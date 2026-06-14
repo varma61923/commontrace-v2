@@ -1,0 +1,8 @@
+# Embeddings index is regenerated locally by memory/attention/build_index.py
+memory/attention/index.npz
+
+# OS / editor cruft
+.DS_Store
+*.swp
+__pycache__/
+*.pyc

@@ -1,0 +1,45 @@
+digraph agent_alpha {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="DejaVu Sans";
+  labelloc="t";
+  fontsize=14;
+  label=<<b>Alpha — retrieval mémoire</b>  ·  Phase 0<br/><font point-size="10">Identifie les leçons/épisodes pertinents pour la tâche entrante (pré-filtre attention + jugement qualitatif)</font>>;
+  nodesep=0.28;
+  ranksep=0.7;
+
+  node [fontname="DejaVu Sans", fontsize=10, shape=box, style="rounded,filled", penwidth=1.2, margin="0.12,0.07"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
+
+  // ---------- Inputs ----------
+  subgraph cluster_in {
+    label=<<b>Inputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
+    in_inv [label="Invocation /justdoit\n(verbatim utilisateur)"];
+    in_mem [label="memory/\n(lecture seule)", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+    in_att [label="Attention layer\nquery.py · index.npz", shape=component, fillcolor="#ccfbf1", color="#0d9488", fontcolor="#134e4a"];
+  }
+
+  // ---------- Agent (étapes internes) ----------
+  alpha [label=<<b>ALPHA</b><br/><font point-size="9">0. pré-filtre attention (top-K cosine + override imp≥4)<br/>1. lire INDEX.md (filtre par domaine)<br/>2. sélectionner 3-7 candidats<br/>3-4. vérifier applies_when / do_not_apply_when<br/>5-6. trier par score = importance × tag_match</font>>,
+         fillcolor="#2563eb", fontcolor="white", penwidth=1.6];
+
+  // ---------- Mandat ----------
+  mandate [label="Mandat : LECTURE SEULE\nno Write · no Edit · no git\nbest-effort → NON BLOQUANT\n(échec ⇒ workflow classique)",
+           shape=note, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d", fontsize=9];
+
+  // ---------- Output ----------
+  subgraph cluster_out {
+    label=<<b>Output</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#dbeafe", color="#2563eb", fontcolor="#1e3a8a"];
+    out [label=<<b>## RETRIEVED MEMORY (Alpha)</b><br align="left"/><font point-size="9">• Lessons applicables (3-5) — slug, importance, cosine,<br align="left"/>  why-applies-here, how-to-apply<br align="left"/>• Episodes précédents (0-2)<br align="left"/>• Recommandations pour le brief A<br align="left"/>• Confidence : HAUTE / MOYENNE / FAIBLE / AUCUNE<br align="left"/>• Lessons consultées (traçabilité)</font>>];
+  }
+
+  // ---------- Edges ----------
+  in_att -> alpha [label=" top-K + imp≥4", color="#0d9488", fontcolor="#0f766e"];
+  in_mem -> alpha [label=" lecture", color="#b45309", fontcolor="#92400e"];
+  in_inv -> alpha [label=" tâche"];
+  alpha -> out [label=" injecté verbatim\n dans le brief A", penwidth=1.4];
+  alpha -> mandate [style=invis];
+  { rank=same; alpha; mandate; }
+}

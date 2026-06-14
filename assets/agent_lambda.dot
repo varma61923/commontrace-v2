@@ -1,0 +1,40 @@
+digraph agent_lambda {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="DejaVu Sans";
+  labelloc="t";
+  fontsize=14;
+  label=<<b>Lambda — validation automatique du backlog</b>  ·  Phase 11<br/><font point-size="10">Reviewer indépendant des propositions Omega — l'équivalent « backlog mémoire » du B reviewer pour le code</font>>;
+  nodesep=0.28;
+  ranksep=0.7;
+
+  node [fontname="DejaVu Sans", fontsize=10, shape=box, style="rounded,filled", penwidth=1.2, margin="0.12,0.07"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
+
+  subgraph cluster_in {
+    label=<<b>Inputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
+    in_omega [label="## OMEGA OUTPUT\n(propositions du run)"];
+    in_mem   [label="memory/ (lecture)\nlessons existantes · INDEX.md", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+    in_rub   [label="Rubrique importance 1-5\n(rappelée verbatim)"];
+  }
+
+  lambda [label=<<b>LAMBDA</b><br/><font point-size="9">audit par proposition · 4 critères :<br/>1. qualité formelle (YAML, applies/do_not)<br/>2. non-doublon (matching sémantique)<br/>3. généralisation (≥ 3 contextes hors-projet)<br/>4. calibration importance (vs rubrique)</font>>,
+          fillcolor="#dc2626", fontcolor="white", penwidth=1.6];
+
+  mandate [label="Mandat : LECTURE SEULE\nno Write · no Edit · no git\n⇒ l'orchestrateur applique les ACCEPTÉ\n   (write lessons/ + rebuild attention)\nspawn frais à chaque run",
+           shape=note, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d", fontsize=9];
+
+  subgraph cluster_out {
+    label=<<b>Output</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d"];
+    out [label=<<b>## LAMBDA OUTPUT</b><br align="left"/><font point-size="9">par proposition : <b>ACCEPTÉ</b> / <b>REJETÉ</b> / <b>À RAFFINER</b><br align="left"/>+ justification (2-3 phrases)<br align="left"/>+ synthèse (total / accepté / rejeté / raffiner)</font>>];
+  }
+
+  in_omega -> lambda [label=" propositions"];
+  in_mem   -> lambda [label=" non-doublon", color="#b45309", fontcolor="#92400e"];
+  in_rub   -> lambda;
+  lambda -> out [label=" → orchestrateur applique\n les ACCEPTÉ seuls", penwidth=1.4];
+  lambda -> mandate [style=invis];
+  { rank=same; lambda; mandate; }
+}

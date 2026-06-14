@@ -1,0 +1,38 @@
+digraph agent_a {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="DejaVu Sans";
+  labelloc="t";
+  fontsize=14;
+  label=<<b>A — implementer</b>  ·  Phase 3 (itérable en Phase 7)<br/><font point-size="10">Implémente la tâche selon le brief, intègre les recommandations Alpha + les contraintes anti-patterns</font>>;
+  nodesep=0.28;
+  ranksep=0.7;
+
+  node [fontname="DejaVu Sans", fontsize=10, shape=box, style="rounded,filled", penwidth=1.2, margin="0.12,0.07"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
+
+  subgraph cluster_in {
+    label=<<b>Input — brief A enrichi</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
+    in_brief [label=<<font point-size="9">• Description tâche + critères de succès (verbatim)<br align="left"/>• Sortie Alpha verbatim (## RETRIEVED MEMORY)<br align="left"/>• Contraintes anti-patterns (standards + Alpha)<br align="left"/>• Documents à lire avant de coder<br align="left"/>• Fichiers à NE PAS toucher</font>>];
+  }
+
+  a [label=<<b>A</b><br/><font point-size="9">implémente dans le périmètre du brief<br/>fixes proactifs OK <i>si documentés</i></font>>,
+     fillcolor="#16a34a", fontcolor="white", penwidth=1.6];
+
+  mandate [label="Mandat : code uniquement\nPAS de commits (→ orchestrateur P4)\nPAS de git ops (stash / clean / restore)\nrelancé en P7 (A2, A3…) si écart B",
+           shape=note, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d", fontsize=9];
+
+  subgraph cluster_out {
+    label=<<b>Outputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#dcfce7", color="#16a34a", fontcolor="#14532d"];
+    out_code [label="Code modifié / créé\n(dans le périmètre)"];
+    out_rep  [label=<<b>Rapport A</b><br align="left"/><font point-size="9">fichiers modifiés · tests chiffrés<br align="left"/>mesures empiriques · surprises</font>>];
+  }
+
+  in_brief -> a [label=" brief"];
+  a -> out_code;
+  a -> out_rep [label=" → commit P4 + Omega P10"];
+  a -> mandate [style=invis];
+  { rank=same; a; mandate; }
+}
