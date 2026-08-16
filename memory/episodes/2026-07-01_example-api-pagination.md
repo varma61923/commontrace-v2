@@ -1,12 +1,12 @@
 ---
 name: 2026-07-01_example-api-pagination
-description: Ajout d'une pagination par curseur à un endpoint REST de liste, via le pattern A+B
-task_invocation: /justdoit ajoute une pagination par curseur à GET /items (limit + cursor opaque, ordre stable), critères — comportement existant préservé, test de non-régression vert, doc OpenAPI à jour
+description: Added cursor-based pagination to a REST list endpoint, via the A+B pattern
+task_invocation: /commontrace add cursor-based pagination to GET /items (limit + opaque cursor, stable order), criteria — existing behavior preserved, regression test green, OpenAPI doc up to date
 tags: [api, rest, pagination, refactor, example]
 project: demo-api
-verdict: CONFORME
+verdict: CONFORM
 importance: 3
-importance_rationale: "Run de démonstration du pattern A+B sur une tâche de refactor à comportement partiellement constant ; sert d'ancre aux deux leçons exemples."
+importance_rationale: "Demonstration run of the A+B pattern on a refactor task with partially constant behavior; serves as anchor for the two example lessons."
 n_iterations: 1
 commit_sha: 0000000
 duration_minutes: 18
@@ -16,18 +16,18 @@ lessons_proposed_by_omega: [lesson_example_serialize_subagents_same_file]
 lessons_validated_by_lambda: [lesson_example_serialize_subagents_same_file]
 ---
 
-> ⚠️ **Exemple illustratif (donnée fictive).** Cet épisode montre le FORMAT ;
-> ce n'est pas un vrai run. À supprimer une fois vos propres épisodes accumulés.
+> **Illustrative example (fictitious data).** This episode shows the FORMAT;
+> it is not a real run. Delete it once your own episodes have accumulated.
 
 ## What happened
-A a d'abord écrit un test de caractérisation figeant la réponse actuelle de `GET /items` (ordre + payload), l'a fait passer sur le code non modifié, puis a introduit la pagination par curseur (paramètres `limit` et `cursor` opaque, ordre stable sur `(created_at, id)`). Commit immédiat. B, reviewer indépendant, a rejoué le test de caractérisation et vérifié que la première page sans curseur reproduisait exactement l'ancien comportement, puis a contrôlé la stabilité du curseur sur insertion concurrente. Verdict CONFORME en 1 itération.
+A first wrote a characterization test freezing the current response of `GET /items` (order + payload), ran it on the unmodified code, then introduced cursor-based pagination (`limit` and opaque `cursor` parameters, stable order on `(created_at, id)`). Immediate commit. B, as an independent reviewer, replayed the characterization test and verified that the first page without a cursor exactly reproduced the old behavior, then checked cursor stability under concurrent insertion. Verdict CONFORM in 1 iteration.
 
 ## What surprised me
-Alpha avait remonté `lesson_example_regression_test_before_refactor` avec confidence haute dès la Phase 0 ; le brief A l'a donc intégrée d'emblée, ce qui a évité l'aller-retour habituel « B réclame un test de non-régression manquant ».
+Alpha had surfaced `lesson_example_regression_test_before_refactor` with high confidence as early as Phase 0; the A brief therefore integrated it from the start, which avoided the usual back-and-forth "B requests a missing regression test".
 
 ## What worked well
-- Test de caractérisation écrit AVANT le refactor → oracle net pour B (leçon `regression_test_before_refactor` effectivement hit).
-- Curseur opaque (base64 de `(created_at, id)`) plutôt qu'offset → pas de saut/duplication sous insertion.
+- Characterization test written BEFORE the refactor -> clean oracle for B (lesson `regression_test_before_refactor` effectively hit).
+- Opaque cursor (base64 of `(created_at, id)`) rather than offset -> no skip/duplication under insertion.
 
 ## What worked less well
-- Omega a noté qu'A et B ont failli éditer `openapi.yaml` en parallèle (doc + exemple de réponse) → proposition de la leçon `lesson_example_serialize_subagents_same_file`, validée par Lambda.
+- Omega noted that A and B nearly edited `openapi.yaml` in parallel (doc + response example) -> proposal of the lesson `lesson_example_serialize_subagents_same_file`, validated by Lambda.

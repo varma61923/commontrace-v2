@@ -1,105 +1,105 @@
-# `memory/lessons/` — Leçons capitalisées entre runs `/justdoit`
+# `memory/lessons/` — Lessons capitalized across /commontrace runs
 
-## Rôle
+## Role
 
-Une leçon `lesson_<slug>.md` représente une règle apprise d'au moins un épisode passé, formulée en langage naturel pour pouvoir être :
-1. **Retrouvée** par le sous-agent **Alpha** (Phase 0) à partir du `name` / `description` / `tags` / `domain` / `applies_when`
-2. **Appliquée** dans le brief A du nouveau run (recommandations, anti-patterns, docs à lire)
+A lesson `lesson_<slug>.md` represents a rule learned from at least one past episode, formulated in natural language so it can be:
+1. **Retrieved** by the sub-agent **Alpha** (Phase 0) based on `name` / `description` / `tags` / `domain` / `applies_when`
+2. **Applied** in the A brief of the new run (recommendations, anti-patterns, docs to read)
 
-## Workflow d'écriture
+## Writing Workflow
 
-Les leçons NE sont JAMAIS écrites directement par Omega. Pipeline (v2.2) :
+Lessons are NEVER written directly by Omega. Pipeline (v2.2):
 
-1. **Phase 10 (Omega)** propose 0-N leçons candidates (output verbatim).
-2. **Phase 11 (Lambda)** audit les propositions selon 4 critères (qualité formelle, non-doublon, généralisation, calibration importance) et rend un verdict ACCEPTÉ | REJETÉ | À RAFFINER par proposition.
-3. Si Lambda marque ACCEPTÉ → l'**orchestrateur** crée le fichier `lesson_<slug>.md` ICI avec frontmatter YAML strict, puis met à jour `memory/INDEX.md` (section domaine correspondante).
+1. **Phase 10 (Omega)** proposes 0-N candidate lessons (verbatim output).
+2. **Phase 11 (Lambda)** audits proposals against 4 criteria (formal quality, non-duplicate, generalization, importance calibration) and renders a verdict ACCEPTED | REJECTED | NEEDS REFINEMENT per proposal.
+3. If Lambda marks ACCEPTED -> the **orchestrator** creates the file `lesson_<slug>.md` HERE with strict YAML frontmatter, then updates `memory/INDEX.md` (corresponding domain section).
 
-Workflow 100% automatisé : pas de validation user dans la boucle, exploitable par un agent sans humain.
+Workflow is 100% automated: no user validation in the loop, usable by an agent without a human.
 
-## Workflow d'update
+## Update Workflow
 
-Quand une leçon existante est hit (utile dans un run) :
+When an existing lesson is hit (useful in a run):
 
-1. Omega propose en Phase 10 : `UPDATE LEÇON "lesson_xxx" : +1 uses`.
-2. Lambda audit Phase 11 (cohérence : source_episode pas déjà présent, dates cohérentes, uses cohérent, lesson_hit confirmé).
-3. Si ACCEPTÉ → orchestrateur incrémente `uses` dans le frontmatter, met `last_hit: YYYY-MM-DD`, append l'épisode courant à `source_episodes`.
+1. Omega proposes in Phase 10: `UPDATE LESSON "lesson_xxx": +1 uses`.
+2. Lambda audits in Phase 11 (consistency: source_episode not already present, dates consistent, uses consistent, lesson_hit confirmed).
+3. If ACCEPTED -> orchestrator increments `uses` in the frontmatter, sets `last_hit: YYYY-MM-DD`, appends the current episode to `source_episodes`.
 
-## Workflow de révision
+## Revision Workflow
 
-Si une leçon a été retrieve par Alpha mais s'est révélée non applicable (mauvaise formulation, applies_when trop large) :
+If a lesson was retrieved by Alpha but turned out to be non-applicable (poor formulation, applies_when too broad):
 
-1. Omega flag en Phase 10 : `RÉVISION LEÇON "lesson_xxx" : À RÉVISER — raison`.
-2. Lambda audit Phase 11 (motif documenté concrètement avec citation rapport A/B ou rétro orchestrateur).
-3. Si ACCEPTÉ → orchestrateur change `status: active → review` dans le frontmatter et append un commentaire `## Revision note` dans le corps.
+1. Omega flags in Phase 10: `REVISION LESSON "lesson_xxx": NEEDS REVISION — reason`.
+2. Lambda audits in Phase 11 (reason documented concretely with citation from A/B report or orchestrator retro).
+3. If ACCEPTED -> orchestrator changes `status: active -> review` in the frontmatter and appends a `## Revision note` comment in the body.
 
-L'utilisateur peut ensuite éditer manuellement les leçons en statut `review`.
+The user can then manually edit lessons with `review` status.
 
 ## Format
 
-Frontmatter YAML strict (parsable par `yaml.safe_load`), suivi d'un corps markdown avec sections fixes. Voir `lesson_template.md` pour un squelette vide.
+Strict YAML frontmatter (parsable by `yaml.safe_load`), followed by a markdown body with fixed sections. See `lesson_template.md` for an empty skeleton.
 
-### Champs frontmatter obligatoires
+### Required Frontmatter Fields
 
-| Champ | Type | Description |
+| Field | Type | Description |
 |---|---|---|
-| `name` | string | slug unique de la leçon (e.g. `lesson_subagent_double_review_pattern`) |
-| `description` | string | Résumé 1 ligne — utilisé par Alpha pour le filtrage sémantique |
-| `tags` | list[string] | Tags libres (e.g. `[subagents, pattern, double-review]`) |
+| `name` | string | unique slug of the lesson (e.g. `lesson_subagent_double_review_pattern`) |
+| `description` | string | 1-line summary — used by Alpha for semantic filtering |
+| `tags` | list[string] | Free tags (e.g. `[subagents, pattern, double-review]`) |
 | `domain` | enum | `git-safety` \| `cuda-gpu` \| `refactor` \| `testing` \| `subagents` \| `performance` \| `other` |
-| `importance` | int | Entier 1-5 — voir rubrique complète dans `SKILL.md` section "Rubrique d'importance" (5=showstopper, 4=critique, 3=utile, 2=mineur, 1=anecdotique). Single source of truth ; `INDEX.md` reflète cette valeur. |
-| `importance_rationale` | string | 1-phrase concrète OBLIGATOIRE justifiant le score (pas générique). Exemple bon : "Sans cette règle, écrasement silencieux par sous-agents parallèles" ; mauvais : "important parce qu'utile". |
-| `importance_history` | list[dict] | Log des changements d'importance, format `[{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]`. Initialisé `[]`. Utile pour audit + détection de drift de calibration. |
-| `applies_when` | string | Condition d'activation sémantique précise (≥ 1 phrase concrète) — Alpha utilise ça pour décider d'appliquer |
-| `do_not_apply_when` | string | Contre-condition explicite — évite sur-généralisation |
-| `uses` | int | Compteur d'usages (incrémenté en Phase 11) |
-| `last_hit` | string | `YYYY-MM-DD` du dernier hit, ou `NEVER` |
-| `source_episodes` | list[string] | Slugs des épisodes qui ont contribué à cette leçon |
-| `status` | enum | `active` \| `review` (flaggée pour révision) \| `archived` (manuellement) |
+| `importance` | int | Integer 1-5 — see full rubric in `SKILL.md` section "Importance rubric" (5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal). Single source of truth; `INDEX.md` reflects this value. |
+| `importance_rationale` | string | 1-sentence concrete REQUIRED justification for the score (not generic). Good example: "Without this rule, silent overwrite by parallel sub-agents"; bad: "important because useful". |
+| `importance_history` | list[dict] | Log of importance changes, format `[{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]`. Initialized `[]`. Useful for audit + calibration drift detection. |
+| `applies_when` | string | Precise semantic activation condition (>= 1 concrete sentence) — Alpha uses this to decide whether to apply |
+| `do_not_apply_when` | string | Explicit counter-condition — prevents over-generalization |
+| `uses` | int | Usage counter (incremented in Phase 11) |
+| `last_hit` | string | `YYYY-MM-DD` of the last hit, or `NEVER` |
+| `source_episodes` | list[string] | Slugs of episodes that contributed to this lesson |
+| `status` | enum | `active` \| `review` (flagged for revision) \| `archived` (manually) |
 
-### Critère Omega pour proposer une nouvelle leçon (v2.1)
+### Omega Criteria for Proposing a New Lesson (v2.1)
 
-Omega propose une leçon candidate si au moins UN des deux critères suivants est vrai (en plus de "non couvert par leçon existante" ET "généralisable hors-projet") :
+Omega proposes a candidate lesson if at least ONE of the following two criteria is true (in addition to "not covered by an existing lesson" AND "generalizable cross-project"):
 
-- **(A)** Importance épisode source ≥ 3 ET généralisable hors-projet.
-- **(B)** Importance 4-5 même sur 1 seule occurrence — showstopper / critique mérite d'être capturé immédiatement.
+- **(A)** Source episode importance >= 3 AND generalizable cross-project.
+- **(B)** Importance 4-5 even on a single occurrence — a showstopper / critical issue deserves to be captured immediately.
 
-Remplace l'ancien critère "≥ 2 épisodes le montrent" qui filtrait trop strict les showstoppers rares mais critiques.
+Replaces the old criterion ">= 2 episodes showing it" which was too strict for rare but critical showstoppers.
 
-L'importance de la leçon candidate est dérivée des `source_episodes` (max ou moyenne), ajustable +/- 1 par Omega au moment de proposer (justifier dans la proposition).
+The candidate lesson's importance is derived from the `source_episodes` (max or mean), adjustable +/- 1 by Omega at proposal time (justify in the proposal).
 
-### Sections du corps
+### Body Sections
 
-- **## Rule** — 1 phrase actionnable
-- **## Why** — observation factuelle ou incident source, ancré dans réalité d'un projet
-- **## How to apply** — quand l'invoquer, comment l'utiliser concrètement dans un brief A ou B
-- **## Counter-examples** — cas où la règle ne s'applique PAS
+- **## Rule** — 1 actionable sentence
+- **## Why** — factual observation or source incident, grounded in project reality
+- **## How to apply** — when to invoke it, how to use it concretely in the A or B brief
+- **## Counter-examples** — cases where the rule does NOT apply
 
-## Bonnes pratiques pour rédiger une bonne leçon
+## Best Practices for Writing a Good Lesson
 
-- **applies_when** doit être précis : pas "quand on refactor" mais "quand on fait un refactor architectural touchant ≥ 3 fichiers d'un module"
-- **do_not_apply_when** doit lister explicitement les exceptions connues : pas "sauf cas spéciaux" mais "ne s'applique pas aux scripts jetables R&D" ou "ne s'applique pas si testé en TDD"
-- **Why** doit citer un incident ou observation concrète d'un projet, pas une généralité
-- **How to apply** doit être actionnable : "ajouter ligne X dans le brief A" ou "vérifier Y avant lancer le code", pas "être prudent"
+- **applies_when** must be precise: not "when refactoring" but "when doing an architectural refactor touching >= 3 files of a module"
+- **do_not_apply_when** must explicitly list known exceptions: not "except in special cases" but "does not apply to throwaway R&D scripts" or "does not apply if tested with TDD"
+- **Why** must cite a concrete incident or observation from a project, not a generality
+- **How to apply** must be actionable: "add line X in the A brief" or "verify Y before running the code", not "be careful"
 
-## Hiérarchie par domaine
+## Domain Hierarchy
 
-Les leçons sont rangées sémantiquement dans `INDEX.md` par `domain`. Domaines actuels :
+Lessons are organized semantically in `INDEX.md` by `domain`. Current domains:
 
-- `git-safety` — opérations git, commit, recovery, stash/clean/reset
-- `cuda-gpu` — kernels CUDA, full-GPU, syncs host, atomics, déterminisme
-- `refactor` — refactor architectural, rename strict, copy vs reimplement
-- `testing` — tests existants, pytest, parité empirique, skip/xfail
-- `subagents` — patterns sous-agents, double-review, parallélisation, indépendance
-- `performance` — bench, mesure, sustained, isolation compute/memory
-- `other` — divers (rapports, output paths, transparence, etc.)
+- `git-safety` — git operations, commit, recovery, stash/clean/reset
+- `cuda-gpu` — CUDA kernels, full-GPU, host syncs, atomics, determinism
+- `refactor` — architectural refactor, strict rename, copy vs reimplement
+- `testing` — existing tests, pytest, empirical parity, skip/xfail
+- `subagents` — sub-agent patterns, double-review, parallelization, independence
+- `performance` — benchmarks, measurement, sustained, compute/memory isolation
+- `other` — miscellaneous (reports, output paths, transparency, etc.)
 
-Pour ajouter un nouveau domaine, éditer `INDEX.md` (ajouter une section) ET ce README.
+To add a new domain, edit `INDEX.md` (add a section) AND this README.
 
-## Édition manuelle
+## Manual Editing
 
-Autorisée (et même encouragée) pour :
-- Affiner `applies_when` / `do_not_apply_when` après un retrieval Alpha raté
-- Archiver une leçon obsolète (`status: archived`)
-- Fusionner deux leçons doublonnes
+Allowed (and even encouraged) for:
+- Refining `applies_when` / `do_not_apply_when` after a failed Alpha retrieval
+- Archiving an obsolete lesson (`status: archived`)
+- Merging two duplicate lessons
 
-Garder une trace dans le commit message.
+Keep a trace in the commit message.

@@ -4,7 +4,7 @@ digraph agent_lambda {
   fontname="DejaVu Sans";
   labelloc="t";
   fontsize=14;
-  label=<<b>Lambda — validation automatique du backlog</b>  ·  Phase 11<br/><font point-size="10">Reviewer indépendant des propositions Omega — l'équivalent « backlog mémoire » du B reviewer pour le code</font>>;
+  label=<<b>Lambda — automatic backlog validation</b>  ·  Phase 11<br/><font point-size="10">Independent reviewer of Omega proposals — the memory backlog equivalent of the B reviewer for code</font>>;
   nodesep=0.28;
   ranksep=0.7;
 
@@ -14,27 +14,27 @@ digraph agent_lambda {
   subgraph cluster_in {
     label=<<b>Inputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
-    in_omega [label="## OMEGA OUTPUT\n(propositions du run)"];
-    in_mem   [label="memory/ (lecture)\nlessons existantes · INDEX.md", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
-    in_rub   [label="Rubrique importance 1-5\n(rappelée verbatim)"];
+    in_omega [label="## OMEGA OUTPUT\n(proposals from the run)"];
+    in_mem   [label="memory/ (read-only)\nexisting lessons · INDEX.md", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+    in_rub   [label="Importance rubric 1-5\n(recalled verbatim)"];
   }
 
-  lambda [label=<<b>LAMBDA</b><br/><font point-size="9">audit par proposition · 4 critères :<br/>1. qualité formelle (YAML, applies/do_not)<br/>2. non-doublon (matching sémantique)<br/>3. généralisation (≥ 3 contextes hors-projet)<br/>4. calibration importance (vs rubrique)</font>>,
+  lambda [label=<<b>LAMBDA</b><br/><font point-size="9">audit per proposal · 4 criteria:<br/>1. formal quality (YAML, applies/do_not)<br/>2. non-duplication (semantic matching)<br/>3. generalization (>= 3 contexts beyond project)<br/>4. importance calibration (vs rubric)</font>>,
           fillcolor="#dc2626", fontcolor="white", penwidth=1.6];
 
-  mandate [label="Mandat : LECTURE SEULE\nno Write · no Edit · no git\n⇒ l'orchestrateur applique les ACCEPTÉ\n   (write lessons/ + rebuild attention)\nspawn frais à chaque run",
+  mandate [label="Mandate: READ-ONLY\nno Write · no Edit · no git\n=> orchestrator applies ACCEPTED\n   (write lessons/ + rebuild attention)\nfresh spawn each run",
            shape=note, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d", fontsize=9];
 
   subgraph cluster_out {
     label=<<b>Output</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d"];
-    out [label=<<b>## LAMBDA OUTPUT</b><br align="left"/><font point-size="9">par proposition : <b>ACCEPTÉ</b> / <b>REJETÉ</b> / <b>À RAFFINER</b><br align="left"/>+ justification (2-3 phrases)<br align="left"/>+ synthèse (total / accepté / rejeté / raffiner)</font>>];
+    out [label=<<b>## LAMBDA OUTPUT</b><br align="left"/><font point-size="9">per proposal: <b>ACCEPTED</b> / <b>REJECTED</b> / <b>NEEDS REFINEMENT</b><br align="left"/>+ justification (2-3 sentences)<br align="left"/>+ summary (total / accepted / rejected / refine)</font>>];
   }
 
-  in_omega -> lambda [label=" propositions"];
-  in_mem   -> lambda [label=" non-doublon", color="#b45309", fontcolor="#92400e"];
+  in_omega -> lambda [label=" proposals"];
+  in_mem   -> lambda [label=" non-duplication", color="#b45309", fontcolor="#92400e"];
   in_rub   -> lambda;
-  lambda -> out [label=" → orchestrateur applique\n les ACCEPTÉ seuls", penwidth=1.4];
+  lambda -> out [label=" -> orchestrator applies\n ACCEPTED only", penwidth=1.4];
   lambda -> mandate [style=invis];
   { rank=same; lambda; mandate; }
 }

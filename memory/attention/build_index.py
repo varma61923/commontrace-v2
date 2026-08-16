@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build attention index for /justdoit memory lessons (v2.3).
+"""Build attention index for /commontrace memory lessons (v2.3).
 
 Encode each ACTIVE lesson (description + domain + tags + applies_when +
 do_not_apply_when + rule) using multi-qa-mpnet-base-dot-v1 (local execution
-after first download — conforme `feedback_code_strictement_prive`).
+after first download — no runtime API calls, no telemetry).
 
 Output: memory/attention/index.npz with fields:
     - slugs (np.ndarray[str])      : lesson identifiers, ordered
@@ -41,8 +41,22 @@ import yaml
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
-LESSONS_DIR = os.path.expanduser("~/.claude/skills/justdoit/memory/lessons")
-INDEX_PATH = os.path.expanduser("~/.claude/skills/justdoit/memory/attention/index.npz")
+
+# ---------------------------------------------------------------------------
+# Path configuration — provider-agnostic
+#
+# Priority:
+#   1. COMMONTRACE_ROOT env var (explicit override)
+#   2. JUSTDOIT_ROOT env var (legacy backward compatibility)
+#   3. Auto-detect from this script's location (works out of the box)
+#
+# Example: export COMMONTRACE_ROOT=/opt/commontrace
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention → memory → ROOT
+_ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
+LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
+INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
 ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule"
 
 

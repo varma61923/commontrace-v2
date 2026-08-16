@@ -1,0 +1,10 @@
+# commontrace-v2 — Python dependencies
+# Minimum Python: 3.10
+#
+# Attention layer (memory/attention/) — required for semantic pre-filtering (Phase 0 / Alpha):
+numpy>=1.24.0,<3.0
+sentence-transformers>=2.7.0,<5.0   # pulls torch CPU automatically
+PyYAML>=6.0,<7.0
+
+# Benchmark (benchmark/measure_performance.py):
+# PyYAML listed above; all other deps are stdlib (argparse, glob, json, re, datetime, os, sys)

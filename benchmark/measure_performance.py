@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""measure_performance.py — benchmark de la base mémoire /justdoit.
+"""measure_performance.py — memory benchmark for /commontrace.
 
-Mesure les 3 axes manquants identifiés dans l'état de l'art (Park 2023 Generative
-Agents, Evo-Memory, AgentErrorBench, ERL, LongMemEval, LoCoMo) :
+Measures 3 axes identified as gaps in the state of the art (Park 2023 Generative
+Agents, Evo-Memory, AgentErrorBench, ERL, LongMemEval, LoCoMo):
 
-- lesson_quality : % de propositions Omega validées par Lambda (qualité génération)
-- implicit_retrieval : % de lessons retrieve par Alpha effectivement hit (qualité retrieval)
-- transfer_gap : % de hits cross-project (transfert hors-projet d'origine)
+- lesson_quality     : % of Omega proposals validated by Lambda (generation quality)
+- implicit_retrieval : % of lessons retrieved by Alpha that actually helped (retrieval quality)
+- transfer_gap       : % of cross-project hits (transfer beyond originating project)
 
-Usage :
-    python measure_performance.py                  # markdown stdout, tous épisodes
-    python measure_performance.py --n=5            # derniers 5 épisodes
-    python measure_performance.py --html           # HTML dans memory/benchmark_reports/
-    python measure_performance.py --json           # JSON brut stdout
+Usage:
+    python measure_performance.py                  # markdown stdout, all episodes
+    python measure_performance.py --n=5            # last 5 episodes
+    python measure_performance.py --html           # HTML to memory/benchmark_reports/
+    python measure_performance.py --json           # raw JSON to stdout
+    python measure_performance.py --save           # persist JSON report to benchmark_reports/
 
-Si PyYAML manquant : tomber sur le fallback regex (parsing simplifié).
-Idéalement lancer via venv : python3 ...
+Alert thresholds (warn when metrics fall below):
+    --threshold-quality=0.8        lesson_quality warning below 80% (default)
+    --threshold-retrieval=0.7      implicit_retrieval strict warning below 70% (default)
+    --threshold-never-hit=0.25     warn if >25% of lessons are never-hit (default)
+
+Falls back to regex parser if PyYAML is not installed.
 """
 import argparse
 import datetime
@@ -31,8 +36,22 @@ try:
 except ImportError:
     HAS_YAML = False
 
+SCHEMA_VERSION = "1.1.0"
 
-BASE_DIR = os.path.expanduser("~/.claude/skills/justdoit/memory")
+# ---------------------------------------------------------------------------
+# Path configuration — provider-agnostic
+#
+# Priority:
+#   1. COMMONTRACE_ROOT env var (explicit override)
+#   2. JUSTDOIT_ROOT env var (legacy backward compatibility)
+#   3. Auto-detect from this script's location (works out of the box)
+#
+# Example: export COMMONTRACE_ROOT=/opt/commontrace
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_AUTO_ROOT = os.path.dirname(_SCRIPT_DIR)  # benchmark → ROOT
+_ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
+BASE_DIR = os.path.join(_ROOT, "memory")
 
 
 def parse_frontmatter(content):
@@ -125,11 +144,11 @@ def compute_lesson_quality(episodes):
 def compute_implicit_retrieval(episodes):
     """Two angles on retrieval quality:
 
-    - strict     = mean(|hit ∩ retrieved| / |retrieved|)  → précision du retrieval Alpha
-                   (proportion des sélections Alpha qui ont effectivement servi)
-    - permissive = mean(|hit| / |retrieved|)               → richesse de l'application Omega
-                   (peut excéder 100% si Omega compte des lessons influentes hors retrieved
-                    Alpha — counter-examples, règles méthodologiques en arrière-plan, etc.)
+    - strict     = mean(|hit ∩ retrieved| / |retrieved|)  → Alpha retrieval precision
+                   (proportion of Alpha's selections that actually helped)
+    - permissive = mean(|hit| / |retrieved|)               → Omega application richness
+                   (can exceed 100% if Omega counts influential lessons beyond those
+                    retrieved by Alpha — counter-examples, background methodological rules, etc.)
 
     Exclude episodes with empty retrieval. Returns (strict, permissive, n_valid).
     """
@@ -213,7 +232,7 @@ def compute_extras(episodes, lessons):
         i = ep.get("importance")
         imp_episodes[i] = imp_episodes.get(i, 0) + 1
 
-    # Coverage par domain
+    # Coverage by domain
     domain_coverage = {}
     for l in lessons.values():
         d = l.get("domain", "?")
@@ -229,59 +248,101 @@ def compute_extras(episodes, lessons):
     }
 
 
+def compute_alerts(report, thresholds):
+    """Return list of alert strings when metrics breach thresholds."""
+    alerts = []
+    lq = report["lesson_quality"]
+    if lq["value"] is not None and lq["value"] < thresholds["quality"]:
+        alerts.append(
+            f"lesson_quality {lq['value']:.1%} < threshold {thresholds['quality']:.1%} "
+            f"— Omega proposal quality degraded"
+        )
+    ir = report["implicit_retrieval"]
+    if ir["strict"] is not None and ir["strict"] < thresholds["retrieval"]:
+        alerts.append(
+            f"implicit_retrieval (strict) {ir['strict']:.1%} < threshold {thresholds['retrieval']:.1%} "
+            f"— Alpha retrieval precision degraded"
+        )
+    extras = report["extras"]
+    n_lessons = report["n_lessons"]
+    if n_lessons > 0:
+        never_ratio = len(extras["never_hit"]) / n_lessons
+        if never_ratio > thresholds["never_hit"]:
+            alerts.append(
+                f"{len(extras['never_hit'])}/{n_lessons} lessons never hit "
+                f"({never_ratio:.1%} > threshold {thresholds['never_hit']:.1%}) "
+                f"— consider archiving stale lessons"
+            )
+    # Warn if lesson_quality > 100% (retro-validation artefact)
+    if lq["value"] is not None and lq["value"] > 1.0:
+        alerts.append(
+            f"lesson_quality {lq['value']:.1%} > 100% — retro-validation artefact "
+            f"(Lambda validated proposals from earlier runs; see STATUS.md §2.2)"
+        )
+    return alerts
+
+
 def fmt_pct(v):
     return "N/A" if v is None else f"{v:.1%}"
 
 
-def render_markdown(r):
+def render_markdown(r, alerts=None):
     out = []
-    out.append("# /justdoit Memory Benchmark Report")
+    out.append("# /commontrace Memory Benchmark Report")
     out.append("")
     out.append(f"**Date** : {r['timestamp']}")
-    out.append(f"**Épisodes analysés** : {r['n_episodes']}")
-    out.append(f"**Lessons en base** : {r['n_lessons']}")
-    out.append(f"**YAML parser** : {'PyYAML' if HAS_YAML else 'regex fallback (PyYAML manquant)'}")
+    out.append(f"**Schema version** : {r.get('schema_version', 'N/A')}")
+    out.append(f"**Episodes analyzed** : {r['n_episodes']}")
+    out.append(f"**Lessons in store** : {r['n_lessons']}")
+    out.append(f"**YAML parser** : {'PyYAML' if HAS_YAML else 'regex fallback (PyYAML not found)'}")
     out.append("")
 
-    out.append("## Métriques principales (3 axes)")
+    if alerts:
+        out.append("## Alerts")
+        out.append("")
+        for a in alerts:
+            out.append(f"- **WARNING**: {a}")
+        out.append("")
+
+    out.append("## Main Metrics (3 axes)")
     out.append("")
     out.append("### lesson_quality")
-    out.append("% de leçons proposées par Omega validées par Lambda.")
+    out.append("% of lessons proposed by Omega that were validated by Lambda.")
     lq = r["lesson_quality"]
     if lq["value"] is None:
-        out.append("→ **N/A** (aucun épisode avec proposition Omega)")
+        out.append("-> **N/A** (no episodes with Omega proposals)")
     else:
-        out.append(f"→ **{fmt_pct(lq['value'])}** sur {lq['n']} épisodes valides")
+        out.append(f"-> **{fmt_pct(lq['value'])}** across {lq['n']} valid episodes")
     out.append("")
 
     out.append("### implicit_retrieval (2 angles)")
-    out.append("Précision et richesse du retrieval Alpha. `hit` n'est pas borné par `retrieved` —")
-    out.append("voir doc sémantique (counter-examples / règles en arrière-plan peuvent compter en hit).")
+    out.append("Precision and richness of Alpha retrieval. `hit` is not bounded by `retrieved` —")
+    out.append("see semantic doc (counter-examples / background rules can count as hits).")
     ir = r["implicit_retrieval"]
     if ir["strict"] is None:
-        out.append("→ **N/A** (aucun épisode avec retrieval Alpha non vide)")
+        out.append("-> **N/A** (no episodes with non-empty Alpha retrieval)")
     else:
-        out.append(f"- **strict** = mean(|hit ∩ retrieved| / |retrieved|) → **{fmt_pct(ir['strict'])}**")
-        out.append(f"  (précision : proportion des sélections Alpha qui ont effectivement servi)")
-        out.append(f"- **permissive** = mean(|hit| / |retrieved|) → **{fmt_pct(ir['permissive'])}**")
-        out.append(f"  (richesse : peut > 100% si Omega compte des hits hors retrieved Alpha)")
-        out.append(f"- sur **{ir['n']}** épisodes valides")
+        out.append(f"- **strict** = mean(|hit ∩ retrieved| / |retrieved|) -> **{fmt_pct(ir['strict'])}**")
+        out.append(f"  (precision: proportion of Alpha selections that actually helped)")
+        out.append(f"- **permissive** = mean(|hit| / |retrieved|) -> **{fmt_pct(ir['permissive'])}**")
+        out.append(f"  (richness: can exceed 100% if Omega counts hits beyond Alpha's retrieved set)")
+        out.append(f"- across **{ir['n']}** valid episodes")
     out.append("")
 
     out.append("### transfer_gap")
-    out.append("% de hits cross-project (transfert hors-projet d'origine).")
+    out.append("% of cross-project hits (transfer beyond originating project).")
     tg = r["transfer_gap"]
     if tg["value"] is None:
-        msg = "→ **N/A**"
+        msg = "-> **N/A**"
         if tg["untraceable"] > 0:
-            msg += f" ({tg['untraceable']} hits untraceable — lessons seedées sans source_episode)"
-        msg += ". Base mono-projet ou hits non traceables — seeder avec épisodes multi-projets pour mesurer."
+            msg += f" ({tg['untraceable']} hits untraceable — seeded lessons without source_episode)"
+        msg += ". Single-project base or untraceable hits — seed with multi-project episodes to measure."
         out.append(msg)
     else:
-        out.append(f"→ **{fmt_pct(tg['value'])}** sur {tg['n']} hits traceables (+ {tg['untraceable']} untraceable)")
+        out.append(f"-> **{fmt_pct(tg['value'])}** across {tg['n']} traceable hits (+ {tg['untraceable']} untraceable)")
     out.append("")
 
-    out.append("## Détail par épisode")
+    out.append("## Detail per episode")
     out.append("")
     out.append("| Date / slug | Verdict | Imp | Retrieved | Hit | Proposed | Validated | Project |")
     out.append("|---|---|---|---|---|---|---|---|")
@@ -299,45 +360,45 @@ def render_markdown(r):
 
     extras = r["extras"]
 
-    out.append("## Top 5 lessons par uses")
+    out.append("## Top 5 lessons by uses")
     out.append("")
     if extras["top5"]:
         for n, u in extras["top5"]:
             out.append(f"- `{n}` : {u} uses")
     else:
-        out.append("*(aucune lesson avec uses > 0)*")
+        out.append("*(no lessons with uses > 0)*")
     out.append("")
 
-    out.append("## Lessons jamais hit (candidates archivage à terme)")
+    out.append("## Lessons never hit (archival candidates)")
     out.append("")
     if extras["never_hit"]:
         for n in extras["never_hit"]:
             out.append(f"- `{n}`")
     else:
-        out.append("*(toutes les lessons ont été hit au moins une fois)*")
+        out.append("*(all lessons have been hit at least once)*")
     out.append("")
 
-    out.append("## Lessons proposées mais jamais validées (signal qualité Omega dégradée)")
+    out.append("## Lessons proposed but never validated (Omega quality signal degraded)")
     out.append("")
     if extras["proposed_not_validated"]:
         for n in extras["proposed_not_validated"]:
             out.append(f"- `{n}`")
     else:
-        out.append("*(toutes les propositions Omega ont été validées)*")
+        out.append("*(all Omega proposals have been validated)*")
     out.append("")
 
-    out.append("## Distribution importance")
+    out.append("## Importance distribution")
     out.append("")
-    out.append("**Lessons** :")
+    out.append("**Lessons**:")
     for i in sorted(extras["importance_lessons"].keys(), key=lambda x: (x is None, x)):
         out.append(f"- importance {i} : {extras['importance_lessons'][i]} lessons")
     out.append("")
-    out.append("**Episodes** :")
+    out.append("**Episodes**:")
     for i in sorted(extras["importance_episodes"].keys(), key=lambda x: (x is None, x)):
-        out.append(f"- importance {i} : {extras['importance_episodes'][i]} épisodes")
+        out.append(f"- importance {i} : {extras['importance_episodes'][i]} episodes")
     out.append("")
 
-    out.append("## Couverture par domain")
+    out.append("## Coverage by domain")
     out.append("")
     for d in sorted(extras["domain_coverage"].keys()):
         out.append(f"- {d} : {extras['domain_coverage'][d]} lessons")
@@ -346,14 +407,153 @@ def render_markdown(r):
     return "\n".join(out)
 
 
-def render_html(md_content, timestamp):
+def _md_to_html_fragment(md_text):
+    """Convert a subset of markdown to HTML (stdlib only, no external deps).
+
+    Handles: ATX headers (# ## ###), bold (**text**), inline code (`code`),
+    table rows (| col | col |), bullet lists (- item), horizontal rules (---),
+    and plain paragraphs. Sufficient for the benchmark report format.
+    """
+    lines = md_text.split("\n")
+    html_lines = []
+    in_table = False
+    in_list = False
+    in_para = False
+
+    def close_para():
+        nonlocal in_para
+        if in_para:
+            html_lines.append("</p>")
+            in_para = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            html_lines.append("</ul>")
+            in_list = False
+
+    def close_table():
+        nonlocal in_table
+        if in_table:
+            html_lines.append("</tbody></table>")
+            in_table = False
+
+    def inline(text):
+        # bold **...** or __...__
+        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+        text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
+        # inline code `...`
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        # italic *...* (single asterisk, after bold handled)
+        text = re.sub(r"\*([^*\n]+)\*", r"<em>\1</em>", text)
+        return text
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # ATX headers
+        m = re.match(r"^(#{1,6})\s+(.*)", line)
+        if m:
+            close_list()
+            close_table()
+            close_para()
+            level = len(m.group(1))
+            html_lines.append(f"<h{level}>{inline(m.group(2))}</h{level}>")
+            i += 1
+            continue
+
+        # Horizontal rule
+        if re.match(r"^---+\s*$", line) or re.match(r"^\*\*\*+\s*$", line):
+            close_list()
+            close_table()
+            close_para()
+            html_lines.append("<hr>")
+            i += 1
+            continue
+
+        # Bullet list
+        m = re.match(r"^[-*]\s+(.*)", line)
+        if m:
+            close_table()
+            close_para()
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            html_lines.append(f"<li>{inline(m.group(1))}</li>")
+            i += 1
+            continue
+
+        # Table row
+        if line.startswith("|"):
+            close_list()
+            close_para()
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            # Skip separator rows like |---|---|
+            if all(re.match(r"^[-:]+$", c) for c in cells if c):
+                i += 1
+                continue
+            if not in_table:
+                html_lines.append('<table><thead><tr>')
+                for c in cells:
+                    html_lines.append(f"<th>{inline(c)}</th>")
+                html_lines.append("</tr></thead><tbody>")
+                in_table = True
+            else:
+                html_lines.append("<tr>")
+                for c in cells:
+                    html_lines.append(f"<td>{inline(c)}</td>")
+                html_lines.append("</tr>")
+            i += 1
+            continue
+
+        # Empty line
+        if not line.strip():
+            close_list()
+            close_table()
+            close_para()
+            html_lines.append("")
+            i += 1
+            continue
+
+        # Plain paragraph text
+        close_list()
+        close_table()
+        if not in_para:
+            html_lines.append("<p>")
+            in_para = True
+        else:
+            # Preserve line breaks within a paragraph (e.g. consecutive metadata lines)
+            html_lines.append("<br>")
+        html_lines.append(inline(line))
+        i += 1
+
+    close_list()
+    close_table()
+    close_para()
+    return "\n".join(html_lines)
+
+
+def render_html(md_content, timestamp, alerts=None):
+    alert_html = ""
+    if alerts:
+        items = "\n".join(f"<li>{a}</li>" for a in alerts)
+        alert_html = f'<div class="alerts"><h2>Alerts</h2><ul>{items}</ul></div>'
+    # Strip the markdown "## Alerts" section so we don't duplicate the banner.
+    body_md = re.sub(
+        r"^## Alerts\s*\n(\n|\s)*" r"((- \*\*WARNING\*\*:.*\n)+)",
+        "",
+        md_content,
+        flags=re.MULTILINE,
+    )
+    body_html = _md_to_html_fragment(body_md)
     return f"""<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>/justdoit Memory Benchmark — {timestamp}</title>
+<title>/commontrace Memory Benchmark — {timestamp}</title>
 <style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d; }}
 h1, h2, h3 {{ color: #1a1a1a; }}
 h1 {{ border-bottom: 2px solid #444; padding-bottom: 0.3em; }}
 h2 {{ border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 2em; }}
@@ -366,31 +566,51 @@ strong {{ color: #0066cc; }}
 em {{ color: #888; font-style: italic; }}
 ul {{ padding-left: 1.5em; }}
 li {{ margin-bottom: 0.3em; }}
-pre {{ white-space: pre-wrap; font-family: inherit; }}
+hr {{ border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }}
+.alerts {{ background: #fff8e1; border: 1px solid #f0c000; border-radius: 6px; padding: 1em 1.5em; margin: 1em 0; }}
+.alerts h2 {{ color: #b07000; border-bottom: none; }}
+.alerts li {{ color: #7a5000; }}
 </style>
 </head>
 <body>
-<pre>{md_content}</pre>
+{alert_html}
+{body_html}
 </body>
 </html>"""
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark de la base mémoire /justdoit (lesson_quality, implicit_retrieval, transfer_gap)",
+        description="Memory benchmark for /commontrace (lesson_quality, implicit_retrieval, transfer_gap)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__.split("Usage :")[1] if "Usage :" in __doc__ else "",
+        epilog=__doc__.split("Usage:")[1] if "Usage:" in __doc__ else "",
     )
-    parser.add_argument("--n", type=int, default=0, help="Nombre d'épisodes récents (default: tous)")
-    parser.add_argument("--html", action="store_true", help="Output HTML dans memory/benchmark_reports/")
-    parser.add_argument("--json", action="store_true", help="Output JSON brut stdout")
+    parser.add_argument("--n", type=int, default=0, help="Number of recent episodes (default: all)")
+    parser.add_argument("--html", action="store_true", help="Output HTML to memory/benchmark_reports/")
+    parser.add_argument("--json", action="store_true", help="Raw JSON output to stdout")
+    parser.add_argument("--save", action="store_true", help="Persist JSON report to memory/benchmark_reports/")
+    parser.add_argument(
+        "--threshold-quality", type=float, default=0.8,
+        metavar="FLOAT",
+        help="lesson_quality alert threshold (default: 0.8)",
+    )
+    parser.add_argument(
+        "--threshold-retrieval", type=float, default=0.7,
+        metavar="FLOAT",
+        help="implicit_retrieval strict alert threshold (default: 0.7)",
+    )
+    parser.add_argument(
+        "--threshold-never-hit", type=float, default=0.25,
+        metavar="FLOAT",
+        help="Never-hit lesson ratio alert threshold (default: 0.25)",
+    )
     args = parser.parse_args()
 
     episodes = load_episodes(args.n if args.n > 0 else None)
     lessons = load_lessons()
 
     if not episodes:
-        print("Pas assez d'épisodes pour calculer, exécutez /justdoit N fois d'abord.")
+        print("Not enough episodes to compute. Run /commontrace a few times first.")
         sys.exit(0)
 
     lq_value, lq_n = compute_lesson_quality(episodes)
@@ -399,6 +619,7 @@ def main():
     extras = compute_extras(episodes, lessons)
 
     report = {
+        "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "n_episodes": len(episodes),
         "n_lessons": len(lessons),
@@ -409,22 +630,49 @@ def main():
         "extras": extras,
     }
 
+    thresholds = {
+        "quality": args.threshold_quality,
+        "retrieval": args.threshold_retrieval,
+        "never_hit": args.threshold_never_hit,
+    }
+    alerts = compute_alerts(report, thresholds)
+
+    clean_report = dict(report)
+    clean_report["episodes"] = [{k: v for k, v in ep.items() if not k.startswith("_")} for ep in episodes]
+    clean_report["alerts"] = alerts
+
     if args.json:
-        clean = dict(report)
-        clean["episodes"] = [{k: v for k, v in ep.items() if not k.startswith("_")} for ep in episodes]
-        print(json.dumps(clean, indent=2, default=str))
+        print(json.dumps(clean_report, indent=2, default=str))
     elif args.html:
-        md = render_markdown(report)
-        html = render_html(md, report["timestamp"])
+        md = render_markdown(report, alerts)
+        html = render_html(md, report["timestamp"], alerts)
         out_dir = os.path.join(BASE_DIR, "benchmark_reports")
         os.makedirs(out_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         out_path = os.path.join(out_dir, f"{ts}.html")
         with open(out_path, "w") as fh:
             fh.write(html)
-        print(f"Rapport HTML écrit : {out_path}")
+        print(f"HTML report written: {out_path}")
+        if alerts:
+            print("\nAlerts:")
+            for a in alerts:
+                print(f"  WARNING: {a}")
     else:
-        print(render_markdown(report))
+        md = render_markdown(report, alerts)
+        print(md)
+
+    if args.save:
+        out_dir = os.path.join(BASE_DIR, "benchmark_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        json_path = os.path.join(out_dir, f"{ts}.json")
+        with open(json_path, "w") as fh:
+            json.dump(clean_report, fh, indent=2, default=str)
+        print(f"JSON report saved: {json_path}", file=sys.stderr)
+
+    # Non-zero exit when alerts fire (after all output is flushed)
+    if alerts and not args.json:
+        sys.exit(2)
 
 
 if __name__ == "__main__":

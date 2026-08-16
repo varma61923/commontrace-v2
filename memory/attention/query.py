@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query the /justdoit attention index for top-K relevant lessons (v2.3).
+"""Query the /commontrace attention index for top-K relevant lessons (v2.3).
 
 Pre-filter step used by Alpha (Phase 0) BEFORE qualitative judgement on
 `applies_when` / `do_not_apply_when`. Output is parseable (one lesson per
@@ -7,16 +7,16 @@ line) and includes both the cosine score and the lesson importance, so
 Alpha can keep using `score = importance × tag_match` as a qualitative
 complement to cosine ranking — cosine is a COMPLEMENT, not a replacement.
 
-Safety override (figée par décision design v2.3) :
+Safety override (fixed by design decision v2.3):
     All ACTIVE lessons with importance >= floor (default 4) are always
     included in the returned set, even if absent from the top-K cosine
     ranking. Ensures a critical / showstopper lesson is never silently
     dropped because of an orthogonal query.
 
 Usage:
-    python query.py "ma tâche entrante"
-    python query.py "ma tâche entrante" --top-k=10
-    python query.py "ma tâche" --top-k=10 --include-importance-floor=4
+    python query.py "my incoming task"
+    python query.py "my incoming task" --top-k=10
+    python query.py "my task" --top-k=10 --include-importance-floor=4
 """
 import argparse
 import glob
@@ -27,8 +27,21 @@ import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
 
-INDEX_PATH = os.path.expanduser("~/.claude/skills/justdoit/memory/attention/index.npz")
-LESSONS_DIR = os.path.expanduser("~/.claude/skills/justdoit/memory/lessons")
+# ---------------------------------------------------------------------------
+# Path configuration — provider-agnostic
+#
+# Priority:
+#   1. COMMONTRACE_ROOT env var (explicit override)
+#   2. JUSTDOIT_ROOT env var (legacy backward compatibility)
+#   3. Auto-detect from this script's location (works out of the box)
+#
+# Example: export COMMONTRACE_ROOT=/opt/commontrace
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention → memory → ROOT
+_ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
+INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
+LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
 
 
 def load_importances() -> dict[str, int]:
@@ -60,7 +73,7 @@ def load_importances() -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("query", help="Tâche entrante / query string (verbatim)")
+    parser.add_argument("query", help="Incoming task / query string (verbatim)")
     parser.add_argument("--top-k", type=int, default=10, help="Top-K cosine hits (default 10)")
     parser.add_argument(
         "--include-importance-floor",

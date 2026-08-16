@@ -1,0 +1,67 @@
+digraph commontrace_overall {
+  rankdir=TB;
+  bgcolor="white";
+  fontname="DejaVu Sans";
+  labelloc="t";
+  fontsize=15;
+  label=<<b>/commontrace v2.3 — 12-Phase Pipeline</b><br/><font point-size="11">Double-review A+B with iteration loop + long-term memory learning</font>>;
+  nodesep=0.35;
+  ranksep=0.45;
+
+  node [fontname="DejaVu Sans", fontsize=11, shape=box, style="rounded,filled", penwidth=1.3, margin="0.14,0.08"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
+
+  // ---------- Legend (color → agent) ----------
+  subgraph cluster_legend {
+    label=<<b>Agents</b>>;
+    fontsize=11; style="rounded"; color="#cbd5e1"; margin=8;
+    node [shape=box, style="filled", fontsize=9, margin="0.08,0.04", width=1.5, height=0.18];
+    lg_orch  [label="Orchestrator", fillcolor="#475569", fontcolor="white"];
+    lg_alpha [label="Alpha", fillcolor="#2563eb", fontcolor="white"];
+    lg_a     [label="A — implementer", fillcolor="#16a34a", fontcolor="white"];
+    lg_b     [label="B — reviewer", fillcolor="#ea580c", fontcolor="white"];
+    lg_omega [label="Omega", fillcolor="#7c3aed", fontcolor="white"];
+    lg_lambda[label="Lambda", fillcolor="#dc2626", fontcolor="white"];
+    lg_orch -> lg_alpha -> lg_a -> lg_b -> lg_omega -> lg_lambda [style=invis];
+  }
+
+  // ---------- Actors / infra ----------
+  user      [label="User", shape=oval, fillcolor="#0f172a", fontcolor="white"];
+  attention [label="Attention layer  (infra)\nquery.py · index.npz\nmulti-qa-mpnet · 768-d", shape=component, fillcolor="#ccfbf1", color="#0d9488", fontcolor="#134e4a"];
+  memory    [label="Memory store\nepisodes/ · lessons/ · INDEX.md", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+
+  // ---------- Phases (color = responsible agent) ----------
+  p0  [label="Phase 0 — Alpha\nmemory retrieval", fillcolor="#2563eb", fontcolor="white"];
+  p1  [label="Phase 1 — Orch.\nparse + brief A", fillcolor="#475569", fontcolor="white"];
+  p2  [label="Phase 2 — Orch.\ncreate task entry", fillcolor="#475569", fontcolor="white"];
+  p3  [label="Phase 3 — A\nimplement", fillcolor="#16a34a", fontcolor="white"];
+  p4  [label="Phase 4 — Orch.\ncommit after A", fillcolor="#475569", fontcolor="white"];
+  p5  [label="Phase 5 — B\nindependent review", fillcolor="#ea580c", fontcolor="white"];
+  p6  [label="Phase 6 — Orch.\ndecision on B verdict", shape=diamond, fillcolor="#475569", fontcolor="white", margin="0.05,0.02"];
+  p7  [label="Phase 7 — A\niteration (A2, A3…)", fillcolor="#16a34a", fontcolor="white"];
+  p8  [label="Phase 8 — Orch.\narbitration (iter ≥ max)", fillcolor="#475569", fontcolor="white"];
+  p9  [label="Phase 9 — Orch.\norchestrator retro", fillcolor="#475569", fontcolor="white"];
+  p10 [label="Phase 10 — Omega\nsynthesize + propose", fillcolor="#7c3aed", fontcolor="white"];
+  p11 [label="Phase 11 — Lambda\nvalidate backlog", fillcolor="#dc2626", fontcolor="white"];
+
+  // ---------- Main flow ----------
+  user -> p0 [label=" /commontrace <task>"];
+  p0 -> p1 -> p2 -> p3 -> p4 -> p5 -> p6;
+  p6 -> p7  [label=" GAP · iter<max"];
+  p6 -> p8  [label=" GAP · iter≥max"];
+  p6 -> p9  [label=" CONFORM"];
+  p7 -> p4  [label=" re-commit →\n fresh B", style=dashed, constraint=false, color="#ea580c", fontcolor="#c2410c"];
+  p8 -> p9;
+  p9 -> p10 -> p11;
+  p11 -> user [label=" final report\n (ACCEPTED/REJECTED)", style=dotted];
+
+  // ---------- Infra wiring ----------
+  attention -> p0 [label=" top-K cosine\n + override imp≥4", color="#0d9488", fontcolor="#0f766e"];
+  memory    -> p0 [label=" read", color="#b45309", fontcolor="#92400e"];
+  p10 -> memory   [label=" writes episode", color="#7c3aed", fontcolor="#6d28d9"];
+  p11 -> memory   [label=" writes ACCEPTED lessons\n + rebuild index", color="#dc2626", fontcolor="#b91c1c"];
+
+  // placement hints
+  { rank=same; p0; attention; }
+  { rank=same; lg_orch; user; }
+}
