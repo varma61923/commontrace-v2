@@ -1,6 +1,7 @@
 ---
 name: 2026-07-01_example-api-pagination
 description: Added cursor-based pagination to a REST list endpoint, via the A+B pattern
+agent_type: code
 task_invocation: /commontrace add cursor-based pagination to GET /items (limit + opaque cursor, stable order), criteria — existing behavior preserved, regression test green, OpenAPI doc up to date
 tags: [api, rest, pagination, refactor, example]
 project: demo-api

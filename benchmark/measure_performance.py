@@ -99,7 +99,7 @@ def load_episodes(n=None):
         paths = paths[-n:]
     episodes = []
     for p in paths:
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             fm = parse_frontmatter(fh.read())
         if fm:
             fm["_path"] = p
@@ -114,7 +114,7 @@ def load_lessons():
         name = os.path.basename(p).replace(".md", "")
         if name.endswith("_template"):
             continue
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             fm = parse_frontmatter(fh.read())
         if fm:
             fm["_path"] = p
@@ -179,7 +179,7 @@ def compute_transfer_gap(episodes, lessons):
             return episode_project[slug]
         path = os.path.join(BASE_DIR, "episodes", f"{slug}.md")
         if os.path.exists(path):
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 fm = parse_frontmatter(fh.read())
             return (fm or {}).get("project")
         return None
@@ -580,6 +580,14 @@ hr {{ border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }}
 
 
 def main():
+    # Report text uses non-ASCII characters (—, ∩, →); Windows consoles default
+    # stdout/stderr to the system codepage (e.g. cp1252), which raises
+    # UnicodeEncodeError on print(). Force UTF-8 output where supported
+    # (Python 3.7+); no-op on platforms already using a UTF-8 locale.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(
         description="Memory benchmark for /commontrace (lesson_quality, implicit_retrieval, transfer_gap)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -650,7 +658,7 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         out_path = os.path.join(out_dir, f"{ts}.html")
-        with open(out_path, "w") as fh:
+        with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(html)
         print(f"HTML report written: {out_path}")
         if alerts:
@@ -666,7 +674,7 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         json_path = os.path.join(out_dir, f"{ts}.json")
-        with open(json_path, "w") as fh:
+        with open(json_path, "w", encoding="utf-8") as fh:
             json.dump(clean_report, fh, indent=2, default=str)
         print(f"JSON report saved: {json_path}", file=sys.stderr)
 

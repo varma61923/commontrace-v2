@@ -7,7 +7,15 @@ and works with any agent framework (Devin, Claude Code, Cursor, OpenHands, custo
 
 ## What this project is
 
-`commontrace` is a double-review agent pipeline where:
+Two layers:
+
+1. **The CommonTrace Protocol** (`protocol/PROTOCOL.md`) — an agent-agnostic spec
+   (Capture → Structure → Extract → Validate → Store → Inject → Measure) and two
+   JSON Schemas (`protocol/schemas/trace.schema.json`,
+   `protocol/schemas/lesson.schema.json`). Implemented as a pip-installable CLI in
+   `commontrace/` (`commontrace init/install/capture/trace/lesson/query/index/bench/sync/doctor`).
+2. **The code-review reference profile** (`SKILL.md`) — a double-review agent
+   pipeline where:
 
 1. An **Implementer (Agent A)** writes the code and commits.
 2. An independent **Reviewer (Agent B)** audits against success criteria.
@@ -23,12 +31,15 @@ The full pipeline spec lives in `SKILL.md`. Architecture diagrams are in `assets
 
 | File | Purpose |
 |---|---|
-| `SKILL.md` | Canonical pipeline spec — read this first |
+| `protocol/PROTOCOL.md` | Canonical, implementation-independent protocol spec — read this first if you're not doing coding-agent double-review |
+| `protocol/schemas/*.json` | JSON Schema for `Trace` and `Lesson` |
+| `commontrace/cli.py` | CLI entry point (`commontrace <subcommand>`) |
+| `SKILL.md` | Code-review reference profile pipeline spec |
 | `README.md` | User-facing quick-start and reference |
-| `DOCUMENTATION.md` | Deep design doc, research refs, roadmap |
-| `requirements.txt` | Python deps (numpy, sentence-transformers, PyYAML) |
-| `install.sh` | Setup script |
-| `memory/INDEX.md` | Index of all stored lessons and episodes |
+| `DOCUMENTATION.md` | Deep design doc on the code-review profile, research refs, roadmap |
+| `requirements.txt` | Python deps for the code-review profile's attention layer (numpy, sentence-transformers, PyYAML) |
+| `install.sh` | Setup script for the code-review profile (SKILL.md route) |
+| `memory/INDEX.md` | Index of all stored lessons/traces/episodes |
 | `memory/attention/build_index.py` | Rebuild semantic embedding index |
 | `memory/attention/query.py` | Query lessons by cosine similarity |
 | `benchmark/measure_performance.py` | Memory health benchmark |
@@ -38,10 +49,14 @@ The full pipeline spec lives in `SKILL.md`. Architecture diagrams are in `assets
 ## Build / verification commands
 
 ```bash
-# Install dependencies
+# Install the commontrace CLI (protocol client)
+python3 -m pip install -e .
+commontrace doctor
+
+# Install dependencies for the code-review profile's attention layer
 python3 -m pip install -r requirements.txt
 
-# Run tests (pytest — 56 tests covering benchmark, frontmatter, integration)
+# Run tests (pytest — covers benchmark, frontmatter contract, and the CLI)
 python3 -m pytest tests/ -v
 
 # Rebuild attention index after editing lessons

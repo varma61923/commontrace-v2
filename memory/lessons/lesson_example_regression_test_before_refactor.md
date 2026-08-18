@@ -2,6 +2,7 @@
 name: lesson_example_regression_test_before_refactor
 description: Write a regression test capturing current behavior BEFORE starting the refactor, not after
 tags: [testing, refactor, regression, example]
+agent_type: code
 domain: testing
 importance: 4
 importance_rationale: "Without a pre-capture test, B cannot distinguish an intentional behavior change from a silent regression."
@@ -10,7 +11,9 @@ applies_when: the A brief requests a refactor / rewrite of a module whose observ
 do_not_apply_when: creating a brand-new feature with no prior behavior to preserve
 uses: 1
 last_hit: 2026-07-01
+source_traces: [2026-07-01_example-api-pagination]
 source_episodes: [2026-07-01_example-api-pagination]
+hub_trace_id: null
 status: active
 ---
 

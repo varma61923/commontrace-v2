@@ -1,11 +1,12 @@
 ---
 name: YYYY-MM-DD_slug
 description: one-line summary
+agent_type: code         # this file is a "code-review" profile Trace (see protocol/PROTOCOL.md) — fields below are profile-specific extensions
 task_invocation: verbatim invocation /commontrace ...
 tags: [tag1, tag2]
 project: project-name-from-cwd
 verdict: CONFORM
-importance: 3            # integer 1-5 REQUIRED, see rubric in SKILL.md section "Importance rubric"
+importance: 3            # integer 1-5 REQUIRED, see rubric in protocol/PROTOCOL.md#importance-rubric
 importance_rationale: "" # string 1-sentence concrete REQUIRED — why this score
 n_iterations: 1
 commit_sha: xxx

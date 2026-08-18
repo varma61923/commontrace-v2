@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "commontrace"
+version = "1.0.0"
+description = "CommonTrace Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "CommonTrace" }]
+keywords = ["agents", "llm", "mcp", "memory", "protocol", "fleet-learning"]
+dependencies = [
+    "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+# Semantic attention layer (Retriever pre-filter). Optional so `pip install commontrace`
+# stays lightweight — no torch download required just to try the protocol.
+attention = [
+    "numpy>=1.24,<3.0",
+    "sentence-transformers>=2.7,<5.0",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/denemlabs/commontrace-v2"
+Protocol = "https://github.com/denemlabs/commontrace-v2/blob/main/protocol/PROTOCOL.md"
+
+[project.scripts]
+commontrace = "commontrace.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["commontrace*"]
+
+[tool.setuptools.package-data]
+commontrace = ["schemas/*.json"]

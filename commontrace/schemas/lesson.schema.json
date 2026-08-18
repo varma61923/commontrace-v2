@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commontrace.dev/schemas/lesson.schema.json",
+  "title": "CommonTrace Lesson",
+  "description": "A validated, generalized rule distilled from one or more Traces, with governance metadata (importance, activation condition, status) that gates it before it is reinjected into a live agent decision. Lessons are local-store scaffolding: the Curator/Validator roles turn Traces into Lessons before promoting the durable, reusable half of a Lesson to a Hub Trace via contribute_trace.",
+  "type": "object",
+  "required": [
+    "name", "description", "tags", "agent_type", "domain", "importance",
+    "importance_rationale", "applies_when", "do_not_apply_when",
+    "uses", "last_hit", "source_traces", "status"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique slug, conventionally 'lesson_<slug>'.",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line summary used by the Retriever role for relevance filtering.",
+      "minLength": 1
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "agent_type": {
+      "type": "string",
+      "description": "Which kind of agent this lesson applies to. Open vocabulary, same values as Trace.agent_type. A fleet with several agent types shares one store and filters by this field.",
+      "examples": ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
+    },
+    "domain": {
+      "type": "string",
+      "description": "Open-vocabulary grouping used for hierarchical indexing (memory/INDEX.md). Not a closed enum at the protocol level -- see PROTOCOL.md#taxonomy for the recommended starter list per agent_type. Historical closed set from the code-review profile (git-safety, cuda-gpu, refactor, testing, subagents, performance, other) remains valid as a subset.",
+      "minLength": 1
+    },
+    "importance": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal. Full rubric in PROTOCOL.md#importance-rubric."
+    },
+    "importance_rationale": {
+      "type": "string",
+      "description": "One concrete sentence justifying the score. Must not be generic.",
+      "minLength": 1
+    },
+    "importance_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "date": { "type": "string" },
+          "old": { "type": "integer" },
+          "new": { "type": "integer" },
+          "reason": { "type": "string" }
+        }
+      },
+      "default": []
+    },
+    "applies_when": {
+      "type": "string",
+      "description": "Precise semantic activation condition (>= 1 concrete sentence, not generic).",
+      "minLength": 1
+    },
+    "do_not_apply_when": {
+      "type": "string",
+      "description": "Explicit counter-condition that prevents over-generalization.",
+      "minLength": 1
+    },
+    "uses": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Local usage counter. Hub equivalent: Trace.retrievals."
+    },
+    "last_hit": {
+      "type": "string",
+      "description": "YYYY-MM-DD of the last hit, or the literal string 'NEVER'."
+    },
+    "source_traces": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "IDs/slugs of the Traces that produced this lesson. Renamed from 'source_episodes' (v1 code-review profile) for agent-agnostic use; 'source_episodes' remains a readable alias for the code-review profile.",
+      "default": []
+    },
+    "source_episodes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Deprecated alias for source_traces, kept for backward compatibility with the code-review profile's episode files.",
+      "default": []
+    },
+    "hub_trace_id": {
+      "type": ["string", "null"],
+      "description": "UUID of the Hub Trace this lesson was promoted to/from via `commontrace sync`, or null if this lesson has never been synced.",
+      "default": null
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "review", "archived"],
+      "description": "active = eligible for retrieval. review = flagged, needs human/Validator attention. archived = retired."
+    }
+  }
+}

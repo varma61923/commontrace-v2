@@ -1,30 +1,98 @@
 # commontrace
 
-> **Version:** v2.3 | **Status:** trial-ready | **Python:** 3.10+
+> **Protocol version:** 1.1.0 | **Code-review reference profile:** v2.3 | **Status:** trial-ready | **Python:** 3.10+
 
-A provider-agnostic double-review agent pipeline for AI coding assistants.
-An **Implementer (A)** and an independent **Reviewer (B)** iterate until the task passes,
-with automatic long-term memory so lessons learned in one run are applied in future runs.
+CommonTrace is an **agent-agnostic protocol** for turning agent experience into
+validated, reusable lessons: Capture → Structure → Extract → Validate → Store →
+Inject → Measure. The full spec lives in [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md).
 
-Works with **any agent platform** — Devin, Claude Code, Cursor, OpenHands, or custom
-orchestrators that can spawn sub-agents and read a spec file.
+This repo ships two things:
+
+1. **The `commontrace` CLI** (`pip install -e .`) — client-installable, works with
+   any agent fleet (code, support, sales, HR, marketing, ...), and can wire a local
+   store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
+   also bridges to the production **CommonTrace Hub** (a live, cross-org shared trace
+   store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
+   `vote_trace`, `amend_trace`, `list_tags`).
+2. **A reference implementation for coding agents** (`SKILL.md`) — the
+   double-review pipeline (**Implementer A** + independent **Reviewer B**, iterating
+   until the task passes) that this whole protocol was distilled from. One profile
+   among possibly many; support/sales/HR/marketing fleets don't need it to use
+   CommonTrace.
+
+Works with **any agent platform** — Devin, Claude Code, Cursor, Windsurf, OpenHands,
+or custom orchestrators — because the local store is plain files and the Hub speaks
+MCP, which all of the above already support natively.
 
 ---
 
 ## Table of Contents
 
-1. [Quick Start](#quick-start)
-2. [How It Works](#how-it-works)
-3. [Architecture](#architecture)
-4. [Configuration](#configuration)
-5. [Memory System](#memory-system)
-6. [Benchmark](#benchmark)
-7. [File Layout](#file-layout)
-8. [Requirements](#requirements)
+1. [Quick Start — CLI (any agent type)](#quick-start--cli-any-agent-type)
+2. [Quick Start — Code Agent reference profile](#quick-start--code-agent-reference-profile)
+3. [How the Reference Pipeline Works](#how-it-works)
+4. [Architecture](#architecture)
+5. [Configuration](#configuration)
+6. [Memory System](#memory-system)
+7. [Benchmark](#benchmark)
+8. [Pilot Metrics](#pilot-metrics)
+9. [The 30-Day Fleet-Learning Pilot](#the-30-day-fleet-learning-pilot)
+10. [File Layout](#file-layout)
+11. [Requirements](#requirements)
 
 ---
 
-## Quick Start
+## Quick Start — CLI (any agent type)
+
+### 1 — Install
+
+```bash
+pip install -e .                    # from a repo checkout — installs the `commontrace` command
+# core install has one dependency (PyYAML); the semantic attention layer is optional:
+pip install -e ".[attention]"
+```
+
+### 2 — Bootstrap a store for your fleet
+
+```bash
+commontrace init --agent-type support        # or: sales | hr | marketing | code | ops | custom
+commontrace doctor                            # sanity-check the environment
+```
+
+### 3 — Wire it into your agent platform
+
+```bash
+commontrace install --target claude-code      # writes .claude/skills/commontrace/SKILL.md
+commontrace install --target cursor           # writes .cursor/rules/ + a Hub MCP config template
+commontrace install --target devin            # writes .devin/skills/commontrace/SKILL.md
+commontrace install --target windsurf         # writes .windsurf/rules/
+commontrace install --target generic-mcp      # Hub MCP config template for any other MCP client
+```
+
+### 4 — Capture experience and curate lessons
+
+```bash
+commontrace capture --title "..." --context "..." --solution "..." --tags a,b --agent-type support
+commontrace lesson new --slug lesson_x --description "..." --domain escalation \
+  --agent-type support --applies-when "..." --do-not-apply-when "..." --importance 4 \
+  --importance-rationale "..."
+commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json
+commontrace trace validate       # checks against protocol/schemas/trace.schema.json
+commontrace sync                 # how to bridge this store to the CommonTrace Hub
+```
+
+Add `--resolved` / `--escalated` / `--repeated-error` / `--frustration` /
+`--tokens-used N` / `--llm-calls N` / `--baseline` to `capture` to record the
+outcome data behind the pilot metrics (§ [Pilot Metrics](#pilot-metrics)
+below) — all optional, all additive to the base capture.
+
+See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
+commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
+for the full CLI reference.
+
+---
+
+## Quick Start — Code Agent reference profile
 
 ### 1 — Install
 
@@ -57,7 +125,7 @@ generic concepts map to your specific agent platform.
 ### 3 — Run the benchmark
 
 ```bash
-# Markdown summary to stdout (scripts auto-detect their root)
+# Markdown summary to stdout (scripts auto-detect their root, or: commontrace bench)
 python3 benchmark/measure_performance.py
 
 # Last 5 episodes only
@@ -183,28 +251,125 @@ cached under `~/.cache/huggingface/`.
 Run periodically (every 5-10 `/commontrace` runs). See `benchmark/STATUS.md` for
 interpretation guidelines and the roadmap.
 
+`measure_performance.py` answers "is the protocol machinery healthy" — is
+generation (Omega) and retrieval (Alpha) doing its job. It does **not**
+answer "did the fleet's behavior actually change," which is a different,
+business-facing question — see the next section.
+
+---
+
+## Pilot Metrics
+
+`benchmark/pilot_metrics.py` (via `commontrace bench --pilot`) computes the
+five business-outcome metrics from the pilot deck, from `Trace.outcome` data
+(see `protocol/schemas/trace.schema.json` and
+[`protocol/PROTOCOL.md`](protocol/PROTOCOL.md#11-pilot-outcome-metrics)):
+
+| Metric | What it answers |
+|---|---|
+| Repeated-error rate | Is the fleet still making mistakes it's already seen? |
+| Resolution rate | Are more tasks reaching a successful conclusion? |
+| Escalation rate | Are fewer tasks needing a human? |
+| Frustration rate | Are fewer users/customers unhappy with the outcome? |
+| Token / LLM-call cost | Is lesson injection making runs cheaper, not just better? |
+
+```bash
+commontrace capture --title "..." --context "..." --solution "..." \
+  --resolved --tokens-used 420 --llm-calls 3 --baseline   # pre-CommonTrace baseline
+commontrace capture --title "..." --context "..." --solution "..." \
+  --resolved --tokens-used 300 --llm-calls 2               # post-injection (default)
+
+commontrace bench --pilot              # markdown: baseline vs. current, all 5 metrics
+commontrace bench --pilot --json       # machine-readable
+commontrace bench --pilot --agent-type support   # filter to one fleet
+```
+
+Traces marked `--baseline` are compared against everything else, giving the
+same before/after framing the deck reports for the Loops pilot ("-53% time to
+resolve," "-29% churn") — computed from your own fleet's traces, not ours.
+Any `outcome` field left unset is simply excluded from its metric rather than
+counted against you, so you can adopt outcome tracking incrementally.
+
+---
+
+## The 30-Day Fleet-Learning Pilot
+
+The intended shape of a first deployment, matching the pilot deck:
+
+**What we connect to** — agent sessions/traces, feedback and outcomes,
+existing memory, observability data, failure/escalation logs. Concretely:
+`commontrace capture` for sessions and outcomes; `commontrace init` to adopt
+an existing memory directory as the Local tier (§ [Memory System](#memory-system));
+`commontrace sync` to pull/push against the CommonTrace Hub if the fleet
+already has traces there.
+
+**What CommonTrace does** — finds repeated failure patterns (`repeated_error`
+outcome tagging + `memory/lessons/` domain coverage), extracts candidate
+lessons (Curator role, § [Roles](protocol/PROTOCOL.md#6-roles-generalized)),
+validates and approves them before deployment (Validator role — an explicit
+human approval gate is exactly what `status: review → active` models),
+injects them into relevant decisions (Retriever role), and compares
+performance against a baseline (`commontrace bench --pilot`).
+
+**What we measure** — the five metrics above, plus the protocol-health axes
+in [Benchmark](#benchmark) as a secondary signal.
+
+**Low-risk setup** — no infrastructure replacement (Local tier is flat
+files); start from historical traces (`commontrace capture --baseline` on
+existing logs, backdated); approve lessons before deployment (`status:
+review`, promoted to `active` only after a human/Validator pass); compare
+against an existing baseline (built into `bench --pilot`).
+
+**Runbook**:
+1. `commontrace init --agent-type <type>` on the target fleet's workflow.
+2. Backfill 1-4 weeks of historical outcomes as baseline traces
+   (`commontrace capture ... --baseline`).
+3. Turn on live capture (drop `--baseline`) and start curating lessons
+   (`commontrace lesson new`, gated at `status: review` until approved).
+4. Wire retrieval into the fleet (`commontrace install --target <platform>`)
+   so lessons get reinjected before each decision.
+5. After ~30 days, `commontrace bench --pilot` for the before/after deltas.
+
 ---
 
 ## File Layout
 
 ```
-commontrace/
-  SKILL.md                   — Full skill specification (pipeline, agent briefs)
-  DOCUMENTATION.md           — Deep-dive: design decisions, research refs, roadmap
-  README.md                  — This file
-  AGENTS.md                  — Agent-facing guidance (any platform)
-  requirements.txt           — Python dependencies
-  install.sh                 — Setup script
-  assets/                    — Architecture diagrams (.dot + .png)
-  memory/                    — Long-term memory store
-  benchmark/                 — Memory health benchmark
-  .devin/                    — Devin-specific skill config (optional)
+commontrace-v2/
+  protocol/
+    PROTOCOL.md               — Canonical, implementation-independent protocol spec
+    schemas/
+      trace.schema.json        — Universal Trace object (matches the live Hub API)
+      lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
+  commontrace/                 — The `commontrace` CLI (pip-installable client)
+    cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py
+    commands/                  — init, install, capture, trace, lesson, query, index, bench, sync, doctor
+    schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
+  pyproject.toml               — `pip install commontrace` packaging
+  clients/                     — (see `commontrace install --target ...`) generated platform integrations
+  SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
+  DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
+  README.md                    — This file
+  AGENTS.md                    — Agent-facing guidance (any platform)
+  requirements.txt             — Python deps for the code-review profile's attention layer
+  install.sh                   — Setup script for the code-review profile (SKILL.md route)
+  assets/                      — Architecture diagrams (.dot + .png)
+  memory/                      — Local store: lessons/ (any agent_type), traces/ (generic), episodes/ (code profile)
+  benchmark/                   — measure_performance.py (protocol health) + pilot_metrics.py (business outcomes)
+  tests/                       — pytest suite (frontmatter contract, benchmark, CLI)
+  .devin/                      — Devin-specific skill config (optional)
 ```
 
 ---
 
 ## Requirements
 
+### CLI (any agent type)
+- **Python** 3.10+
+- `pip install -e .` — one dependency (PyYAML)
+- Optional: `pip install -e ".[attention]"` for semantic retrieval (`numpy`, `sentence-transformers`, pulls torch)
+
+### Code-review reference profile (`SKILL.md`)
 - **Python** 3.10+
 - **pip packages** (see `requirements.txt`):
   - `numpy>=1.24`

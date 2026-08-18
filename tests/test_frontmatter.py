@@ -66,12 +66,15 @@ class TestLessonFrontmatterRequiredFields:
     """Verify that real lesson template files satisfy expected schema."""
 
     REQUIRED_FIELDS = [
-        "name", "description", "tags", "domain", "importance",
+        "name", "description", "tags", "agent_type", "domain", "importance",
         "importance_rationale", "applies_when", "do_not_apply_when",
-        "uses", "last_hit", "source_episodes", "status",
+        "uses", "last_hit", "source_traces", "status",
     ]
 
-    VALID_DOMAINS = {
+    # `domain` is an open vocabulary at the protocol level (protocol/PROTOCOL.md#taxonomy).
+    # This is the code-review profile's historical starter set — informational only,
+    # NOT enforced as a closed list. See test_example_lessons_domain_is_nonempty_string.
+    CODE_PROFILE_DOMAINS = {
         "git-safety", "cuda-gpu", "refactor", "testing",
         "subagents", "performance", "other",
     }
@@ -101,7 +104,8 @@ class TestLessonFrontmatterRequiredFields:
             for field in self.REQUIRED_FIELDS:
                 assert field in fm, f"Missing '{field}' in {os.path.basename(path)}"
 
-    def test_example_lessons_domain_valid(self):
+    def test_example_lessons_domain_is_nonempty_string(self):
+        """`domain` is open vocabulary (protocol/PROTOCOL.md#taxonomy) — only shape is checked."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         import glob
         lessons_dir = os.path.join(repo_root, "memory", "lessons")
@@ -110,8 +114,21 @@ class TestLessonFrontmatterRequiredFields:
                 continue
             fm = self._load_lesson(path)
             domain = fm.get("domain")
-            assert domain in self.VALID_DOMAINS, (
-                f"{os.path.basename(path)}: domain '{domain}' not in {self.VALID_DOMAINS}"
+            assert isinstance(domain, str) and domain, (
+                f"{os.path.basename(path)}: domain must be a non-empty string, got {domain!r}"
+            )
+
+    def test_example_lessons_have_agent_type(self):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import glob
+        lessons_dir = os.path.join(repo_root, "memory", "lessons")
+        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+            if path.endswith("lesson_template.md"):
+                continue
+            fm = self._load_lesson(path)
+            agent_type = fm.get("agent_type")
+            assert isinstance(agent_type, str) and agent_type, (
+                f"{os.path.basename(path)}: agent_type must be a non-empty string, got {agent_type!r}"
             )
 
     def test_example_lessons_status_valid(self):
@@ -146,7 +163,7 @@ class TestEpisodeFrontmatterRequiredFields:
     """Verify that real episode files satisfy expected schema."""
 
     REQUIRED_FIELDS = [
-        "name", "description", "task_invocation", "tags", "project", "verdict",
+        "name", "description", "agent_type", "task_invocation", "tags", "project", "verdict",
         "importance", "n_iterations", "commit_sha", "duration_minutes",
         "lessons_retrieved_by_alpha", "lessons_hit",
         "lessons_proposed_by_omega", "lessons_validated_by_lambda",
