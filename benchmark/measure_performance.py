@@ -55,13 +55,20 @@ _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or
 BASE_DIR = os.path.join(_ROOT, "memory")
 
 
+# Delimiter must be its own line (optionally trailing whitespace / CR), not just the
+# substring "---" anywhere in the file -- a plain content.split("---", 2) corrupts any
+# field whose value contains "---" (e.g. `description: use --- as a separator`), silently
+# dropping every field after it. \r is allowed so CRLF-checked-out files parse too.
+_DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
+
+
 def parse_frontmatter(content):
     if not content.startswith("---"):
         return None
-    parts = content.split("---", 2)
-    if len(parts) < 3:
+    delims = list(_DELIM_RE.finditer(content))
+    if len(delims) < 2:
         return None
-    fm_text = parts[1]
+    fm_text = content[delims[0].end():delims[1].start()]
     if HAS_YAML:
         try:
             return yaml.safe_load(fm_text)
@@ -70,7 +77,19 @@ def parse_frontmatter(content):
     return parse_yaml_minimal(fm_text)
 
 
-_KEY_RE = re.compile(r"^([A-Za-z_]\w*):\s*(.*)$")
+# Key names may contain hyphens/digits (e.g. `agent-type:`, `2026:`). The old
+# ^[A-Za-z_]\w* pattern rejected those, which made _parse_block bail and return an
+# EMPTY dict for the whole document rather than just skipping the odd line.
+#
+# The colon must be followed by whitespace or end-of-line to count as a mapping
+# separator -- this is YAML's own disambiguation rule (a colon with no following space,
+# e.g. a URL "http://x" or a ratio "3:1" inside a plain scalar, is NOT a key). Without
+# this, a prose value containing a bare colon is misread as a nested "key: value",
+# corrupting a plain list item into a bogus one-entry dict.
+_KEY_RE = re.compile(r"^([^\s:#][^:]*?):(?:[ \t]+(.*)|)$")
+
+_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_TIMESTAMP_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$")
 
 
 def _strip_inline_comment(line):
@@ -89,24 +108,89 @@ def _strip_inline_comment(line):
 
 def _coerce_scalar(val):
     val = val.strip()
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
-        return val[1:-1]
+    if len(val) >= 2 and val[0] == val[-1] and val[0] == '"':
+        # YAML double-quoted style escapes almost exactly like JSON (\n, \t, \", \\,
+        # \uXXXX), so let json do it; fall back to a naive strip if it's not valid JSON.
+        try:
+            return json.loads(val)
+        except ValueError:
+            return val[1:-1]
+    if len(val) >= 2 and val[0] == val[-1] and val[0] == "'":
+        # YAML single-quoted style escapes only the quote itself, by doubling it.
+        return val[1:-1].replace("''", "'")
     if val in ("null", "Null", "NULL", "~", ""):
         return None
     if val in ("true", "True", "TRUE"):
         return True
     if val in ("false", "False", "FALSE"):
         return False
-    if val == "{}":
-        return {}
+    # Flow collections: [a, b] and {k: v}. Split on TOP-LEVEL commas only -- a naive
+    # str.split(",") shreds nested collections like [{date: x, old: 3}] into fragments.
     if val.startswith("[") and val.endswith("]"):
         inner = val[1:-1].strip()
-        return [_coerce_scalar(x.strip()) for x in inner.split(",")] if inner else []
-    if re.fullmatch(r"-?\d+", val):
+        return [_coerce_scalar(x) for x in _split_flow(inner)] if inner else []
+    if val.startswith("{") and val.endswith("}"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return {}
+        out = {}
+        for part in _split_flow(inner):
+            m = _KEY_RE.match(part)
+            if m:
+                out[m.group(1).strip()] = _coerce_scalar(m.group(2) or "")
+        return out
+    if re.fullmatch(r"[-+]?\d+", val):
         return int(val)
-    if re.fullmatch(r"-?\d+\.\d+", val):
+    # Floats, including scientific notation, matching PyYAML's own resolver rule: the
+    # mantissa MUST contain a literal '.' for the exponential form to count as a float
+    # -- "7E3" (no dot) resolves as the STRING "7E3" even to real PyYAML, only "7.0e3"
+    # (with a dot) resolves as a float. Confirmed against yaml.safe_dump/safe_load.
+    if re.fullmatch(r"[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?", val):
         return float(val)
+    if val in (".inf", ".Inf", ".INF", "+.inf"):
+        return float("inf")
+    if val in ("-.inf", "-.Inf", "-.INF"):
+        return float("-inf")
+    if val in (".nan", ".NaN", ".NAN"):
+        return float("nan")
+    m = _TIMESTAMP_RE.match(val)
+    if m:
+        try:
+            return datetime.datetime(*(int(g) for g in m.groups()))
+        except ValueError:
+            return val
+    m = _DATE_RE.match(val)
+    if m:
+        try:
+            return datetime.date(*(int(g) for g in m.groups()))
+        except ValueError:
+            return val
     return val
+
+
+def _split_flow(s):
+    """Split a flow-collection body on top-level commas, respecting nesting and quotes."""
+    parts, buf, depth = [], [], 0
+    in_squote = in_dquote = False
+    for ch in s:
+        if ch == "'" and not in_dquote:
+            in_squote = not in_squote
+        elif ch == '"' and not in_squote:
+            in_dquote = not in_dquote
+        if not in_squote and not in_dquote:
+            if ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+                continue
+        buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def _split_lines(text):
@@ -121,6 +205,28 @@ def _split_lines(text):
         indent = len(raw) - len(raw.lstrip(" "))
         out.append((indent, content))
     return out
+
+
+def _fold_continuations(lines, i, key_indent, first_part):
+    """Fold PyYAML's wrapped-scalar continuation lines into one value.
+
+    safe_dump wraps long scalars at width=80, emitting continuation lines indented
+    deeper than their key:
+
+        applies_when: some very long sentence that exceeds the default width and so
+          continues on this line
+
+    A non-empty value means YAML cannot have a nested block under that key, so any
+    following deeper-indented line that isn't a list item must be a continuation.
+    They fold with a single space (YAML plain-scalar folding). Without this, the value
+    is truncated at the first line AND every later sibling key is silently dropped,
+    because the parser stops at the first line whose indent doesn't match.
+    """
+    parts = [first_part]
+    while i < len(lines) and lines[i][0] > key_indent and not lines[i][1].startswith("- "):
+        parts.append(lines[i][1])
+        i += 1
+    return " ".join(p for p in parts if p), i
 
 
 def _parse_value(lines, i, key_indent):
@@ -151,31 +257,37 @@ def _parse_block(lines, start, min_indent):
         i = start
         while i < len(lines) and lines[i][0] == indent0 and lines[i][1].startswith("- "):
             rest = lines[i][1][2:]
-            m = _KEY_RE.match(rest)
+            # A quoted list item (this project never emits quoted mapping keys) can
+            # legitimately contain ": " inside the quotes -- e.g. a value PyYAML had to
+            # quote FOR containing ": " in the first place. _KEY_RE has no idea it's
+            # inside quotes, so skip the key check entirely rather than misreading the
+            # quoted colon as a mapping separator.
+            is_quoted = len(rest) >= 1 and rest[0] in ("'", '"')
+            m = None if is_quoted else _KEY_RE.match(rest)
             if not m:
-                result.append(_coerce_scalar(rest))
-                i += 1
+                folded, i = _fold_continuations(lines, i + 1, indent0, rest)
+                result.append(_coerce_scalar(folded))
                 continue
             item = {}
             field_indent = indent0 + 2  # column where "key:" starts, right after "- "
-            key0, val0 = m.group(1), m.group(2).strip()
+            key0, val0 = m.group(1), (m.group(2) or "").strip()
             if val0 == "":
                 sub_val, i = _parse_value(lines, i + 1, field_indent)
                 item[key0] = sub_val
             else:
-                item[key0] = _coerce_scalar(val0)
-                i += 1
+                folded, i = _fold_continuations(lines, i + 1, field_indent, val0)
+                item[key0] = _coerce_scalar(folded)
             while i < len(lines) and lines[i][0] == field_indent:
                 m2 = _KEY_RE.match(lines[i][1])
                 if not m2:
                     break
-                key, val = m2.group(1), m2.group(2).strip()
+                key, val = m2.group(1), (m2.group(2) or "").strip()
                 if val == "":
                     sub_val, i = _parse_value(lines, i + 1, field_indent)
                     item[key] = sub_val
                 else:
-                    item[key] = _coerce_scalar(val)
-                    i += 1
+                    folded, i = _fold_continuations(lines, i + 1, field_indent, val)
+                    item[key] = _coerce_scalar(folded)
             result.append(item)
         return result, i
 
@@ -185,13 +297,13 @@ def _parse_block(lines, start, min_indent):
         m = _KEY_RE.match(lines[i][1])
         if not m:
             break
-        key, val = m.group(1), m.group(2).strip()
+        key, val = m.group(1), (m.group(2) or "").strip()
         if val == "":
             sub_val, i = _parse_value(lines, i + 1, indent0)
             result[key] = sub_val
         else:
-            result[key] = _coerce_scalar(val)
-            i += 1
+            folded, i = _fold_continuations(lines, i + 1, indent0, val)
+            result[key] = _coerce_scalar(folded)
     return result, i
 
 
@@ -201,8 +313,18 @@ def parse_yaml_minimal(text):
     Handles flat 'key: value' pairs, one or more levels of nested mapping ('key:' followed
     by more-indented 'subkey: value' lines -- e.g. Trace.outcome), block lists of scalars
     or of dicts (e.g. tags, importance_history -- PyYAML's default block style, not inline
-    '[a, b]'), inline '[a, b]' lists, quoted strings, booleans/null, and trailing '# comment'
-    stripping.
+    '[a, b]'), inline '[a, b]'/'{k: v}' flow collections, quoted strings (single- and
+    double-quoted escaping), booleans/null/dates/floats/scientific notation, PyYAML's
+    line-wrapped-scalar continuation lines (width=80 default), and trailing '# comment'
+    stripping. Differential-tested against real PyYAML output across hundreds of
+    generated cases.
+
+    Known, deliberate gaps (not used by anything this project's own writer emits, so not
+    worth the added complexity): a block list nested directly inside another block list
+    ('- - item'); a plain scalar containing a literal embedded blank line, which YAML
+    folds to a newline rather than a space (this parser always folds wrapped continuation
+    lines to a single space); non-string mapping keys (an unquoted numeric key like
+    `2026:` is read back as the string '2026', not the int 2026).
     """
     lines = _split_lines(text)
     value, _ = _parse_block(lines, 0, 0)

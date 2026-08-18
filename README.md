@@ -81,8 +81,9 @@ commontrace trace validate       # checks against protocol/schemas/trace.schema.
 commontrace sync                 # how to bridge this store to the CommonTrace Hub
 ```
 
-Add `--resolved` / `--escalated` / `--repeated-error` / `--frustration` /
-`--tokens-used N` / `--llm-calls N` / `--baseline` to `capture` to record the
+Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
+`--repeated-error`/`--not-repeated-error`, `--frustration`/`--not-frustration`,
+`--tokens-used N`, `--llm-calls N`, and `--baseline` to `capture` to record the
 outcome data behind the pilot metrics (§ [Pilot Metrics](#pilot-metrics)
 below) — all optional, all additive to the base capture.
 

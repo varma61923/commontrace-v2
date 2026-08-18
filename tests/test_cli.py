@@ -227,6 +227,36 @@ def test_install_claude_code_finds_skill_md_via_dest(store, monkeypatch):
     assert "Real skill content" in out.read_text()
 
 
+def test_capture_can_record_a_definite_negative_for_every_outcome_flag(store):
+    """Regression: --escalated/--repeated-error/--frustration originally had no
+    --not-* counterpart (unlike --resolved/--not-resolved), so there was no way to
+    record "definitely not escalated" -- only "escalated" or "unknown". Since a rate's
+    denominator only counts traces where the field was actually set, this made
+    escalation_rate/repeated_error_rate/frustration_rate degenerate to N/A or 100%,
+    never a real number reflecting actual performance."""
+    main(["init", "--agent-type", "support", "--dest", str(store)])
+    rc = main(
+        [
+            "capture",
+            "--title", "definitely fine", "--context", "c", "--solution", "s",
+            "--agent-type", "support",
+            "--not-resolved", "--not-escalated", "--not-repeated-error", "--not-frustration",
+            "--dest", str(store),
+        ]
+    )
+    assert rc == 0
+    traces = [p for p in (store / "memory" / "traces").glob("*.md") if p.name != "README.md"]
+    instance, _ = trace_io.read(str(traces[0]))
+    assert instance["outcome"] == {
+        "resolved": False,
+        "escalated": False,
+        "repeated_error": False,
+        "frustration_signal": False,
+    }
+    schema = validate.load_schema("trace.schema.json")
+    assert validate.validate(instance, schema) == []
+
+
 def test_install_generic_target_writes_pointer_doc(store):
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
     assert (store / "COMMONTRACE.md").is_file()

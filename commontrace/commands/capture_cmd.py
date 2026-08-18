@@ -31,16 +31,28 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Underlying task did NOT reach a successful conclusion.",
     )
     p.add_argument(
-        "--escalated", action="store_true", default=None,
+        "--escalated", dest="escalated", action="store_true", default=None,
         help="Underlying task required human escalation (pilot metric: escalation rate).",
     )
     p.add_argument(
-        "--repeated-error", action="store_true", default=None,
+        "--not-escalated", dest="escalated", action="store_false",
+        help="Underlying task did NOT require human escalation.",
+    )
+    p.add_argument(
+        "--repeated-error", dest="repeated_error", action="store_true", default=None,
         help="This trace is a recurrence of a previously captured failure (pilot metric: repeated-error rate).",
     )
     p.add_argument(
-        "--frustration", action="store_true", default=None,
+        "--not-repeated-error", dest="repeated_error", action="store_false",
+        help="This trace is NOT a recurrence of a previously captured failure.",
+    )
+    p.add_argument(
+        "--frustration", dest="frustration", action="store_true", default=None,
         help="Explicit negative signal tied to this trace (pilot metric: frustration rate).",
+    )
+    p.add_argument(
+        "--not-frustration", dest="frustration", action="store_false",
+        help="No negative signal tied to this trace.",
     )
     p.add_argument("--tokens-used", type=int, default=None, help="Tokens consumed producing this outcome.")
     p.add_argument("--llm-calls", type=int, default=None, help="LLM calls made producing this outcome.")

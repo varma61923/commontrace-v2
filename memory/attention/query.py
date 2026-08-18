@@ -30,7 +30,8 @@ from sentence_transformers import SentenceTransformer
 
 # Delimiter must be its own line, not just the substring "---" anywhere in the file --
 # a plain content.split("---", 2) corrupts any field whose value contains "---".
-_DELIM_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
+# \r is allowed so CRLF content parses too.
+_DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 # ---------------------------------------------------------------------------
 # Path configuration — provider-agnostic

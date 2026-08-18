@@ -6,10 +6,12 @@ from typing import Any
 
 import yaml
 
-# Delimiter must be its own line (optionally trailing whitespace), not just the
+# Delimiter must be its own line (optionally trailing whitespace / CR), not just the
 # substring "---" anywhere in the file -- a plain `content.split("---", 2)` corrupts
 # any field whose value happens to contain "---" (e.g. a title like "before---after").
-_DELIM_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
+# \r is allowed so a raw CRLF string parses even when it didn't come from a
+# universal-newline text-mode read.
+_DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 
 def read(path: str) -> tuple[dict[str, Any], str]:

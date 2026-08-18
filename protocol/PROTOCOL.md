@@ -211,8 +211,11 @@ contribute — it is not counted as a negative result. `outcome.baseline`
 splits traces into a pre-CommonTrace baseline window and a post-injection
 window so a pilot can report the same before/after framing as the deck
 (e.g. "-53% time to resolve," "-29% churn"): compute each metric once per
-`baseline` value and diff. `commontrace capture` accepts `--resolved`,
-`--escalated`, `--repeated-error`, `--frustration`, `--tokens-used`,
+`baseline` value and diff. `commontrace capture` accepts `--resolved` /
+`--escalated` / `--repeated-error` / `--frustration` (each with a `--not-*`
+counterpart, e.g. `--not-escalated`, so a definite "no" can be recorded, not
+just "yes" or "unknown" — a field's rate denominator only counts traces
+where it was actually set one way or the other), plus `--tokens-used`,
 `--llm-calls`, and `--baseline` to populate this at capture time;
 `commontrace bench --pilot` (backed by `benchmark/pilot_metrics.py`)
 computes and reports the five metrics, baseline-vs-current, from whatever

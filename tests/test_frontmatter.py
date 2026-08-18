@@ -108,6 +108,66 @@ class TestMinimalYamlParser:
         result = bm.parse_yaml_minimal(text)
         assert result["title"] == "before # after"
 
+    def test_pyyaml_line_wrapped_long_value_is_not_truncated(self):
+        """Regression: PyYAML wraps scalars > width=80 across continuation lines. The
+        parser used to stop at the first line without a 'key:' pattern, truncating the
+        value AND silently dropping every key after it."""
+        text = (
+            "importance_rationale: Prevented a force-push that would have destroyed two "
+            "days of reviewer work.\n"
+            "applies_when: When the agent is about to run git push --force on a shared "
+            "branch without confirming with the team first.\n"
+            "uses: 0\nstatus: active\n"
+        )
+        # Reproduce PyYAML's actual wrapping via safe_dump so this is testing the real shape.
+        import yaml as _yaml
+        wrapped = _yaml.safe_dump(_yaml.safe_load(text), sort_keys=False)
+        result = bm.parse_yaml_minimal(wrapped)
+        assert result["uses"] == 0
+        assert result["status"] == "active"
+        assert "reviewer work." in result["importance_rationale"]
+        assert "team first." in result["applies_when"]
+
+    def test_colon_without_trailing_space_is_not_a_key(self):
+        """Regression: a bare colon inside a list-item scalar (e.g. a URL or ratio) with
+        no following space must not be misread as a nested 'key: value'."""
+        text = "tags:\n- see http://example.com:8080/path for details\n- ratio 3:1\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["tags"] == [
+            "see http://example.com:8080/path for details",
+            "ratio 3:1",
+        ]
+
+    def test_quoted_list_item_containing_colon_space(self):
+        """Regression: a quoted scalar list item containing ': ' (why PyYAML quoted it)
+        must not have the internal colon misread as a mapping key."""
+        text = "items:\n- 'first part: second part'\n- plain\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["items"] == ["first part: second part", "plain"]
+
+    def test_scientific_notation_requires_a_decimal_point(self):
+        """Regression: matches PyYAML's own resolver -- '7E3' (no dot) stays a string,
+        only a form with a literal '.' in the mantissa (e.g. '7.0e3') is a float."""
+        assert bm.parse_yaml_minimal("a: 7E3\n")["a"] == "7E3"
+        assert bm.parse_yaml_minimal("a: 7.0e3\n")["a"] == 7.0e3
+
+    def test_flow_list_of_dicts_not_shredded_by_naive_comma_split(self):
+        # date is an unquoted YAML date scalar -- real PyYAML resolves it to
+        # datetime.date too (confirmed against yaml.safe_load), not a string.
+        import datetime as _dt
+
+        text = "importance_history: [{date: 2026-01-01, old: 3, new: 4, reason: bumped}]\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["importance_history"] == [
+            {"date": _dt.date(2026, 1, 1), "old": 3, "new": 4, "reason": "bumped"}
+        ]
+
+    def test_hyphenated_and_numeric_keys_do_not_break_the_whole_document(self):
+        text = "agent-type: support\n2026: x\nafter: y\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["agent-type"] == "support"
+        assert result["after"] == "y"
+
     def test_round_trips_against_real_pyyaml_output(self):
         """The fallback parser must agree with real PyYAML on this project's own frontmatter shape."""
         import yaml as _yaml
