@@ -32,14 +32,14 @@
     },
     "domain": {
       "type": "string",
-      "description": "Open-vocabulary grouping used for hierarchical indexing (memory/INDEX.md). Not a closed enum at the protocol level -- see PROTOCOL.md#taxonomy for the recommended starter list per agent_type. Historical closed set from the code-review profile (git-safety, cuda-gpu, refactor, testing, subagents, performance, other) remains valid as a subset.",
+      "description": "Open-vocabulary grouping used for hierarchical indexing (memory/INDEX.md). Not a closed enum at the protocol level -- see PROTOCOL.md#7-taxonomy-open-not-closed for the recommended starter list per agent_type. Historical closed set from the code-review profile (git-safety, cuda-gpu, refactor, testing, subagents, performance, other) remains valid as a subset.",
       "minLength": 1
     },
     "importance": {
       "type": "integer",
       "minimum": 1,
       "maximum": 5,
-      "description": "5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal. Full rubric in PROTOCOL.md#importance-rubric."
+      "description": "5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal. Full rubric in PROTOCOL.md#10-importance-rubric."
     },
     "importance_rationale": {
       "type": "string",

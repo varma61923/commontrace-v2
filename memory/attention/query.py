@@ -21,11 +21,16 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import sys
 
 import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
+
+# Delimiter must be its own line, not just the substring "---" anywhere in the file --
+# a plain content.split("---", 2) corrupts any field whose value contains "---".
+_DELIM_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
 
 # ---------------------------------------------------------------------------
 # Path configuration — provider-agnostic
@@ -52,11 +57,11 @@ def load_importances() -> dict[str, int]:
             continue
         with open(path, "r", encoding="utf-8") as fh:
             content = fh.read()
-        parts = content.split("---", 2)
-        if len(parts) < 3:
+        delims = list(_DELIM_RE.finditer(content))
+        if len(delims) < 2:
             continue
         try:
-            frontmatter = yaml.safe_load(parts[1]) or {}
+            frontmatter = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
         if frontmatter.get("status", "active") != "active":
@@ -105,26 +110,44 @@ def main() -> int:
     order = np.argsort(scores)[::-1]
     top_k_idx = list(order[: args.top_k])
 
-    # Safety override: include all active lessons with importance >= floor
+    # Safety override: include all active lessons with importance >= floor. This must
+    # check every lesson currently on disk (`importances`, from load_importances()), not
+    # just slugs already present in `slugs` (the index) -- a lesson added/edited since the
+    # last `build_index.py` run exists on disk but not in the index, so iterating only the
+    # index's own slugs silently breaks this script's own documented safety guarantee for
+    # exactly the lessons most likely to need it (freshly-authored critical rules).
     importances = load_importances()
     floor = args.include_importance_floor
+    missing_from_index = []
     if floor is not None:
         existing = set(top_k_idx)
+        indexed_slugs = {str(s) for s in slugs}
         for i, slug in enumerate(slugs):
             if i in existing:
                 continue
             if importances.get(str(slug), 0) >= floor:
                 top_k_idx.append(i)
                 existing.add(i)
+        for slug, imp in importances.items():
+            if imp >= floor and slug not in indexed_slugs:
+                missing_from_index.append((slug, imp))
 
     print(f"# Top-{args.top_k} retrieval (+ importance>={floor} override)")
     print(f"# Index: {n_lessons} lessons, model={model_name}")
     print(f"# Query: {args.query!r}")
+    if missing_from_index:
+        print(
+            f"# WARNING: {len(missing_from_index)} importance>={floor} lesson(s) not yet in "
+            "the index (run build_index.py) -- included below with cosine=N/A",
+            file=sys.stderr,
+        )
     for idx in top_k_idx:
         slug = str(slugs[idx])
         score = float(scores[idx])
         imp = importances.get(slug, 0)
         print(f"{slug} | cosine={score:.3f} | importance={imp}")
+    for slug, imp in missing_from_index:
+        print(f"{slug} | cosine=N/A | importance={imp}")
     return 0
 
 

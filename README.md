@@ -346,7 +346,6 @@ commontrace-v2/
     commands/                  — init, install, capture, trace, lesson, query, index, bench, sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   pyproject.toml               — `pip install commontrace` packaging
-  clients/                     — (see `commontrace install --target ...`) generated platform integrations
   SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
   DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
   README.md                    — This file

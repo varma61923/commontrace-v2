@@ -45,9 +45,9 @@ Strict YAML frontmatter (parsable by `yaml.safe_load`), followed by a markdown b
 | `name` | string | unique slug of the lesson (e.g. `lesson_subagent_double_review_pattern`) |
 | `description` | string | 1-line summary — used by Alpha for semantic filtering |
 | `tags` | list[string] | Free tags (e.g. `[subagents, pattern, double-review]`) |
-| `agent_type` | string | REQUIRED. Open vocabulary: `code` \| `support` \| `sales` \| `hr` \| `marketing` \| `ops` \| `custom`. See `protocol/PROTOCOL.md#taxonomy`. |
-| `domain` | string | Open vocabulary (not a closed enum — see `protocol/PROTOCOL.md#taxonomy` for the recommended starter list per `agent_type`). The historical code-review set (`git-safety`, `cuda-gpu`, `refactor`, `testing`, `subagents`, `performance`, `other`) remains valid as a subset. |
-| `importance` | int | Integer 1-5 — see full rubric in `protocol/PROTOCOL.md#importance-rubric` (5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal). Single source of truth; `INDEX.md` reflects this value. |
+| `agent_type` | string | REQUIRED. Open vocabulary: `code` \| `support` \| `sales` \| `hr` \| `marketing` \| `ops` \| `custom`. See `protocol/PROTOCOL.md#7-taxonomy-open-not-closed`. |
+| `domain` | string | Open vocabulary (not a closed enum — see `protocol/PROTOCOL.md#7-taxonomy-open-not-closed` for the recommended starter list per `agent_type`). The historical code-review set (`git-safety`, `cuda-gpu`, `refactor`, `testing`, `subagents`, `performance`, `other`) remains valid as a subset. |
+| `importance` | int | Integer 1-5 — see full rubric in `protocol/PROTOCOL.md#10-importance-rubric` (5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal). Single source of truth; `INDEX.md` reflects this value. |
 | `importance_rationale` | string | 1-sentence concrete REQUIRED justification for the score (not generic). Good example: "Without this rule, silent overwrite by parallel sub-agents"; bad: "important because useful". |
 | `importance_history` | list[dict] | Log of importance changes, format `[{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]`. Initialized `[]`. Useful for audit + calibration drift detection. |
 | `applies_when` | string | Precise semantic activation condition (>= 1 concrete sentence) — Alpha uses this to decide whether to apply |
@@ -87,7 +87,7 @@ The candidate lesson's importance is derived from the `source_episodes` (max or 
 ## Domain Hierarchy
 
 Lessons are organized semantically in `INDEX.md` by `domain`. `domain` is an
-**open vocabulary** at the protocol level (`protocol/PROTOCOL.md#taxonomy`) —
+**open vocabulary** at the protocol level (`protocol/PROTOCOL.md#7-taxonomy-open-not-closed`) —
 nothing validates it against a closed list. The code-review profile
 (`agent_type: code`) uses these domains today:
 
@@ -101,9 +101,9 @@ nothing validates it against a closed list. The code-review profile
 
 Other `agent_type`s bring their own domains (e.g. `support` →
 `escalation`/`refunds`/`troubleshooting`) — see the starter table in
-`protocol/PROTOCOL.md#taxonomy`. To add a new domain, edit `INDEX.md` (add a
+`protocol/PROTOCOL.md#7-taxonomy-open-not-closed`. To add a new domain, edit `INDEX.md` (add a
 section) AND, if it's a new recommended starter for an `agent_type`, this
-README and `protocol/PROTOCOL.md#taxonomy`.
+README and `protocol/PROTOCOL.md#7-taxonomy-open-not-closed`.
 
 ## Manual Editing
 

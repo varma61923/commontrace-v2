@@ -34,11 +34,16 @@ import argparse
 import datetime
 import glob
 import os
+import re
 import sys
 
 import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
+
+# Delimiter must be its own line, not just the substring "---" anywhere in the file --
+# a plain content.split("---", 2) corrupts any field whose value contains "---".
+_DELIM_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
 
 MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
 
@@ -94,12 +99,14 @@ def iter_active_lessons(lessons_dir: str):
             continue
         with open(path, "r", encoding="utf-8") as fh:
             content = fh.read()
-        parts = content.split("---", 2)
-        if len(parts) < 3:
+        delims = list(_DELIM_RE.finditer(content))
+        if len(delims) < 2:
             # Malformed: no closing frontmatter
             continue
+        fm_text = content[delims[0].end():delims[1].start()]
+        body = content[delims[1].end():]
         try:
-            frontmatter = yaml.safe_load(parts[1]) or {}
+            frontmatter = yaml.safe_load(fm_text) or {}
         except yaml.YAMLError as exc:
             print(f"[WARN] YAML parse failed for {fname}: {exc}", file=sys.stderr)
             continue
@@ -109,7 +116,7 @@ def iter_active_lessons(lessons_dir: str):
         if not slug:
             print(f"[WARN] No 'name' field in {fname}, skipping", file=sys.stderr)
             continue
-        yield slug, build_query_text(frontmatter, parts[2])
+        yield slug, build_query_text(frontmatter, body)
 
 
 def main() -> int:
@@ -121,17 +128,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if os.path.exists(INDEX_PATH) and not args.force:
-        # Simple staleness check: rebuild if any lesson newer than the index.
-        index_mtime = os.path.getmtime(INDEX_PATH)
-        newest_lesson = max(
-            (os.path.getmtime(p) for p in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))),
-            default=0.0,
-        )
-        if newest_lesson <= index_mtime:
-            print(f"Index up-to-date at {INDEX_PATH} (use --force to rebuild anyway)")
-            return 0
-
     slugs: list[str] = []
     texts: list[str] = []
     for slug, query_text in iter_active_lessons(LESSONS_DIR):
@@ -141,6 +137,27 @@ def main() -> int:
     if not slugs:
         print(f"[ERR] No active lessons found under {LESSONS_DIR}", file=sys.stderr)
         return 1
+
+    if os.path.exists(INDEX_PATH) and not args.force:
+        # Staleness check has two parts: (a) mtime, which catches additions/edits, and
+        # (b) the indexed slug set vs. the current one, which mtime alone can't catch --
+        # deleting a lesson file doesn't advance any *remaining* file's mtime, so an
+        # mtime-only check would report "up to date" while a stale slug lingers in
+        # index.npz.
+        index_mtime = os.path.getmtime(INDEX_PATH)
+        newest_lesson = max(
+            (os.path.getmtime(p) for p in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))),
+            default=0.0,
+        )
+        try:
+            with np.load(INDEX_PATH, allow_pickle=True) as data:
+                indexed_slugs = {str(s) for s in data["slugs"]}
+        except Exception:
+            indexed_slugs = None
+        same_slugs = indexed_slugs is not None and indexed_slugs == set(slugs)
+        if newest_lesson <= index_mtime and same_slugs:
+            print(f"Index up-to-date at {INDEX_PATH} (use --force to rebuild anyway)")
+            return 0
 
     print(f"Loading model {MODEL_NAME} (cached under ~/.cache/huggingface/) ...")
     model = SentenceTransformer(MODEL_NAME)

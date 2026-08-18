@@ -12,7 +12,10 @@ from typing import Any
 
 from commontrace import frontmatter as frontmatter_io
 
-_SECTION_RE = re.compile(r"^##\s*(Context|Solution)\s*\n(.*?)(?=\n##\s|\Z)", re.S | re.M)
+_SECTION_RE = re.compile(
+    r"^##\s*(Context|Solution)\s*\n(.*?)(?=\n##\s*(?:Context|Solution)\s*\n|\Z)",
+    re.S | re.M,
+)
 
 
 def read(path: str) -> tuple[dict[str, Any], str]:

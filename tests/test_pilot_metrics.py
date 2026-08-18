@@ -55,6 +55,25 @@ class TestRateAndMean:
         assert val == pytest.approx(200.0)
         assert n == 2
 
+    def test_rate_ignores_non_bool_values(self):
+        """Regression: a malformed/hand-edited value like the string 'false' is Python-
+        truthy and would otherwise invert the rate if not filtered to real bools."""
+        traces = [{"id": "a", "outcome": {"resolved": "false"}}, _trace("b", resolved=True)]
+        val, n = pm._rate(traces, "resolved")
+        assert val == pytest.approx(1.0)  # only the real bool counts
+        assert n == 1
+
+    def test_mean_ignores_non_numeric_and_bool_values(self):
+        """Regression: sum() on a mix of int and non-numeric string values raised TypeError."""
+        traces = [
+            {"id": "a", "outcome": {"tokens_used": 300}},
+            {"id": "b", "outcome": {"tokens_used": "1500.5"}},
+            {"id": "c", "outcome": {"tokens_used": True}},
+        ]
+        val, n = pm._mean(traces, "tokens_used")
+        assert val == pytest.approx(300.0)
+        assert n == 1
+
 
 class TestSplitBaseline:
     def test_splits_by_outcome_baseline_flag(self):

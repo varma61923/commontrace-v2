@@ -166,6 +166,67 @@ def test_capture_without_outcome_flags_omits_outcome_field(store):
     assert "outcome" not in instance
 
 
+def test_lesson_new_rejects_path_traversal_slug(store):
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    rc = main(
+        [
+            "lesson", "new",
+            "--slug", "../../evil",
+            "--description", "x",
+            "--agent-type", "code",
+            "--domain", "testing",
+            "--dest", str(store),
+        ]
+    )
+    assert rc == 1
+    # Nothing should have been written outside (or inside) the store. ldir="<store>/memory/lessons",
+    # so "../../evil.md" would land at "<store>/evil.md" if the traversal weren't blocked.
+    assert not (store / "evil.md").exists()
+    assert list((store / "memory" / "lessons").glob("*evil*")) == []
+
+
+def test_validate_catches_invalid_nested_outcome_fields(store):
+    """Regression: validate.py must recurse into Trace.outcome's own properties, not just
+    check that outcome is a dict."""
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    bad_path = store / "memory" / "traces" / "bad.md"
+    frontmatter.write(
+        str(bad_path),
+        {
+            "id": "x", "title": "t", "agent_type": "code",
+            "outcome": {"resolved": "not-a-boolean", "tokens_used": -50},
+        },
+        "## Context\nc\n\n## Solution\ns\n",
+    )
+    assert main(["trace", "validate", str(bad_path), "--dest", str(store)]) == 1
+
+
+def test_validate_rejects_bool_for_number_typed_field(store):
+    """Regression: _check_type must exclude bool from 'number', not just 'integer',
+    or minimum/maximum bounds checking is silently skipped for True/False."""
+    schema = validate.load_schema("trace.schema.json")
+    instance = {
+        "id": "x", "title": "t", "context_text": "c", "solution_text": "s",
+        "tags": [], "agent_type": "code", "trust": True,
+    }
+    errors = validate.validate(instance, schema)
+    assert any("trust" in e for e in errors)
+
+
+def test_install_claude_code_finds_skill_md_via_dest(store, monkeypatch):
+    """Regression: install --dest must be checked when looking for a real SKILL.md,
+    not just COMMONTRACE_ROOT/cwd."""
+    monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+    (store / "SKILL.md").write_text("# Real skill content for the dest project\n" * 50)
+    other_cwd = store.parent / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    assert main(["install", "--target", "claude-code", "--dest", str(store)]) == 0
+    out = store / ".claude" / "skills" / "commontrace" / "SKILL.md"
+    assert out.is_file()
+    assert "Real skill content" in out.read_text()
+
+
 def test_install_generic_target_writes_pointer_doc(store):
     assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
     assert (store / "COMMONTRACE.md").is_file()

@@ -38,7 +38,9 @@ def _check_type(value: Any, expected: str | list) -> bool:
         py_type = _TYPE_MAP.get(et)
         if py_type is None:
             continue
-        if et == "integer" and isinstance(value, bool):
+        # bool is an int subclass in Python; neither JSON Schema "integer" nor
+        # "number" should accept a boolean, or minimum/maximum silently never run.
+        if et in ("integer", "number") and isinstance(value, bool):
             continue
         if isinstance(value, py_type):
             return True
@@ -96,5 +98,17 @@ def _validate_value(label: str, value: Any, schema: dict) -> list[str]:
         item_schema = schema["items"]
         for i, item in enumerate(value):
             errors.extend(_validate_value(f"{label}[{i}]", item, item_schema))
+
+    if isinstance(value, dict) and "properties" in schema:
+        nested_properties = schema["properties"]
+        nested_required = schema.get("required", [])
+        for field in nested_required:
+            if field not in value:
+                errors.append(f"'{label}': missing required field '{field}'")
+        for key, item in value.items():
+            item_schema = nested_properties.get(key)
+            if item_schema is None:
+                continue
+            errors.extend(_validate_value(f"{label}.{key}", item, item_schema))
 
     return errors

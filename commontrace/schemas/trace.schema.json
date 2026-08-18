@@ -28,7 +28,7 @@
     },
     "tags": {
       "type": "array",
-      "description": "Free-form categorization tags. No closed taxonomy at the protocol level -- see protocol/PROTOCOL.md#taxonomy for recommended starter tags per agent_type.",
+      "description": "Free-form categorization tags. No closed taxonomy at the protocol level -- see protocol/PROTOCOL.md#7-taxonomy-open-not-closed for recommended starter tags per agent_type.",
       "items": { "type": "string" },
       "default": []
     },

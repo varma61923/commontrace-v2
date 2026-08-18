@@ -210,6 +210,23 @@ class TestTransferGap:
         assert val is None
         assert untraceable == 1
 
+    def test_episode_with_no_project_field_is_untraceable_not_cross_project(self, tmp_memory):
+        """Regression: current episode's own project=None must not be auto-counted as
+        'cross-project' (None was never a real project value to compare against)."""
+        write_episode(tmp_memory, "ep_src", project="proj-a")
+        episodes = [
+            {"name": "ep_no_project", "lessons_hit": ["lesson_x"]},  # no "project" key at all
+        ]
+        lessons = {"lesson_x": {"source_episodes": ["ep_src"]}}
+        old_base = bm.BASE_DIR
+        bm.BASE_DIR = str(tmp_memory)
+        try:
+            val, total, untraceable = bm.compute_transfer_gap(episodes, lessons)
+        finally:
+            bm.BASE_DIR = old_base
+        assert total == 0
+        assert untraceable == 1
+
 
 # ---------------------------------------------------------------------------
 # Alert thresholds
@@ -298,6 +315,25 @@ class TestHtmlRendering:
         assert "<ul>" in html
         assert "<li>item one</li>" in html
 
+    def test_table_cell_content_is_html_escaped(self):
+        """Regression: raw frontmatter content (project names, titles, ...) containing
+        <, >, or & must not be able to inject markup into the rendered report."""
+        md = "| Project |\n|---|\n| proj<b>bold</b>&evil |"
+        html = bm._md_to_html_fragment(md)
+        assert "<b>bold</b>" not in html
+        assert "&lt;b&gt;bold&lt;/b&gt;&amp;evil" in html
+
+    def test_paragraph_content_is_html_escaped(self):
+        html = bm._md_to_html_fragment("plain text with <script>alert(1)</script>")
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_bold_still_renders_after_escaping(self):
+        """Escaping must happen before, not instead of, markdown-to-HTML substitution."""
+        html = bm._md_to_html_fragment("**bold** and <raw>")
+        assert "<strong>bold</strong>" in html
+        assert "&lt;raw&gt;" in html
+
     def test_full_render_html(self):
         html = bm.render_html("# Report\n\nContent", "2026-01-01T00:00:00")
         assert "<!DOCTYPE html>" in html
@@ -308,6 +344,24 @@ class TestHtmlRendering:
         html = bm.render_html("# Report", "2026-01-01T00:00:00", alerts=alerts)
         assert "alerts" in html
         assert "metric_x below threshold" in html
+
+
+# ---------------------------------------------------------------------------
+# Importance sort key (render_markdown's importance-distribution section)
+# ---------------------------------------------------------------------------
+
+class TestImportanceSortKey:
+    def test_sorts_ints_numerically(self):
+        assert sorted([3, 1, 2], key=bm._importance_sort_key) == [1, 2, 3]
+
+    def test_none_sorts_first(self):
+        assert sorted([3, None, 1], key=bm._importance_sort_key) == [None, 1, 3]
+
+    def test_mixed_int_and_string_does_not_crash(self):
+        """Regression: sorted([3, 'high'], key=lambda x: (x is None, x)) raises TypeError
+        because int and str are never comparable."""
+        result = sorted([3, "high", 1], key=bm._importance_sort_key)
+        assert result == [1, 3, "high"]
 
 
 # ---------------------------------------------------------------------------

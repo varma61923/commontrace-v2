@@ -61,6 +61,116 @@ class TestMinimalYamlParser:
         result = bm.parse_yaml_minimal(text)
         assert result["status"] == "active"
 
+    def test_boolean_and_null(self):
+        text = "resolved: true\nescalated: false\nhub_trace_id: null\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["resolved"] is True
+        assert result["escalated"] is False
+        assert result["hub_trace_id"] is None
+
+    def test_nested_mapping(self):
+        """PyYAML block-dumps a nested dict as 'key:\\n  subkey: value', not inline."""
+        text = "outcome:\n  resolved: true\n  tokens_used: 100\n  baseline: false\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["outcome"] == {"resolved": True, "tokens_used": 100, "baseline": False}
+
+    def test_block_list_of_scalars(self):
+        """PyYAML's actual default output style for a list is block ('- item'), not '[a, b]'."""
+        text = "tags:\n- refunds\n- tone\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["tags"] == ["refunds", "tone"]
+
+    def test_block_list_of_dicts(self):
+        text = "importance_history:\n- date: '2026-01-01'\n  old: 3\n  new: 4\n  reason: r\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["importance_history"] == [
+            {"date": "2026-01-01", "old": 3, "new": 4, "reason": "r"}
+        ]
+
+    def test_keys_after_a_block_list_are_not_dropped(self):
+        """Regression: a block-list value must not swallow the rest of the mapping."""
+        text = "tags:\n- a\n- b\nagent_type: support\nstatus: active\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result == {"tags": ["a", "b"], "agent_type": "support", "status": "active"}
+
+    def test_trailing_inline_comment_stripped(self):
+        text = "agent_type: code         # REQUIRED, open vocabulary: code | support\n"
+        result = bm.parse_yaml_minimal(text)
+        assert result["agent_type"] == "code"
+
+    def test_trailing_comment_on_empty_list_does_not_corrupt_value(self):
+        text = 'importance_history: []   # log of changes: [{date: YYYY-MM-DD, reason: "..."}]\n'
+        result = bm.parse_yaml_minimal(text)
+        assert result["importance_history"] == []
+
+    def test_hash_inside_quotes_is_not_a_comment(self):
+        text = 'title: "before # after"\n'
+        result = bm.parse_yaml_minimal(text)
+        assert result["title"] == "before # after"
+
+    def test_round_trips_against_real_pyyaml_output(self):
+        """The fallback parser must agree with real PyYAML on this project's own frontmatter shape."""
+        import yaml as _yaml
+
+        text = (
+            "id: id1\n"
+            "title: 'A title: with colon'\n"
+            "tags:\n- refunds\n- tone\n"
+            "outcome:\n  resolved: true\n  tokens_used: 100\n  baseline: false\n"
+            "hub_trace_id: null\n"
+        )
+        assert bm.parse_yaml_minimal(text) == _yaml.safe_load(text)
+
+
+class TestFrontmatterDelimiterHandling:
+    """commontrace/frontmatter.py must split on '---' delimiter LINES, not the substring
+    '---' anywhere in the file -- an ordinary title/description containing '---' should
+    not corrupt every other field.
+    """
+
+    def test_field_value_containing_triple_dash_does_not_corrupt_parse(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "trace.md"
+        frontmatter.write(
+            str(path),
+            {"id": "x", "title": "before---after marker", "agent_type": "code"},
+            "body text",
+        )
+        fm, body = frontmatter.read(str(path))
+        assert fm["title"] == "before---after marker"
+        assert fm["id"] == "x"
+        assert fm["agent_type"] == "code"
+        assert body.strip() == "body text"
+
+    def test_round_trip_with_colon_and_quotes(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "trace2.md"
+        fm_in = {"id": "y", "title": 'A "quoted" title: with colon', "agent_type": "code"}
+        frontmatter.write(str(path), fm_in, "body")
+        fm_out, _ = frontmatter.read(str(path))
+        assert fm_out["title"] == fm_in["title"]
+
+
+class TestTraceIoSectionParsing:
+    """commontrace/trace_io.py must not truncate Context/Solution at an unrelated '## '
+    sub-heading embedded inside the section's own text.
+    """
+
+    def test_solution_with_embedded_subheading_is_not_truncated(self, tmp_path):
+        from commontrace import frontmatter, trace_io
+
+        path = tmp_path / "trace.md"
+        solution = "Step one\n## Substep heading\nThis part must not be lost\nMore text"
+        frontmatter.write(
+            str(path),
+            {"id": "x", "title": "t", "agent_type": "code"},
+            f"## Context\nctx\n\n## Solution\n{solution}\n",
+        )
+        instance, _ = trace_io.read(str(path))
+        assert instance["solution_text"] == solution
+
 
 class TestLessonFrontmatterRequiredFields:
     """Verify that real lesson template files satisfy expected schema."""
@@ -71,7 +181,7 @@ class TestLessonFrontmatterRequiredFields:
         "uses", "last_hit", "source_traces", "status",
     ]
 
-    # `domain` is an open vocabulary at the protocol level (protocol/PROTOCOL.md#taxonomy).
+    # `domain` is an open vocabulary at the protocol level (protocol/PROTOCOL.md#7-taxonomy-open-not-closed).
     # This is the code-review profile's historical starter set — informational only,
     # NOT enforced as a closed list. See test_example_lessons_domain_is_nonempty_string.
     CODE_PROFILE_DOMAINS = {
@@ -105,7 +215,7 @@ class TestLessonFrontmatterRequiredFields:
                 assert field in fm, f"Missing '{field}' in {os.path.basename(path)}"
 
     def test_example_lessons_domain_is_nonempty_string(self):
-        """`domain` is open vocabulary (protocol/PROTOCOL.md#taxonomy) — only shape is checked."""
+        """`domain` is open vocabulary (protocol/PROTOCOL.md#7-taxonomy-open-not-closed) — only shape is checked."""
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         import glob
         lessons_dir = os.path.join(repo_root, "memory", "lessons")

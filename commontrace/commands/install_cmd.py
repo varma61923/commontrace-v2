@@ -59,10 +59,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-def _find_skill_md(root: str) -> str | None:
+def _find_skill_md(root: str, dest: str) -> str | None:
     candidates = [
         os.path.join(root, "SKILL.md"),
         os.path.join(os.getcwd(), "SKILL.md"),
+        os.path.join(dest, "SKILL.md"),
     ]
     for c in candidates:
         if os.path.isfile(c):
@@ -80,7 +81,7 @@ def _write(path: str, content: str) -> None:
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root()
     dest = os.path.abspath(args.dest)
-    skill_md = _find_skill_md(root)
+    skill_md = _find_skill_md(root, dest)
     print(f"[commontrace] installing target='{args.target}' into {dest}")
 
     if args.target == "claude-code":

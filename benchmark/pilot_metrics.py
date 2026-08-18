@@ -64,9 +64,11 @@ def load_traces(root=None, agent_type=None):
 
 
 def _rate(traces, field):
-    """Fraction of traces where outcome[field] is True, over traces where it's non-null."""
+    """Fraction of traces where outcome[field] is True, over traces where it's a real bool."""
     values = [t.get("outcome", {}).get(field) for t in traces if isinstance(t.get("outcome"), dict)]
-    values = [v for v in values if v is not None]
+    # Strictly bool, not just truthy -- a malformed/hand-edited frontmatter value like the
+    # string "false" is truthy in Python and would otherwise invert the rate.
+    values = [v for v in values if isinstance(v, bool)]
     if not values:
         return None, 0
     return sum(1 for v in values if v) / len(values), len(values)
@@ -74,7 +76,7 @@ def _rate(traces, field):
 
 def _mean(traces, field):
     values = [t.get("outcome", {}).get(field) for t in traces if isinstance(t.get("outcome"), dict)]
-    values = [v for v in values if v is not None]
+    values = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
     if not values:
         return None, 0
     return sum(values) / len(values), len(values)
@@ -202,6 +204,8 @@ def main():
     parser.add_argument("--json", action="store_true", help="Raw JSON output to stdout")
     parser.add_argument("--html", action="store_true", help="Output HTML to memory/benchmark_reports/")
     args = parser.parse_args()
+    if args.json and args.html:
+        parser.error("--json and --html are mutually exclusive (choose one output format).")
 
     root = args.dest or _ROOT
     traces = load_traces(root, args.agent_type)
@@ -228,13 +232,13 @@ def main():
 
     md = render_markdown(report)
     if args.html:
-        html = mp.render_html(md, report["timestamp"])
+        html_report = mp.render_html(md, report["timestamp"])
         out_dir = os.path.join(root, "memory", "benchmark_reports")
         os.makedirs(out_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         out_path = os.path.join(out_dir, f"pilot_{ts}.html")
         with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(html)
+            fh.write(html_report)
         print(f"HTML report written: {out_path}")
     else:
         print(md)

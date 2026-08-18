@@ -3,8 +3,8 @@ name: lesson-slug
 description: one-line summary (used by Alpha / the Retriever for relevance check)
 tags: [tag1, tag2]
 agent_type: code         # REQUIRED, open vocabulary: code | support | sales | hr | marketing | ops | custom
-domain: git-safety       # open vocabulary, see protocol/PROTOCOL.md#taxonomy for recommended starter lists per agent_type
-importance: 3            # integer 1-5 REQUIRED, see rubric in protocol/PROTOCOL.md#importance-rubric
+domain: git-safety       # open vocabulary, see protocol/PROTOCOL.md#7-taxonomy-open-not-closed for recommended starter lists per agent_type
+importance: 3            # integer 1-5 REQUIRED, see rubric in protocol/PROTOCOL.md#10-importance-rubric
 importance_rationale: "" # string 1-sentence concrete REQUIRED — why this score (not generic)
 importance_history: []   # log of changes: [{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]
 applies_when: precise semantic activation condition (>= 1 concrete sentence, not generic)

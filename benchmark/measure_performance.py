@@ -25,6 +25,7 @@ Falls back to regex parser if PyYAML is not installed.
 import argparse
 import datetime
 import glob
+import html
 import json
 import os
 import re
@@ -69,28 +70,143 @@ def parse_frontmatter(content):
     return parse_yaml_minimal(fm_text)
 
 
-def parse_yaml_minimal(text):
-    """Fallback regex-based parser for our frontmatter format."""
-    data = {}
-    for line in text.splitlines():
-        line = line.rstrip()
-        if not line or line.startswith("#"):
+_KEY_RE = re.compile(r"^([A-Za-z_]\w*):\s*(.*)$")
+
+
+def _strip_inline_comment(line):
+    """Strip a trailing ' #comment', but not a '#' that's inside a quoted string."""
+    in_squote = in_dquote = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_dquote:
+            in_squote = not in_squote
+        elif ch == '"' and not in_squote:
+            in_dquote = not in_dquote
+        elif ch == "#" and not in_squote and not in_dquote:
+            if i == 0 or line[i - 1] in " \t":
+                return line[:i].rstrip()
+    return line
+
+
+def _coerce_scalar(val):
+    val = val.strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+        return val[1:-1]
+    if val in ("null", "Null", "NULL", "~", ""):
+        return None
+    if val in ("true", "True", "TRUE"):
+        return True
+    if val in ("false", "False", "FALSE"):
+        return False
+    if val == "{}":
+        return {}
+    if val.startswith("[") and val.endswith("]"):
+        inner = val[1:-1].strip()
+        return [_coerce_scalar(x.strip()) for x in inner.split(",")] if inner else []
+    if re.fullmatch(r"-?\d+", val):
+        return int(val)
+    if re.fullmatch(r"-?\d+\.\d+", val):
+        return float(val)
+    return val
+
+
+def _split_lines(text):
+    """(indent, content) pairs for non-blank, non-full-line-comment lines, comments stripped."""
+    out = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.strip().startswith("#"):
             continue
-        m = re.match(r"^([A-Za-z_]\w*):\s*(.*)$", line)
+        content = _strip_inline_comment(raw.rstrip()).strip()
+        if not content:
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        out.append((indent, content))
+    return out
+
+
+def _parse_value(lines, i, key_indent):
+    """Parse the value following an empty-valued 'key:' line (lines[i] is the first
+    candidate child line). PyYAML block-dumps a list under a mapping key at the SAME
+    indent as the key itself (not indented further), while a nested mapping IS indented
+    further -- branch on which shape actually follows.
+    """
+    if i < len(lines) and lines[i][0] >= key_indent and lines[i][1].startswith("- "):
+        return _parse_block(lines, i, lines[i][0])
+    return _parse_block(lines, i, key_indent + 1)
+
+
+def _parse_block(lines, start, min_indent):
+    """Parse a contiguous indentation block starting at lines[start] (indent >= min_indent)
+    as either a YAML block list ('- item' / '- key: val') or block mapping ('key: val').
+    Returns (value, next_index). Not a general YAML parser -- covers exactly the shapes
+    templates.py's yaml.safe_dump emits for this project's frontmatter (which defaults to
+    PyYAML's block style for every non-empty list/mapping, not inline '[a, b]').
+    """
+    if start >= len(lines) or lines[start][0] < min_indent:
+        return None, start
+
+    indent0 = lines[start][0]
+
+    if lines[start][1].startswith("- "):
+        result = []
+        i = start
+        while i < len(lines) and lines[i][0] == indent0 and lines[i][1].startswith("- "):
+            rest = lines[i][1][2:]
+            m = _KEY_RE.match(rest)
+            if not m:
+                result.append(_coerce_scalar(rest))
+                i += 1
+                continue
+            item = {}
+            field_indent = indent0 + 2  # column where "key:" starts, right after "- "
+            key0, val0 = m.group(1), m.group(2).strip()
+            if val0 == "":
+                sub_val, i = _parse_value(lines, i + 1, field_indent)
+                item[key0] = sub_val
+            else:
+                item[key0] = _coerce_scalar(val0)
+                i += 1
+            while i < len(lines) and lines[i][0] == field_indent:
+                m2 = _KEY_RE.match(lines[i][1])
+                if not m2:
+                    break
+                key, val = m2.group(1), m2.group(2).strip()
+                if val == "":
+                    sub_val, i = _parse_value(lines, i + 1, field_indent)
+                    item[key] = sub_val
+                else:
+                    item[key] = _coerce_scalar(val)
+                    i += 1
+            result.append(item)
+        return result, i
+
+    result = {}
+    i = start
+    while i < len(lines) and lines[i][0] == indent0:
+        m = _KEY_RE.match(lines[i][1])
         if not m:
-            continue
+            break
         key, val = m.group(1), m.group(2).strip()
-        if val.startswith('"') and val.endswith('"'):
-            val = val[1:-1]
-        elif val.startswith("'") and val.endswith("'"):
-            val = val[1:-1]
-        if val.startswith("[") and val.endswith("]"):
-            inner = val[1:-1].strip()
-            val = [x.strip().strip('"').strip("'") for x in inner.split(",")] if inner else []
-        elif val.lstrip("-").isdigit():
-            val = int(val)
-        data[key] = val
-    return data
+        if val == "":
+            sub_val, i = _parse_value(lines, i + 1, indent0)
+            result[key] = sub_val
+        else:
+            result[key] = _coerce_scalar(val)
+            i += 1
+    return result, i
+
+
+def parse_yaml_minimal(text):
+    """Fallback parser for our frontmatter format, used only when PyYAML isn't installed.
+
+    Handles flat 'key: value' pairs, one or more levels of nested mapping ('key:' followed
+    by more-indented 'subkey: value' lines -- e.g. Trace.outcome), block lists of scalars
+    or of dicts (e.g. tags, importance_history -- PyYAML's default block style, not inline
+    '[a, b]'), inline '[a, b]' lists, quoted strings, booleans/null, and trailing '# comment'
+    stripping.
+    """
+    lines = _split_lines(text)
+    value, _ = _parse_block(lines, 0, 0)
+    return value if isinstance(value, dict) else {}
 
 
 def load_episodes(n=None):
@@ -202,6 +318,12 @@ def compute_transfer_gap(episodes, lessons):
             if not src_projects:
                 untraceable += 1
                 continue
+            if current is None:
+                # Current episode's own project is unknown -- can't tell same- vs.
+                # cross-project, so this hit is untraceable rather than automatically
+                # "cross-project" (None was never a real project value).
+                untraceable += 1
+                continue
             total_hits += 1
             if current not in src_projects:
                 cross_hits += 1
@@ -280,6 +402,19 @@ def compute_alerts(report, thresholds):
             f"(Lambda validated proposals from earlier runs; see STATUS.md §2.2)"
         )
     return alerts
+
+
+def _importance_sort_key(x):
+    """Sort importance keys (None / int / stray non-numeric garbage) without ever
+    comparing across incompatible types -- e.g. `sorted([3, "high"])` raises TypeError.
+    Groups: None first, then numbers (sorted numerically), then anything else (sorted
+    as a string).
+    """
+    if x is None:
+        return (0, 0, "")
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
+        return (1, x, "")
+    return (2, 0, str(x))
 
 
 def fmt_pct(v):
@@ -390,11 +525,11 @@ def render_markdown(r, alerts=None):
     out.append("## Importance distribution")
     out.append("")
     out.append("**Lessons**:")
-    for i in sorted(extras["importance_lessons"].keys(), key=lambda x: (x is None, x)):
+    for i in sorted(extras["importance_lessons"].keys(), key=_importance_sort_key):
         out.append(f"- importance {i} : {extras['importance_lessons'][i]} lessons")
     out.append("")
     out.append("**Episodes**:")
-    for i in sorted(extras["importance_episodes"].keys(), key=lambda x: (x is None, x)):
+    for i in sorted(extras["importance_episodes"].keys(), key=_importance_sort_key):
         out.append(f"- importance {i} : {extras['importance_episodes'][i]} episodes")
     out.append("")
 
@@ -439,6 +574,10 @@ def _md_to_html_fragment(md_text):
             in_table = False
 
     def inline(text):
+        # Escape raw content FIRST so arbitrary frontmatter text (project names, lesson
+        # titles, etc.) containing <, >, or & can't inject markup into the report --
+        # markdown syntax chars (*, `, _) aren't HTML-special so escaping first is safe.
+        text = html.escape(text, quote=False)
         # bold **...** or __...__
         text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
         text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
@@ -613,6 +752,8 @@ def main():
         help="Never-hit lesson ratio alert threshold (default: 0.25)",
     )
     args = parser.parse_args()
+    if args.json and args.html:
+        parser.error("--json and --html are mutually exclusive (choose one output format).")
 
     episodes = load_episodes(args.n if args.n > 0 else None)
     lessons = load_lessons()
@@ -653,13 +794,13 @@ def main():
         print(json.dumps(clean_report, indent=2, default=str))
     elif args.html:
         md = render_markdown(report, alerts)
-        html = render_html(md, report["timestamp"], alerts)
+        html_report = render_html(md, report["timestamp"], alerts)
         out_dir = os.path.join(BASE_DIR, "benchmark_reports")
         os.makedirs(out_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         out_path = os.path.join(out_dir, f"{ts}.html")
         with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(html)
+            fh.write(html_report)
         print(f"HTML report written: {out_path}")
         if alerts:
             print("\nAlerts:")

@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import sys
 
 from commontrace import frontmatter, paths, templates, validate
+
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -39,6 +42,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_new(args: argparse.Namespace) -> int:
+    if not _SLUG_RE.match(args.slug):
+        print(
+            f"[commontrace] invalid --slug '{args.slug}': only letters, digits, "
+            "'_', '-' are allowed (no path separators or '..').",
+            file=sys.stderr,
+        )
+        return 1
+
     root = paths.resolve_root(args.dest)
     ldir = paths.lessons_dir(root)
     os.makedirs(ldir, exist_ok=True)

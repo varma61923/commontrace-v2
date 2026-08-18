@@ -136,7 +136,10 @@ stays legible:
    `pyproject.toml`.
 2. **Wiring a specific agent platform** to read/write that store —
    `commontrace install --target claude-code|cursor|devin|windsurf|generic-mcp`
-   generates the platform-native integration file. See `clients/`.
+   writes the platform-native integration file into the *destination
+   project* (e.g. `.claude/skills/commontrace/SKILL.md`, `.cursor/rules/`)
+   — see `commontrace/commands/install_cmd.py` for the full target list and
+   what each one writes.
 
 Because the Hub tier speaks MCP — already supported natively by Claude Code,
 Cursor, Devin, Windsurf, and any OpenAI-Agents/generic MCP client — "agent
@@ -224,5 +227,7 @@ can ignore it entirely.
 - Hub authentication/multi-tenancy details — out of scope for a protocol
   spec; the Hub already exists and is reachable over MCP.
 - Non-file local storage backends (e.g. SQLite) — nothing in this spec
-  precludes one; `commontrace/store.py` is the seam where a second backend
-  would plug in.
+  precludes one; `commontrace/paths.py` + `commontrace/trace_io.py` /
+  `commontrace/frontmatter.py` are the current file-backed read/write seam a
+  second backend would need to sit behind (no such backend exists yet —
+  there is no `commontrace/store.py` in the codebase today).

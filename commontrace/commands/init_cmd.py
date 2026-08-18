@@ -15,7 +15,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--agent-type",
         choices=paths.AGENT_TYPES,
         default="code",
-        help="Kind of agent this store is for (default: code). See protocol/PROTOCOL.md#taxonomy.",
+        help="Kind of agent this store is for (default: code). See protocol/PROTOCOL.md#7-taxonomy-open-not-closed.",
     )
     p.add_argument("--dest", default=".", help="Directory to scaffold into (default: current directory)")
     p.set_defaults(func=run)

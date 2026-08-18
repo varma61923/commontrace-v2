@@ -1,9 +1,15 @@
 """Read/write Markdown files with YAML frontmatter (the CommonTrace file format)."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
+
+# Delimiter must be its own line (optionally trailing whitespace), not just the
+# substring "---" anywhere in the file -- a plain `content.split("---", 2)` corrupts
+# any field whose value happens to contain "---" (e.g. a title like "before---after").
+_DELIM_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
 
 
 def read(path: str) -> tuple[dict[str, Any], str]:
@@ -12,11 +18,11 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         content = fh.read()
     if not content.startswith("---"):
         return {}, content
-    parts = content.split("---", 2)
-    if len(parts) < 3:
+    delims = list(_DELIM_RE.finditer(content))
+    if len(delims) < 2:
         return {}, content
-    fm = yaml.safe_load(parts[1]) or {}
-    body = parts[2].lstrip("\n")
+    fm = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
+    body = content[delims[1].end():].lstrip("\n")
     return fm, body
 
 

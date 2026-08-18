@@ -1,8 +1,8 @@
 """Root/store resolution — provider-agnostic, mirrors memory/attention/query.py's convention.
 
-Priority:
-  1. COMMONTRACE_ROOT env var (explicit override)
-  2. --dest / --root CLI flag (passed in by callers)
+Priority (matches resolve_root()'s actual checks, most to least specific):
+  1. --dest / --root CLI flag (explicit, passed in by callers as `explicit`)
+  2. COMMONTRACE_ROOT env var
   3. Current working directory, if it looks like a commontrace store (has memory/)
   4. Current working directory (fallback — `commontrace init` will create memory/ there)
 """
