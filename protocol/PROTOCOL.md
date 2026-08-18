@@ -1,6 +1,6 @@
 # The CommonTrace Protocol
 
-**Version:** 1.1.0 | **Status:** stable | **Scope:** agent-agnostic
+**Version:** 2.0.0 | **Status:** stable | **Scope:** agent-agnostic
 
 > This document is the canonical, implementation-independent specification of
 > CommonTrace. `SKILL.md` in the repo root is *one* conformant implementation
@@ -147,10 +147,15 @@ tier remains file-based for agents that can only read/write files.
 ## 9. Versioning & extension mechanism
 
 - This protocol is versioned independently of any single profile
-  (`SKILL.md`'s code-review profile is currently v2.3; the protocol is
-  v1.1.0). Breaking changes to `trace.schema.json` / `lesson.schema.json`
-  bump the major version; additive, optional fields (e.g. `Trace.outcome` in
-  v1.1.0, §11) bump the minor version.
+  (`SKILL.md`'s code-review profile is versioned separately, currently v2.3).
+  Breaking changes to `trace.schema.json` / `lesson.schema.json` bump the
+  major version; additive, optional fields (e.g. `Trace.outcome`, §11) bump
+  the minor version. The protocol is at **2.0.0** — the v2 product baseline
+  (matching the `commontrace-v2` repo), unifying what had drifted into two
+  numbers (package `1.0.0` vs. protocol `1.1.0`) into one version that the
+  package, the protocol, and the CLI (`commontrace --version`) all report
+  identically. It is not a breaking schema change: a `Trace`/`Lesson` written
+  under v1.x remains valid under 2.0.0.
 - A profile MUST declare itself via the `profile` field on `Trace` and put
   everything that doesn't generalize under `extensions`. A consumer that
   doesn't recognize a `profile` value MUST still be able to read `title`,

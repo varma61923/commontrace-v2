@@ -1,6 +1,6 @@
 # commontrace
 
-> **Protocol version:** 1.1.0 | **Code-review reference profile:** v2.3 | **Status:** trial-ready | **Python:** 3.10+
+> **Version:** 2.0.0 | **Code-review reference profile:** v2.3 (versioned independently, see [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md#9-versioning--extension-mechanism)) | **Status:** trial-ready | **Python:** 3.10+
 
 CommonTrace is an **agent-agnostic protocol** for turning agent experience into
 validated, reusable lessons: Capture → Structure → Extract → Validate → Store →

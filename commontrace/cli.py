@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from commontrace import __version__
+from commontrace import PROTOCOL_VERSION, __version__
 from commontrace.commands import (
     bench_cmd,
     capture_cmd,
@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="CommonTrace Protocol client - capture experience, curate lessons, "
         "inject them into any agent platform. Spec: protocol/PROTOCOL.md",
     )
-    parser.add_argument("--version", action="version", version=f"commontrace {__version__}")
+    parser.add_argument(
+        "--version", action="version",
+        version=f"commontrace {__version__} (protocol {PROTOCOL_VERSION})",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for module in _SUBCOMMANDS:
         module.add_parser(subparsers)

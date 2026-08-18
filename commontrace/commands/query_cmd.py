@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 
+import sys
+
 from commontrace import paths
-from commontrace.commands._shellout import run_script
+from commontrace.commands._shellout import has_attention_deps, run_script
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -20,6 +22,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if not has_attention_deps():
+        print(
+            "[commontrace] Semantic retrieval requires the optional attention extra "
+            "(numpy + sentence-transformers): `pip install commontrace[attention]`. "
+            "Falling back: grep memory/lessons/*.md for now, or run "
+            "`commontrace lesson list` for a non-semantic view.",
+            file=sys.stderr,
+        )
+        return 1
     return run_script(
         root,
         os.path.join("memory", "attention", "query.py"),

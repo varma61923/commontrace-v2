@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from commontrace import paths
-from commontrace.commands._shellout import run_script
+from commontrace.commands._shellout import has_attention_deps, run_script
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -15,6 +16,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if not has_attention_deps():
+        print(
+            "[commontrace] Building the attention index requires the optional attention "
+            "extra (numpy + sentence-transformers): `pip install commontrace[attention]`.",
+            file=sys.stderr,
+        )
+        return 1
     extra = ["--force"] if args.force else []
     return run_script(
         root,

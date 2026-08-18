@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 
 from commontrace import paths
+
+
+def has_attention_deps() -> bool:
+    """Whether the optional semantic attention layer's deps (numpy, sentence-transformers)
+    are importable. Check this before shelling out to memory/attention/*.py -- those scripts
+    `import numpy` at module scope, so without this check a missing dep surfaces as a raw
+    traceback (internal file paths and all) instead of the `pip install commontrace[attention]`
+    hint `doctor` already gives.
+    """
+    return (
+        importlib.util.find_spec("numpy") is not None
+        and importlib.util.find_spec("sentence_transformers") is not None
+    )
 
 
 def find_reference_script(root: str, relative: str) -> str | None:
