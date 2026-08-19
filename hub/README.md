@@ -182,15 +182,39 @@ for and this codebase doesn't otherwise assume. `hub/requirements.txt` +
 
 ## Operator CLI (`hub/manage.py`)
 
+There is no web admin panel — this CLI *is* the admin/monitoring surface,
+consistent with the rest of the Hub being a from-a-checkout service you
+operate, not a hosted product with its own UI. A web dashboard is a
+reasonable future addition, but it needs its own cross-org admin auth model
+(a superadmin credential, distinct from the org-scoped API keys `hub/auth.py`
+issues) — a bigger, separate decision this pass didn't make.
+
 ```
 python -m hub.manage create-org <name>
 python -m hub.manage issue-key <org_id>
 python -m hub.manage rotate-key <key_id>
 python -m hub.manage revoke-key <key_id>
 python -m hub.manage list-orgs
+
+python -m hub.manage stats                       # orgs, active keys, traces, quarantined, votes, mean trust
+python -m hub.manage list-quarantined [org_id]    # the abuse-control review queue (hub/abuse.py)
+python -m hub.manage release-quarantine <trace_id>  # reviewed, it's fine -> becomes search_traces-eligible
+python -m hub.manage purge-trace <trace_id>       # permanent delete, irreversible
+python -m hub.manage purge-org <org_id>           # permanent delete (cascades), irreversible
 ```
 
 The raw API key is only ever printed at issuance/rotation time — it is
 hashed with argon2 before the row is written and never logged or returned by
 any tool/endpoint afterward. There is no "show me the key again" path by
 design; rotate if it's lost.
+
+`purge-trace`/`purge-org` are the data-deletion path DATA_RETENTION.md
+previously documented as entirely missing (only "a direct database
+operation run by whoever operates Postgres" existed). They're still
+operator/DB-access-trust-level only — deliberately not exposed as a
+seventh MCP tool an org's own API key could call. Handing self-service
+deletion to an org's own credential is a real feature with its own
+authorization questions (should a single compromised key be able to wipe
+an org's entire trace history with no confirmation step?) that this pass
+didn't design; CLI-only for now is the conservative default, not a
+permanent decision.

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Hub admin/monitoring commands** (`hub/manage.py`): `stats` (org/key/
+  trace/vote counts, mean trust), `list-quarantined [org_id]` (the
+  abuse-control review queue), `release-quarantine <trace_id>`, and —
+  closing a gap `DATA_RETENTION.md` previously flagged as entirely
+  unimplemented — `purge-trace <trace_id>` / `purge-org <org_id>`
+  (permanent, operator-CLI-only deletion; cleans up `trace_relations` rows
+  that FK cascades don't reach since `related_trace_id` isn't a foreign
+  key). There is no web admin panel; this CLI is deliberately the whole
+  admin surface for now — a dashboard needs its own cross-org admin auth
+  model, a separate decision from the org-scoped API keys `hub/auth.py`
+  issues. Every `hub/manage.py` command now takes an optional
+  `session_factory` for dependency injection (tests inject a fixture's;
+  the CLI defaults to building one from `HubConfig.from_env()`), replacing
+  what would otherwise need module-global monkeypatching to test.
 - **`commontrace import`** (`commontrace/import_data.py` +
   `commands/import_cmd.py`): bulk-import an existing JSONL or CSV export
   into `memory/traces/`, per the pilot deck's "What we connect to" /

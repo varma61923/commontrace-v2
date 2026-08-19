@@ -76,17 +76,20 @@ even though the product's positioning describes cross-org learning.
   kept outside those files.
 - **Hub tier (`hub/`):** revoking an org's access is implemented
   (`python -m hub.manage revoke-key <key_id>` — see `hub/README.md`).
-  **Deleting an org's data is not implemented**: none of the six Hub MCP
-  tools (`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
-  `amend_trace`, `list_tags`) include a `delete_trace` or `forget_org`
-  operation, and `hub/manage.py` has no `delete-org`/`purge-org` command.
-  Today, the only way to remove an org's rows from a `hub/` deployment is a
-  direct database operation (`DELETE FROM traces WHERE org_id = ...` and
-  friends) run by whoever operates that Postgres instance — there is no
-  product-level self-service or API-level deletion path. Building one is
-  straightforward (the schema already has `org_id` on every row that needs
-  it) but was out of scope for this pass and should not be assumed to exist
-  until it's actually added and tested.
+  Permanently deleting data is also implemented, at the operator-CLI level:
+  `python -m hub.manage purge-trace <trace_id>` and `purge-org <org_id>`
+  (the latter cascades to that org's `api_keys`/`traces`/`votes` via FK
+  `ondelete=CASCADE`; both clean up any `trace_relations` row that would
+  otherwise dangle). Both are irreversible and require the same
+  database-access trust level as every other `hub/manage.py` command —
+  there is still **no self-service or API-level deletion path**: none of
+  the six Hub MCP tools (`search_traces`, `contribute_trace`, `get_trace`,
+  `vote_trace`, `amend_trace`, `list_tags`) includes a `delete_trace` or
+  `forget_org` operation, and an org's own API key cannot delete anything.
+  That's a deliberate scope boundary, not an oversight: letting a single
+  API key wipe an org's entire history with no confirmation step is a real
+  feature with its own authorization design questions this pass didn't
+  make (see `hub/README.md`'s Operator CLI section).
 
 ## 4. What happens to lessons already derived from an org's contributed traces
 
@@ -124,10 +127,12 @@ land *before* that milestone ships, not after.
 
 ## 5. Related open questions for whoever operates a `hub/` deployment
 
-- `hub/` has no API/self-service data-deletion path (§3) — only key
-  revocation. Building `delete_trace`/`forget_org` (straightforward given
-  every row already has `org_id`) needs to happen before this document can
-  state a real deletion SLA.
+- `hub/` still has no API/self-service data-deletion path (§3) — operator-CLI
+  purge is implemented (`purge-trace`/`purge-org`), but an org cannot delete
+  its own data via its own API key. Deciding whether/how to expose that
+  (a `delete_trace`/`forget_org` MCP tool, with what confirmation/
+  authorization step) needs to happen before this document can state a real
+  self-service deletion SLA.
 - Where would a real deployment's Postgres actually be hosted, under what
   jurisdiction, and with what backup/retention configuration? Nothing in
   `hub/` prescribes this — it is deploy-target-specific and unset in
