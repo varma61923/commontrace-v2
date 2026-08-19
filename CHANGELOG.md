@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`commontrace import`** (`commontrace/import_data.py` +
+  `commands/import_cmd.py`): bulk-import an existing JSONL or CSV export
+  into `memory/traces/`, per the pilot deck's "What we connect to" /
+  "start from your historical traces, no infrastructure replacement"
+  pitch. Field-name mapping is configurable (a real export's column names
+  are whatever the source system calls them); malformed or
+  missing-required-field rows are skipped and reported per-row rather than
+  failing the whole batch; `resolved`/`escalated`/`repeated_error`/
+  `frustration_signal`/`tokens_used`/`llm_calls` columns populate
+  `Trace.outcome` automatically if present. `--dry-run` previews without
+  writing. Deliberately a generic format-level importer, not a set of
+  vendor-specific connectors (Zendesk, Salesforce, Datadog, ...) this
+  codebase has no way to test against a real vendor API for.
 - **A generic Curator/Validator loop for any `agent_type`**
   (`commontrace distill`, `commontrace lesson approve|reject`). Previously
   "Extract lessons" / "Validate" (protocol/PROTOCOL.md §2, §6) only had a

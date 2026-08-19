@@ -60,6 +60,25 @@ commontrace init --agent-type support        # or: sales | hr | marketing | code
 commontrace doctor                            # sanity-check the environment
 ```
 
+**Optional: start from your existing traces.** No infrastructure
+replacement — bulk-import a JSONL or CSV export from wherever your fleet's
+history already lives (a ticketing export, an observability dump, whatever
+you can get out as flat rows) instead of starting from zero:
+
+```bash
+commontrace import export.jsonl --agent-type support \
+  --title-field subject --context-field description --solution-field resolution
+commontrace import export.csv --agent-type support --dry-run   # preview first
+```
+
+Field names are configurable (`--title-field`/`--context-field`/
+`--solution-field`/`--tags-field`/`--id-field`) since a real export's column
+names are whatever the source system calls them. Rows missing a required
+field are skipped and reported, not silently dropped or a hard failure of
+the whole batch. `resolved`/`escalated`/`repeated_error`/
+`frustration_signal`/`tokens_used`/`llm_calls` columns, if present, populate
+`Trace.outcome` (§ [Pilot Metrics](#pilot-metrics)) automatically.
+
 ### 3 — Wire it into your agent platform
 
 ```bash
@@ -409,8 +428,8 @@ commontrace-v2/
       lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
   commontrace/                 — The `commontrace` CLI (pip-installable client)
     cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py,
-    distill.py (Curator clustering), retrieval.py (lexical fallback ranker)
-    commands/                  — init, install, capture, trace, distill, lesson, query, index, bench, sync, doctor
+    distill.py (Curator clustering), retrieval.py (lexical fallback ranker), import_data.py
+    commands/                  — init, install, capture, import, trace, distill, lesson, query, index, bench, sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
   pyproject.toml               — packaging config for the `commontrace` CLI. Currently
