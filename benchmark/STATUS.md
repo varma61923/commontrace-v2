@@ -459,3 +459,102 @@ see semantic doc (counter-examples / background rules can count as hits).
 - subagents: 10 lessons
 - testing: 5 lessons
 ```
+
+---
+
+## 8. Phase 3 — Benchmark Credibility (implemented 2026-08-19)
+
+This section records what changed in `measure_performance.py` / `memory/attention/query.py`
+/ `SKILL.md` for Phase 3 of the engineering hardening brief, and is additive to §4/§5 above
+(those sections are left as the historical record of the gaps that motivated this work). The
+§7 appendix above still reflects the 2026-05-27 snapshot verbatim, unchanged by Phase 3.
+
+### 8.1 What was implemented
+
+- **P3 — Run persistence + trend analysis**: every invocation now persists its JSON report
+  to `memory/benchmark_reports/YYYY-MM-DD_HHMMSS.json` by default (`--no-save` opts out).
+  `--diff` compares the 2 most recent stored runs and flags any of the 3 main metrics that
+  moved by more than 5 percentage points; `--history` prints a compact table of all stored
+  runs. Both handle 0 or 1 stored runs with a clear message and exit 0 rather than crashing.
+  `schema_version` was already present (`1.1.0`); it is now `1.2.0` to reflect the two new,
+  purely additive, report sections below (no existing key removed or renamed).
+
+- **P4 — Configurable alert thresholds**: defaults now match this document exactly --
+  `lesson_quality < 0.7`, `implicit_retrieval_strict < 0.5`, `never_hit_ratio > 0.3`, plus a
+  new unimodal-importance-distribution check (95%+ of lessons at one importance level). All
+  four are configurable via `--threshold-*` flags. Alerts render at the top of the markdown
+  report and are highlighted in the HTML report (existing `.alerts` styling). `--strict`
+  makes the process exit non-zero (2) when any alert fires (or, with `--diff`, when a metric
+  moved more than 5pp); without `--strict`, alerts remain purely informational (exit 0) --
+  this is a **behavior change** from the prior build, which exited non-zero on any alert
+  unconditionally (for any non-`--json` invocation). Anyone scripting around the old exit
+  code must now pass `--strict` to keep the old gating behavior.
+
+- **P5 — Cost/latency instrumentation**: `memory/attention/query.py` (Alpha) now appends one
+  JSON object per invocation to `memory/alpha_telemetry.jsonl` (created if absent, always
+  appended, never truncated): retrieval latency (ms), number of lesson frontmatters parsed,
+  number of candidates the attention layer itself surfaced, and an estimated token count of
+  the resulting brief (word-count × 1.3 heuristic, no new dependency). The benchmark's new
+  "Operational Cost" section reports p50/p95 latency and p50/p95 tokens from that file, and
+  says so clearly (rather than crashing or silently omitting the section) when the file is
+  absent or has no usable records yet.
+
+- **P8 — Semantic near-duplicate detection**: the benchmark can load
+  `memory/attention/index.npz` and report lesson pairs with cosine similarity > 0.85 as merge
+  candidates in a new "Semantic near-duplicates" section. If `numpy` isn't installed (the
+  `attention` extra wasn't installed) or the index file doesn't exist, the section reports
+  that clearly and is skipped -- it never breaks the benchmark for users without
+  `pip install -e ".[attention]"`. This is recommendation-only: nothing is ever deleted,
+  merged, or modified automatically.
+
+- **P2 — transfer_gap input-data-quality guidance**: `SKILL.md`'s episode frontmatter
+  guidance (the "Run metadata" note and the frontmatter template's `project:` field) now
+  tells Omega to tag distinctly by sub-project (e.g. `module-a`, `module-b`) going forward,
+  instead of collapsing every sub-project run under one parent-repo name. This does **not**
+  change the `transfer_gap` formula or definition (§2.4) -- it only affects what future
+  episodes get written, and does not retroactively touch any existing file under
+  `memory/episodes/` (see §8.2 for the manual, optional retro-tagging path).
+
+### 8.2 Retro-tagging existing episodes (optional, manual)
+
+The `project:` field on episodes already written under `memory/episodes/` is **not**
+rewritten automatically by anything in this repo, and Phase 3 did not script a bulk rewrite
+-- `transfer_gap`'s current 0% on the existing 12-episode snapshot (§3) is a fact about the
+input data, not something a script should silently "fix" by rewriting history. If an
+operator wants old episodes to participate in a meaningful `transfer_gap` reading, the path
+is a deliberate, manual, one-episode-at-a-time edit:
+
+1. **Decide the sub-project taxonomy first.** Look at what `task_invocation` / the episode
+   body actually describe (e.g. module-a vs module-b vs a meta `/commontrace`-on-itself
+   run) before touching any file -- a wrong retro-tag is worse than no retro-tag, since it
+   would make `transfer_gap` report a fabricated signal.
+2. **Edit one episode file's frontmatter `project:` value** (e.g. `project-x` ->
+   `module-a`) directly in the `.md` file, preserving every other field verbatim. This is a
+   plain text edit -- no script in this repo performs it, by design, so a human reviews each
+   change.
+3. **Cross-check `source_episodes` on any lesson seeded from that episode.** A lesson's
+   `source_episodes` list references episode slugs, not their `project:` values, so
+   retro-tagging an episode's `project:` automatically changes what `compute_transfer_gap`
+   resolves for every lesson that cites it (`resolve_project()` reads the episode file live,
+   not a cached copy) -- no separate lesson-file edit is needed for this step.
+4. **Re-run the benchmark and sanity-check the delta.** `python3 benchmark/measure_performance.py --diff`
+   after a retro-tagging batch will flag if `transfer_gap` (or any other main metric) moved by
+   more than 5 points, which is expected and desired here -- confirm the new value makes
+   sense before treating it as a reliable signal (§4.3: variance is still high at N=12).
+5. **Do this in a dedicated commit**, separate from any code change, so the retro-tag is
+   independently reviewable and revertible.
+
+Because this is manual and reviewed one file at a time, there is no destructive bulk-rewrite
+tool for it in this repo, and Phase 3 intentionally did not add one.
+
+### 8.3 What was explicitly out of scope for Phase 3
+
+- **P1** (persist Lambda's full verdict in the episode) and **P6** (Dreamer input
+  integration) and **P7** (enriched HTML visualization / sparklines) were not implemented --
+  out of scope for this pass, left for a future phase.
+- No existing metric's formula, exclusion rule, or definition changed (`lesson_quality`,
+  `implicit_retrieval` strict/permissive, `transfer_gap`). No existing episode file under
+  `memory/episodes/` was retroactively edited. On the existing example dataset in this repo,
+  none of the 3 main metrics' reported values changed as a result of Phase 3 -- the new
+  report sections (`operational_cost`, `semantic_duplicates`) and `alerts`/`schema_version`
+  bump are strictly additive JSON keys.

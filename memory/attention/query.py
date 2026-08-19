@@ -19,10 +19,13 @@ Usage:
     python query.py "my task" --top-k=10 --include-importance-floor=4
 """
 import argparse
+import datetime
 import glob
+import json
 import os
 import re
 import sys
+import time
 
 import numpy as np
 import yaml
@@ -58,11 +61,19 @@ _AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention â
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
 LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
+# Alpha operational-cost telemetry (Phase 3, P5): one JSON object appended per invocation.
+# A module-level path (not a literal inlined at the call site) so tests can monkeypatch it
+# to a tmp path, same pattern already used for INDEX_PATH/LESSONS_DIR above.
+TELEMETRY_PATH = os.path.join(_ROOT, "memory", "alpha_telemetry.jsonl")
 
 
-def load_importances() -> dict[str, int]:
-    """Return {slug: importance} for every ACTIVE lesson (default 3 if missing)."""
+def load_importances() -> "tuple[dict[str, int], int]":
+    """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
+    n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
+    template) whose frontmatter was successfully parsed, active or not, for Alpha
+    operational-cost telemetry (how many frontmatters retrieval had to read)."""
     out: dict[str, int] = {}
+    n_parsed = 0
     for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
@@ -75,6 +86,7 @@ def load_importances() -> dict[str, int]:
             frontmatter = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
+        n_parsed += 1
         if frontmatter.get("status", "active") != "active":
             continue
         slug = frontmatter.get("name")
@@ -84,7 +96,22 @@ def load_importances() -> dict[str, int]:
             out[str(slug)] = int(frontmatter.get("importance", 3))
         except (TypeError, ValueError):
             out[str(slug)] = 3
-    return out
+    return out, n_parsed
+
+
+def _append_telemetry(record, path=None):
+    """Append one JSON line to memory/alpha_telemetry.jsonl -- create the file if absent,
+    always append, never truncate existing history. A telemetry write failure (e.g.
+    read-only filesystem) must never break the actual retrieval it's instrumenting, so
+    failures are reported to stderr and swallowed rather than raised.
+    """
+    path = path or TELEMETRY_PATH
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -98,6 +125,11 @@ def main() -> int:
         help="Always include lessons with importance >= this (safety override, default 4)",
     )
     args = parser.parse_args()
+
+    # Latency covers the whole retrieval stage (index load through brief assembly below),
+    # not just the cosine matmul -- that's what actually costs an Alpha invocation wall-clock
+    # time and is what STATUS.md P5 asks to measure.
+    _t0 = time.monotonic()
 
     if not os.path.exists(INDEX_PATH):
         print(
@@ -136,7 +168,7 @@ def main() -> int:
     # last `build_index.py` run exists on disk but not in the index, so iterating only the
     # index's own slugs silently breaks this script's own documented safety guarantee for
     # exactly the lessons most likely to need it (freshly-authored critical rules).
-    importances = load_importances()
+    importances, n_frontmatters_parsed = load_importances()
     floor = args.include_importance_floor
     missing_from_index = []
     if floor is not None:
@@ -152,9 +184,11 @@ def main() -> int:
             if imp >= floor and slug not in indexed_slugs:
                 missing_from_index.append((slug, imp))
 
-    print(f"# Top-{args.top_k} retrieval (+ importance>={floor} override)")
-    print(f"# Index: {n_lessons} lessons, model={model_name}")
-    print(f"# Query: {args.query!r}")
+    brief_lines = [
+        f"# Top-{args.top_k} retrieval (+ importance>={floor} override)",
+        f"# Index: {n_lessons} lessons, model={model_name}",
+        f"# Query: {args.query!r}",
+    ]
     if missing_from_index:
         print(
             f"# WARNING: {len(missing_from_index)} importance>={floor} lesson(s) not yet in "
@@ -165,9 +199,33 @@ def main() -> int:
         slug = str(slugs[idx])
         score = float(scores[idx])
         imp = importances.get(slug, 0)
-        print(f"{slug} | cosine={score:.3f} | importance={imp}")
+        brief_lines.append(f"{slug} | cosine={score:.3f} | importance={imp}")
     for slug, imp in missing_from_index:
-        print(f"{slug} | cosine=N/A | importance={imp}")
+        brief_lines.append(f"{slug} | cosine=N/A | importance={imp}")
+
+    for line in brief_lines:
+        print(line)
+
+    # Alpha operational-cost telemetry (Phase 3, P5): latency, frontmatters parsed, number
+    # of candidates the attention layer itself surfaced (top_k_idx -- entries with an actual
+    # embedding/cosine score; missing_from_index entries are a disk fallback, not something
+    # the attention layer surfaced), and a cheap word-count*1.3 estimate of the resulting
+    # brief's token cost (no tokenizer dependency added just for an estimate).
+    elapsed_ms = (time.monotonic() - _t0) * 1000.0
+    brief_text = "\n".join(brief_lines)
+    estimated_tokens = len(brief_text.split()) * 1.3
+    _append_telemetry(
+        {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "latency_ms": elapsed_ms,
+            "n_frontmatters_parsed": n_frontmatters_parsed,
+            "n_candidates_surfaced": len(top_k_idx),
+            "n_missing_from_index": len(missing_from_index),
+            "estimated_tokens": estimated_tokens,
+            "top_k": args.top_k,
+            "query_chars": len(args.query),
+        }
+    )
     return 0
 
 

@@ -459,7 +459,12 @@ The rationale is MANDATORY and must be 1 concrete sentence (not "important becau
 
 ### Run metadata
 - task_invocation: [verbatim]
-- project: [detected from cwd, e.g. "<your_project>"]
+- project: [detected from cwd; tag the SUB-PROJECT distinctly, not just the parent repo — e.g.
+  "module-a" or "module-b", not a single "<your_project>" collapsing every sub-project run
+  together. Collapsing sub-projects under one name makes transfer_gap mechanically 0% forever
+  (see benchmark/STATUS.md §2.4 and §4.2) because no hit can ever look "cross-project" if
+  everything shares the same project tag. Only fall back to the bare repo name when the run
+  genuinely isn't scoped to any sub-project.]
 - commit_sha: [final SHA]
 - duration_minutes: [N]
 - n_iterations: [N]
@@ -477,7 +482,9 @@ name: YYYY-MM-DD_slug
 description: one-line summary of the run
 task_invocation: verbatim invocation /commontrace ...
 tags: [tag1, tag2]
-project: project-name
+project: project-name   # tag the SUB-PROJECT distinctly (e.g. "module-a", "module-b"), not
+                         # one shared parent-repo name for every sub-project run -- see the
+                         # "Run metadata" note above and benchmark/STATUS.md §2.4/§4.2
 verdict: CONFORM | ARBITRATION | ABANDON
 importance: N          # integer 1-5, see rubric above
 importance_rationale: "1-sentence concrete, justifies the score"
