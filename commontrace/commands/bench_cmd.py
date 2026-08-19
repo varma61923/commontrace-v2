@@ -7,7 +7,11 @@ from commontrace.commands._shellout import run_script
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    p = subparsers.add_parser("bench", help="Run the memory health benchmark (lesson_quality, implicit_retrieval, transfer_gap), or --pilot for the five business-outcome metrics.")
+    p = subparsers.add_parser(
+        "bench",
+        help="Run the memory health benchmark (lesson_quality, implicit_retrieval, transfer_gap), "
+        "or --pilot for the five business-outcome metrics.",
+    )
     p.add_argument("--n", type=int, default=0)
     p.add_argument("--html", action="store_true")
     p.add_argument("--json", action="store_true")

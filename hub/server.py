@@ -57,7 +57,9 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
-            return JSONResponse({"error": "missing or malformed Authorization: Bearer <api-key> header"}, status_code=401)
+            return JSONResponse(
+                {"error": "missing or malformed Authorization: Bearer <api-key> header"}, status_code=401
+            )
         raw_key = header[len("bearer ") :].strip()
 
         async with self._session_factory() as session:

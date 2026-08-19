@@ -1,7 +1,7 @@
 """initial schema
 
 Revision ID: b1e835b3302d
-Revises: 
+Revises:
 Create Date: 2026-08-19 13:58:15.289771
 
 """
@@ -85,7 +85,9 @@ def upgrade() -> None:
     sa.Column('feedback_tag', sa.String(length=32), nullable=False),
     sa.Column('feedback_text', sa.Text(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("feedback_tag IN ('', 'outdated', 'wrong', 'security_concern', 'spam')", name='ck_votes_feedback_tag'),
+    sa.CheckConstraint(
+        "feedback_tag IN ('', 'outdated', 'wrong', 'security_concern', 'spam')", name='ck_votes_feedback_tag'
+    ),
     sa.CheckConstraint("vote_type IN ('up', 'down')", name='ck_votes_vote_type'),
     sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['trace_id'], ['traces.id'], ondelete='CASCADE'),

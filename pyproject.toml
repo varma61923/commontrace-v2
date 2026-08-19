@@ -51,3 +51,17 @@ commontrace = ["schemas/*.json"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+# hub/ worktrees Claude Code may create locally under .claude/ are gitignored
+# and not part of the package -- keep them out of lint scope explicitly too.
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+# An explicit, intentional baseline (pycodestyle errors/warnings, pyflakes,
+# isort) rather than whatever ruff's default rule set happens to include on
+# a given ruff version -- newer defaults on some ruff releases pull in much
+# stricter/opinionated categories (datetime-tz-awareness, blind-except,
+# mutable-class-defaults, ...) that represent real, pre-existing style debt
+# across this repo unrelated to any one change. CI should fail on a
+# deliberately-chosen policy, not silently start failing because a ruff
+# upgrade added a new default category.
+select = ["E", "F", "W", "I"]

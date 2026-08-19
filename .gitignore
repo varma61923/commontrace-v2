@@ -11,6 +11,9 @@ memory/benchmark_reports/
 .idea/
 .vscode/
 
+# Claude Code local session/worktree state (not project source)
+.claude/
+
 # Python
 __pycache__/
 *.pyc

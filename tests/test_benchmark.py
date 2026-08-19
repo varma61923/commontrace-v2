@@ -34,7 +34,6 @@ class TestParseFrontmatter:
         assert result["field"] == []
 
     def test_string_with_quotes(self):
-        content = '---\nname: "quoted"\n---\n'
         result = bm.parse_yaml_minimal('name: "quoted"\n')
         assert result["name"] == "quoted"
 
@@ -413,10 +412,10 @@ class TestIntegrationExamples:
 
     def test_example_lesson_importance_valid(self):
         lessons = bm.load_lessons()
-        for slug, l in lessons.items():
-            if "importance" in l:
-                assert isinstance(l["importance"], int), f"{slug}: importance must be int"
-                assert 1 <= l["importance"] <= 5, f"{slug}: importance must be 1-5"
+        for slug, lesson in lessons.items():
+            if "importance" in lesson:
+                assert isinstance(lesson["importance"], int), f"{slug}: importance must be int"
+                assert 1 <= lesson["importance"] <= 5, f"{slug}: importance must be 1-5"
 
     def test_benchmark_runs_without_error(self):
         episodes = bm.load_episodes()
@@ -424,5 +423,5 @@ class TestIntegrationExamples:
         lq, lq_n = bm.compute_lesson_quality(episodes)
         ir_s, ir_p, ir_n = bm.compute_implicit_retrieval(episodes)
         tg, tg_n, tg_u = bm.compute_transfer_gap(episodes, lessons)
-        extras = bm.compute_extras(episodes, lessons)
+        bm.compute_extras(episodes, lessons)  # just verify it doesn't raise
         assert lq is None or (0.0 <= lq)  # lesson_quality can exceed 1.0 (retro-validation)

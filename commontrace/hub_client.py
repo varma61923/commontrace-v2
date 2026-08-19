@@ -19,8 +19,9 @@ from typing import Any
 
 from commontrace import frontmatter, paths, templates
 
+_SECTION_NAMES = r"Rule|Why|How to apply|Counter-examples"
 _SECTION_RE = re.compile(
-    r"^##\s*(Rule|Why|How to apply|Counter-examples)\s*\n(.*?)(?=\n##\s*(?:Rule|Why|How to apply|Counter-examples)\s*\n|\Z)",
+    rf"^##\s*({_SECTION_NAMES})\s*\n(.*?)(?=\n##\s*(?:{_SECTION_NAMES})\s*\n|\Z)",
     re.DOTALL | re.MULTILINE,
 )
 
