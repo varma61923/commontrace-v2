@@ -3,7 +3,10 @@
 #
 # Attention layer (memory/attention/) — required for semantic pre-filtering (Phase 0 / Alpha):
 numpy>=1.24.0,<3.0
-sentence-transformers>=2.7.0,<5.0   # pulls torch CPU automatically
+# See pyproject.toml's [attention] extra for why this floor is >=6.0/>=5.5.0
+# (pip-audit found 5 known transformers RCE-class CVEs below transformers 5.5.0).
+sentence-transformers>=6.0.0,<7.0   # pulls torch CPU automatically
+transformers>=5.5.0
 PyYAML>=6.0,<7.0
 
 # Benchmark (benchmark/measure_performance.py):

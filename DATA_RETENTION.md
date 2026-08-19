@@ -29,24 +29,31 @@ backup, and access-control policies already are. There is nothing for
 *this project* to retain or delete on the user's behalf at the local tier;
 deleting the files (or the repo) is deletion.
 
-### Hub tier (status unresolved — see §4)
+### Hub tier (implemented in `hub/`; not currently deployed anywhere)
 
-`protocol/PROTOCOL.md` §5 describes a Hub reached over MCP
-(`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
-`amend_trace`, `list_tags`) and lists it as "already in production." This
-repository's own client code disagrees: `commontrace/commands/sync_cmd.py`
-makes no network call and only prints instructions for how an MCP-capable
-agent could bridge to a Hub manually. No Hub server implementation, and no
-schema field for organization/tenant identity (`org_id` or similar), exists
-anywhere in `protocol/schemas/` or `commontrace/` today.
+A real Hub server now exists in this repository (`hub/`, see
+`hub/README.md`), exposing the six MCP tools `protocol/PROTOCOL.md` §5
+describes (`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
+`amend_trace`, `list_tags`) over Postgres, with an `org_id` on every trace
+row. What follows describes what that codebase actually does — it is not a
+claim that any particular deployment of it exists or holds real customer
+data today. If/when an operator deploys `hub/`, this section is the accurate
+description of that deployment's storage and isolation behavior; if a
+*different* Hub implementation is deployed instead, this section does not
+apply to it and needs to be re-verified against that system.
 
-**This document cannot state a real retention period, deletion SLA, or
-storage location for the Hub tier, because there is no verified live system
-to describe.** Whoever owns the actual Hub deployment (if `PROTOCOL.md`'s
-"already in production" claim is accurate) needs to either supply this
-document with real answers, or `PROTOCOL.md` needs to be corrected to stop
-describing it as production infrastructure. See `DATA_RETENTION.md` §4 for
-the specific decision this blocks.
+| Table (`hub/models.py`) | Contents |
+|---|---|
+| `organizations` | Org id + display name. |
+| `api_keys` | Argon2 hash of each org's API key (never the raw key), a non-secret lookup prefix, issuance/revocation/last-used timestamps. |
+| `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). |
+| `votes` | Up/down votes + optional feedback, per (trace, org). |
+| `trace_relations` | AMENDS/SUPERSEDED_BY edges created by `amend_trace`. |
+
+Every read path is scoped to the calling org's own `org_id` at the query
+layer (`hub/crud.py`); see `hub/README.md`'s "Tenant isolation vs. the
+cross-org commons pitch" for why cross-org visibility is not yet automatic
+even though the product's positioning describes cross-org learning.
 
 ## 2. How long data is kept
 
@@ -55,17 +62,31 @@ the specific decision this blocks.
   `memory/`. `status: archived` on a lesson (see `protocol/PROTOCOL.md` §4)
   is a soft, in-band marker the tooling can filter on — it does not delete
   or move the underlying file.
-- **Hub tier:** unknown — see §1.
+- **Hub tier (`hub/`):** indefinitely as well — the same "no automatic
+  expiry" is true here. Nothing in `hub/` runs a retention/purge job; a row
+  in `traces`/`votes`/`api_keys` persists until explicitly deleted. What
+  "indefinitely" *should* mean for a real deployment holding paying
+  customers' data (30 days after contract end? 1 year? never, until asked?)
+  is a business decision — see §4.
 
 ## 3. How an org requests deletion
 
 - **Local tier:** delete the relevant files under `memory/` (or the whole
   repo). There is no CommonTrace-side record to also purge, since none is
   kept outside those files.
-- **Hub tier:** no deletion mechanism exists in this codebase — the six Hub
-  MCP tools listed in `protocol/PROTOCOL.md` §5 do not include a
-  `delete_trace` or `forget_org` operation. If a real Hub exists elsewhere,
-  it needs its own documented deletion path; this repo cannot speak for it.
+- **Hub tier (`hub/`):** revoking an org's access is implemented
+  (`python -m hub.manage revoke-key <key_id>` — see `hub/README.md`).
+  **Deleting an org's data is not implemented**: none of the six Hub MCP
+  tools (`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
+  `amend_trace`, `list_tags`) include a `delete_trace` or `forget_org`
+  operation, and `hub/manage.py` has no `delete-org`/`purge-org` command.
+  Today, the only way to remove an org's rows from a `hub/` deployment is a
+  direct database operation (`DELETE FROM traces WHERE org_id = ...` and
+  friends) run by whoever operates that Postgres instance — there is no
+  product-level self-service or API-level deletion path. Building one is
+  straightforward (the schema already has `org_id` on every row that needs
+  it) but was out of scope for this pass and should not be assumed to exist
+  until it's actually added and tested.
 
 ## 4. What happens to lessons already derived from an org's contributed traces
 
@@ -84,21 +105,32 @@ it is a business/legal decision, not an engineering one:
 >    "delete this org's contribution" isn't a clean subtraction.
 
 **This needs a decision from whoever owns commercial/legal terms with
-Hub-contributing organizations before a Hub is built or a customer's data
-touches one.** Candidate positions (not a recommendation, just the shape of
-the choice) range from "traces are deletable, lessons already derived and
-distributed are not retroactively recalled" (like an open-source contribution
-model) to "lessons must be re-derivable/re-validatable without deleted
-source traces, with a grace/quarantine period." Flagging this, not deciding
-it, is the point of this section.
+Hub-contributing organizations before a customer's data is allowed to flow
+into a cross-org "commons."** Candidate positions (not a recommendation,
+just the shape of the choice) range from "traces are deletable, lessons
+already derived and distributed are not retroactively recalled" (like an
+open-source contribution model) to "lessons must be re-derivable/
+re-validatable without deleted source traces, with a grace/quarantine
+period." Flagging this, not deciding it, is the point of this section.
 
-## 5. Related open questions for whoever resolves §1/§4
+Note on current scope: `hub/`'s tenant isolation is deliberately strict
+today (see §1 and `hub/README.md`) — every read is scoped to the caller's
+own `org_id`, so the cross-org scenario above (org B ever seeing a lesson
+derived from org A's trace) cannot happen yet in this codebase as shipped.
+It becomes live the moment a future "opt-in commons" milestone is built on
+top of the `shared_with_commons` column that already exists in
+`hub/models.py` but is not yet acted on by any query — this decision should
+land *before* that milestone ships, not after.
 
-- Does a real CommonTrace Hub already exist in production, contradicting
-  this repo's own `sync_cmd.py`? (`protocol/PROTOCOL.md` §5 says yes; this
-  repo's code says no network client exists to reach one.)
-- If yes: where is its data hosted, under what jurisdiction, and what
-  retention/deletion SLA does it already operate under today?
-- If no: retention/deletion policy should be designed alongside the Hub's
-  schema (which will need an `org_id` concept that doesn't exist yet) rather
-  than retrofitted after data is already flowing.
+## 5. Related open questions for whoever operates a `hub/` deployment
+
+- `hub/` has no API/self-service data-deletion path (§3) — only key
+  revocation. Building `delete_trace`/`forget_org` (straightforward given
+  every row already has `org_id`) needs to happen before this document can
+  state a real deletion SLA.
+- Where would a real deployment's Postgres actually be hosted, under what
+  jurisdiction, and with what backup/retention configuration? Nothing in
+  `hub/` prescribes this — it is deploy-target-specific and unset in
+  `hub/.env.example`.
+- §4's cross-org deletion question needs an answer before (not after) the
+  "opt-in commons" milestone in `hub/README.md` ships.

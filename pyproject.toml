@@ -20,7 +20,16 @@ dependencies = [
 # stays lightweight — no torch download required just to try the protocol.
 attention = [
     "numpy>=1.24,<3.0",
-    "sentence-transformers>=2.7,<5.0",
+    # sentence-transformers pulls in `transformers` transitively; the previous
+    # `<5.0` cap (pip-audit, Phase 2 dependency audit) resolved a transformers
+    # version with 5 known RCE-class CVEs (PYSEC-2025-217, PYSEC-2026-2288/89/90)
+    # in checkpoint/config deserialization, fixed in transformers>=5.5.0. This
+    # codebase never loads an attacker-controlled model (memory/attention/query.py
+    # only ever loads a hardcoded, trusted model name -- see its own hardening
+    # comment), so exploitability here was already low, but pinning to a
+    # resolvable, patched range costs nothing.
+    "sentence-transformers>=6.0,<7.0",
+    "transformers>=5.5.0",
 ]
 # `commontrace sync` talking to a CommonTrace Hub (commontrace/hub_client.py).
 # Optional for the same reason `attention` is: most users never need it.
