@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The CommonTrace Hub server (`hub/`).** Previously `protocol/PROTOCOL.md`
+  described a Hub as already in production while `commontrace sync` made no
+  network call at all — this closes that gap with a real implementation: an
+  MCP server (`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
+  `amend_trace`, `list_tags`) over streamable-HTTP, backed by Postgres
+  (SQLAlchemy 2.0 + Alembic), with every read/write scoped to the calling
+  org's `org_id` at the query layer, API-key-per-org auth (argon2-hashed,
+  rotatable), and abuse controls (schema/size validation, per-org rate
+  limiting, a quarantine state for suspect contributions). See
+  `hub/README.md` for setup and the design decisions worth knowing about
+  before extending it, especially "Tenant isolation vs. the cross-org
+  commons pitch."
+- `commontrace/hub_client.py` + `commontrace sync --push`/`--pull`: the
+  client half of the bridge, now a real implementation instead of printed
+  instructions — pushes local `active` lessons to the Hub via
+  `contribute_trace` (recording `hub_trace_id` back into the lesson
+  frontmatter) and pulls `search_traces` results into `memory/traces/` as
+  candidates for `commontrace lesson new`. New `commontrace[hub-sync]`
+  optional extra for the client dependency.
+- `DATA_RETENTION.md` now documents the Hub tier's actual tables and
+  `org_id` scoping instead of stating no verified system existed to
+  describe; still explicitly flags org-level data deletion as unimplemented
+  and the cross-org "commons" deletion question as an open business decision.
+- Benchmark credibility (`benchmark/measure_performance.py`,
+  `memory/attention/query.py`; see `benchmark/STATUS.md` §5 P2–P5, P8):
+  every run now persists to `memory/benchmark_reports/*.json`
+  (`schema_version`-tagged) with new `--diff`/`--history`/`--strict` modes;
+  configurable alert thresholds surface as a report-level "Alerts" section;
+  `memory/alpha_telemetry.jsonl` + a new "Operational Cost" report section
+  instrument retrieval latency/token cost; a new "Semantic near-duplicates"
+  section flags cosine->0.85 lesson pairs as merge candidates
+  (recommendation-only); and `SKILL.md`'s episode guidance now tags
+  sub-projects distinctly so `transfer_gap` can become non-zero going
+  forward (no existing episode file was retagged retroactively). No
+  existing metric definition, formula, or exclusion rule changed.
 - CI (`.github/workflows/ci.yml`) running the test suite and a `ruff` lint pass
   on Python 3.10, 3.11, and 3.12, both for the core install (`pip install -e .`)
   and the `dev` extra (`pip install -e ".[dev]"`).
@@ -23,13 +58,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout) — previously these were indistinguishable from real `[WARN]`s.
 
 ### Changed
-- `ruff` added to the `dev` optional-dependency group.
+- `ruff` added to the `dev` optional-dependency group, with an explicit
+  `[tool.ruff.lint] select = ["E", "F", "W", "I"]` policy rather than
+  whatever a given `ruff` release's default rule set happens to include —
+  needed because this repo's `ruff` version's real defaults pull in far
+  more than pyflakes/pycodestyle and were failing CI outright.
 - README install-target quick-reference and file-layout table point at the new
   support matrix instead of asserting untested platform behavior.
 - Documentation no longer implies `pip install commontrace` (bare, from PyPI)
   works today; `pip install -e .` from a repo checkout is the only currently
   verified install path, and PyPI publication is called out as a future step
   (see `protocol/PROTOCOL.md` §8 and `README.md`).
+- `README.md` no longer describes the Hub as "production" infrastructure
+  external to this repo; it now points at `hub/` as the (self-hosted, not
+  hosted-by-this-project) server implementation.
+- The `[attention]` optional extra's `sentence-transformers` floor bumped
+  from `<5.0` to `>=6.0,<7.0`, with an explicit `transformers>=5.5.0` floor
+  (mirrored in `requirements.txt`) — see Fixed.
+- CI gained a `test-hub` job (Postgres 16 service container,
+  `hub/tests/` including `test_tenant_isolation.py`) alongside the existing
+  core/dev jobs.
 
 ### Fixed
 - `commontrace install --target cursor|generic-mcp` generated
@@ -43,6 +91,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installed. It now uses `pytest.importorskip("numpy")`, matching the
   existing `sentence_transformers` skip, so the base install's test run
   (no `attention` extra) collects and passes cleanly.
+- `[attention]`'s previous `sentence-transformers<5.0` cap transitively
+  resolved a `transformers` version with 5 known RCE-class CVEs
+  (PYSEC-2025-217, PYSEC-2026-2288/2289/2290) in checkpoint/config
+  deserialization (found via `pip-audit`), fixed upstream in
+  `transformers>=5.5.0`. Exploitability was already low here specifically —
+  `memory/attention/query.py` only ever loads a hardcoded, trusted model
+  name — but the new floor resolves to a version with zero known
+  vulnerabilities per `pip-audit`.
 
 ## [2.0.0] - 2026-08-18
 
