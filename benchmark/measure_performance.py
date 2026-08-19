@@ -13,12 +13,23 @@ Usage:
     python measure_performance.py --n=5            # last 5 episodes
     python measure_performance.py --html           # HTML to memory/benchmark_reports/
     python measure_performance.py --json           # raw JSON to stdout
-    python measure_performance.py --save           # persist JSON report to benchmark_reports/
+    python measure_performance.py --no-save        # skip persisting JSON (persisted by default)
+    python measure_performance.py --diff           # compare the 2 most recent stored runs
+    python measure_performance.py --history        # table of stored runs over time
+    python measure_performance.py --strict         # non-zero exit if any alert fires
 
-Alert thresholds (warn when metrics fall below):
-    --threshold-quality=0.8        lesson_quality warning below 80% (default)
-    --threshold-retrieval=0.7      implicit_retrieval strict warning below 70% (default)
-    --threshold-never-hit=0.25     warn if >25% of lessons are never-hit (default)
+Every invocation (other than --diff/--history, which only read existing history) persists
+its JSON report to memory/benchmark_reports/YYYY-MM-DD_HHMMSS.json by default -- pass
+--no-save to skip this (e.g. for a scratch/read-only invocation).
+
+Alert thresholds (warn when metrics breach; see STATUS.md §5 P4):
+    --threshold-quality=0.7        lesson_quality warning below 70% (default)
+    --threshold-retrieval=0.5      implicit_retrieval strict warning below 50% (default)
+    --threshold-never-hit=0.3      warn if >30% of lessons are never-hit (default)
+    --threshold-unimodal=0.95      warn if >=95% of lessons sit at one importance level (default)
+
+By default alerts are informational only (exit 0). Pass --strict to exit non-zero (2) when
+any alert fires (including from --diff, when a metric moves more than 5 points).
 
 Falls back to regex parser if PyYAML is not installed.
 """
@@ -27,6 +38,7 @@ import datetime
 import glob
 import html
 import json
+import math
 import os
 import re
 import sys
@@ -37,7 +49,15 @@ try:
 except ImportError:
     HAS_YAML = False
 
-SCHEMA_VERSION = "1.1.0"
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+# Bumped from 1.1.0: additive-only fields `operational_cost` and `semantic_duplicates`
+# (Phase 3, P5 / P8). No existing key was removed or renamed.
+SCHEMA_VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Path configuration — provider-agnostic
@@ -53,6 +73,30 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _AUTO_ROOT = os.path.dirname(_SCRIPT_DIR)  # benchmark → ROOT
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 BASE_DIR = os.path.join(_ROOT, "memory")
+
+
+# These are functions rather than frozen constants so that reassigning the module-level
+# BASE_DIR (as tests do, e.g. `bm.BASE_DIR = str(tmp_memory)`) is picked up by every path
+# that derives from it -- a constant computed once at import time would silently keep
+# pointing at the real repo's memory/ even after a test repoints BASE_DIR.
+def _reports_dir():
+    return os.path.join(BASE_DIR, "benchmark_reports")
+
+
+def _telemetry_path():
+    return os.path.join(BASE_DIR, "alpha_telemetry.jsonl")
+
+
+def _attention_index_path():
+    return os.path.join(BASE_DIR, "attention", "index.npz")
+
+
+DEFAULT_THRESHOLD_QUALITY = 0.7
+DEFAULT_THRESHOLD_RETRIEVAL = 0.5
+DEFAULT_THRESHOLD_NEVER_HIT = 0.3
+DEFAULT_THRESHOLD_UNIMODAL = 0.95
+DIFF_FLAG_DELTA = 0.05  # 5 percentage points
+SEMANTIC_DUP_THRESHOLD = 0.85
 
 
 # Delimiter must be its own line (optionally trailing whitespace / CR), not just the
@@ -523,7 +567,278 @@ def compute_alerts(report, thresholds):
             f"lesson_quality {lq['value']:.1%} > 100% — retro-validation artefact "
             f"(Lambda validated proposals from earlier runs; see STATUS.md §2.2)"
         )
+    # Unimodal importance distribution: 95%+ (default) of lessons crammed into a single
+    # importance level suggests a broken/degenerate rubric (everything drifts to one value).
+    imp_lessons = extras.get("importance_lessons", {})
+    total_imp = sum(v for v in imp_lessons.values())
+    unimodal_threshold = thresholds.get("unimodal", DEFAULT_THRESHOLD_UNIMODAL)
+    if total_imp > 0:
+        max_level, max_count = max(imp_lessons.items(), key=lambda kv: kv[1])
+        ratio = max_count / total_imp
+        if ratio >= unimodal_threshold:
+            alerts.append(
+                f"Unimodal importance distribution: {max_count}/{total_imp} lessons "
+                f"({ratio:.1%}) at importance {max_level!r} — threshold {unimodal_threshold:.0%} "
+                f"— rubric may be miscalibrated"
+            )
     return alerts
+
+
+def _percentile(values, pct):
+    """Linear-interpolation percentile (same convention as numpy.percentile default)."""
+    if not values:
+        return None
+    s = sorted(values)
+    if len(s) == 1:
+        return float(s[0])
+    k = (len(s) - 1) * (pct / 100.0)
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return float(s[int(k)])
+    return float(s[f] + (s[c] - s[f]) * (k - f))
+
+
+def compute_operational_cost(telemetry_path=None):
+    """Read memory/alpha_telemetry.jsonl (one JSON object per Alpha retrieval invocation,
+    written by memory/attention/query.py) and summarize latency/token cost.
+
+    Returns a dict with `available: bool`. When unavailable, `message` explains why
+    (file absent or empty/unusable) -- callers must render that message rather than
+    crashing or silently omitting the section.
+    """
+    path = telemetry_path or _telemetry_path()
+    if not os.path.exists(path):
+        return {
+            "available": False,
+            "message": (
+                f"No Alpha telemetry found at {path}. Run memory/attention/query.py "
+                "at least once to generate retrieval telemetry."
+            ),
+        }
+    latencies, tokens = [], []
+    n_lines = 0
+    n_malformed = 0
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            n_lines += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                n_malformed += 1
+                continue
+            lat = rec.get("latency_ms")
+            tok = rec.get("estimated_tokens")
+            if isinstance(lat, (int, float)) and not isinstance(lat, bool):
+                latencies.append(float(lat))
+            if isinstance(tok, (int, float)) and not isinstance(tok, bool):
+                tokens.append(float(tok))
+    if not latencies and not tokens:
+        return {
+            "available": False,
+            "message": f"Telemetry file at {path} exists but has no usable records "
+                       f"({n_lines} line(s) read, {n_malformed} malformed).",
+        }
+    return {
+        "available": True,
+        "n": n_lines,
+        "n_malformed_skipped": n_malformed,
+        "latency_p50_ms": _percentile(latencies, 50),
+        "latency_p95_ms": _percentile(latencies, 95),
+        "tokens_p50": _percentile(tokens, 50),
+        "tokens_p95": _percentile(tokens, 95),
+    }
+
+
+def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOLD):
+    """Load memory/attention/index.npz and report lesson pairs with cosine similarity
+    above `threshold` as merge candidates (recommendation only -- never merges/deletes).
+
+    Guards: missing `numpy` (the `attention` extra isn't installed) or a missing/unreadable
+    index.npz both degrade to `available: False` with an explanatory message, never a crash.
+    """
+    if not HAS_NUMPY:
+        return {
+            "available": False,
+            "message": (
+                "numpy is not installed -- install the 'attention' extra "
+                "(`pip install -e '.[attention]'`) to enable semantic near-duplicate detection."
+            ),
+        }
+    path = index_path or _attention_index_path()
+    if not os.path.exists(path):
+        return {
+            "available": False,
+            "message": (
+                f"No attention index found at {path}. Run memory/attention/build_index.py "
+                "first (requires the 'attention' extra)."
+            ),
+        }
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            slugs = [str(s) for s in data["slugs"]]
+            embeddings = np.asarray(data["embeddings"], dtype=np.float64)
+    except Exception as exc:  # noqa: BLE001 - any load failure degrades, never crashes
+        return {"available": False, "message": f"Failed to load {path}: {exc}"}
+
+    n = len(slugs)
+    if n < 2 or embeddings.shape[0] != n:
+        return {"available": True, "pairs": [], "n_lessons": n, "threshold": threshold}
+
+    sim = embeddings @ embeddings.T
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            score = float(sim[i, j])
+            if score > threshold:
+                pairs.append((slugs[i], slugs[j], score))
+    pairs.sort(key=lambda t: t[2], reverse=True)
+    return {"available": True, "pairs": pairs, "n_lessons": n, "threshold": threshold}
+
+
+# ---------------------------------------------------------------------------
+# Run persistence + trend analysis (P3)
+# ---------------------------------------------------------------------------
+
+# The 3 main metrics tracked over time (cf. STATUS.md "Main Metrics (3 axes)"). Each entry
+# is (display_name, path_into_the_stored_json_report). implicit_retrieval's permissive
+# angle is carried alongside strict for context but is not itself one of the 3 axes.
+_TREND_METRIC_PATHS = [
+    ("lesson_quality", ("lesson_quality", "value")),
+    ("implicit_retrieval_strict", ("implicit_retrieval", "strict")),
+    ("implicit_retrieval_permissive", ("implicit_retrieval", "permissive")),
+    ("transfer_gap", ("transfer_gap", "value")),
+]
+
+
+def _extract_metric(report, path):
+    v = report
+    for k in path:
+        if not isinstance(v, dict):
+            return None
+        v = v.get(k)
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def persist_report(clean_report, ts=None):
+    """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS.json.
+    Returns the path written. `ts` (a datetime) lets callers reuse the same instant used
+    to build the report's own `timestamp` field, so filenames and content agree.
+    """
+    ts = ts or datetime.datetime.now()
+    out_dir = _reports_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{ts.strftime('%Y-%m-%d_%H%M%S')}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(clean_report, fh, indent=2, default=str)
+    return path
+
+
+def load_stored_reports(reports_dir=None):
+    """Return [(path, report_dict), ...] for every *.json under benchmark_reports/,
+    oldest first (filenames sort chronologically: YYYY-MM-DD_HHMMSS.json). Unreadable
+    files (partial write, corrupted JSON) are skipped with a stderr warning rather than
+    crashing the whole diff/history run.
+    """
+    d = reports_dir or _reports_dir()
+    out = []
+    for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                out.append((p, json.load(fh)))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[WARN] Skipping unreadable stored report {p}: {exc}", file=sys.stderr)
+    return out
+
+
+def compute_diff(older, newer, flag_delta=DIFF_FLAG_DELTA):
+    """Compute deltas on the main metrics between two stored reports. A metric flags when
+    it moved by more than `flag_delta` (default 5 percentage points, i.e. 0.05)."""
+    rows = []
+    for name, path in _TREND_METRIC_PATHS:
+        old_v = _extract_metric(older, path)
+        new_v = _extract_metric(newer, path)
+        delta = None
+        flagged = False
+        if old_v is not None and new_v is not None:
+            delta = new_v - old_v
+            flagged = abs(delta) > flag_delta
+        rows.append({"metric": name, "old": old_v, "new": new_v, "delta": delta, "flagged": flagged})
+    return rows
+
+
+def render_diff_report(rows, older_label, newer_label):
+    out = [f"# Benchmark Diff: `{older_label}` -> `{newer_label}`", ""]
+    out.append("| Metric | Old | New | Delta | Flag |")
+    out.append("|---|---|---|---|---|")
+    for r in rows:
+        old_s = fmt_pct(r["old"])
+        new_s = fmt_pct(r["new"])
+        delta_s = f"{r['delta'] * 100:+.1f}pp" if r["delta"] is not None else "N/A"
+        flag_s = "**MOVED >5pp**" if r["flagged"] else ""
+        out.append(f"| {r['metric']} | {old_s} | {new_s} | {delta_s} | {flag_s} |")
+    flagged = [r for r in rows if r["flagged"]]
+    out.append("")
+    if flagged:
+        out.append("**Flagged deltas (>5 percentage points):**")
+        for r in flagged:
+            out.append(f"- {r['metric']}: {fmt_pct(r['old'])} -> {fmt_pct(r['new'])} ({r['delta'] * 100:+.1f}pp)")
+    else:
+        out.append("*(no metric moved by more than 5 percentage points)*")
+    return "\n".join(out)
+
+
+def run_diff(reports_dir=None, strict=False, out=print):
+    """Implements --diff. Returns a process exit code (0 unless --strict and something
+    flagged). Handles 0 or 1 stored runs gracefully instead of crashing."""
+    stored = load_stored_reports(reports_dir)
+    if len(stored) < 2:
+        out(
+            f"Not enough stored benchmark runs to diff (found {len(stored)}, need >= 2). "
+            f"Run measure_performance.py a few more times to build history under "
+            f"{reports_dir or _reports_dir()}."
+        )
+        return 0
+    (older_path, older), (newer_path, newer) = stored[-2], stored[-1]
+    rows = compute_diff(older, newer)
+    out(render_diff_report(rows, os.path.basename(older_path), os.path.basename(newer_path)))
+    if strict and any(r["flagged"] for r in rows):
+        return 2
+    return 0
+
+
+def render_history_report(stored):
+    out = [f"# Benchmark History ({len(stored)} stored run(s))", ""]
+    if len(stored) == 1:
+        out.append("*(only 1 stored run -- not enough yet for a trend, showing it anyway)*")
+        out.append("")
+    out.append("| Timestamp | lesson_quality | retrieval strict | retrieval permissive | transfer_gap |")
+    out.append("|---|---|---|---|---|")
+    for path, r in stored:
+        ts = r.get("timestamp") or os.path.basename(path)
+        lq = _extract_metric(r, ("lesson_quality", "value"))
+        irs = _extract_metric(r, ("implicit_retrieval", "strict"))
+        irp = _extract_metric(r, ("implicit_retrieval", "permissive"))
+        tg = _extract_metric(r, ("transfer_gap", "value"))
+        out.append(f"| {ts} | {fmt_pct(lq)} | {fmt_pct(irs)} | {fmt_pct(irp)} | {fmt_pct(tg)} |")
+    return "\n".join(out)
+
+
+def run_history(reports_dir=None, out=print):
+    """Implements --history. Returns a process exit code (always 0 -- history is purely
+    informational). Handles 0 stored runs gracefully instead of crashing."""
+    stored = load_stored_reports(reports_dir)
+    if not stored:
+        out(
+            f"No stored benchmark runs found under {reports_dir or _reports_dir()}. "
+            "Run measure_performance.py (without --diff/--history) to persist a run first."
+        )
+        return 0
+    out(render_history_report(stored))
+    return 0
 
 
 def _importance_sort_key(x):
@@ -580,9 +895,9 @@ def render_markdown(r, alerts=None):
         out.append("-> **N/A** (no episodes with non-empty Alpha retrieval)")
     else:
         out.append(f"- **strict** = mean(|hit ∩ retrieved| / |retrieved|) -> **{fmt_pct(ir['strict'])}**")
-        out.append(f"  (precision: proportion of Alpha selections that actually helped)")
+        out.append("  (precision: proportion of Alpha selections that actually helped)")
         out.append(f"- **permissive** = mean(|hit| / |retrieved|) -> **{fmt_pct(ir['permissive'])}**")
-        out.append(f"  (richness: can exceed 100% if Omega counts hits beyond Alpha's retrieved set)")
+        out.append("  (richness: can exceed 100% if Omega counts hits beyond Alpha's retrieved set)")
         out.append(f"- across **{ir['n']}** valid episodes")
     out.append("")
 
@@ -659,6 +974,46 @@ def render_markdown(r, alerts=None):
     out.append("")
     for d in sorted(extras["domain_coverage"].keys()):
         out.append(f"- {d} : {extras['domain_coverage'][d]} lessons")
+    out.append("")
+
+    out.append("## Operational Cost (Alpha retrieval telemetry)")
+    out.append("")
+    oc = r.get("operational_cost") or {}
+    if not oc.get("available"):
+        out.append(f"*{oc.get('message', 'No telemetry data available.')}*")
+    else:
+        out.append(
+            f"Based on {oc['n']} recorded Alpha retrieval invocation(s) in "
+            "`memory/alpha_telemetry.jsonl`"
+            + (f" ({oc['n_malformed_skipped']} malformed line(s) skipped)" if oc.get("n_malformed_skipped") else "")
+            + "."
+        )
+        out.append("")
+        out.append(f"- latency p50 : {oc['latency_p50_ms']:.1f} ms")
+        out.append(f"- latency p95 : {oc['latency_p95_ms']:.1f} ms")
+        out.append(f"- tokens p50 : {oc['tokens_p50']:.0f}")
+        out.append(f"- tokens p95 : {oc['tokens_p95']:.0f}")
+    out.append("")
+
+    out.append("## Semantic near-duplicates (merge candidates)")
+    out.append("")
+    sd = r.get("semantic_duplicates") or {}
+    if not sd.get("available"):
+        out.append(f"*{sd.get('message', 'No semantic duplicate data available.')}*")
+    else:
+        pairs = sd.get("pairs") or []
+        thr = sd.get("threshold", SEMANTIC_DUP_THRESHOLD)
+        if not pairs:
+            out.append(f"*(no lesson pairs above cosine {thr:.2f}, among {sd.get('n_lessons', 0)} indexed lessons)*")
+        else:
+            out.append(
+                f"{len(pairs)} candidate pair(s) above cosine {thr:.2f} among "
+                f"{sd.get('n_lessons', 0)} indexed lessons — recommendation only, "
+                "no lesson is ever auto-merged or deleted:"
+            )
+            out.append("")
+            for a, b, score in pairs:
+                out.append(f"- `{a}` <-> `{b}` : cosine {score:.3f}")
     out.append("")
 
     return "\n".join(out)
@@ -857,25 +1212,63 @@ def main():
     parser.add_argument("--n", type=int, default=0, help="Number of recent episodes (default: all)")
     parser.add_argument("--html", action="store_true", help="Output HTML to memory/benchmark_reports/")
     parser.add_argument("--json", action="store_true", help="Raw JSON output to stdout")
-    parser.add_argument("--save", action="store_true", help="Persist JSON report to memory/benchmark_reports/")
     parser.add_argument(
-        "--threshold-quality", type=float, default=0.8,
-        metavar="FLOAT",
-        help="lesson_quality alert threshold (default: 0.8)",
+        "--save", action="store_true",
+        help="Deprecated no-op: every run persists its JSON report by default now. "
+             "Kept only so old invocations that pass --save don't break. Use --no-save to opt out.",
     )
     parser.add_argument(
-        "--threshold-retrieval", type=float, default=0.7,
-        metavar="FLOAT",
-        help="implicit_retrieval strict alert threshold (default: 0.7)",
+        "--no-save", action="store_true",
+        help="Do not persist the JSON report to memory/benchmark_reports/ (persisted by default)",
     )
     parser.add_argument(
-        "--threshold-never-hit", type=float, default=0.25,
+        "--diff", action="store_true",
+        help="Compare the 2 most recent stored runs under memory/benchmark_reports/ and flag deltas > 5pp",
+    )
+    parser.add_argument(
+        "--history", action="store_true",
+        help="Print a compact table of the 3 main metrics across all stored runs",
+    )
+    parser.add_argument(
+        "--strict", action="store_true",
+        help="Exit non-zero (2) if any alert fires (or, with --diff, if any metric moved >5pp). "
+             "Without this flag alerts/deltas are informational only (exit 0).",
+    )
+    parser.add_argument(
+        "--threshold-quality", type=float, default=DEFAULT_THRESHOLD_QUALITY,
         metavar="FLOAT",
-        help="Never-hit lesson ratio alert threshold (default: 0.25)",
+        help=f"lesson_quality alert threshold (default: {DEFAULT_THRESHOLD_QUALITY})",
+    )
+    parser.add_argument(
+        "--threshold-retrieval", type=float, default=DEFAULT_THRESHOLD_RETRIEVAL,
+        metavar="FLOAT",
+        help=f"implicit_retrieval strict alert threshold (default: {DEFAULT_THRESHOLD_RETRIEVAL})",
+    )
+    parser.add_argument(
+        "--threshold-never-hit", type=float, default=DEFAULT_THRESHOLD_NEVER_HIT,
+        metavar="FLOAT",
+        help=f"Never-hit lesson ratio alert threshold (default: {DEFAULT_THRESHOLD_NEVER_HIT})",
+    )
+    parser.add_argument(
+        "--threshold-unimodal", type=float, default=DEFAULT_THRESHOLD_UNIMODAL,
+        metavar="FLOAT",
+        help=f"Unimodal importance-distribution alert threshold (default: {DEFAULT_THRESHOLD_UNIMODAL})",
     )
     args = parser.parse_args()
     if args.json and args.html:
         parser.error("--json and --html are mutually exclusive (choose one output format).")
+    if args.diff and args.history:
+        parser.error("--diff and --history are mutually exclusive.")
+    if (args.diff or args.history) and (args.json or args.html):
+        parser.error("--diff/--history report on stored history, not a fresh computation -- "
+                      "cannot be combined with --json/--html.")
+
+    # --diff / --history only read previously-persisted reports; they don't touch
+    # episodes/lessons at all, and never persist a new report themselves.
+    if args.diff:
+        sys.exit(run_diff(strict=args.strict))
+    if args.history:
+        sys.exit(run_history())
 
     episodes = load_episodes(args.n if args.n > 0 else None)
     lessons = load_lessons()
@@ -884,14 +1277,17 @@ def main():
         print("Not enough episodes to compute. Run /commontrace a few times first.")
         sys.exit(0)
 
+    now = datetime.datetime.now()
     lq_value, lq_n = compute_lesson_quality(episodes)
     ir_strict, ir_permissive, ir_n = compute_implicit_retrieval(episodes)
     tg_value, tg_n, tg_untraceable = compute_transfer_gap(episodes, lessons)
     extras = compute_extras(episodes, lessons)
+    operational_cost = compute_operational_cost()
+    semantic_duplicates = compute_semantic_duplicates()
 
     report = {
         "schema_version": SCHEMA_VERSION,
-        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "timestamp": now.isoformat(timespec="seconds"),
         "n_episodes": len(episodes),
         "n_lessons": len(lessons),
         "lesson_quality": {"value": lq_value, "n": lq_n},
@@ -899,12 +1295,15 @@ def main():
         "transfer_gap": {"value": tg_value, "n": tg_n, "untraceable": tg_untraceable},
         "episodes": episodes,
         "extras": extras,
+        "operational_cost": operational_cost,
+        "semantic_duplicates": semantic_duplicates,
     }
 
     thresholds = {
         "quality": args.threshold_quality,
         "retrieval": args.threshold_retrieval,
         "never_hit": args.threshold_never_hit,
+        "unimodal": args.threshold_unimodal,
     }
     alerts = compute_alerts(report, thresholds)
 
@@ -917,10 +1316,9 @@ def main():
     elif args.html:
         md = render_markdown(report, alerts)
         html_report = render_html(md, report["timestamp"], alerts)
-        out_dir = os.path.join(BASE_DIR, "benchmark_reports")
+        out_dir = _reports_dir()
         os.makedirs(out_dir, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        out_path = os.path.join(out_dir, f"{ts}.html")
+        out_path = os.path.join(out_dir, f"{now.strftime('%Y-%m-%d_%H%M%S')}.html")
         with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(html_report)
         print(f"HTML report written: {out_path}")
@@ -932,17 +1330,15 @@ def main():
         md = render_markdown(report, alerts)
         print(md)
 
-    if args.save:
-        out_dir = os.path.join(BASE_DIR, "benchmark_reports")
-        os.makedirs(out_dir, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        json_path = os.path.join(out_dir, f"{ts}.json")
-        with open(json_path, "w", encoding="utf-8") as fh:
-            json.dump(clean_report, fh, indent=2, default=str)
+    # Every invocation persists its JSON report by default (P3) -- pass --no-save to opt out
+    # (e.g. a throwaway/read-only invocation you don't want cluttering the history used by
+    # --diff/--history). --save is kept as an accepted no-op for backward compatibility.
+    if not args.no_save:
+        json_path = persist_report(clean_report, ts=now)
         print(f"JSON report saved: {json_path}", file=sys.stderr)
 
-    # Non-zero exit when alerts fire (after all output is flushed)
-    if alerts and not args.json:
+    # Non-zero exit only when explicitly requested via --strict (after all output is flushed)
+    if alerts and args.strict:
         sys.exit(2)
 
 
