@@ -14,6 +14,13 @@ import yaml
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 
+class FrontmatterError(ValueError):
+    """Raised when a file's frontmatter block is present but not parseable YAML,
+    or does not decode to a mapping. Callers should treat this as a clean,
+    reportable error rather than letting a raw yaml.YAMLError/AttributeError
+    traceback reach the user."""
+
+
 def read(path: str) -> tuple[dict[str, Any], str]:
     """Return (frontmatter_dict, body_markdown) for a `---\\nYAML\\n---\\nbody` file."""
     with open(path, "r", encoding="utf-8") as fh:
@@ -23,7 +30,17 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     delims = list(_DELIM_RE.finditer(content))
     if len(delims) < 2:
         return {}, content
-    fm = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
+    fm_text = content[delims[0].end():delims[1].start()]
+    try:
+        fm = yaml.safe_load(fm_text)
+    except yaml.YAMLError as exc:
+        raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
+    if fm is None:
+        fm = {}
+    if not isinstance(fm, dict):
+        raise FrontmatterError(
+            f"{path}: frontmatter must be a YAML mapping, got {type(fm).__name__}"
+        )
     body = content[delims[1].end():].lstrip("\n")
     return fm, body
 

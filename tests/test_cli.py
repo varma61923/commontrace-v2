@@ -272,6 +272,30 @@ def test_install_claude_code_copies_real_skill_md_when_found(store, monkeypatch)
     assert out.stat().st_size > 1000
 
 
+def test_install_generic_mcp_warns_about_credentials_in_gitignore(store, capsys):
+    assert main(["install", "--target", "generic-mcp", "--dest", str(store)]) == 0
+    out = capsys.readouterr().out
+    assert ".gitignore" in out
+    example = store / "commontrace.hub.mcp.json.example"
+    assert example.is_file()
+    assert ".gitignore" in example.read_text()
+
+
+def test_install_cursor_warns_about_credentials_in_gitignore(store, capsys):
+    assert main(["install", "--target", "cursor", "--dest", str(store)]) == 0
+    out = capsys.readouterr().out
+    assert ".gitignore" in out
+
+
+def test_install_warns_before_overwriting_existing_generated_file(store, capsys):
+    assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
+    capsys.readouterr()  # discard first-run output
+    assert main(["install", "--target", "generic", "--dest", str(store)]) == 0
+    out = capsys.readouterr().out
+    assert "[WARN] overwriting existing file" in out
+    assert "COMMONTRACE.md" in out
+
+
 def test_doctor_runs_without_crashing(store):
     main(["init", "--agent-type", "code", "--dest", str(store)])
     assert main(["doctor", "--dest", str(store)]) == 0

@@ -37,7 +37,7 @@ install. This agent should instead:
 def _hub_mcp_example() -> str:
     tools = ", ".join(f'"{t}"' for t in _HUB_TOOLS)
     return f"""{{
-  "_comment": "Template — fill in your org's CommonTrace Hub connection details, then merge the 'commontrace' entry into your agent platform's mcp.json / mcp_servers config. Tool surface: [{tools}].",
+  "_comment": "Template — fill in your org's CommonTrace Hub connection details, then merge the 'commontrace' entry into your agent platform's mcp.json / mcp_servers config. Tool surface: [{tools}]. This file is a template only, but once you fill in a real endpoint/API key below, add its filename (or your real mcp.json) to .gitignore before committing — do not check in Hub credentials.",
   "mcpServers": {{
     "commontrace": {{
       "command": "<your-hub-mcp-launcher-or-url>",
@@ -72,10 +72,28 @@ def _find_skill_md(root: str, dest: str) -> str | None:
 
 
 def _write(path: str, content: str) -> None:
+    if os.path.isfile(path):
+        print(f"  [WARN] overwriting existing file: {path}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     print(f"  wrote {path}")
+
+
+def _copy(src: str, dest: str) -> None:
+    if os.path.isfile(dest):
+        print(f"  [WARN] overwriting existing file: {dest}")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copyfile(src, dest)
+    print(f"  copied {src} -> {dest}")
+
+
+def _print_hub_credential_warning(example_path: str) -> None:
+    print(
+        f"  [WARN] {example_path} is a template for Hub connection details. "
+        "Once you fill in a real endpoint/API key, make sure that file (or wherever "
+        "you merge it, e.g. mcp.json) is covered by .gitignore before committing."
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -86,20 +104,16 @@ def run(args: argparse.Namespace) -> int:
 
     if args.target == "claude-code":
         out = os.path.join(dest, ".claude", "skills", "commontrace", "SKILL.md")
-        os.makedirs(os.path.dirname(out), exist_ok=True)
         if skill_md:
-            shutil.copyfile(skill_md, out)
-            print(f"  copied {skill_md} -> {out}")
+            _copy(skill_md, out)
         else:
             _write(out, _GENERIC_POINTER_SKILL)
         print("  Invoke with: /commontrace <task description + success criteria>")
 
     elif args.target == "devin":
         out = os.path.join(dest, ".devin", "skills", "commontrace", "SKILL.md")
-        os.makedirs(os.path.dirname(out), exist_ok=True)
         if skill_md:
-            shutil.copyfile(skill_md, out)
-            print(f"  copied {skill_md} -> {out}")
+            _copy(skill_md, out)
         else:
             _write(out, _GENERIC_POINTER_SKILL)
 
@@ -119,6 +133,7 @@ def run(args: argparse.Namespace) -> int:
         example = os.path.join(dest, "commontrace.hub.mcp.json.example")
         _write(example, _hub_mcp_example())
         print(f"  To connect to the Hub: merge {example} into .cursor/mcp.json")
+        _print_hub_credential_warning(example)
 
     elif args.target == "windsurf":
         out = os.path.join(dest, ".windsurf", "rules", "commontrace.md")
@@ -136,6 +151,7 @@ def run(args: argparse.Namespace) -> int:
         _write(example, _hub_mcp_example())
         print("  Any MCP-capable agent (OpenAI Agents SDK, custom orchestrators, etc.)")
         print(f"  can attach to the Hub by merging {example} into its MCP client config.")
+        _print_hub_credential_warning(example)
 
     else:  # generic
         out = os.path.join(dest, "COMMONTRACE.md")

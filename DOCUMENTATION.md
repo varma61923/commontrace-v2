@@ -624,7 +624,7 @@ The `index.npz` format (cf. §4.6) was designed as a stable reusable contract. T
 
 ```python
 import numpy as np
-data = np.load("memory/attention/index.npz", allow_pickle=True)
+data = np.load("memory/attention/index.npz", allow_pickle=False)
 emb = data["embeddings"]                    # already L2-normalized
 slugs = data["slugs"]
 sim_matrix = emb @ emb.T                    # pairwise cosine (N x N), trivial on 10k×10k

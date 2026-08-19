@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
+from commontrace.frontmatter import FrontmatterError
 from commontrace.commands import (
     bench_cmd,
     capture_cmd,
@@ -50,7 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except FrontmatterError as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

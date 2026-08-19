@@ -28,6 +28,16 @@ import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
 
+# The only model this project's build_index.py ever writes into index.npz. index.npz
+# is a local build artifact, but it can arrive on a machine via a git clone/fork/sync
+# rather than a local `build_index.py` run -- so its `model_name` field is not
+# trustworthy input. Loading whatever string it contains via SentenceTransformer(...)
+# would let a tampered index file point at an arbitrary Hugging Face Hub repo ID,
+# which (per known transformers/sentence-transformers CVEs around
+# trust_remote_code/torch.load) can execute attacker-supplied code on load. Only ever
+# load this fixed, known-safe model name -- warn, don't trust, if the file disagrees.
+_TRUSTED_MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
+
 # Delimiter must be its own line, not just the substring "---" anywhere in the file --
 # a plain content.split("---", 2) corrupts any field whose value contains "---".
 # \r is allowed so CRLF content parses too.
@@ -96,13 +106,22 @@ def main() -> int:
         )
         return 1
 
-    data = np.load(INDEX_PATH, allow_pickle=True)
+    data = np.load(INDEX_PATH, allow_pickle=False)
     model_name = str(data["model_name"])
     embeddings = data["embeddings"]  # already L2-normalized
     slugs = data["slugs"]
     n_lessons = int(data["n_lessons"])
 
-    model = SentenceTransformer(model_name)
+    if model_name != _TRUSTED_MODEL_NAME:
+        print(
+            f"[WARN] {INDEX_PATH} declares model_name={model_name!r}, which does not "
+            f"match the expected {_TRUSTED_MODEL_NAME!r}. Refusing to load an "
+            "untrusted model name from an index file -- run build_index.py --force "
+            "to regenerate a trustworthy index.",
+            file=sys.stderr,
+        )
+        return 1
+    model = SentenceTransformer(_TRUSTED_MODEL_NAME)
     q_emb = model.encode(args.query, normalize_embeddings=True, convert_to_numpy=True)
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb

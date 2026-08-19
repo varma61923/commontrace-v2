@@ -213,6 +213,56 @@ class TestFrontmatterDelimiterHandling:
         assert fm_out["title"] == fm_in["title"]
 
 
+class TestFrontmatterMalformedInput:
+    """commontrace/frontmatter.py must raise a clean, catchable error on hostile or
+    malformed frontmatter -- never an uncaught yaml.YAMLError/AttributeError traceback.
+    """
+
+    def test_invalid_yaml_syntax_raises_frontmatter_error(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "bad.md"
+        path.write_text("---\nkey: [unclosed\n---\nbody\n", encoding="utf-8")
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_frontmatter_error_is_a_value_error(self, tmp_path):
+        """Callers doing a broad `except ValueError` (a natural instinct for bad input)
+        must still catch this."""
+        from commontrace import frontmatter
+
+        assert issubclass(frontmatter.FrontmatterError, ValueError)
+
+    def test_top_level_scalar_raises_frontmatter_error(self, tmp_path):
+        """A frontmatter block that parses to a plain string, not a mapping, must not
+        silently become an object callers then call `.get(...)` on."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "scalar.md"
+        path.write_text("---\njust a plain scalar\n---\nbody\n", encoding="utf-8")
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_top_level_list_raises_frontmatter_error(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "list.md"
+        path.write_text("---\n- a\n- b\n---\nbody\n", encoding="utf-8")
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_empty_frontmatter_block_returns_empty_dict(self, tmp_path):
+        """An empty block (---\\n---\\n) is valid YAML (None) and should stay a
+        no-op empty mapping, not an error."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "empty.md"
+        path.write_text("---\n---\nbody\n", encoding="utf-8")
+        fm, body = frontmatter.read(str(path))
+        assert fm == {}
+        assert body.strip() == "body"
+
+
 class TestTraceIoSectionParsing:
     """commontrace/trace_io.py must not truncate Context/Solution at an unrelated '## '
     sub-heading embedded inside the section's own text.

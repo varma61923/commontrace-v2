@@ -151,7 +151,7 @@ def main() -> int:
             default=0.0,
         )
         try:
-            with np.load(INDEX_PATH, allow_pickle=True) as data:
+            with np.load(INDEX_PATH, allow_pickle=False) as data:
                 indexed_slugs = {str(s) for s in data["slugs"]}
         except Exception:
             indexed_slugs = None

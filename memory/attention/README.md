@@ -69,7 +69,7 @@ candidates among existing lessons via **inter-lesson** cosine similarity
 
 ```python
 import numpy as np
-data = np.load("memory/attention/index.npz", allow_pickle=True)
+data = np.load("memory/attention/index.npz", allow_pickle=False)
 emb = data["embeddings"]                    # already L2-normalized
 sim_matrix = emb @ emb.T                    # pairwise cosine (N x N)
 candidates = np.argwhere((sim_matrix > 0.85) & (sim_matrix < 1.0))
