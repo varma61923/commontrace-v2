@@ -20,6 +20,7 @@ def lesson_frontmatter(
     importance: int = 3,
     importance_rationale: str = "",
     source_traces: list[str] | None = None,
+    status: str = "active",
 ) -> dict[str, Any]:
     return {
         "name": slug,
@@ -37,7 +38,7 @@ def lesson_frontmatter(
         "source_traces": source_traces or [],
         "source_episodes": [],
         "hub_trace_id": None,
-        "status": "active",
+        "status": status,
     }
 
 

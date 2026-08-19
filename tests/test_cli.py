@@ -336,6 +336,63 @@ def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, mo
     assert "COMMONTRACE_HUB_URL" in out
 
 
+def test_query_lexical_finds_matching_lesson(store, capsys):
+    main(["init", "--agent-type", "sales", "--dest", str(store)])
+    main(
+        [
+            "lesson", "new",
+            "--slug", "lesson_handle_price_objection",
+            "--description", "Reframe price objections around ROI, not discount",
+            "--agent-type", "sales",
+            "--domain", "objection-handling",
+            "--tags", "pricing,objection",
+            "--applies-when", "prospect objects to price after seeing a demo",
+            "--do-not-apply-when", "prospect has not seen the product value yet",
+            "--importance", "4",
+            "--importance-rationale", "x",
+            "--dest", str(store),
+        ]
+    )
+    capsys.readouterr()
+    rc = main(["query", "prospect is objecting to price", "--lexical", "--dest", str(store)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "lesson_handle_price_objection" in out
+
+
+def test_query_lexical_reports_no_matches_cleanly(store, capsys):
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    capsys.readouterr()
+    rc = main(["query", "something nobody has a lesson about", "--lexical", "--dest", str(store)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no lexical matches" in out
+
+
+def test_query_lexical_excludes_review_status_lessons(store, capsys):
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    main(
+        [
+            "lesson", "new",
+            "--slug", "lesson_pending_review",
+            "--description", "candidate lesson about widgets",
+            "--agent-type", "code",
+            "--domain", "other",
+            "--dest", str(store),
+        ]
+    )
+    lesson_path = store / "memory" / "lessons" / "lesson_pending_review.md"
+    fm, body = frontmatter.read(str(lesson_path))
+    fm["status"] = "review"
+    frontmatter.write(str(lesson_path), fm, body)
+
+    capsys.readouterr()
+    rc = main(["query", "widgets", "--lexical", "--dest", str(store)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "lesson_pending_review" not in out
+
+
 def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, monkeypatch):
     # A URL with no key (or vice versa) is not enough to attempt a connection --
     # sync must not try to talk to a Hub with half a credential.

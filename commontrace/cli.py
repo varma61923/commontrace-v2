@@ -7,6 +7,7 @@ from commontrace import PROTOCOL_VERSION, __version__
 from commontrace.commands import (
     bench_cmd,
     capture_cmd,
+    distill_cmd,
     doctor_cmd,
     index_cmd,
     init_cmd,
@@ -23,6 +24,7 @@ _SUBCOMMANDS = [
     install_cmd,
     capture_cmd,
     trace_cmd,
+    distill_cmd,
     lesson_cmd,
     query_cmd,
     index_cmd,

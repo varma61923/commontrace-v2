@@ -100,13 +100,13 @@ The code-review profile's five sub-agents are one instantiation of five
 generic roles. Any agent-agnostic implementation needs at least Producer;
 the rest are optional depth you add as a fleet matures.
 
-| Generic role | Code-review profile name | Minimum requirement |
-|---|---|---|
-| **Producer** | Agent A (implementer) | Does the actual task. Always present — this is just "the agent." |
-| **Reviewer** *(optional)* | Agent B | Independent audit of the Producer's output before it ships. Coding-specific value; a Support/Sales agent may skip this. |
-| **Curator** | Omega | Turns traces into candidate lessons. Can be automated (an LLM pass) or manual. |
-| **Validator** | Lambda | Approves/rejects candidate lessons before they go live. Can be automated, or a human approval step (the pilot's "approve lessons before deployment"). |
-| **Retriever** | Alpha | Surfaces relevant lessons before the Producer acts. |
+| Generic role | Code-review profile name | Minimum requirement | Generic CLI reference (any `agent_type`) |
+|---|---|---|---|
+| **Producer** | Agent A (implementer) | Does the actual task. Always present — this is just "the agent." | — (the agent itself) |
+| **Reviewer** *(optional)* | Agent B | Independent audit of the Producer's output before it ships. Coding-specific value; a Support/Sales agent may skip this. | — |
+| **Curator** | Omega | Turns traces into candidate lessons. Can be automated (an LLM pass) or manual. | `commontrace distill` — heuristic (word-overlap clustering, no LLM call) pattern-finder; writes candidates at `status: review`, never `active`. |
+| **Validator** | Lambda | Approves/rejects candidate lessons before they go live. Can be automated, or a human approval step (the pilot's "approve lessons before deployment"). | `commontrace lesson approve\|reject` — the only way a `review` lesson becomes `active` or `archived`; refuses to act on a lesson not already in `review`. |
+| **Retriever** | Alpha | Surfaces relevant lessons before the Producer acts. | `commontrace query` — semantic (optional `[attention]` extra) with an automatic pure-Python lexical fallback, so retrieval works with only the core install. |
 
 ## 7. Taxonomy (open, not closed)
 

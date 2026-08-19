@@ -114,6 +114,38 @@ commontrace sync --pull --query "..." --tags a,b   # pull only
 for the client dependency. Without those set, `sync` prints setup
 instructions instead of failing.
 
+### 5 — Curator/Validator loop (any agent_type, no LLM call required)
+
+The pipeline's "Extract lessons" / "Validate" stages, made concrete for a
+fleet that isn't running the code-review profile's Omega/Lambda subagents:
+
+```bash
+commontrace distill              # find repeated patterns across memory/traces/,
+                                  # write candidate lessons at status=review
+commontrace lesson list --status review
+commontrace lesson approve lesson_candidate_20260101_1 --rationale "..."
+commontrace lesson reject lesson_candidate_20260101_2 --reason "..."
+```
+
+`distill` clusters traces by word-overlap similarity (pure Python, no LLM
+call, no API key) and never writes anything above `status: review` — a
+candidate only becomes retrieval-eligible once a human runs `lesson
+approve`. Traces already referenced by an existing lesson's `source_traces`
+are skipped on the next run, so re-running `distill` doesn't keep
+re-proposing patterns someone already curated.
+
+### 6 — Retrieve a lesson for an incoming task
+
+```bash
+commontrace query "customer is escalating about a delayed refund"
+commontrace query "..." --lexical        # force the dependency-free fallback
+```
+
+Falls back automatically to a pure-Python lexical (word-overlap) ranker if
+the optional `attention` extra (semantic embeddings) isn't installed —
+`commontrace query` always returns something with just the core install,
+rather than failing outright.
+
 Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 `--repeated-error`/`--not-repeated-error`, `--frustration`/`--not-frustration`,
 `--tokens-used N`, `--llm-calls N`, and `--baseline` to `capture` to record the
@@ -376,8 +408,9 @@ commontrace-v2/
       trace.schema.json        — Universal Trace object (matches the Hub server's on-wire shape)
       lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
   commontrace/                 — The `commontrace` CLI (pip-installable client)
-    cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py
-    commands/                  — init, install, capture, trace, lesson, query, index, bench, sync, doctor
+    cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py,
+    distill.py (Curator clustering), retrieval.py (lexical fallback ranker)
+    commands/                  — init, install, capture, trace, distill, lesson, query, index, bench, sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
   pyproject.toml               — packaging config for the `commontrace` CLI. Currently

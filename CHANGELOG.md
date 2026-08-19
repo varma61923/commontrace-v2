@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A generic Curator/Validator loop for any `agent_type`**
+  (`commontrace distill`, `commontrace lesson approve|reject`). Previously
+  "Extract lessons" / "Validate" (protocol/PROTOCOL.md §2, §6) only had a
+  concrete implementation for the code-review profile's Omega/Lambda
+  subagents, which only run inside a live Claude Code session. `distill`
+  clusters `memory/traces/*.md` by word-overlap similarity (pure Python, no
+  LLM call, no API key) and writes candidate lessons at `status: review`
+  only — never `active`; re-running it skips traces already referenced by
+  an existing lesson's `source_traces`. `lesson approve`/`lesson reject`
+  are the only way a `review` lesson becomes `active`/`archived`, and both
+  refuse to act on a lesson not already in `review`.
+- **A dependency-free retrieval fallback** (`commontrace/retrieval.py`).
+  `commontrace query` previously *required* the optional `[attention]`
+  extra and failed outright without it — "Local tier remains file-based for
+  agents that can only read/write files" (PROTOCOL.md §8) wasn't actually
+  true for the Retriever role. It now falls back automatically to a
+  pure-Python lexical (word-overlap) ranker, or `--lexical` forces it
+  explicitly.
+- protocol/PROTOCOL.md §6's Roles table gained a "Generic CLI reference"
+  column pointing Curator/Validator/Retriever at the commands above.
 - **The CommonTrace Hub server (`hub/`).** Previously `protocol/PROTOCOL.md`
   described a Hub as already in production while `commontrace sync` made no
   network call at all — this closes that gap with a real implementation: an

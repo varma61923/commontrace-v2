@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import os
 import re
@@ -39,6 +40,24 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ls.add_argument("--status", default=None)
     ls.add_argument("--dest", default=None)
     ls.set_defaults(func=run_list)
+
+    ap = sub.add_parser(
+        "approve",
+        help="Validator step: status review -> active. Refuses a lesson that isn't 'review'.",
+    )
+    ap.add_argument("slug")
+    ap.add_argument("--rationale", default="", help="One sentence recorded in the lesson body.")
+    ap.add_argument("--dest", default=None)
+    ap.set_defaults(func=run_approve)
+
+    rj = sub.add_parser(
+        "reject",
+        help="Validator step: status review -> archived. Refuses a lesson that isn't 'review'.",
+    )
+    rj.add_argument("slug")
+    rj.add_argument("--reason", required=True, help="Why this candidate was rejected -- recorded in the lesson body.")
+    rj.add_argument("--dest", default=None)
+    rj.set_defaults(func=run_reject)
 
 
 def run_new(args: argparse.Namespace) -> int:
@@ -104,6 +123,70 @@ def run_validate(args: argparse.Namespace) -> int:
             print(f"OK   {path}")
     print(f"\n[commontrace] {n_checked - n_failed}/{n_checked} lessons valid.")
     return 1 if n_failed else 0
+
+
+def _resolve_lesson_path(root: str, slug: str) -> str | None:
+    if not _SLUG_RE.match(slug):
+        return None
+    path = os.path.join(paths.lessons_dir(root), f"{slug}.md")
+    return path if os.path.isfile(path) else None
+
+
+def _append_body_note(body: str, heading: str, text: str) -> str:
+    date = datetime.date.today().isoformat()
+    return body.rstrip("\n") + f"\n\n## {heading}\n{date}: {text}\n"
+
+
+def run_approve(args: argparse.Namespace) -> int:
+    """The generic-pipeline Validator step (protocol/PROTOCOL.md §6's
+    "Validator" role, e.g. the code-review profile's Lambda): a candidate
+    lesson at status=review is only ever activated by an explicit human/
+    Validator call to this command, never automatically by whatever
+    proposed it (e.g. `commontrace distill`)."""
+    root = paths.resolve_root(args.dest)
+    path = _resolve_lesson_path(root, args.slug)
+    if path is None:
+        print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+        return 1
+
+    fm, body = frontmatter.read(path)
+    if fm.get("status") != "review":
+        print(
+            f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
+            "refusing to approve. Only a candidate awaiting review can be approved.",
+            file=sys.stderr,
+        )
+        return 1
+
+    fm["status"] = "active"
+    if args.rationale:
+        body = _append_body_note(body, "Approved", args.rationale)
+    frontmatter.write(path, fm, body)
+    print(f"[commontrace] approved {args.slug} (status: review -> active)")
+    return 0
+
+
+def run_reject(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    path = _resolve_lesson_path(root, args.slug)
+    if path is None:
+        print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+        return 1
+
+    fm, body = frontmatter.read(path)
+    if fm.get("status") != "review":
+        print(
+            f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
+            "refusing to reject. Only a candidate awaiting review can be rejected.",
+            file=sys.stderr,
+        )
+        return 1
+
+    fm["status"] = "archived"
+    body = _append_body_note(body, "Rejected", args.reason)
+    frontmatter.write(path, fm, body)
+    print(f"[commontrace] rejected {args.slug} (status: review -> archived)")
+    return 0
 
 
 def run_list(args: argparse.Namespace) -> int:
