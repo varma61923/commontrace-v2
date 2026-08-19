@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-core:
+    # Validates the package as an external user would actually get it: `pip install -e .`
+    # with only the one core dependency (PyYAML) — no dev/lint tooling, no [attention] extra.
+    name: test (core install, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install commontrace (core, no extras)
+        run: python -m pip install -e .
+
+      - name: Install test runner
+        run: python -m pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  test-dev:
+    # The `[dev]` extra (pytest + ruff) is what a contributor installs. Also exercises lint.
+    name: test + lint (dev extra, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install commontrace with the dev extra
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Lint with ruff
+        run: ruff check .

@@ -1,4 +1,5 @@
 """Smoke + contract tests for the `commontrace` CLI (protocol/PROTOCOL.md client)."""
+import json
 import os
 
 import pytest
@@ -279,6 +280,26 @@ def test_install_generic_mcp_warns_about_credentials_in_gitignore(store, capsys)
     example = store / "commontrace.hub.mcp.json.example"
     assert example.is_file()
     assert ".gitignore" in example.read_text()
+
+
+def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(store):
+    """Regression: the generated commontrace.hub.mcp.json.example previously interpolated
+    a quoted tool list straight into a JSON string field via an f-string template, so the
+    unescaped quotes broke JSON parsing. It must be valid JSON with the real mcpServers
+    shape used by Claude Code / Cursor / Windsurf MCP client configs."""
+    assert main(["install", "--target", "generic-mcp", "--dest", str(store)]) == 0
+    example = store / "commontrace.hub.mcp.json.example"
+    doc = json.loads(example.read_text())
+    assert "mcpServers" in doc
+    assert "commontrace" in doc["mcpServers"]
+    assert "command" in doc["mcpServers"]["commontrace"]
+
+
+def test_install_cursor_writes_valid_json_mcp_example(store):
+    assert main(["install", "--target", "cursor", "--dest", str(store)]) == 0
+    example = store / "commontrace.hub.mcp.json.example"
+    doc = json.loads(example.read_text())
+    assert "commontrace" in doc["mcpServers"]
 
 
 def test_install_cursor_warns_about_credentials_in_gitignore(store, capsys):

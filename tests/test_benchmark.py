@@ -1,15 +1,12 @@
 """Tests for benchmark/measure_performance.py."""
 import os
-import sys
-import json
-import pytest
-
-# Fixtures and helpers from conftest
-from conftest import write_lesson, write_episode
 
 # Import the benchmark module under test
 import measure_performance as bm
+import pytest
 
+# Fixtures and helpers from conftest
+from conftest import write_episode, write_lesson
 
 # ---------------------------------------------------------------------------
 # YAML / frontmatter parsing

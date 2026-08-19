@@ -1,7 +1,6 @@
 """Tests for benchmark/pilot_metrics.py — the deck's five business-outcome metrics."""
-import pytest
-
 import pilot_metrics as pm
+import pytest
 
 
 def _trace(name, resolved=None, escalated=None, repeated_error=None,

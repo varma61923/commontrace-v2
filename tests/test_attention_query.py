@@ -6,17 +6,16 @@ field must not be trusted blindly -- see the comment in query.py for the CVE
 context (a malicious model_name could point SentenceTransformer at an arbitrary,
 code-executing Hugging Face Hub repo).
 """
-import importlib
 import os
 import sys
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
 pytest.importorskip("sentence_transformers")
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
-import query as attn_query  # noqa: E402
+import query as attn_query
 
 
 def _write_index(path, model_name, n=2):

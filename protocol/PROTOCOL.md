@@ -130,8 +130,10 @@ stays legible:
 
 "Client-installable" means two independent things, both covered:
 
-1. **Installing CommonTrace itself** into a project/fleet — `pip install
-   commontrace`, then `commontrace init --agent-type <type>` scaffolds a
+1. **Installing CommonTrace itself** into a project/fleet — currently
+   `pip install -e .` from a repo checkout (this package is not yet published
+   to PyPI; `pip install commontrace` is the intended path once it is — see
+   `README.md`), then `commontrace init --agent-type <type>` scaffolds a
    local store (§5, Local tier). See `commontrace/` (the CLI package) and
    `pyproject.toml`.
 2. **Wiring a specific agent platform** to read/write that store —

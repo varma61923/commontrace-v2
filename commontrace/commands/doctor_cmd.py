@@ -24,6 +24,17 @@ def _check(label: str, ok: bool, detail: str = "") -> None:
     print(line)
 
 
+def _info(label: str, detail: str = "") -> None:
+    """For conditions that are expected/normal in a standard client install and need no
+    action -- as opposed to _check(..., ok=False), which means something is actually wrong
+    and worth fixing. Keeping these off [WARN] means a clean `pip install commontrace` +
+    `commontrace init` install doesn't read as having problems it doesn't have."""
+    line = "[INFO] " + label
+    if detail:
+        line += f" - {detail}"
+    print(line)
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     print(f"[commontrace] doctor - store root: {root}\n")
@@ -48,20 +59,34 @@ def run(args: argparse.Namespace) -> int:
     attention_extra = importlib.util.find_spec("numpy") is not None and importlib.util.find_spec(
         "sentence_transformers"
     ) is not None
-    _check(
-        "attention extra installed (numpy + sentence-transformers)",
-        attention_extra,
-        "optional; install with `pip install commontrace[attention]`" if not attention_extra else "",
-    )
+    if attention_extra:
+        _check("attention extra installed (numpy + sentence-transformers)", True)
+    else:
+        _info(
+            "attention extra installed (numpy + sentence-transformers)",
+            "optional; install with `pip install commontrace[attention]` for semantic retrieval",
+        )
 
     query_script = find_reference_script(root, "memory/attention/query.py")
-    _check("reference attention/query.py found", query_script is not None, query_script or "not in a repo checkout")
+    if query_script is not None:
+        _check("reference attention/query.py found", True, query_script)
+    else:
+        _info("reference attention/query.py found", "not in a repo checkout (expected for a pip-installed client)")
 
     bench_script = find_reference_script(root, "benchmark/measure_performance.py")
-    _check("reference benchmark script found", bench_script is not None, bench_script or "not in a repo checkout")
+    if bench_script is not None:
+        _check("reference benchmark script found", True, bench_script)
+    else:
+        _info("reference benchmark script found", "not in a repo checkout (expected for a pip-installed client)")
 
     protocol_dir = os.path.join(root, "protocol")
-    _check("protocol/ spec present", os.path.isdir(protocol_dir), protocol_dir if os.path.isdir(protocol_dir) else "")
+    if os.path.isdir(protocol_dir):
+        _check("protocol/ spec present", True, protocol_dir)
+    else:
+        _info(
+            "protocol/ spec present",
+            "not in a repo checkout; schemas are mirrored at commontrace/schemas/ for the installed package",
+        )
 
     print("\nDone.")
     return 0

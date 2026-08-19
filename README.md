@@ -70,6 +70,30 @@ commontrace install --target windsurf         # writes .windsurf/rules/
 commontrace install --target generic-mcp      # Hub MCP config template for any other MCP client
 ```
 
+**Install-target support matrix** — what each target actually writes, and how far that's
+been verified. "Format verified against docs" means the generated file's structure (valid
+JSON where JSON is expected, correct frontmatter shape, etc.) was checked against that
+platform's publicly documented config convention — not that the file was loaded into the
+running product. No target in this table has been live-tested inside the actual platform;
+none of that is claimed below.
+
+| Target | File(s) written | Format verified against docs | Live-tested in the platform |
+|---|---|---|---|
+| `claude-code` | `.claude/skills/<name>/SKILL.md` (copies the repo's `SKILL.md` if found, else a generic pointer skill) — YAML frontmatter (`name`, `description`) + Markdown body | Yes — matches Claude Code's documented Skill file shape | No — not loaded into a running Claude Code session |
+| `cursor` | `.cursor/rules/commontrace.mdc` (YAML frontmatter: `description`, `alwaysApply`) + `commontrace.hub.mcp.json.example` (`mcpServers` block) | Yes — `.mdc` frontmatter matches Cursor's documented Project Rules format; the MCP file is valid JSON with the `mcpServers` shape Cursor's `mcp.json` uses | No — not loaded into a running Cursor instance |
+| `devin` | `.devin/skills/commontrace/SKILL.md` (same content as `claude-code`) | Partial — file is well-formed Markdown+frontmatter, but Devin's skill-loading convention is less publicly documented than Claude Code's/Cursor's, so this is the least-confirmed target | No — Devin is not available in this environment to confirm it's actually consumed |
+| `windsurf` | `.windsurf/rules/commontrace.md` (plain Markdown, no frontmatter) | Partial — matches the commonly documented `.windsurf/rules/*.md` convention, but Windsurf's rules format has changed across releases and isn't independently confirmed here | No — Windsurf is not available in this environment to confirm it's actually consumed |
+| `generic-mcp` | `commontrace.hub.mcp.json.example` (`mcpServers` block) | Yes — valid JSON; `mcpServers` is the de facto shape shared by Claude Code/Cursor/Windsurf MCP client configs | No — generic by design, no single product to test against |
+| `generic` (fallback) | `COMMONTRACE.md` — plain pointer doc | N/A — no platform-specific format to check against | N/A |
+
+All five real targets (plus the `generic` fallback) were run end-to-end against a scratch
+directory as part of this verification pass, including from outside a repo checkout (to
+exercise the "no `SKILL.md` on disk" fallback path for `claude-code`/`devin`), and their
+output was inspected file-by-file for structural correctness. That inspection caught and
+fixed a real bug: `commontrace.hub.mcp.json.example` was previously **not valid JSON** (an
+unescaped tool list leaked quotes into a JSON string field) for both `cursor` and
+`generic-mcp`.
+
 ### 4 — Capture experience and curate lessons
 
 ```bash
@@ -356,7 +380,10 @@ commontrace-v2/
     commands/                  — init, install, capture, trace, lesson, query, index, bench, sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
-  pyproject.toml               — future `pip install commontrace` packaging (today: `pip install -e .` from a checkout)
+  pyproject.toml               — packaging config for the `commontrace` CLI. Currently
+                                  installed via `pip install -e .` from a checkout; not
+                                  yet published to PyPI (`pip install commontrace` is the
+                                  intended path once it is).
   SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
   DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
   README.md                    — This file

@@ -580,9 +580,9 @@ def render_markdown(r, alerts=None):
         out.append("-> **N/A** (no episodes with non-empty Alpha retrieval)")
     else:
         out.append(f"- **strict** = mean(|hit ∩ retrieved| / |retrieved|) -> **{fmt_pct(ir['strict'])}**")
-        out.append(f"  (precision: proportion of Alpha selections that actually helped)")
+        out.append("  (precision: proportion of Alpha selections that actually helped)")
         out.append(f"- **permissive** = mean(|hit| / |retrieved|) -> **{fmt_pct(ir['permissive'])}**")
-        out.append(f"  (richness: can exceed 100% if Omega counts hits beyond Alpha's retrieved set)")
+        out.append("  (richness: can exceed 100% if Omega counts hits beyond Alpha's retrieved set)")
         out.append(f"- across **{ir['n']}** valid episodes")
     out.append("")
 
