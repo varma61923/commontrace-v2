@@ -306,7 +306,12 @@ class TestOperationalCost:
 # ---------------------------------------------------------------------------
 
 class TestSemanticDuplicates:
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_missing_index_reports_clearly(self, tmp_path):
+        # Only reaches the "index file missing" branch when numpy IS
+        # installed (compute_semantic_duplicates checks HAS_NUMPY first --
+        # see test_missing_numpy_reports_clearly for that case, which
+        # monkeypatches HAS_NUMPY rather than depending on the real install).
         result = bm.compute_semantic_duplicates(str(tmp_path / "index.npz"))
         assert result["available"] is False
         assert "No attention index found" in result["message"]
