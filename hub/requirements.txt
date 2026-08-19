@@ -1,0 +1,14 @@
+# CommonTrace Hub server — not packaged/distributed via pyproject.toml
+# (the Hub is a service you deploy from a checkout, not a pip-installed
+# library). Install with: pip install -r hub/requirements.txt
+#
+# Pinned to major-version floors only; see hub/README.md for the exact
+# versions this was developed and tested against.
+
+mcp>=1.2                  # MCP server transport (streamable-http), also pulls starlette + uvicorn
+httpx2
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29              # async Postgres driver
+alembic>=1.13
+argon2-cffi>=23.1          # API key hashing
+jsonschema>=4.20           # protocol/schemas/*.json validation

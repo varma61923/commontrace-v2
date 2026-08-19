@@ -11,9 +11,10 @@ This repo ships two things:
 1. **The `commontrace` CLI** (`pip install -e .`) — client-installable, works with
    any agent fleet (code, support, sales, HR, marketing, ...), and can wire a local
    store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
-   also bridges to the production **CommonTrace Hub** (a live, cross-org shared trace
+   also bridges to the **CommonTrace Hub** (a self-hostable, cross-org shared trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
-   `vote_trace`, `amend_trace`, `list_tags`).
+   `vote_trace`, `amend_trace`, `list_tags`; server implementation and setup in
+   [`hub/`](hub/README.md), not a hosted service run by this project).
 2. **A reference implementation for coding agents** (`SKILL.md`) — the
    double-review pipeline (**Implementer A** + independent **Reviewer B**, iterating
    until the task passes) that this whole protocol was distilled from. One profile
@@ -78,8 +79,16 @@ commontrace lesson new --slug lesson_x --description "..." --domain escalation \
   --importance-rationale "..."
 commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json
 commontrace trace validate       # checks against protocol/schemas/trace.schema.json
-commontrace sync                 # how to bridge this store to the CommonTrace Hub
+commontrace sync                 # push active lessons + pull search results, if a Hub is configured
+commontrace sync --push          # push only
+commontrace sync --pull --query "..." --tags a,b   # pull only
 ```
+
+`sync` needs `COMMONTRACE_HUB_URL` + `COMMONTRACE_HUB_API_KEY` (env vars or
+`--hub-url`/`--hub-api-key`) pointing at a running Hub — see
+[`hub/README.md`](hub/README.md) to run one, and `pip install commontrace[hub-sync]`
+for the client dependency. Without those set, `sync` prints setup
+instructions instead of failing.
 
 Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 `--repeated-error`/`--not-repeated-error`, `--frustration`/`--not-frustration`,
@@ -340,13 +349,14 @@ commontrace-v2/
   protocol/
     PROTOCOL.md               — Canonical, implementation-independent protocol spec
     schemas/
-      trace.schema.json        — Universal Trace object (matches the live Hub API)
+      trace.schema.json        — Universal Trace object (matches the Hub server's on-wire shape)
       lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
   commontrace/                 — The `commontrace` CLI (pip-installable client)
-    cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py
+    cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py
     commands/                  — init, install, capture, trace, lesson, query, index, bench, sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
-  pyproject.toml               — `pip install commontrace` packaging
+  hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
+  pyproject.toml               — future `pip install commontrace` packaging (today: `pip install -e .` from a checkout)
   SKILL.md                     — Code-review reference profile spec (pipeline, agent briefs)
   DOCUMENTATION.md             — Deep-dive on the code-review profile: design decisions, research refs
   README.md                    — This file

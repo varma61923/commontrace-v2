@@ -22,6 +22,14 @@ attention = [
     "numpy>=1.24,<3.0",
     "sentence-transformers>=2.7,<5.0",
 ]
+# `commontrace sync` talking to a CommonTrace Hub (commontrace/hub_client.py).
+# Optional for the same reason `attention` is: most users never need it.
+# The Hub *server* itself (hub/) is not packaged/distributed by this
+# pyproject at all -- see hub/README.md + hub/requirements.txt to run one.
+hub-sync = [
+    "mcp>=1.2",
+    "httpx2",
+]
 dev = [
     "pytest>=7.0",
 ]

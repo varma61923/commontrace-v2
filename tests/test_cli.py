@@ -304,3 +304,22 @@ def test_doctor_runs_without_crashing(store):
 def test_paths_env_var_override(tmp_path, monkeypatch):
     monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path))
     assert paths.resolve_root() == str(tmp_path)
+
+
+def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, monkeypatch):
+    monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
+    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    assert main(["sync", "--dest", str(store)]) == 0
+    out = capsys.readouterr().out
+    assert "No Hub is configured" in out
+    assert "COMMONTRACE_HUB_URL" in out
+
+
+def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, monkeypatch):
+    # A URL with no key (or vice versa) is not enough to attempt a connection --
+    # sync must not try to talk to a Hub with half a credential.
+    monkeypatch.setenv("COMMONTRACE_HUB_URL", "http://localhost:8420/mcp")
+    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    assert main(["sync", "--dest", str(store)]) == 0
+    out = capsys.readouterr().out
+    assert "No Hub is configured" in out
