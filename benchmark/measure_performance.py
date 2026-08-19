@@ -500,8 +500,8 @@ def compute_transfer_gap(episodes, lessons):
 
 def compute_extras(episodes, lessons):
     by_uses = sorted(lessons.items(), key=lambda kv: kv[1].get("uses", 0), reverse=True)
-    top5 = [(n, l.get("uses", 0)) for n, l in by_uses[:5] if l.get("uses", 0) > 0]
-    never_hit = sorted(n for n, l in lessons.items() if l.get("uses", 0) == 0)
+    top5 = [(n, lesson.get("uses", 0)) for n, lesson in by_uses[:5] if lesson.get("uses", 0) > 0]
+    never_hit = sorted(n for n, lesson in lessons.items() if lesson.get("uses", 0) == 0)
 
     all_proposed = set()
     all_validated = set()
@@ -512,8 +512,8 @@ def compute_extras(episodes, lessons):
 
     # Distribution importance
     imp_lessons = {}
-    for l in lessons.values():
-        i = l.get("importance")
+    for lesson in lessons.values():
+        i = lesson.get("importance")
         imp_lessons[i] = imp_lessons.get(i, 0) + 1
     imp_episodes = {}
     for ep in episodes:
@@ -522,8 +522,8 @@ def compute_extras(episodes, lessons):
 
     # Coverage by domain
     domain_coverage = {}
-    for l in lessons.values():
-        d = l.get("domain", "?")
+    for lesson in lessons.values():
+        d = lesson.get("domain", "?")
         domain_coverage[d] = domain_coverage.get(d, 0) + 1
 
     return {
@@ -1169,12 +1169,18 @@ def render_html(md_content, timestamp, alerts=None):
 <meta charset="UTF-8">
 <title>/commontrace Memory Benchmark — {timestamp}</title>
 <style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d; }}
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px;
+  margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d;
+}}
 h1, h2, h3 {{ color: #1a1a1a; }}
 h1 {{ border-bottom: 2px solid #444; padding-bottom: 0.3em; }}
 h2 {{ border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 2em; }}
 h3 {{ margin-top: 1.5em; color: #444; }}
-code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; font-family: "SF Mono", Menlo, Consolas, monospace; }}
+code {{
+  background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}}
 table {{ border-collapse: collapse; margin: 1em 0; width: 100%; }}
 th, td {{ border: 1px solid #ccc; padding: 8px 12px; text-align: left; }}
 th {{ background: #f0f0f0; }}

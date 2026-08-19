@@ -13,9 +13,8 @@ import json
 import os
 import sys
 
-import pytest
-
 import measure_performance as bm
+import pytest
 
 try:
     import numpy as np
@@ -473,7 +472,7 @@ class TestExistingMetricsUnchangedByPhase3:
         assert permissive == pytest.approx(0.5)
 
     def test_transfer_gap_formula_unchanged(self, tmp_memory):
-        from conftest import write_lesson, write_episode
+        from conftest import write_lesson
         write_lesson(tmp_memory, "lesson_foo", source_episodes=["ep_1"], uses=1)
         episodes = [
             {"name": "ep_2", "project": "proj-a", "lessons_hit": ["lesson_foo"]},
