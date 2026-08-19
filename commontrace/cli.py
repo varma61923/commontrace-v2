@@ -4,7 +4,6 @@ import argparse
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
-from commontrace.frontmatter import FrontmatterError
 from commontrace.commands import (
     bench_cmd,
     capture_cmd,
@@ -17,6 +16,7 @@ from commontrace.commands import (
     sync_cmd,
     trace_cmd,
 )
+from commontrace.frontmatter import FrontmatterError
 
 _SUBCOMMANDS = [
     init_cmd,

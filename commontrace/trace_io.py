@@ -14,7 +14,7 @@ from commontrace import frontmatter as frontmatter_io
 
 _SECTION_RE = re.compile(
     r"^##\s*(Context|Solution)\s*\n(.*?)(?=\n##\s*(?:Context|Solution)\s*\n|\Z)",
-    re.S | re.M,
+    re.DOTALL | re.MULTILINE,
 )
 
 

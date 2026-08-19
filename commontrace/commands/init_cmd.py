@@ -67,7 +67,7 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
 
-    print("")
+    print()
     print("Next steps:")
     print(f"  commontrace lesson new --agent-type {args.agent_type} ...   # capture a validated rule")
     print(f"  commontrace capture --agent-type {args.agent_type} ...      # capture raw experience")

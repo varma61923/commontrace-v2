@@ -5,8 +5,6 @@ import os
 import subprocess
 import sys
 
-from commontrace import paths
-
 
 def has_attention_deps() -> bool:
     """Whether the optional semantic attention layer's deps (numpy, sentence-transformers)

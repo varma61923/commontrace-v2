@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 
@@ -35,18 +36,27 @@ install. This agent should instead:
 
 
 def _hub_mcp_example() -> str:
-    tools = ", ".join(f'"{t}"' for t in _HUB_TOOLS)
-    return f"""{{
-  "_comment": "Template — fill in your org's CommonTrace Hub connection details, then merge the 'commontrace' entry into your agent platform's mcp.json / mcp_servers config. Tool surface: [{tools}]. This file is a template only, but once you fill in a real endpoint/API key below, add its filename (or your real mcp.json) to .gitignore before committing — do not check in Hub credentials.",
-  "mcpServers": {{
-    "commontrace": {{
-      "command": "<your-hub-mcp-launcher-or-url>",
-      "args": [],
-      "env": {{}}
-    }}
-  }}
-}}
-"""
+    # Built via json.dumps (not an f-string template) so the generated file is guaranteed
+    # valid JSON even though the comment text below embeds a quoted tool list -- a raw
+    # f-string previously let those quotes leak in unescaped and break parsing.
+    tools = ", ".join(_HUB_TOOLS)
+    doc = {
+        "_comment": (
+            "Template — fill in your org's CommonTrace Hub connection details, then merge "
+            "the 'commontrace' entry into your agent platform's mcp.json / mcp_servers "
+            f"config. Tool surface: [{tools}]. This file is a template only, but once you "
+            "fill in a real endpoint/API key below, add its filename (or your real "
+            "mcp.json) to .gitignore before committing — do not check in Hub credentials."
+        ),
+        "mcpServers": {
+            "commontrace": {
+                "command": "<your-hub-mcp-launcher-or-url>",
+                "args": [],
+                "env": {},
+            }
+        },
+    }
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

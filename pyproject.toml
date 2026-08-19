@@ -24,6 +24,7 @@ attention = [
 ]
 dev = [
     "pytest>=7.0",
+    "ruff>=0.4,<1.0",
 ]
 
 [project.urls]
@@ -38,3 +39,7 @@ include = ["commontrace*"]
 
 [tool.setuptools.package-data]
 commontrace = ["schemas/*.json"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

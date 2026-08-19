@@ -33,7 +33,7 @@ import sys
 
 # Reuse the frontmatter parser + HTML renderer from the sibling benchmark script.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import measure_performance as mp  # noqa: E402
+import measure_performance as mp
 
 SCHEMA_VERSION = "1.0.0"
 
@@ -43,7 +43,7 @@ _ROOT = (
 )
 TRACES_DIR = os.path.join(_ROOT, "memory", "traces")
 
-_SECTION_RE = re.compile(r"^##\s*(Context|Solution)\s*\n(.*?)(?=\n##\s|\Z)", re.S | re.M)
+_SECTION_RE = re.compile(r"^##\s*(Context|Solution)\s*\n(.*?)(?=\n##\s|\Z)", re.DOTALL | re.MULTILINE)
 
 
 def load_traces(root=None, agent_type=None):
