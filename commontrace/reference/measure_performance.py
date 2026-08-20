@@ -971,7 +971,8 @@ def render_markdown(r, alerts=None):
     out.append("| Date / slug | Verdict | Imp | Retrieved | Hit | Proposed | Validated | Project |")
     out.append("|---|---|---|---|---|---|---|---|")
     for ep in r["episodes"]:
-        ep_name = ep.get("name") or ep.get("id") or (os.path.basename(ep.get("_path", "")) if ep.get("_path") else "unnamed")
+        ep_path = ep.get("_path", "")
+        ep_name = ep.get("name") or ep.get("id") or (os.path.basename(ep_path) if ep_path else "unnamed")
         out.append(
             f"| `{ep_name}` | {ep.get('verdict', '?')} | "
             f"{ep.get('importance', '?')} | "

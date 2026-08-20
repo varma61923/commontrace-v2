@@ -8,19 +8,16 @@
 """
 import argparse
 import codecs
-import glob
 import importlib.machinery
 import os
 import sys
-import tempfile
 import types
-import zipfile
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from commontrace import frontmatter, paths, trace_io, validate
+from commontrace import frontmatter, paths
 from commontrace.commands import lesson_cmd, trace_cmd
 
 
@@ -298,7 +295,9 @@ class TestUtf8BomHandling:
 
     def test_attention_build_index_iter_active_lessons_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
         import build_index
 
         lessons_dir = tmp_path / "lessons"
@@ -329,7 +328,9 @@ class TestUtf8BomHandling:
 
     def test_attention_query_load_importances_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
         import query
 
         lessons_dir = tmp_path / "memory" / "lessons"
@@ -363,7 +364,9 @@ class TestAtomicIndexGeneration:
         self, tmp_path, monkeypatch
     ):
         _ensure_mock_st(monkeypatch)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
         import build_index
 
         lessons_dir = tmp_path / "memory" / "lessons"
@@ -426,7 +429,9 @@ class TestCorruptedIndexHandling:
         self, tmp_path, monkeypatch, capsys, corrupted_content
     ):
         _ensure_mock_st(monkeypatch)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
         import query
 
         attention_dir = tmp_path / "memory" / "attention"
@@ -449,7 +454,9 @@ class TestCorruptedIndexHandling:
         self, tmp_path, monkeypatch, capsys
     ):
         _ensure_mock_st(monkeypatch)
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
         import query
 
         attention_dir = tmp_path / "memory" / "attention"

@@ -59,3 +59,44 @@ def test_iter_active_lesson_paths_skips_template_and_non_active(store):
     # filtered by the caller, push_active_lessons) -- assert the iterator
     # doesn't silently drop them, which would hide a status-filter bug.
     assert "lesson_b.md" in basenames
+
+
+class TestHubUrlSchemeGuard:
+    """The commit that added path-traversal sanitization to this module
+    also claimed to 'enforce http/https-only URLs', but no such check
+    existed in the code -- httpx merely refuses non-http(s) "connections"
+    on its own, which is safety incidental to the HTTP client, not a
+    guarantee this module made. Left unchecked, a bad scheme also burned
+    the full retry budget (3 attempts, exponential backoff) on something
+    that can never succeed, surfacing as an opaque "unhandled errors in a
+    TaskGroup" instead of a clear message."""
+
+    @pytest.mark.parametrize("bad_url", [
+        "file:///etc/passwd",
+        "ftp://example.com/mcp",
+        "javascript://alert(1)",
+        "not-a-url-at-all",
+        "",
+    ])
+    def test_non_http_schemes_are_rejected_immediately(self, bad_url):
+        with pytest.raises(hub_client.HubConnectionError, match="scheme must be http or https"):
+            hub_client._validate_hub_url(bad_url)
+
+    @pytest.mark.parametrize("good_url", ["http://hub.example.com/mcp", "https://hub.example.com/mcp"])
+    def test_http_and_https_pass(self, good_url):
+        hub_client._validate_hub_url(good_url)  # must not raise
+
+    def test_the_rejection_happens_before_any_retry(self, monkeypatch):
+        """Fail fast: a bad scheme can never succeed, so it must not consume
+        the retry budget or reach the network at all."""
+        import asyncio
+
+        calls = []
+        monkeypatch.setattr(asyncio, "sleep", lambda *a, **k: calls.append("slept") or asyncio.sleep(0))
+
+        async def go():
+            with pytest.raises(hub_client.HubConnectionError):
+                await hub_client._call_tool("file:///etc/passwd", "key", "search_traces", {})
+
+        asyncio.run(go())
+        assert calls == [], "a bad scheme must not trigger retry backoff"

@@ -9,8 +9,6 @@
 import argparse
 import asyncio
 import os
-import sys
-import tempfile
 from unittest.mock import AsyncMock, patch
 
 import pytest

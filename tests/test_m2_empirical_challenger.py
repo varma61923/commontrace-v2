@@ -4,24 +4,18 @@ Lesson Slug Normalization, and Index Diagnostics.
 """
 from __future__ import annotations
 
-import glob
 import importlib
 import importlib.machinery
 import os
-import shutil
 import sys
-import tempfile
 import types
-import zipfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
-import yaml
 
-from commontrace import frontmatter, paths, templates, trace_io, validate
+from commontrace import frontmatter, paths, trace_io
 from commontrace.cli import main as cli_main
-from commontrace.commands import lesson_cmd, trace_cmd
 
 
 @pytest.fixture
@@ -35,7 +29,6 @@ def clean_store(tmp_path):
 def attention_modules():
     """Dynamically loads build_index and query with isolated mock of sentence_transformers if needed."""
     had_st = "sentence_transformers" in sys.modules
-    old_st = sys.modules.get("sentence_transformers")
 
     if not had_st:
         try:
@@ -510,7 +503,9 @@ class TestLessonSlugNormalizationAndIndexing:
         frontmatter.write(lesson_file, fm, body)
 
         # Approve using un-prefixed slug
-        rc = cli_main(["lesson", "approve", "review_candidate", "--rationale", "Looks good", "--dest", str(clean_store)])
+        rc = cli_main([
+            "lesson", "approve", "review_candidate", "--rationale", "Looks good", "--dest", str(clean_store),
+        ])
         assert rc == 0
         fm, body = frontmatter.read(lesson_file)
         assert fm["status"] == "active"
@@ -519,7 +514,9 @@ class TestLessonSlugNormalizationAndIndexing:
         # Set status back to review and reject using prefixed slug
         fm["status"] = "review"
         frontmatter.write(lesson_file, fm, body)
-        rc = cli_main(["lesson", "reject", "lesson_review_candidate", "--reason", "Not ready", "--dest", str(clean_store)])
+        rc = cli_main([
+            "lesson", "reject", "lesson_review_candidate", "--reason", "Not ready", "--dest", str(clean_store),
+        ])
         assert rc == 0
         fm, body = frontmatter.read(lesson_file)
         assert fm["status"] == "archived"

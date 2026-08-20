@@ -27,8 +27,16 @@ def load_schema(name: str) -> dict:
     """Load a bundled schema by file name, e.g. 'trace.schema.json'."""
     from commontrace.paths import schemas_dir
 
-    if not isinstance(name, str) or os.path.basename(name) != name or not (
-        name.endswith(".schema.json") or name.endswith(".json")
+    # os.path.basename only treats "/" as a separator on POSIX, so a name
+    # containing "\" or ":" (Windows separators/drive letters) would pass
+    # `basename(name) == name` unchanged here even though it is not a bare
+    # filename. Rejecting those characters explicitly keeps this check
+    # platform-independent rather than relying on the host OS's path rules.
+    if (
+        not isinstance(name, str)
+        or os.path.basename(name) != name
+        or any(sep in name for sep in ("\\", ":"))
+        or not (name.endswith(".schema.json") or name.endswith(".json"))
     ):
         raise ValueError(f"Invalid or unsafe schema file name: {name!r}")
 

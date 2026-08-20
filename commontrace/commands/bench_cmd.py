@@ -38,7 +38,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--threshold-quality", type=float, default=None, help="lesson_quality alert threshold")
     p.add_argument("--threshold-retrieval", type=float, default=None, help="implicit_retrieval strict alert threshold")
     p.add_argument("--threshold-never-hit", type=float, default=None, help="Never-hit lesson ratio alert threshold")
-    p.add_argument("--threshold-unimodal", type=float, default=None, help="Unimodal importance-distribution alert threshold")
+    p.add_argument(
+        "--threshold-unimodal", type=float, default=None,
+        help="Unimodal importance-distribution alert threshold",
+    )
     p.add_argument("--threshold-semantic", type=float, default=None, help="Semantic similarity threshold")
     p.add_argument("--threshold-lexical", type=float, default=None, help="Lexical similarity threshold")
     p.add_argument("--threshold-freshness", type=float, default=None, help="Freshness threshold")

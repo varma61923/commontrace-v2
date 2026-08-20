@@ -68,7 +68,27 @@ def _iter_active_lesson_paths(root: str):
         yield p
 
 
+def _validate_hub_url(hub_url: str) -> None:
+    """Reject anything but http(s) before it reaches a transport.
+
+    httpx already refuses to open a `file://` or `ftp://` "connection", so
+    nothing is actually exploitable today -- but that safety is incidental to
+    the HTTP client's own behavior, not a guarantee this module makes. Left
+    unchecked, a bad scheme also wastes the full retry budget (3 attempts,
+    exponential backoff) on something that can never succeed, and surfaces as
+    an opaque "unhandled errors in a TaskGroup" rather than a clear message.
+    """
+    from urllib.parse import urlparse
+
+    scheme = urlparse(hub_url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise HubConnectionError(
+            f"refusing to use Hub URL {hub_url!r}: scheme must be http or https, got {scheme or '(none)'!r}"
+        )
+
+
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
+    _validate_hub_url(hub_url)
     try:
         import httpx2
         from mcp import ClientSession

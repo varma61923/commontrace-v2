@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`load_schema`'s path-traversal guard missed backslash/colon separators.**
+  `os.path.basename` only treats `/` as a separator on POSIX, so a name like
+  `C:\trace.schema.json` passed the "is this a bare filename" check
+  unchanged on Linux, then 404'd instead of raising the intended `ValueError`
+  -- not exploitable (backslash doesn't escape a directory on POSIX), but the
+  wrong exception type reaching callers, and what the new regression test
+  existed to catch. `\` and `:` are now rejected explicitly rather than
+  relying on the host OS's path rules.
+- **`sync`'s Hub URL had no explicit scheme guard**, despite a commit message
+  claiming one. httpx already refuses to open a `file://`/`ftp://`
+  "connection" so nothing was exploitable, but that safety was incidental to
+  the HTTP client, not a guarantee this module made -- and a bad scheme burned
+  the full retry budget (3 attempts, exponential backoff) before surfacing as
+  an opaque "unhandled errors in a TaskGroup". Now rejected immediately with
+  a clear message; verified live (1.05s of pointless retries -> 0.1s).
 - **`query --experiment` silently did nothing on the semantic path.** Only
   the lexical branch honoured the holdout flags; the semantic branch
   forwarded just the query and `--top-k` to the reference script. A fleet

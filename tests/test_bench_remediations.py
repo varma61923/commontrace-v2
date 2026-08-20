@@ -5,15 +5,11 @@
 - Doctor command directory listing error resilience
 """
 import argparse
-import codecs
 import os
 import subprocess
 import sys
 from unittest.mock import patch
 
-import pytest
-
-from commontrace import paths
 from commontrace.commands import bench_cmd, doctor_cmd
 from commontrace.reference import measure_performance as mp
 from commontrace.reference import pilot_metrics as pm
