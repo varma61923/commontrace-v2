@@ -93,14 +93,32 @@ def _extract_outcome(row: dict[str, Any]) -> dict[str, Any]:
     return outcome
 
 
+# The protocol's own field names (protocol/schemas/trace.schema.json). An export
+# produced by this product -- `sync --pull`, a Hub `search_traces` dump -- uses
+# these, so importing our own output must not require --context-field flags to
+# rename a field into the very name we emitted it under.
+_PROTOCOL_ALIASES = {"context": "context_text", "solution": "solution_text"}
+
+
+def _pick(row: dict[str, Any], name: str, alias: str | None = None) -> str:
+    value = str(row.get(name, "") or "").strip()
+    if not value and alias:
+        value = str(row.get(alias, "") or "").strip()
+    return value
+
+
 def _row_to_trace(line_no: int, row: dict[str, Any], mapping: FieldMapping) -> ImportedRow | SkippedRow:
-    title = str(row.get(mapping.title, "") or "").strip()
-    context_text = str(row.get(mapping.context, "") or "").strip()
-    solution_text = str(row.get(mapping.solution, "") or "").strip()
+    title = _pick(row, mapping.title)
+    context_text = _pick(row, mapping.context, _PROTOCOL_ALIASES.get(mapping.context))
+    solution_text = _pick(row, mapping.solution, _PROTOCOL_ALIASES.get(mapping.solution))
 
     missing = [
         name
-        for name, value in (("title", title), ("context", context_text), ("solution", solution_text))
+        for name, value in (
+            (mapping.title, title),
+            (f"{mapping.context}/{_PROTOCOL_ALIASES.get(mapping.context, mapping.context)}", context_text),
+            (f"{mapping.solution}/{_PROTOCOL_ALIASES.get(mapping.solution, mapping.solution)}", solution_text),
+        )
         if not value
     ]
     if missing:

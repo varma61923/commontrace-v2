@@ -279,7 +279,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {argv[0]} takes {expected} argument(s), got {len(args)}", file=sys.stderr)
         return 2
 
-    asyncio.run(fn(*args))
+    try:
+        asyncio.run(fn(*args))
+    except (ValueError, LookupError) as exc:
+        # Operator mistakes -- a bad day count, an org id that doesn't exist.
+        # A traceback here reads as "the tool is broken" rather than "you typed
+        # something wrong", and this CLI is what an operator runs in production.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

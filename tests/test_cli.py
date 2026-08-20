@@ -292,7 +292,16 @@ def test_install_generic_mcp_writes_valid_json_with_correct_mcp_servers_shape(st
     doc = json.loads(example.read_text())
     assert "mcpServers" in doc
     assert "commontrace" in doc["mcpServers"]
-    assert "command" in doc["mcpServers"]["commontrace"]
+
+    entry = doc["mcpServers"]["commontrace"]
+    # The Hub serves streamable-HTTP MCP (hub/main.py -> HUB_HOST:HUB_PORT/mcp).
+    # This template previously emitted the stdio shape (command/args/env), which
+    # has nowhere to put an endpoint or a bearer token -- so anyone who pasted
+    # it simply could not connect to the server this repo ships.
+    assert entry["type"] == "http"
+    assert entry["url"].endswith("/mcp")
+    assert entry["headers"]["Authorization"].startswith("Bearer ")
+    assert "command" not in entry
 
 
 def test_install_cursor_writes_valid_json_mcp_example(store):

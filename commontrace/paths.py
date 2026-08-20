@@ -39,6 +39,30 @@ def memory_dir(root: str) -> str:
     return os.path.join(root, "memory")
 
 
+def store_agent_type(root: str, default: str = "code") -> str:
+    """The agent_type this store was initialized with.
+
+    `commontrace init` stamps it into the first line of memory/INDEX.md. Reading
+    it back matters because a support/sales/ops fleet otherwise has to repeat
+    `--agent-type` on every single command, and the one time someone forgets,
+    the record is silently written as `code` -- wrong, and invisible until a
+    later filter mysteriously returns nothing.
+
+    Falls back to `default` for a store with no index (or an index written by
+    hand), so this can never be the thing that stops a capture from happening.
+    """
+    try:
+        with open(index_path(root), encoding="utf-8") as fh:
+            first = fh.readline()
+    except OSError:
+        return default
+    _, sep, value = first.partition("agent_type:")
+    if not sep:
+        return default
+    candidate = value.strip()
+    return candidate if candidate in AGENT_TYPES else default
+
+
 def lessons_dir(root: str) -> str:
     return os.path.join(memory_dir(root), "lessons")
 

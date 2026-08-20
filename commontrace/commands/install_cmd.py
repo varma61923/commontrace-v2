@@ -44,15 +44,22 @@ def _hub_mcp_example() -> str:
         "_comment": (
             "Template — fill in your org's CommonTrace Hub connection details, then merge "
             "the 'commontrace' entry into your agent platform's mcp.json / mcp_servers "
-            f"config. Tool surface: [{tools}]. This file is a template only, but once you "
+            f"config. Tool surface: [{tools}]. The Hub speaks streamable-HTTP, so replace "
+            "<your-hub-host> with your Hub's host and <your-api-key> with the key from "
+            "`python -m hub.manage issue-key`. This file is a template only, but once you "
             "fill in a real endpoint/API key below, add its filename (or your real "
             "mcp.json) to .gitignore before committing — do not check in Hub credentials."
         ),
         "mcpServers": {
+            # The Hub speaks streamable-HTTP (hub/main.py serves MCP at
+            # HUB_HOST:HUB_PORT/mcp), so this is the http transport shape --
+            # url + headers -- not the stdio `command`/`args`/`env` shape. A
+            # stdio block here cannot carry an endpoint or a bearer token, so
+            # anyone pasting it would simply fail to connect.
             "commontrace": {
-                "command": "<your-hub-mcp-launcher-or-url>",
-                "args": [],
-                "env": {},
+                "type": "http",
+                "url": "https://<your-hub-host>/mcp",
+                "headers": {"Authorization": "Bearer <your-api-key>"},
             }
         },
     }

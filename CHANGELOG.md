@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`capture` and `lesson new` now inherit the store's `agent_type`.** `init
+  --agent-type support` stamps the type into `memory/INDEX.md`, but both
+  commands hard-defaulted to `code`, so a support/sales/ops fleet silently
+  mislabeled every record unless the operator repeated `--agent-type` on every
+  invocation. Wrong, and invisible until a later filter mysteriously returned
+  nothing. An explicit flag still overrides.
+- **The generated Hub MCP config could not connect.** `commontrace install`
+  wrote the stdio shape (`command`/`args`/`env`) for a server that speaks
+  streamable-HTTP — there was nowhere to put the endpoint or the bearer token,
+  so anyone pasting the template simply failed to attach. It now emits the
+  http shape (`type`/`url`/`headers`), verified by connecting to a live Hub
+  using only the generated file. The regression test had been asserting the
+  broken shape and was updated.
+- **`import` accepts the protocol's own field names.** `context_text` /
+  `solution_text` are what `sync --pull` writes and `search_traces` returns,
+  yet the importer required `--context-field` flags to rename them into the
+  names we ourselves emit — so the product could not round-trip its own
+  export. Both spellings now work; an explicit mapping still wins, and a
+  genuinely missing field names both accepted spellings.
+- **`hub.manage` reports operator mistakes as errors, not tracebacks.** A bad
+  day count or an unknown org id raised a raw `ValueError` traceback from the
+  production operator CLI; these now print `error: ...` and exit 2.
+
 ### Added
 - **Causal effect measurement via randomized holdout** (`commontrace
   experiment`, `commontrace query --experiment`). Every lesson-value number

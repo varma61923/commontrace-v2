@@ -2,6 +2,7 @@
 `commontrace import` CLI command -- the generic "start from your historical
 traces" onboarding path from the pilot deck's "What we connect to" panel."""
 import io
+import json
 import os
 
 import pytest
@@ -156,3 +157,34 @@ class TestImportCommand:
         main(["import", str(jsonl_path), "--agent-type", "code", "--dest", str(store)])
         capsys.readouterr()
         assert main(["trace", "validate", "--dest", str(store)]) == 0
+
+
+
+def _one(row, mapping=None):
+    return import_data.parse_jsonl(iter([json.dumps(row)]), mapping or FieldMapping())
+
+
+def test_protocol_field_names_import_without_flags():
+    """The product's own output uses the protocol's names (context_text /
+    solution_text) -- `sync --pull` writes them, `search_traces` returns them.
+    Requiring --context-field to rename a field into the name we ourselves
+    emitted made round-tripping our own export fail by default."""
+    parsed, skipped = _one({"title": "t", "context_text": "ctx", "solution_text": "sol", "tags": ["a"]})
+    assert skipped == []
+    assert parsed[0].context_text == "ctx" and parsed[0].solution_text == "sol"
+
+
+def test_legacy_field_names_still_import():
+    parsed, skipped = _one({"title": "t", "context": "ctx", "solution": "sol"})
+    assert skipped == [] and parsed[0].context_text == "ctx"
+
+
+def test_an_explicit_mapping_still_wins():
+    parsed, skipped = _one({"title": "t", "body": "ctx", "fix": "sol"},
+                           FieldMapping(context="body", solution="fix"))
+    assert skipped == [] and parsed[0].context_text == "ctx"
+
+
+def test_a_truly_missing_field_names_both_accepted_spellings():
+    _, skipped = _one({"title": "only a title"})
+    assert "context/context_text" in skipped[0].reason

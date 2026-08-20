@@ -19,7 +19,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--context", required=True, help="The problem context")
     p.add_argument("--solution", required=True, help="What worked")
     p.add_argument("--tags", default="", help="Comma-separated tags")
-    p.add_argument("--agent-type", choices=paths.AGENT_TYPES, default="code")
+    p.add_argument(
+        "--agent-type", choices=paths.AGENT_TYPES, default=None,
+        help="Defaults to the agent_type this store was initialized with.",
+    )
     p.add_argument("--profile", default="", help="Optional profile name (e.g. code-review)")
     p.add_argument("--dest", default=None, help="Store root (default: auto-detect / $COMMONTRACE_ROOT)")
     p.add_argument(
@@ -95,7 +98,8 @@ def run(args: argparse.Namespace) -> int:
         out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
 
     outcome = _outcome_from_args(args)
-    fm = templates.trace_frontmatter(trace_id, args.title, args.agent_type, tags, args.profile, outcome)
+    agent_type = args.agent_type or paths.store_agent_type(root)
+    fm = templates.trace_frontmatter(trace_id, args.title, agent_type, tags, args.profile, outcome)
     body = templates.trace_body(args.context, args.solution)
 
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:

@@ -19,7 +19,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     new = sub.add_parser("new", help="Create a new lesson from the template.")
     new.add_argument("--slug", required=True, help="e.g. lesson_my_rule")
     new.add_argument("--description", required=True)
-    new.add_argument("--agent-type", choices=paths.AGENT_TYPES, default="code")
+    new.add_argument(
+        "--agent-type", choices=paths.AGENT_TYPES, default=None,
+        help="Defaults to the agent_type this store was initialized with.",
+    )
     new.add_argument("--domain", required=True)
     new.add_argument("--tags", default="")
     new.add_argument("--applies-when", default="")
@@ -80,7 +83,7 @@ def run_new(args: argparse.Namespace) -> int:
     fm = templates.lesson_frontmatter(
         slug=args.slug,
         description=args.description,
-        agent_type=args.agent_type,
+        agent_type=args.agent_type or paths.store_agent_type(root),
         domain=args.domain,
         tags=[t.strip() for t in args.tags.split(",") if t.strip()],
         applies_when=args.applies_when,
