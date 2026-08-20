@@ -415,5 +415,14 @@ def render(
         "young corpus will correctly read as mostly UNPROVEN rather than mostly good. "
         "Polarity detection is lexical and will miss contradictions phrased without "
         "always/never-style markers.",
+        "",
+        "**`lift` is correlational, not causal.** A lesson is retrieved *because* the "
+        "situation matched its activation condition, so the occasions where it fired "
+        "differ systematically from the ones where it did not. A lesson that fires on "
+        "routine work can show strong positive lift while contributing nothing; one "
+        "that fires only on the hardest cases can look harmful while being the reason "
+        "those cases were resolved. This bias does not shrink as more data arrives. "
+        "To measure cause instead, retrieve with `commontrace query --experiment "
+        "--occasion-id <id>` and read `commontrace experiment`.",
     ]
     return "\n".join(lines)

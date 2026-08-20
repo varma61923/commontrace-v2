@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     lesson would have helped and 1 occasion in 10 loses that help.
     `--holdout-rate 0` opts out entirely. Statistics are stdlib-only
     (`math.erf`), so the core install stays PyYAML-only.
+- **`commontrace reliability` now states that `lift` is correlational** and
+  points at `commontrace experiment`. The report puts `lift` in a table
+  beside a HARMFUL verdict; without the caveat a reader takes it as a causal
+  claim, and it is not one. No metric, formula, or threshold changed — only
+  what the report says about itself.
 - **Production deployment artifacts.** `Dockerfile` (multi-stage, non-root,
   no build toolchain in the runtime layer), `docker-compose.yml` (with
   migrations as a one-shot service the app waits on, so replicas can't race

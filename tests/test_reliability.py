@@ -182,6 +182,15 @@ class TestRender:
         out = rel.render([], [], 5)
         assert "lexical" in out and "Wilson" in out
 
+    def test_says_out_loud_that_lift_is_correlational(self):
+        """The report puts `lift` in a table next to a HARMFUL verdict. Without
+        this caveat a reader takes it as a causal claim, and it is not one --
+        the lesson fired *because* the situation matched it. The pointer to
+        the experiment command has to travel with the number."""
+        out = rel.render([], [], 5)
+        assert "correlational, not causal" in out
+        assert "commontrace experiment" in out
+
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
