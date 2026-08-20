@@ -127,6 +127,18 @@ class Trace(Base):
     retrievals: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # Idempotency for contribute_trace: an MCP client that times out waiting
+    # for a response has no way to tell "the write never happened" from
+    # "the write happened but the response was lost", so it must be safe to
+    # retry with the same key. NULL (the default, no key supplied) never
+    # conflicts with anything -- Postgres unique constraints treat every
+    # NULL as distinct from every other NULL -- so unkeyed contribute_trace
+    # calls are unaffected. request_hash lets a retry with the SAME key but
+    # a DIFFERENT payload be detected as a caller bug instead of silently
+    # returning the wrong (stale) trace. See hub/crud.py:contribute_trace.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Governance / abuse-control fields, not part of the wire Trace object
     quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quarantine_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
@@ -164,6 +176,7 @@ class Trace(Base):
         # search_traces orders by created_at DESC within an org; without this
         # the ordering step sorts the whole org partition on every query.
         Index("ix_traces_org_created_at", "org_id", "created_at"),
+        UniqueConstraint("org_id", "idempotency_key", name="uq_traces_org_idempotency_key"),
     )
 
 

@@ -18,11 +18,15 @@ property testable without spinning up a live MCP transport for every case.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from hub import audit
 from hub.abuse import RateLimited, RateLimiter, suspicion_reason, validate_size
@@ -34,6 +38,25 @@ from hub.schema_validation import validate_trace
 # verbatim rather than silently omitted: an audit row that can't name
 # its actor should be visibly incomplete, not invisible.
 AUDIT_ACTOR_UNKNOWN = "unknown"
+
+
+class IdempotencyKeyConflict(ValueError):
+    """A contribute_trace retry reused an idempotency_key with a different
+    payload than the original call. Returning the ORIGINAL trace here would
+    silently discard the caller's actual (different) request; raising lets
+    the caller fix the bug (a key must identify one logical write) instead
+    of one of the two payloads vanishing without a trace."""
+
+
+def _contribute_request_hash(
+    title: str, context_text: str, solution_text: str, tags: list[str], agent_type: str
+) -> str:
+    # Order-independent over tags (a client may reasonably reorder an
+    # unordered set between retries) but otherwise exact -- this only needs
+    # to distinguish "same logical request" from "different request", not
+    # to be a general canonicalization.
+    parts = [title, context_text, solution_text, agent_type, "\x1f".join(sorted(tags))]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
 def _iso(dt: datetime) -> str:
@@ -164,9 +187,16 @@ async def search_traces(
         # error on stray operators like '&' or '!'.
         tsquery = func.plainto_tsquery(TEXT_SEARCH_CONFIG, query)
         stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
-        stmt = stmt.order_by(func.ts_rank(Trace.search_vector, tsquery).desc(), Trace.created_at.desc())
+        # id.desc() as a tiebreaker: created_at alone is not unique enough
+        # under concurrent inserts (or two rows sharing a timestamp) to
+        # make OFFSET/LIMIT paging deterministic -- without a total order,
+        # Postgres is free to break ties by physical row order, which is
+        # not guaranteed stable across two separate queries.
+        stmt = stmt.order_by(
+            func.ts_rank(Trace.search_vector, tsquery).desc(), Trace.created_at.desc(), Trace.id.desc()
+        )
     else:
-        stmt = stmt.order_by(Trace.created_at.desc())
+        stmt = stmt.order_by(Trace.created_at.desc(), Trace.id.desc())
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
@@ -202,11 +232,35 @@ async def contribute_trace(
     tags: list[str] | None = None,
     agent_type: str = "",
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    idempotency_key: str | None = None,
 ) -> dict:
     """Returns {"id": ..., "quarantined": bool, "quarantine_reason": str}.
     Raises TraceRejected (bad schema/oversized) or RateLimited (429-shaped)
-    without storing anything."""
+    without storing anything.
+
+    `idempotency_key` makes retries safe: an MCP client that times out
+    waiting for a response cannot tell "the write never happened" from "it
+    happened but the response was lost", so without a key every retry
+    creates a second trace (reproduced in
+    hub/tests/test_concurrency_audit.py before this was added). Passing the
+    same key on a retry returns the original result instead of duplicating
+    it; passing the same key with a genuinely different payload raises
+    IdempotencyKeyConflict rather than silently returning stale content.
+    Omitting the key (the default) is unaffected -- NULL never conflicts
+    with anything under the backing UNIQUE(org_id, idempotency_key).
+    """
     tags = tags or []
+
+    if idempotency_key is not None:
+        existing = (
+            await session.execute(
+                select(Trace).where(Trace.org_id == org_id, Trace.idempotency_key == idempotency_key)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return _idempotent_replay_or_conflict(
+                existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+            )
 
     if not rate_limiter.allow(org_id):
         raise RateLimited(f"org {org_id} exceeded contribute_trace rate limit")
@@ -234,9 +288,32 @@ async def contribute_trace(
         agent_type=agent_type,
         quarantined=reason is not None,
         quarantine_reason=reason or "",
+        idempotency_key=idempotency_key,
+        request_hash=(
+            _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+            if idempotency_key is not None
+            else None
+        ),
     )
     session.add(trace)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # Lost the race: a concurrent call with the same (org_id,
+        # idempotency_key) committed first. Roll back this attempt and
+        # treat it exactly like we'd found the row up front.
+        await session.rollback()
+        existing = (
+            await session.execute(
+                select(Trace).where(Trace.org_id == org_id, Trace.idempotency_key == idempotency_key)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise  # the constraint fired for some other reason; don't mask it
+        return _idempotent_replay_or_conflict(
+            existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+        )
+
     # Bounded, content-free summary -- audit rows outlive an org purge, so
     # they must never carry the trace body. See hub/audit.py.
     await audit.record(
@@ -252,6 +329,28 @@ async def contribute_trace(
         ),
     )
     return {"id": trace.id, "quarantined": trace.quarantined, "quarantine_reason": trace.quarantine_reason}
+
+
+def _idempotent_replay_or_conflict(
+    existing: Trace,
+    idempotency_key: str,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+) -> dict:
+    incoming_hash = _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+    if existing.request_hash != incoming_hash:
+        raise IdempotencyKeyConflict(
+            f"idempotency_key {idempotency_key!r} was already used for a different contribute_trace "
+            "payload; reuse a key only to retry the exact same request"
+        )
+    return {
+        "id": existing.id,
+        "quarantined": existing.quarantined,
+        "quarantine_reason": existing.quarantine_reason,
+    }
 
 
 async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict | None:
@@ -284,24 +383,33 @@ async def vote_trace(
     if trace is None:
         return None
 
-    existing = (
-        await session.execute(select(Vote).where(Vote.trace_id == trace_id, Vote.org_id == org_id))
-    ).scalar_one_or_none()
-    if existing is not None:
-        existing.vote_type = vote_type
-        existing.feedback_tag = feedback_tag
-        existing.feedback_text = feedback_text
-    else:
-        session.add(
-            Vote(
-                trace_id=trace_id,
-                org_id=org_id,
-                vote_type=vote_type,
-                feedback_tag=feedback_tag,
-                feedback_text=feedback_text,
-            )
+    # A separate SELECT-existing-vote then INSERT-or-UPDATE is not atomic:
+    # two concurrent first-time votes on the same trace can both see no
+    # existing row, both attempt an INSERT, and the loser gets an
+    # IntegrityError on uq_votes_trace_org that propagated all the way out
+    # of this function uncaught (reproduced under 20-way asyncio.gather
+    # concurrency in hub/tests/test_concurrency_audit.py). A single atomic
+    # upsert closes the race at the database level instead of racing two
+    # round trips against it.
+    upsert = (
+        pg_insert(Vote)
+        .values(
+            trace_id=trace_id,
+            org_id=org_id,
+            vote_type=vote_type,
+            feedback_tag=feedback_tag,
+            feedback_text=feedback_text,
         )
-    await session.flush()
+        .on_conflict_do_update(
+            constraint="uq_votes_trace_org",
+            set_={
+                "vote_type": vote_type,
+                "feedback_tag": feedback_tag,
+                "feedback_text": feedback_text,
+            },
+        )
+    )
+    await session.execute(upsert)
 
     # COUNT, not SELECT: the previous form hydrated every up- and
     # down-vote row for the trace as ORM objects just to len() the lists.
@@ -317,7 +425,27 @@ async def vote_trace(
     tally = dict(counts)
     up_count, down_count = tally.get("up", 0), tally.get("down", 0)
     total = up_count + down_count
-    trace.trust = (up_count / total) if total else 0.5
+    new_trust = (up_count / total) if total else 0.5
+
+    # A plain `trace.trust = new_trust` here is a real, silent lost-update
+    # bug: SQLAlchemy's unit-of-work only emits an UPDATE when the new
+    # value differs from the value `trace` held at load time (before this
+    # function even reached the vote-row lock above). Under concurrent
+    # votes, `trace` can be loaded while trust=1.0 (another vote's already-
+    # committed value), and *this* call can independently compute
+    # new_trust=1.0 too (its own vote happens to match) even though, by the
+    # time it gets here, a third concurrent vote already committed
+    # trust=0.0 in between -- "new == old" from this call's stale
+    # perspective wrongly skips the write, leaving trust permanently
+    # inconsistent with the vote that's actually on record (reproduced:
+    # ~1 in 4 runs of 4-way concurrent voting in
+    # hub/tests/test_concurrency_audit.py before this fix). An explicit,
+    # unconditional UPDATE -- the same pattern already used for
+    # `retrievals` below -- always writes the value this transaction just
+    # computed from its own fresh, post-lock COUNT, regardless of what the
+    # in-memory object happened to hold before.
+    await session.execute(update(Trace).where(Trace.id == trace_id).values(trust=new_trust))
+    set_committed_value(trace, "trust", new_trust)
 
     await session.flush()
     await audit.record(
@@ -389,6 +517,18 @@ async def amend_trace(
         agent_type=original.agent_type,
         profile=original.profile,
         extensions=dict(original.extensions or {}),
+        # These four have no override parameter (a caller amending title
+        # can't currently ask to change them), so -- like agent_type,
+        # profile, and extensions above -- they must carry forward
+        # unchanged. Without this they silently reset to their column
+        # defaults ("" / {}) on every amendment: a trace's contributor
+        # attribution and structured outcome data would vanish the first
+        # time anyone tweaked its title, with no error and no audit trail
+        # of the loss.
+        watch_condition=original.watch_condition,
+        review_after=original.review_after,
+        contributor=original.contributor,
+        outcome=dict(original.outcome or {}),
         supersedes_trace_id=original.id,
         depth=original.depth + 1,
         quarantined=reason is not None,

@@ -15,8 +15,9 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
-    purge-trace <trace_id>         -> permanently deletes one trace (+ its votes and
-                                       any relation edges referencing it). Irreversible.
+    purge-trace <trace_id>         -> permanently deletes the trace AND every trace in
+                                       its amendment chain (+ their votes and any relation
+                                       edges referencing them). Irreversible.
     purge-org <org_id>             -> permanently deletes an org and everything scoped to
                                        it (api_keys, traces, votes -- FK ondelete=CASCADE).
                                        Irreversible. See DATA_RETENTION.md.
@@ -43,7 +44,7 @@ import asyncio
 import statistics
 import sys
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hub import audit, auth
@@ -195,27 +196,65 @@ async def release_quarantine(trace_id: str, session_factory=None) -> None:
     print(f"released from quarantine: {trace_id}")
 
 
+async def _amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
+    """Every trace id in `trace_id`'s amendment lineage: itself, every
+    trace it (transitively) supersedes, and every trace that (transitively)
+    supersedes it.
+
+    amend_trace creates a NEW row that carries most of the original's
+    content forward unchanged (hub/crud.py:amend_trace) -- title/context/
+    solution_text can be identical or near-identical across the whole
+    chain. A purge scoped to a single id in the middle of that chain
+    leaves the same content sitting in its neighbors, which is exactly
+    the gap a "delete this trace" request is supposed to close.
+    """
+    seen: set[str] = {trace_id}
+    frontier: set[str] = {trace_id}
+    while frontier:
+        rows = (
+            await session.execute(
+                select(Trace.id, Trace.supersedes_trace_id).where(
+                    or_(Trace.id.in_(frontier), Trace.supersedes_trace_id.in_(frontier))
+                )
+            )
+        ).all()
+        next_frontier: set[str] = set()
+        for tid, supersedes in rows:
+            for candidate in (tid, supersedes):
+                if candidate is not None and candidate not in seen:
+                    seen.add(candidate)
+                    next_frontier.add(candidate)
+        frontier = next_frontier
+    return seen
+
+
 async def purge_trace(trace_id: str, session_factory=None) -> None:
-    """Permanently deletes one trace. Votes and trace_relations rows keyed by
+    """Permanently deletes one trace AND every trace in its amendment chain
+    (see _amendment_chain). Votes and trace_relations rows keyed by
     trace_id cascade automatically (FK ondelete=CASCADE, hub/models.py); a
-    relation row where this trace is the *target* (related_trace_id) is not
-    covered by that FK -- related_trace_id is a plain column, not a foreign
-    key, so it survives the source trace being deleted elsewhere. Clean it
-    up explicitly here rather than leave a dangling reference behind."""
+    relation row where a chain member is the *target* (related_trace_id) is
+    not covered by that FK -- related_trace_id is a plain column, not a
+    foreign key, so it survives the source trace being deleted elsewhere.
+    Clean it up explicitly here rather than leave a dangling reference
+    behind."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         trace = await session.get(Trace, trace_id)
         if trace is None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
             return
-        await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id == trace_id))
+        chain_ids = await _amendment_chain(session, trace_id)
+        await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(chain_ids)))
         org_id = trace.org_id
-        await session.delete(trace)
+        await session.execute(delete(Trace).where(Trace.id.in_(chain_ids)))
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_trace",
-            org_id=org_id, target_type="trace", target_id=trace_id, summary="irreversible",
+            org_id=org_id, target_type="trace", target_id=trace_id,
+            summary=f"irreversible n_amendment_chain={len(chain_ids)}",
         )
-    print(f"permanently deleted trace: {trace_id}")
+    extra = len(chain_ids) - 1
+    suffix = f" (+{extra} amendment-chain trace{'s' if extra != 1 else ''})" if extra else ""
+    print(f"permanently deleted trace: {trace_id}{suffix}")
 
 
 async def purge_org(org_id: str, session_factory=None) -> None:

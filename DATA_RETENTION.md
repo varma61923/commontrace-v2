@@ -80,7 +80,12 @@ even though the product's positioning describes cross-org learning.
   `python -m hub.manage purge-trace <trace_id>` and `purge-org <org_id>`
   (the latter cascades to that org's `api_keys`/`traces`/`votes` via FK
   `ondelete=CASCADE`; both clean up any `trace_relations` row that would
-  otherwise dangle). Both are irreversible and require the same
+  otherwise dangle). `purge-trace` also walks and deletes the trace's
+  entire amendment chain (every trace it supersedes and every trace that
+  supersedes it) rather than just the one id given: `amend_trace` creates
+  a new row that carries most of the original's content forward, so a
+  purge scoped to a single link in that chain would leave the same
+  content sitting in its neighbors. Both are irreversible and require the same
   database-access trust level as every other `hub/manage.py` command —
   there is still **no self-service or API-level deletion path**: none of
   the six Hub MCP tools (`search_traces`, `contribute_trace`, `get_trace`,

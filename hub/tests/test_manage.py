@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from hub import auth, manage
 from hub.abuse import make_rate_limiter
-from hub.crud import contribute_trace
+from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
 from hub.models import Organization, Trace, TraceRelation
 
@@ -127,6 +127,82 @@ async def test_purge_trace_cleans_dangling_relation_referencing_it(session_facto
             await session.execute(select(TraceRelation).where(TraceRelation.related_trace_id == amended["id"]))
         ).scalars().all()
     assert dangling == []
+
+
+async def test_purge_trace_on_an_amended_original_also_removes_the_amendment(
+    session_factory, config, two_orgs
+):
+    """Regression test: purge_trace used to delete only the exact id it was
+    given. amend_trace carries most content forward into a NEW row rather
+    than mutating in place, so purging the ORIGINAL id left the amended
+    row -- holding the same (or superset) content -- fully intact. A
+    deletion request against one link in a chain must remove the whole
+    logical trace, not just that link."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        original = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="MARKER-ORIGINAL", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    async with session_scope(session_factory) as session:
+        amended = await amend_trace(
+            session, two_orgs["org_a"], original["id"], config, rate_limiter,
+            title="MARKER-AMENDED", actor="test",
+        )
+
+    await manage.purge_trace(original["id"], session_factory=session_factory)
+
+    async with session_scope(session_factory) as session:
+        original_row = await session.get(Trace, original["id"])
+        amended_row = await session.get(Trace, amended["id"])
+    assert original_row is None
+    assert amended_row is None, "amending, then purging the ORIGINAL id, must also remove the amendment"
+
+
+async def test_purge_trace_on_the_amendment_also_removes_the_original(session_factory, config, two_orgs):
+    """Same chain, purged from the other end: deleting the newest version
+    must also remove the older version it superseded."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        original = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="MARKER-ORIGINAL-2", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    async with session_scope(session_factory) as session:
+        amended = await amend_trace(
+            session, two_orgs["org_a"], original["id"], config, rate_limiter,
+            title="MARKER-AMENDED-2", actor="test",
+        )
+
+    await manage.purge_trace(amended["id"], session_factory=session_factory)
+
+    async with session_scope(session_factory) as session:
+        original_row = await session.get(Trace, original["id"])
+        amended_row = await session.get(Trace, amended["id"])
+    assert amended_row is None
+    assert original_row is None, "purging the newest version in a chain must also remove the original"
+
+
+async def test_purge_trace_unrelated_traces_survive(session_factory, config, two_orgs):
+    """The chain walk must not over-reach: an unrelated trace (never
+    amended, no supersedes link) must survive purging a completely
+    different trace."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        target = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="target", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+        bystander = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="bystander", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+
+    await manage.purge_trace(target["id"], session_factory=session_factory)
+
+    async with session_scope(session_factory) as session:
+        bystander_row = await session.get(Trace, bystander["id"])
+    assert bystander_row is not None
 
 
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):

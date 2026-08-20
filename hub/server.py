@@ -86,6 +86,8 @@ def _error_response(exc: Exception) -> dict:
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
         return {"error": "rate_limited", "detail": str(exc)}
+    if isinstance(exc, crud.IdempotencyKeyConflict):
+        return {"error": "conflict", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -135,8 +137,17 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         solution_text: str,
         tags: list[str] | None = None,
         agent_type: str = "",
+        idempotency_key: str | None = None,
     ) -> dict:
-        """Contribute a new trace. Returns its id and quarantine status."""
+        """Contribute a new trace. Returns its id and quarantine status.
+
+        Pass a client-generated `idempotency_key` (e.g. a UUID minted once
+        per logical contribution) to make retries after a lost/timed-out
+        response safe: retrying with the same key returns the original
+        result instead of creating a duplicate trace. Reusing a key with a
+        different payload is rejected as a conflict rather than silently
+        returning the wrong trace.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
@@ -151,6 +162,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     tags=tags,
                     agent_type=agent_type,
                     actor=auth.get_current_actor(),
+                    idempotency_key=idempotency_key,
                 )
             return result
         except Exception as exc:  # noqa: BLE001
