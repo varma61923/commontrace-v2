@@ -1,12 +1,18 @@
 """Read/write Markdown files with YAML frontmatter (the CommonTrace file format)."""
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import tempfile
 from typing import Any
 
 import yaml
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover -- POSIX-only stdlib module
+    fcntl = None  # type: ignore[assignment]
 
 # Delimiter must be its own line (optionally trailing whitespace / CR), not just the
 # substring "---" anywhere in the file -- a plain `content.split("---", 2)` corrupts
@@ -117,3 +123,65 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
             except OSError:
                 pass
         raise
+
+
+@contextlib.contextmanager
+def locked(path: str):
+    """Serialize a read-modify-write critical section against `path`
+    across processes: `with frontmatter.locked(path): fm, body =
+    frontmatter.read(path); ...; frontmatter.write(path, fm, body)`.
+
+    write()'s NamedTemporaryFile + os.replace() makes one call to write()
+    atomic -- readers never see a half-written file -- but atomicity of a
+    single write is not the same as safety for two concurrent
+    read-modify-writers. If writer A and writer B each independently read
+    the file, change a DIFFERENT field, and write back, both writes are
+    individually atomic and neither corrupts the file -- but B's
+    os.replace() completes after A's, so B's write silently overwrites
+    A's change with the pre-A content B started from. No error, no
+    exception, no corrupted file -- just a logical update quietly lost.
+    Reproduced directly: two OS processes racing an approve-style
+    read-modify-write on the same lesson file lost one of the two changes
+    in 5/5 runs.
+
+    Locks a dedicated, stable sibling file (`path + ".lock"`), NOT `path`
+    itself. Locking `path` directly would defeat itself against write()'s
+    own atomic-replace design: os.replace() swaps in a new inode, so a
+    second writer that opened `path` (and is blocked waiting for the
+    lock) is blocked on the OLD inode: once unblocked it reads through
+    its already-open file descriptor, seeing the pre-replace content, not
+    what the first writer just wrote. A lock file that no writer ever
+    replaces keeps the same inode across every acquisition, so "holds the
+    lock" and "sees the latest content" never drift apart -- this is
+    exactly the "synchronize on a shared lock identity, not independent
+    temporary files" fix, as opposed to each writer locking its own
+    NamedTemporaryFile (which never contends with anyone).
+
+    POSIX only (fcntl.flock). On a platform without fcntl (e.g. native
+    Windows, not WSL) this degrades to no synchronization at all rather
+    than raising -- consistent with this module's existing policy that a
+    robustness feature must never be the reason a capture/approve/write
+    fails outright -- but that means the race this function exists to
+    close is NOT closed there. This is a known, real limitation, not a
+    claim of full cross-platform correctness.
+
+    Does not address: a process crashing while holding the lock (the OS
+    releases flock automatically when the holding process's file
+    descriptors close, including on crash, so a stale lock cannot outlive
+    its process); NFS or other network filesystems, where flock semantics
+    are unreliable or unsupported -- this is designed for the local
+    filesystem `memory/` is expected to live on.
+    """
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = path + ".lock"
+    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

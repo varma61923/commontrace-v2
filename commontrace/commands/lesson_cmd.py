@@ -166,19 +166,20 @@ def run_approve(args: argparse.Namespace) -> int:
         print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
         return 1
 
-    fm, body = frontmatter.read(path)
-    if fm.get("status") != "review":
-        print(
-            f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
-            "refusing to approve. Only a candidate awaiting review can be approved.",
-            file=sys.stderr,
-        )
-        return 1
+    with frontmatter.locked(path):
+        fm, body = frontmatter.read(path)
+        if fm.get("status") != "review":
+            print(
+                f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
+                "refusing to approve. Only a candidate awaiting review can be approved.",
+                file=sys.stderr,
+            )
+            return 1
 
-    fm["status"] = "active"
-    if args.rationale:
-        body = _append_body_note(body, "Approved", args.rationale)
-    frontmatter.write(path, fm, body)
+        fm["status"] = "active"
+        if args.rationale:
+            body = _append_body_note(body, "Approved", args.rationale)
+        frontmatter.write(path, fm, body)
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
     return 0
 
@@ -190,18 +191,19 @@ def run_reject(args: argparse.Namespace) -> int:
         print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
         return 1
 
-    fm, body = frontmatter.read(path)
-    if fm.get("status") != "review":
-        print(
-            f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
-            "refusing to reject. Only a candidate awaiting review can be rejected.",
-            file=sys.stderr,
-        )
-        return 1
+    with frontmatter.locked(path):
+        fm, body = frontmatter.read(path)
+        if fm.get("status") != "review":
+            print(
+                f"[commontrace] {args.slug} has status={fm.get('status')!r}, not 'review' -- "
+                "refusing to reject. Only a candidate awaiting review can be rejected.",
+                file=sys.stderr,
+            )
+            return 1
 
-    fm["status"] = "archived"
-    body = _append_body_note(body, "Rejected", args.reason)
-    frontmatter.write(path, fm, body)
+        fm["status"] = "archived"
+        body = _append_body_note(body, "Rejected", args.reason)
+        frontmatter.write(path, fm, body)
     print(f"[commontrace] rejected {args.slug} (status: review -> archived)")
     return 0
 

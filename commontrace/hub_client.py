@@ -209,8 +209,17 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             continue
 
         hub_trace_id = result.get("id")
-        fm["hub_trace_id"] = hub_trace_id
-        frontmatter.write(path, fm, body)
+        # Re-read under the lock rather than reusing the `fm` captured
+        # before the (slow, awaited) Hub call above: another process could
+        # have changed a different field on this same file (e.g. `lesson
+        # approve`/`reject` flipping `status`) while this push was in
+        # flight, and writing back the pre-call snapshot would silently
+        # discard that change -- the exact lost-update frontmatter.locked()
+        # exists to prevent, see its docstring.
+        with frontmatter.locked(path):
+            fm, body = frontmatter.read(path)
+            fm["hub_trace_id"] = hub_trace_id
+            frontmatter.write(path, fm, body)
         results.append(PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False)))
     return results
 
