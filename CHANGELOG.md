@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Causal effect measurement via randomized holdout** (`commontrace
+  experiment`, `commontrace query --experiment`). Every lesson-value number
+  this project reported until now — including `reliability`'s `lift` — is
+  correlational, and the confound is structural: a lesson is retrieved
+  *because* the situation matched its activation condition, so the occasions
+  where it fired differ systematically from the ones where it did not. That
+  bias does not shrink with more data. Verified in simulation against a
+  known ground truth: correlational scoring labeled a genuinely helpful
+  lesson HARMFUL (−13.7%) and a useless one RELIABLE (+20.0%) — both exactly
+  backwards; the holdout recovered the truth in each case. Both are now
+  regression tests.
+  - `query --experiment --occasion-id <id>` withholds a lesson from a random
+    ~10% of the occasions where it was *eligible* and appends the arm
+    assignment to `memory/holdout_log.jsonl`; `experiment` joins those arms
+    to recorded episode/trace outcomes and reports a causal effect with a
+    95% CI and a p-value.
+  - Assignment is a deterministic hash of `(lesson, occasion, salt)`: no
+    stored state, exactly reproducible when a result is disputed later, and
+    stable under retries so an occasion cannot flip arms by being processed
+    twice. It is independent per lesson, which is what makes two lessons
+    that always co-fire separable at all — no observational method can do
+    that.
+  - Verdicts are HELPS / HURTS / NO_MEASURABLE_EFFECT / UNDERPOWERED, with
+    the last deliberately separate so "not enough data yet" is never read as
+    "tested and found useless". Significance is Benjamini-Hochberg-corrected
+    across tested lessons; underpowered comparisons are excluded from the
+    correction rather than inflating `m`. Null results quote their minimum
+    detectable effect. `--strict` exits non-zero if any lesson significantly
+    hurts outcomes, so a regression can gate CI.
+  - Cost is bounded and stated rather than hidden: in the worst case the
+    lesson would have helped and 1 occasion in 10 loses that help.
+    `--holdout-rate 0` opts out entirely. Statistics are stdlib-only
+    (`math.erf`), so the core install stays PyYAML-only.
 - **Production deployment artifacts.** `Dockerfile` (multi-stage, non-root,
   no build toolchain in the runtime layer), `docker-compose.yml` (with
   migrations as a one-shot service the app waits on, so replicas can't race

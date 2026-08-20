@@ -204,6 +204,50 @@ the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
 
+### 9 — Prove the lessons *cause* the improvement
+
+```bash
+commontrace query "..." --experiment --occasion-id task-4711   # withhold at random, log the arm
+# ...do the task, then record its outcome under that same id...
+commontrace experiment                  # causal effect per lesson
+commontrace experiment --strict         # non-zero exit if a lesson significantly HURTS
+```
+
+Every other number in this repo — including `reliability`'s `lift` — is
+**correlational**, and the confound is structural: a lesson is retrieved
+*because* the situation matched its activation condition, so the occasions
+where it fired differ systematically from the ones where it didn't. A lesson
+that fires on routine work looks brilliant while contributing nothing; one
+that fires only on the gnarliest incidents looks harmful while being the
+reason those incidents got resolved. That bias does not shrink with more
+data.
+
+`--experiment` withholds a lesson from a random ~10% of the occasions where
+it *was* eligible, and logs which arm each occasion landed in. Comparing
+those two arms is a controlled experiment on your own fleet, so the result
+is causal: **"tasks resolved 34% more often with this lesson injected (95%
+CI [12%, 56%], p = 0.002)"**.
+
+- Assignment is a deterministic hash of `(lesson, occasion, salt)` — no
+  stored state, exactly reproducible months later when someone disputes a
+  result, and stable under retries, so an occasion can't flip arms by being
+  processed twice.
+- It is **independent per lesson**, which is what makes two lessons that
+  always fire together separable at all. No observational method can do
+  that: they share every outcome.
+- Verdicts are **HELPS**, **HURTS**, **NO_MEASURABLE_EFFECT**, and
+  **UNDERPOWERED** — the last stated separately so "not enough data yet" is
+  never read as "tested and found useless". Significance is
+  Benjamini-Hochberg-corrected across all tested lessons, because at
+  α = 0.05 over 100 lessons ~5 look significant by chance and those are
+  exactly the ones that get quoted.
+- "No measurable effect" is always reported alongside the **minimum
+  detectable effect** for that sample, so it reads as a statement about the
+  experiment's power rather than about the lesson.
+
+The cost is bounded and explicit: in the worst case the lesson would have
+helped, and 1 occasion in 10 loses that help. That is the price of knowing.
+
 Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 `--repeated-error`/`--not-repeated-error`, `--frustration`/`--not-frustration`,
 `--tokens-used N`, `--llm-calls N`, and `--baseline` to `capture` to record the

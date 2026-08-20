@@ -188,14 +188,94 @@ activation overlap plus lexical polarity plus empirical divergence.
 Not built, and worth knowing:
 - Contradiction detection is partly lexical, so it misses conflicts phrased
   without always/never-style markers.
-- Two lessons that *always* co-fire cannot be told apart empirically — they
-  share every outcome. That is the hard case and it needs either an
-  intervention (withhold one and compare) or human judgment.
+- Every number it reports is **correlational**, including `lift`. §8 is
+  about that, and about the intervention that fixes it.
 - Nothing feeds these scores back into retrieval ranking yet. Doing so is
   the step that makes the loop actually close, and it should wait until the
   scores have been validated against a real corpus.
 
-## 8. Decisions I cannot make for you
+## 8. The claim nobody could verify: from correlation to cause
+
+This is the one I would defend hardest, because it is the difference
+between a product that reports numbers and a product that can prove them.
+
+**The problem.** Every lesson-value number in this repo before now —
+`lift`, `precision`, the deck's own case studies — is correlational, and
+the confound is structural rather than a sampling artifact:
+
+> A lesson is retrieved **because** the situation matched its activation
+> condition. So the occasions where lesson L fired are systematically
+> different from the occasions where it did not.
+
+A lesson that fires on routine work shows beautiful lift while
+contributing nothing. A lesson that fires only on the gnarliest incidents
+looks harmful while being the reason those incidents got resolved at all.
+Observation cannot separate these, and **the bias does not shrink with n** —
+collecting ten times the data makes the wrong answer ten times more
+confident. I verified this rather than assuming it: in simulation, against
+a known ground truth, correlational scoring labeled a genuinely helpful
+lesson HARMFUL (−13.7%) and a useless one RELIABLE (+20.0%). Both exactly
+backwards. Those two cases are now regression tests
+(`tests/test_experiment.py::TestCorrelationVsCausation`).
+
+**Why it matters commercially, not just intellectually.** A prospect's only
+path to belief today is a 30-day before/after pilot — which is itself
+confounded, slow, and unrepeatable. That is the longest, most fragile part
+of the sales cycle. And the deck's two case studies are somebody else's
+fleet; nothing lets a buyer verify the effect on *their* work.
+
+**The fix.** `commontrace query --experiment` withholds a lesson from a
+random ~10% of the occasions where it was *eligible* — the activation
+condition matched — and logs which arm each occasion landed in.
+`commontrace experiment` joins those arms to recorded outcomes. That is a
+randomized controlled experiment, so the resulting number is causal:
+
+> *"Tasks resolved 34% more often with this lesson injected (95% CI
+> [12%, 56%], p = 0.002, n = 412)."*
+
+That sentence survives a technical review. *"Tasks with this lesson tend to
+succeed more"* does not.
+
+**Four things it unlocks.**
+
+1. **Proof on the customer's own data, in days rather than a quarter.** The
+   pilot stops being a leap of faith and becomes a measurement.
+2. **Co-firing lessons become separable.** §7 listed this as the hard case
+   with no observational answer. Holdout assignment is independent per
+   lesson by construction, so some occasions get A without B and vice
+   versa — the tie is broken by design, not by more data.
+3. **A safety net for closing the loop.** Letting reliability scores drive
+   retrieval ranking (§7's "not built") is only responsible if degradation
+   is detectable. This is the detector, and `--strict` is the CI gate.
+4. **A defensible pricing story.** Measured causal effect per lesson is the
+   most direct denominator for value-based pricing that this product can
+   have (§9.4).
+
+**Design decisions worth knowing.** Assignment is a deterministic hash of
+`(lesson, occasion, salt)` — no stored state, exactly reproducible when a
+result is disputed months later, and stable under retries so an occasion
+cannot flip arms by being processed twice. Significance is
+Benjamini-Hochberg-corrected across all tested lessons, because at α = 0.05
+over 100 lessons ~5 look significant by chance and those are precisely the
+ones that end up on a slide. Underpowered comparisons are excluded from
+that correction rather than counted in it, and are reported as
+UNDERPOWERED — a separate verdict from NO_MEASURABLE_EFFECT, so "we cannot
+answer this yet" is never presented as "we tested it and it does nothing".
+Every null result carries its minimum detectable effect alongside.
+
+**The honest cost.** In the worst case the lesson would have helped and one
+occasion in ten loses that help. That is a real cost, it is bounded, and it
+is stated in the CLI output rather than buried. A customer who will not pay
+it can set `--holdout-rate 0` and keep correlational numbers — but they
+should then not be shown a causal claim.
+
+**What is still open.** The join from occasion to outcome relies on the
+caller passing a stable `--occasion-id`; a fleet that does not thread that
+id through gets an empty report rather than a wrong one, which is the right
+failure mode but still a failure mode. And nothing yet runs the experiment
+continuously in the background — it is opt-in per retrieval today.
+
+## 9. Decisions I cannot make for you
 
 Flagging rather than inventing:
 
@@ -213,12 +293,12 @@ Flagging rather than inventing:
    different product. The operational-cost telemetry now exists to answer
    this empirically rather than by intuition.
 
-## 9. What I would not do
+## 10. What I would not do
 
 - **Do not build the cross-org read path yet.** It is the one change that
   can leak a customer's data across a tenant boundary, and today's strict
   isolation is an asset in every security review. Build it after the number
-  justifies it and the terms in §8.2 are settled — not before.
+  justifies it and the terms in §9.2 are settled — not before.
 - **Do not lead with the benchmark numbers.** −53% and 9%→78% are real and
   externally confirmed, and they are per-org results. Citing them as
   evidence for the *commons* would be claiming something they do not show.

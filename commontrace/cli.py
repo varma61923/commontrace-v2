@@ -9,6 +9,7 @@ from commontrace.commands import (
     capture_cmd,
     distill_cmd,
     doctor_cmd,
+    experiment_cmd,
     import_cmd,
     index_cmd,
     init_cmd,
@@ -35,6 +36,7 @@ _SUBCOMMANDS = [
     index_cmd,
     bench_cmd,
     reliability_cmd,
+    experiment_cmd,
     sync_cmd,
     doctor_cmd,
 ]
