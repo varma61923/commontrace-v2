@@ -6,17 +6,17 @@ Opinionated on purpose. The business calls at the end are not mine to make.
 
 ---
 
-## 1. The gap between the deck and the repository
+## 1. The gap between the positioning and the repository
 
-The pitch deck's third panel is *"Lessons compound into intelligence across
-the fleet"*, drawn as a **Shared Intelligence Hub** every agent connects
-to, with **"strategic moat"** as the terminal business outcome. The moat
-argument is a network-effects argument: one org's mistake improves every
+CommonTrace is positioned around the claim that *lessons compound into
+intelligence across the fleet* — a **Shared Intelligence Hub** every agent
+connects to, with a **strategic moat** as the terminal business outcome. The
+moat argument is a network-effects argument: one org's mistake improves every
 other org's agents.
 
 The repository implements something different, and does it well:
 
-| The deck sells | The code does |
+| The positioning claims | The code does |
 |---|---|
 | Cross-org collective intelligence | Strictly per-org memory. Every read path in `hub/crud.py` is unconditionally scoped to the caller's own `org_id`. |
 | A commons that compounds across companies | `Trace.shared_with_commons` exists as a column and **is never read by a single query.** |
@@ -119,7 +119,7 @@ Why this specific thing:
 2. **The output is itself the strongest sales asset you have.** "We analyzed
    your traces against the commons: 47 of your recurring failures are
    already solved, here are the three costing you the most" is a far better
-   first meeting than any deck slide.
+   first meeting than any claim made on the company's behalf.
 3. **It solves the adverse-selection problem's on-ramp.** Nobody has to
    contribute anything to find out what they'd get. The report is the
    incentive to join, which is exactly the bootstrapping mechanism a
@@ -141,7 +141,7 @@ quietly assumed.
 This one turned out to be more fundamental than "a missing feature", and
 `commontrace reliability` now addresses the core of it.
 
-The deck's own headline is *"Raw memory remembers. CommonTrace
+CommonTrace's own headline claim is *"Raw memory remembers. CommonTrace
 generalizes."* The first half was delivered — a `Lesson` is a generalized
 rule with an explicit activation condition, not a stored episode. The
 second half had a hole: **nothing ever checked whether the generalization
@@ -168,7 +168,7 @@ The protocol is copyable in a weekend. Storage is a commodity. What is not
 copyable is knowing **which accumulated knowledge is reliable**, because
 that judgment is derived from outcome data a competitor does not have. More
 usage → better calibration → better retrieval → more usage. That is the
-compounding loop the deck's final panel promises, and it is a data
+compounding loop the product's positioning promises, and it is a data
 advantage rather than a code advantage.
 
 It is also a **precondition for the commons**, not a follow-up to it:
@@ -200,7 +200,7 @@ This is the one I would defend hardest, because it is the difference
 between a product that reports numbers and a product that can prove them.
 
 **The problem.** Every lesson-value number in this repo before now —
-`lift`, `precision`, the deck's own case studies — is correlational, and
+`lift`, `precision`, the published case studies — is correlational, and
 the confound is structural rather than a sampling artifact:
 
 > A lesson is retrieved **because** the situation matched its activation
@@ -221,7 +221,7 @@ backwards. Those two cases are now regression tests
 **Why it matters commercially, not just intellectually.** A prospect's only
 path to belief today is a 30-day before/after pilot — which is itself
 confounded, slow, and unrepeatable. That is the longest, most fragile part
-of the sales cycle. And the deck's two case studies are somebody else's
+of the sales cycle. And the published case studies are somebody else's
 fleet; nothing lets a buyer verify the effect on *their* work.
 
 **The fix.** `commontrace query --experiment` withholds a lesson from a
@@ -257,7 +257,7 @@ result is disputed months later, and stable under retries so an occasion
 cannot flip arms by being processed twice. Significance is
 Benjamini-Hochberg-corrected across all tested lessons, because at α = 0.05
 over 100 lessons ~5 look significant by chance and those are precisely the
-ones that end up on a slide. Underpowered comparisons are excluded from
+ones that end up being quoted. Underpowered comparisons are excluded from
 that correction rather than counted in it, and are reported as
 UNDERPOWERED — a separate verdict from NO_MEASURABLE_EFFECT, so "we cannot
 answer this yet" is never presented as "we tested it and it does nothing".

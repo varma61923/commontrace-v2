@@ -308,9 +308,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what would otherwise need module-global monkeypatching to test.
 - **`commontrace import`** (`commontrace/import_data.py` +
   `commands/import_cmd.py`): bulk-import an existing JSONL or CSV export
-  into `memory/traces/`, per the pilot deck's "What we connect to" /
-  "start from your historical traces, no infrastructure replacement"
-  pitch. Field-name mapping is configurable (a real export's column names
+  into `memory/traces/`, so a fleet can start from its historical traces
+  with no infrastructure replacement.
+  Field-name mapping is configurable (a real export's column names
   are whatever the source system calls them); malformed or
   missing-required-field rows are skipped and reported per-row rather than
   failing the whole batch; `resolved`/`escalated`/`repeated_error`/

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pilot_metrics.py — the five business-outcome metrics from the CommonTrace pilot deck.
+"""pilot_metrics.py — CommonTrace's five business-outcome metrics.
 
 Computes, from memory/traces/*.md `outcome` frontmatter (see
 protocol/schemas/trace.schema.json and protocol/PROTOCOL.md#11-pilot-outcome-metrics):
@@ -13,8 +13,9 @@ protocol/schemas/trace.schema.json and protocol/PROTOCOL.md#11-pilot-outcome-met
 Unlike benchmark/measure_performance.py (which measures whether the protocol
 *machinery* is healthy — Omega/Alpha quality), this measures whether the
 *fleet's behavior* actually changed, split baseline (outcome.baseline: true)
-vs current, matching the deck's before/after framing (e.g. "-53% time to
-resolve").
+vs current. Intended to be run continuously against a production fleet, not
+only during an initial evaluation window: the same before/after split answers
+"did adopting this help?" on day 30 and "is it still helping?" on day 300.
 
 Usage:
     python pilot_metrics.py                 # markdown stdout, all traces
@@ -153,7 +154,7 @@ def render_markdown(report):
     out.append(f"**Total traces** : {report['n_traces_total']}")
     out.append("")
     out.append(
-        "The five business-outcome metrics from the pilot deck, computed from "
+        "The five business-outcome metrics, computed from "
         "`Trace.outcome` fields. See protocol/PROTOCOL.md#11-pilot-outcome-metrics."
     )
     out.append("")
@@ -175,8 +176,8 @@ def render_markdown(report):
             out.append(f"| {label} | {fmt(b)} | {fmt(c)} | {fmt_delta(delta)} |")
         out.append("")
         out.append(
-            "*Change is relative (e.g. -53% means the current value is 53% lower "
-            "than baseline), matching the deck's before/after framing.*"
+            "*Change is relative: -53% means the current value is 53% lower "
+            "than baseline.*"
         )
     else:
         out.append(f"## Current ({current['n_traces']} traces)")

@@ -220,9 +220,10 @@ All five are ratios or means over traces where the backing field is
 non-null; a trace that never recorded an `outcome` simply doesn't
 contribute — it is not counted as a negative result. `outcome.baseline`
 splits traces into a pre-CommonTrace baseline window and a post-injection
-window so a pilot can report the same before/after framing as the deck
-(e.g. "-53% time to resolve," "-29% churn"): compute each metric once per
-`baseline` value and diff. `commontrace capture` accepts `--resolved` /
+window, so a deployment can report a before/after change for each metric:
+compute each metric once per `baseline` value and diff. This is a standing
+production measurement, not a one-off evaluation — the same split answers
+"did adopting this help?" and, months later, "is it still helping?" `commontrace capture` accepts `--resolved` /
 `--escalated` / `--repeated-error` / `--frustration` (each with a `--not-*`
 counterpart, e.g. `--not-escalated`, so a definite "no" can be recorded, not
 just "yes" or "unknown" — a field's rate denominator only counts traces

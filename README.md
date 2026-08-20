@@ -36,8 +36,8 @@ MCP, which all of the above already support natively.
 5. [Configuration](#configuration)
 6. [Memory System](#memory-system)
 7. [Benchmark](#benchmark)
-8. [Pilot Metrics](#pilot-metrics)
-9. [The 30-Day Fleet-Learning Pilot](#the-30-day-fleet-learning-pilot)
+8. [Outcome Metrics](#outcome-metrics)
+9. [Deploying to Production](#deploying-to-production)
 10. [File Layout](#file-layout)
 11. [Requirements](#requirements)
 
@@ -77,7 +77,7 @@ names are whatever the source system calls them. Rows missing a required
 field are skipped and reported, not silently dropped or a hard failure of
 the whole batch. `resolved`/`escalated`/`repeated_error`/
 `frustration_signal`/`tokens_used`/`llm_calls` columns, if present, populate
-`Trace.outcome` (§ [Pilot Metrics](#pilot-metrics)) automatically.
+`Trace.outcome` (§ [Outcome Metrics](#outcome-metrics)) automatically.
 
 ### 3 — Wire it into your agent platform
 
@@ -251,7 +251,7 @@ helped, and 1 occasion in 10 loses that help. That is the price of knowing.
 Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 `--repeated-error`/`--not-repeated-error`, `--frustration`/`--not-frustration`,
 `--tokens-used N`, `--llm-calls N`, and `--baseline` to `capture` to record the
-outcome data behind the pilot metrics (§ [Pilot Metrics](#pilot-metrics)
+outcome data behind the outcome metrics (§ [Outcome Metrics](#outcome-metrics)
 below) — all optional, all additive to the base capture.
 
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
@@ -426,10 +426,10 @@ business-facing question — see the next section.
 
 ---
 
-## Pilot Metrics
+## Outcome Metrics
 
-`commontrace bench --pilot` computes the
-five business-outcome metrics from the pilot deck, from `Trace.outcome` data
+`commontrace bench --pilot` computes
+five business-outcome metrics from `Trace.outcome` data
 (see `protocol/schemas/trace.schema.json` and
 [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md#11-pilot-outcome-metrics)):
 
@@ -452,51 +452,103 @@ commontrace bench --pilot --json       # machine-readable
 commontrace bench --pilot --agent-type support   # filter to one fleet
 ```
 
-Traces marked `--baseline` are compared against everything else, giving the
-same before/after framing the deck reports for the Loops pilot ("-53% time to
-resolve," "-29% churn") — computed from your own fleet's traces, not ours.
+Traces marked `--baseline` are compared against everything else, giving a
+before/after change per metric — computed from your own fleet's traces.
 Any `outcome` field left unset is simply excluded from its metric rather than
 counted against you, so you can adopt outcome tracking incrementally.
 
+This is a standing production measurement, not a one-time evaluation. The
+same baseline/current split that answers "did adopting this help?" in the
+first month answers "is it still helping?" a year in, and regressions show
+up as a metric moving the wrong way. For a *causal* rather than
+correlational answer on a specific lesson, see `commontrace experiment`
+(randomized holdout, § [Benchmark](#benchmark)).
+
 ---
 
-## The 30-Day Fleet-Learning Pilot
+## Deploying to Production
 
-The intended shape of a first deployment, matching the pilot deck:
+CommonTrace is built to run as production infrastructure, not as a trial.
+The two tiers deploy independently: the **Local tier** is flat files in a
+git-tracked `memory/` directory with no service to operate, and the
+**Hub tier** is a containerized MCP server backed by PostgreSQL. Either
+can be adopted without the other.
 
-**What we connect to** — agent sessions/traces, feedback and outcomes,
-existing memory, observability data, failure/escalation logs. Concretely:
+### What it connects to
+
+Agent sessions and traces, feedback and outcomes,
+existing memory, observability data, and failure/escalation logs. Concretely:
 `commontrace capture` for sessions and outcomes; `commontrace init` to adopt
 an existing memory directory as the Local tier (§ [Memory System](#memory-system));
 `commontrace sync` to pull/push against the CommonTrace Hub if the fleet
 already has traces there.
 
-**What CommonTrace does** — finds repeated failure patterns (`repeated_error`
+### What it does
+
+Finds repeated failure patterns (`repeated_error`
 outcome tagging + `memory/lessons/` domain coverage), extracts candidate
 lessons (Curator role, § [Roles](protocol/PROTOCOL.md#6-roles-generalized)),
 validates and approves them before deployment (Validator role — an explicit
 human approval gate is exactly what `status: review → active` models),
-injects them into relevant decisions (Retriever role), and compares
-performance against a baseline (`commontrace bench --pilot`).
+injects them into relevant decisions (Retriever role), and continuously
+measures performance against a baseline (`commontrace bench --pilot`).
 
-**What we measure** — the five metrics above, plus the protocol-health axes
-in [Benchmark](#benchmark) as a secondary signal.
+Nothing reaches a live agent without passing a human gate: a lesson stays at
+`status: review` until someone promotes it. Rollback is `commontrace lesson
+reject` (or a git revert of `memory/`) and takes effect on the next
+retrieval — there is no cache to drain or model to retrain.
 
-**Low-risk setup** — no infrastructure replacement (Local tier is flat
-files); start from historical traces (`commontrace capture --baseline` on
-existing logs, backdated); approve lessons before deployment (`status:
-review`, promoted to `active` only after a human/Validator pass); compare
-against an existing baseline (built into `bench --pilot`).
+### Rolling it out
 
-**Runbook**:
 1. `commontrace init --agent-type <type>` on the target fleet's workflow.
-2. Backfill 1-4 weeks of historical outcomes as baseline traces
-   (`commontrace capture ... --baseline`).
+2. Backfill historical outcomes as baseline traces
+   (`commontrace capture ... --baseline`, or `commontrace import` for a bulk
+   JSONL/CSV export). This is what "before" is measured against, so it is
+   worth doing properly — but it needs no infrastructure change, since the
+   Local tier is flat files.
 3. Turn on live capture (drop `--baseline`) and start curating lessons
    (`commontrace lesson new`, gated at `status: review` until approved).
 4. Wire retrieval into the fleet (`commontrace install --target <platform>`)
    so lessons get reinjected before each decision.
-5. After ~30 days, `commontrace bench --pilot` for the before/after deltas.
+5. Deploy the Hub if more than one workflow or team needs to share traces —
+   see [`hub/DEPLOYMENT.md`](hub/DEPLOYMENT.md) for the container, the
+   Postgres schema migration, health probes, and the post-deploy smoke check
+   (`python -m hub.smoke`).
+
+### Running it in production
+
+The Hub is designed for continuous operation under real multi-tenant load,
+and the properties that matter most are enforced in code and covered by
+tests, not left to convention:
+
+| Concern | How it's handled |
+|---|---|
+| Tenant isolation | Every trace read/write is scoped by `org_id` in the SQL `WHERE` clause, never filtered in Python. Covered by `hub/tests/test_tenant_isolation.py`. |
+| Authentication | Per-org API keys, argon2id-hashed, never stored or logged in recoverable form. Rotate with `manage.py rotate-key`, revoke with `revoke-key`, and set an expiry at issue time. |
+| Retries | `contribute_trace` accepts an `idempotency_key`, so a client retrying after a lost response gets the original result instead of a duplicate trace. |
+| Concurrency | Vote writes are a single atomic upsert; counters use in-database increments. Concurrent-load regression tests run against real Postgres in CI. |
+| Health checks | `/healthz` (liveness, no DB dependency — a database blip must not trigger a restart storm) and `/readyz` (readiness, real query). |
+| Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
+| Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
+| Data deletion | `manage.py purge-trace` / `purge-org` perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
+| Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
+
+Before putting a client's data on it, work through the security checklist in
+`hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.
+Backups are the one piece CommonTrace does not implement for you: the Hub
+keeps all state in Postgres, so your provider's automated backups (or
+`pg_dump`) cover it — but set a retention window and **test a restore**,
+because an untested backup is not a backup.
+
+### Measuring, continuously
+
+`commontrace bench --pilot` gives before/after deltas on the five outcome
+metrics above. Run it on a schedule, not once: the first read after ~30 days
+of live capture tells you whether adoption helped, and the same command a
+year later tells you whether it still does. Pair it with the protocol-health
+axes in [Benchmark](#benchmark) as a secondary signal, and with
+`commontrace experiment` when you need a causal answer for a specific lesson
+rather than a correlational one.
 
 ---
 

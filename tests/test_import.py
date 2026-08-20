@@ -1,6 +1,6 @@
 """Tests for commontrace/import_data.py's parsing logic and the
 `commontrace import` CLI command -- the generic "start from your historical
-traces" onboarding path from the pilot deck's "What we connect to" panel."""
+traces" onboarding path."""
 import io
 import json
 import os

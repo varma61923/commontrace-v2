@@ -2,8 +2,8 @@
 
 THE PROBLEM THIS EXISTS FOR
 ---------------------------
-The deck's headline is *"Raw memory remembers. CommonTrace generalizes."*
-The first half is delivered: a `Lesson` is a generalized rule with an
+CommonTrace's core claim is that raw memory remembers, while CommonTrace
+generalizes. The first half is delivered: a `Lesson` is a generalized rule with an
 explicit activation condition, not a stored episode. The second half has a
 hole in it — **nothing ever checks whether the generalization was correct.**
 

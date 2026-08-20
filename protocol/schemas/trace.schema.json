@@ -155,7 +155,7 @@
         },
         "baseline": {
           "type": "boolean",
-          "description": "True if this trace was captured during a pre-CommonTrace baseline measurement window (see the 30-day pilot runbook in README.md), for before/after comparison. False (default) means it was captured with CommonTrace lesson injection active.",
+          "description": "True if this trace was captured during a pre-CommonTrace baseline measurement window (see \"Deploying to Production\" in README.md), for before/after comparison. False (default) means it was captured with CommonTrace lesson injection active.",
           "default": false
         }
       },

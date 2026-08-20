@@ -1,4 +1,4 @@
-"""Tests for commontrace/reference/pilot_metrics.py — the deck's five business-outcome metrics."""
+"""Tests for commontrace/reference/pilot_metrics.py — the five business-outcome metrics."""
 import pilot_metrics as pm
 import pytest
 
@@ -116,7 +116,7 @@ class TestComputeBucket:
 
 class TestPctDelta:
     def test_improvement_is_negative(self):
-        # Deck framing: current lower than baseline -> negative % (e.g. -53%)
+        # Before/after framing: current lower than baseline -> negative %
         assert pm._pct_delta(600.0, 300.0) == pytest.approx(-0.5)
 
     def test_regression_is_positive(self):

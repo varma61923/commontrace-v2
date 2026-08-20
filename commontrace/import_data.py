@@ -1,7 +1,7 @@
 """Bulk-import existing trace-like records (a support/CRM/observability
-export) into memory/traces/, per the pilot deck's "What we connect to" /
-"Start from your historical traces" pitch and README's "Low-risk setup: no
-infrastructure replacement." This is deliberately a generic, format-level
+export) into memory/traces/, so a fleet can start from its historical traces
+without replacing any existing infrastructure (see README, "Deploying to
+Production"). This is deliberately a generic, format-level
 importer (JSONL or CSV, with configurable field-name mapping) rather than a
 set of vendor-specific connectors (Zendesk, Salesforce, Datadog, ...): this
 codebase has no way to test against a real vendor API, and a set of
