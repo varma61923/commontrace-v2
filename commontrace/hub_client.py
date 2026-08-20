@@ -11,13 +11,21 @@ ModuleNotFoundError traceback.
 
 from __future__ import annotations
 
+import asyncio
 import glob
+import json
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from commontrace import frontmatter, paths, templates
+
+# Network defaults. Overridable per call; `commontrace sync` exposes them
+# as --timeout / --max-attempts.
+DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_ATTEMPTS = 3
+RETRY_BASE_DELAY_SECONDS = 0.5
 
 _SECTION_NAMES = r"Rule|Why|How to apply|Counter-examples"
 _SECTION_RE = re.compile(
@@ -60,7 +68,7 @@ def _iter_active_lesson_paths(root: str):
         yield p
 
 
-async def _open_session(hub_url: str, api_key: str):
+async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     try:
         import httpx2
         from mcp import ClientSession
@@ -71,30 +79,72 @@ async def _open_session(hub_url: str, api_key: str):
             "`pip install commontrace[hub-sync]`."
         ) from exc
 
-    http_client = httpx2.AsyncClient(headers={"Authorization": f"Bearer {api_key}"})
+    # Without an explicit timeout the underlying client waits indefinitely,
+    # so a Hub that accepts the connection and then stalls hangs
+    # `commontrace sync` forever with no output -- the worst failure mode for
+    # a CLI someone may have put in a cron job.
+    http_client = httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=timeout_seconds,
+    )
     return streamable_http_client(hub_url, http_client=http_client), ClientSession
 
 
-async def _call_tool(hub_url: str, api_key: str, name: str, arguments: dict[str, Any]) -> dict:
-    transport_ctx, ClientSession = await _open_session(hub_url, api_key)
-    try:
-        async with transport_ctx as (read, write), ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(name, arguments)
-            if result.is_error:
-                text = "; ".join(getattr(c, "text", str(c)) for c in result.content)
-                raise HubConnectionError(f"Hub tool {name!r} returned an error: {text}")
-            if result.structured_content is not None:
-                return result.structured_content
-            # Fallback: some transports only populate .content (text blocks of JSON).
-            import json
+def _is_retryable(exc: Exception) -> bool:
+    """Retry transport-level failures (connection refused, timeout, 5xx),
+    never application-level ones.
 
-            text = "".join(getattr(c, "text", "") for c in result.content)
-            return json.loads(text) if text else {}
-    except HubConnectionError:
-        raise
-    except Exception as exc:
-        raise HubConnectionError(f"could not reach the Hub at {hub_url}: {exc}") from exc
+    A rejected API key or a schema-invalid trace fails identically on every
+    attempt, so retrying it just multiplies the delay before the user sees
+    the real error -- and retrying a rejected credential against a server
+    that may be rate-limiting auth failures actively makes things worse.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(marker in text for marker in ("401", "unauthorized", "invalid", "revoked", "expired", "403")):
+        return False
+    return any(
+        marker in text
+        for marker in ("timeout", "connect", "refused", "reset", "temporarily", "502", "503", "504", "eof")
+    )
+
+
+async def _call_tool(
+    hub_url: str,
+    api_key: str,
+    name: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> dict:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        transport_ctx, ClientSession = await _open_session(hub_url, api_key, timeout_seconds)
+        try:
+            async with transport_ctx as (read, write), ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
+                if result.is_error:
+                    text = "; ".join(getattr(c, "text", str(c)) for c in result.content)
+                    # An error *from* the tool is an answer, not a transport
+                    # failure -- surfaced immediately, never retried.
+                    raise HubConnectionError(f"Hub tool {name!r} returned an error: {text}")
+                if result.structured_content is not None:
+                    return result.structured_content
+                # Fallback: some transports only populate .content (text blocks of JSON).
+                text = "".join(getattr(c, "text", "") for c in result.content)
+                return json.loads(text) if text else {}
+        except HubConnectionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - transport errors aren't one exception type
+            last_exc = exc
+            if attempt >= max_attempts or not _is_retryable(exc):
+                break
+            # Exponential backoff: 0.5s, 1s, 2s, ...
+            await asyncio.sleep(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+
+    raise HubConnectionError(
+        f"could not reach the Hub at {hub_url} after {max_attempts} attempt(s): {last_exc}"
+    ) from last_exc
 
 
 async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[PushResult]:

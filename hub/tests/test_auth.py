@@ -25,7 +25,12 @@ async def test_issued_key_verifies_and_resolves_to_org(session_factory, config):
 
     async with session_scope(session_factory) as session:
         resolved = await auth.verify_api_key(session, issued.raw_key)
-    assert resolved == org_id
+    assert resolved is not None
+    assert resolved.org_id == org_id
+    # the non-secret prefix comes back for audit attribution, and is a
+    # prefix of the raw key -- never the whole thing
+    assert resolved.key_prefix == issued.raw_key[: len(resolved.key_prefix)]
+    assert resolved.key_prefix != issued.raw_key
 
 
 async def test_wrong_key_does_not_verify(session_factory, config):
@@ -72,7 +77,8 @@ async def test_rotate_key_revokes_old_and_issues_new(session_factory, config):
         old_resolves = await auth.verify_api_key(session, original.raw_key)
         new_resolves = await auth.verify_api_key(session, rotated.raw_key)
     assert old_resolves is None
-    assert new_resolves == org_id
+    assert new_resolves is not None
+    assert new_resolves.org_id == org_id
 
 
 async def test_raw_key_is_never_persisted_verbatim(session_factory, config):

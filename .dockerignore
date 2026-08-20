@@ -1,0 +1,23 @@
+.git
+.github
+.claude
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.pytest_cache
+.venv
+venv
+env
+
+# Local store / generated artifacts -- never belong in a server image
+memory/
+benchmark/
+tests/
+commontrace/
+assets/
+
+# Secrets must come from the platform's secret store, never be baked in
+.env
+hub/.env
+*.env
+!hub/.env.example

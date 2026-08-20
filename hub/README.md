@@ -28,13 +28,16 @@ hub/config.py      env-driven settings, no unsafe defaults
 hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceRelation
 hub/db.py          async engine/session plumbing
 hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates against them
-hub/auth.py        argon2 API-key hashing/verification/rotation + request-scoped org_id
+hub/auth.py        argon2 API-key hashing/verification/rotation/expiry + request-scoped org_id
 hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
+hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
+hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
 hub/crud.py        the six tools' actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
 hub/main.py        `python -m hub.main` -- run the server
 hub/manage.py       `python -m hub.manage <cmd>` -- org/API-key operator CLI
 hub/alembic/        migrations (see "Running locally" below)
+hub/DEPLOYMENT.md   running it for real: probes, scaling, backups, security checklist
 hub/tests/          pytest suite, including test_tenant_isolation.py
 ```
 
@@ -45,11 +48,15 @@ table puts `org_id` in the SQL `WHERE` clause itself — never "fetch rows,
 then filter in Python." That's what makes tenant isolation a property of the
 query layer, not an application-level convention someone can forget.
 
+For a real deployment (containers, probes, scaling, backups, security
+checklist) see **[hub/DEPLOYMENT.md](DEPLOYMENT.md)**. The rest of this
+file covers running it from a checkout and the design decisions behind it.
+
 ## Running locally
 
 Requires a real Postgres instance (this was developed and tested against a
-local Postgres 16). No Docker Compose file is provided deliberately — see
-"Not implemented" below.
+local Postgres 16). For a containerized stack instead, see
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ```bash
 pip install -r hub/requirements.txt
@@ -61,14 +68,16 @@ export $(grep -v '^#' hub/.env | xargs)   # or use your process manager
 python -m alembic -c hub/alembic.ini upgrade head
 
 python -m hub.manage create-org "Acme Corp"
-python -m hub.manage issue-key <org_id_from_above>   # prints the raw key ONCE
+python -m hub.manage issue-key <org_id_from_above> 90   # prints the raw key ONCE; expires in 90 days
 
 python -m hub.main   # serves streamable-HTTP MCP on HUB_HOST:HUB_PORT/mcp
 ```
 
 Point any MCP client at `http://<host>:<port>/mcp` with
-`Authorization: Bearer <api-key>`. `GET /healthz` is unauthenticated (liveness
-checks only).
+`Authorization: Bearer <api-key>`. `GET /healthz` (liveness) and `GET /readyz`
+(readiness, checks the database) are unauthenticated — see
+[DEPLOYMENT.md §4](DEPLOYMENT.md#4-health-probes) for why they are separate
+and which probe to attach to each.
 
 ### Running the tests
 
@@ -171,14 +180,18 @@ needs session-level co-retrieval tracking that wasn't in scope for this MVP.
 `up / (up + down)` ratio with a neutral `0.5` prior when there are no votes
 yet; treat it as a starting point, not a calibrated reputation model.
 
-### No Docker Compose file
+### Container image: present, but not yet built by its authors
 
-Deliberately not included. This is a from-a-checkout, single-process MVP
-server against a Postgres you already run (a managed instance, a local
-`pg_ctlcluster`, whatever your deploy target already has) — adding a Compose
-file implies a specific containerized deployment shape the brief didn't ask
-for and this codebase doesn't otherwise assume. `hub/requirements.txt` +
-`hub/.env.example` + `alembic upgrade head` is the actual contract.
+`Dockerfile` and `docker-compose.yml` now exist at the repo root (an earlier
+revision of this file said they deliberately did not — that is no longer
+true). One caveat worth stating plainly: **they have never been built or
+run.** The environment they were written in had no Docker daemon, so they
+are reviewed-but-unverified. CI has a `docker-build` job that builds the
+image and asserts the container serves `/healthz`; until you've seen that
+pass, treat the image as unproven and prefer the from-a-checkout path above.
+
+Everything else in this README describes behavior covered by `hub/tests/`
+against a real Postgres.
 
 ## Operator CLI (`hub/manage.py`)
 

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Computed,
     DateTime,
     Float,
     ForeignKey,
@@ -35,8 +36,20 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Postgres text-search configuration used for the traces.search_vector
+# generated column and for every query that matches against it. The two MUST
+# agree -- a tsvector built with 'english' and a tsquery built with a
+# different config will silently fail to match. Keep this the single source
+# of truth rather than repeating the literal in models.py + crud.py.
+#
+# Note this must be a *literal* config name, not the 1-arg to_tsvector():
+# a GENERATED column's expression has to be IMMUTABLE, and 1-arg
+# to_tsvector() depends on the session's default_text_search_config, which
+# makes it merely STABLE and Postgres rejects it here.
+TEXT_SEARCH_CONFIG = "english"
 
 
 def _uuid() -> str:
@@ -77,6 +90,11 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # NULL = never expires (the pre-existing behavior, and still the default
+    # for a key issued without --expires-days). A non-NULL value is enforced
+    # at verification time in hub/auth.py, so an expired key stops working
+    # without anyone having to run a revocation job.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     organization: Mapped[Organization] = relationship(back_populates="api_keys")
 
@@ -119,9 +137,33 @@ class Trace(Base):
     # of this flag's value.
     shared_with_commons: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Full-text search vector, maintained by Postgres itself (GENERATED ...
+    # STORED) so it can never drift from the columns it summarizes -- there
+    # is no application-side "remember to reindex on update" step to forget.
+    #
+    # This replaces a `title ILIKE '%q%' OR context_text ILIKE '%q%' OR ...`
+    # scan. That form cannot use any index (a leading wildcard defeats
+    # B-tree prefix matching), so every search was a full sequential scan of
+    # the org's traces; with the GIN index below, matching is index-backed.
+    # See hub/crud.py:search_traces for the semantic difference this
+    # introduces (word/stem matching instead of raw substring matching).
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed(
+            f"to_tsvector('{TEXT_SEARCH_CONFIG}', "
+            "title || ' ' || context_text || ' ' || solution_text)",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+
     __table_args__ = (
         Index("ix_traces_org_quarantined", "org_id", "quarantined"),
         Index("ix_traces_tags_gin", "tags", postgresql_using="gin"),
+        Index("ix_traces_search_vector_gin", "search_vector", postgresql_using="gin"),
+        # search_traces orders by created_at DESC within an org; without this
+        # the ordering step sorts the whole org partition on every query.
+        Index("ix_traces_org_created_at", "org_id", "created_at"),
     )
 
 
@@ -166,3 +208,47 @@ class TraceRelation(Base):
     related_trace_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     relationship_type: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class AuditLogEntry(Base):
+    """Append-only record of consequential actions, so a deployment holding
+    several organizations' data can answer "who did what, when."
+
+    Deliberately NOT ON DELETE CASCADE from organizations: `org_id` is a
+    plain column, not a foreign key. Purging an org must not erase the
+    record that the purge happened -- that is precisely the event an audit
+    trail exists to retain (and the reason `actor` and `summary` are
+    denormalized strings rather than joins to rows that may no longer
+    exist).
+
+    Scope, stated plainly so nobody over-reads it: this captures
+    *mutating* operations -- writes via the MCP tools and every
+    hub/manage.py admin command. It is not a full request log; ordinary
+    reads (search_traces/get_trace/list_tags) are not recorded here, since
+    logging every read of a knowledge store is high-volume and low-signal.
+    Read-side visibility comes from the request logs instead.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    # Who. "api-key:<key_prefix>" for MCP-tool actions (the non-secret
+    # prefix, never the key itself); "operator-cli" for hub/manage.py.
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Which org the action was scoped to, when applicable. Not an FK -- see
+    # the class docstring.
+    org_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True, index=True)
+
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    # Short human-readable context. Must never contain secrets or full
+    # trace bodies -- see hub/audit.py for what callers are expected to put
+    # here.
+    summary: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+    __table_args__ = (
+        Index("ix_audit_log_org_created_at", "org_id", "created_at"),
+    )

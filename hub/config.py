@@ -11,6 +11,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+# search_traces pagination. MAX is a hard ceiling applied to whatever a
+# client asks for: an unbounded limit lets one caller pull an org's entire
+# trace store in a single request, which is both a performance and a
+# blast-radius concern.
+DEFAULT_SEARCH_LIMIT = 50  # matches the previous hard-coded cap
+MAX_SEARCH_LIMIT = 200
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -52,6 +59,16 @@ class HubConfig:
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
 
+    # --- Connection pool ---
+    # pool_size * number_of_replicas must stay below Postgres max_connections.
+    db_pool_size: int = 10
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 30       # seconds to wait for a free connection
+    db_pool_recycle: int = 1800     # recycle connections older than 30 min
+
+    # --- Lifecycle ---
+    graceful_shutdown_seconds: int = 30
+
     # --- Misc ---
     log_level: str = "INFO"
     extra: dict = field(default_factory=dict)
@@ -78,5 +95,10 @@ class HubConfig:
             rate_limit_per_minute=_env_int("HUB_RATE_LIMIT_PER_MINUTE", 20),
             rate_limit_burst=_env_int("HUB_RATE_LIMIT_BURST", 5),
             suspect_url_threshold=_env_int("HUB_SUSPECT_URL_THRESHOLD", 5),
+            db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),
+            db_max_overflow=_env_int("HUB_DB_MAX_OVERFLOW", 5),
+            db_pool_timeout=_env_int("HUB_DB_POOL_TIMEOUT", 30),
+            db_pool_recycle=_env_int("HUB_DB_POOL_RECYCLE", 1800),
+            graceful_shutdown_seconds=_env_int("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )

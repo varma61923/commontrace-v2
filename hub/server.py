@@ -27,8 +27,9 @@ from starlette.types import ASGIApp
 
 from hub import auth, crud
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter
-from hub.config import HubConfig
+from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
+from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
 
 logger = logging.getLogger("commontrace.hub")
@@ -63,17 +64,21 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         raw_key = header[len("bearer ") :].strip()
 
         async with self._session_factory() as session:
-            org_id = await auth.verify_api_key(session, raw_key)
+            authenticated = await auth.verify_api_key(session, raw_key)
             await session.commit()  # persists last_used_at touch
 
-        if org_id is None:
-            return JSONResponse({"error": "invalid or revoked API key"}, status_code=401)
+        if authenticated is None:
+            # One message for invalid / revoked / expired alike -- see
+            # hub/auth.py:verify_api_key for why they must be indistinguishable.
+            return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
 
-        token = auth.current_org_id.set(org_id)
+        org_token = auth.current_org_id.set(authenticated.org_id)
+        actor_token = auth.current_actor.set(authenticated.key_prefix)
         try:
             return await call_next(request)
         finally:
-            auth.current_org_id.reset(token)
+            auth.current_org_id.reset(org_token)
+            auth.current_actor.reset(actor_token)
 
 
 def _error_response(exc: Exception) -> dict:
@@ -103,13 +108,23 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     )
 
     @mcp.tool()
-    async def search_traces(query: str = "", tags: list[str] | None = None) -> dict:
-        """Search this org's traces by free-text query and/or tags."""
+    async def search_traces(
+        query: str = "",
+        tags: list[str] | None = None,
+        limit: int = DEFAULT_SEARCH_LIMIT,
+        offset: int = 0,
+    ) -> dict:
+        """Search this org's traces by full-text query and/or tags.
+
+        Returns {"traces": [...], "limit", "offset", "has_more"}. Page by
+        re-calling with offset += limit while has_more is true.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
-                results = await crud.search_traces(session, org_id, query=query, tags=tags)
-            return {"traces": results}
+                return await crud.search_traces(
+                    session, org_id, query=query, tags=tags, limit=limit, offset=offset
+                )
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
             return _error_response(exc)
 
@@ -135,6 +150,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     solution_text=solution_text,
                     tags=tags,
                     agent_type=agent_type,
+                    actor=auth.get_current_actor(),
                 )
             return result
         except Exception as exc:  # noqa: BLE001
@@ -160,7 +176,10 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
-                trace = await crud.vote_trace(session, org_id, id, vote, feedback_tag, feedback_text)
+                trace = await crud.vote_trace(
+                    session, org_id, id, vote, feedback_tag, feedback_text,
+                    actor=auth.get_current_actor(),
+                )
             if trace is None:
                 return {"error": "not_found", "detail": f"no trace with id {id}"}
             return trace
@@ -188,6 +207,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     context_text=context_text,
                     solution_text=solution_text,
                     tags=tags,
+                    actor=auth.get_current_actor(),
                 )
             if amended is None:
                 return {"error": "not_found", "detail": f"no trace with id {id}"}
@@ -214,11 +234,11 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     mcp = build_mcp_server(config, session_factory, rate_limiter)
     inner_app = mcp.streamable_http_app(streamable_http_path=config.streamable_http_path, host=config.host)
 
-    async def healthz(request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok"})
-
-    inner_app.add_route("/healthz", healthz, methods=["GET"])
+    add_health_routes(inner_app, session_factory)
     inner_app.add_middleware(
         ApiKeyAuthMiddleware, session_factory=session_factory, protected_path=config.streamable_http_path
     )
+    # Added last => outermost: a request id exists (and the request gets
+    # logged) even for calls the auth middleware rejects with a 401.
+    inner_app.add_middleware(RequestContextMiddleware)
     return inner_app

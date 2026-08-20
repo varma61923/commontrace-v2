@@ -21,37 +21,63 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hub import audit
 from hub.abuse import RateLimited, RateLimiter, suspicion_reason, validate_size
-from hub.config import HubConfig
-from hub.models import Trace, TraceRelation, Vote
+from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
+from hub.models import TEXT_SEARCH_CONFIG, Trace, TraceRelation, Vote
 from hub.schema_validation import validate_trace
 
-_SEARCH_LIMIT = 50
+# Fallback `actor` for a call site that didn't supply one. Recorded
+# verbatim rather than silently omitted: an audit row that can't name
+# its actor should be visibly incomplete, not invisible.
+AUDIT_ACTOR_UNKNOWN = "unknown"
 
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-async def _votes_for(session: AsyncSession, trace_id: str) -> list[dict]:
-    rows = (await session.execute(select(Vote).where(Vote.trace_id == trace_id))).scalars().all()
-    return [
-        {"vote_type": v.vote_type, "feedback_tag": v.feedback_tag, "feedback_text": v.feedback_text}
-        for v in rows
-    ]
+async def _votes_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[str, list[dict]]:
+    """Batch-load votes for many traces in ONE query.
+
+    Previously this was a per-trace query inside _to_wire, so a 50-result
+    search issued 1 + 2*50 = 101 round trips. Safe for tenant isolation
+    because `trace_ids` is always derived from an already-org-scoped query
+    -- these helpers never widen the set of traces the caller can see, they
+    only decorate rows that were already selected.
+    """
+    if not trace_ids:
+        return {}
+    rows = (await session.execute(select(Vote).where(Vote.trace_id.in_(trace_ids)))).scalars().all()
+    out: dict[str, list[dict]] = {}
+    for v in rows:
+        out.setdefault(v.trace_id, []).append(
+            {"vote_type": v.vote_type, "feedback_tag": v.feedback_tag, "feedback_text": v.feedback_text}
+        )
+    return out
 
 
-async def _related_for(session: AsyncSession, trace_id: str) -> list[dict]:
+async def _related_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[str, list[dict]]:
+    """Batch-load relation edges for many traces in ONE query. See _votes_by_trace."""
+    if not trace_ids:
+        return {}
     rows = (
-        await session.execute(select(TraceRelation).where(TraceRelation.trace_id == trace_id))
+        await session.execute(select(TraceRelation).where(TraceRelation.trace_id.in_(trace_ids)))
     ).scalars().all()
-    return [{"relationship": r.relationship_type, "trace_id": r.related_trace_id} for r in rows]
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.trace_id, []).append(
+            {"relationship": r.relationship_type, "trace_id": r.related_trace_id}
+        )
+    return out
 
 
-async def _to_wire(session: AsyncSession, trace: Trace) -> dict:
+def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
+    """Pure shaping -- no I/O. Callers batch-load `votes`/`related` first
+    (see _votes_by_trace) rather than letting this function issue queries."""
     return {
         "id": trace.id,
         "title": trace.title,
@@ -69,36 +95,99 @@ async def _to_wire(session: AsyncSession, trace: Trace) -> dict:
         "trust": trace.trust,
         "retrievals": trace.retrievals,
         "depth": trace.depth,
-        "votes": await _votes_for(session, trace.id),
-        "related": await _related_for(session, trace.id),
+        "votes": votes,
+        "related": related,
         "outcome": dict(trace.outcome or {}),
     }
+
+
+async def _hydrate(session: AsyncSession, traces: list[Trace]) -> list[dict]:
+    """Wire-shape a list of already-org-scoped traces, batch-loading their
+    votes and relations (2 queries total, regardless of list length)."""
+    trace_ids = [t.id for t in traces]
+    votes = await _votes_by_trace(session, trace_ids)
+    related = await _related_by_trace(session, trace_ids)
+    return [_to_wire(t, votes.get(t.id, []), related.get(t.id, [])) for t in traces]
+
+
+async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
+    return (await _hydrate(session, [trace]))[0]
 
 
 # --- The six Hub tools -------------------------------------------------
 
 
 async def search_traces(
-    session: AsyncSession, org_id: str, query: str = "", tags: list[str] | None = None
-) -> list[dict]:
+    session: AsyncSession,
+    org_id: str,
+    query: str = "",
+    tags: list[str] | None = None,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+    offset: int = 0,
+) -> dict:
+    """Returns {"traces": [...], "limit", "offset", "has_more"}.
+
+    Two deliberate changes from the original implementation, both visible
+    to callers:
+
+    1. **Pagination.** This used to hard-cap at 50 results with no offset,
+       so a client could never reach result 51 at all. `limit` is clamped
+       to [1, MAX_SEARCH_LIMIT] and `has_more` tells the caller whether to
+       page again (computed by fetching one extra row, not by a second
+       COUNT query).
+
+    2. **Matching is full-text, not substring.** The old
+       `ILIKE '%query%'` could not use an index -- a leading wildcard
+       defeats B-tree prefix matching -- so every search sequentially
+       scanned the org's traces. It now matches against the
+       `traces.search_vector` GIN index (hub/models.py).
+
+       This changes results, not just speed, and the difference cuts both
+       ways: "deploy" now also matches "deployed"/"deploying" (stemming),
+       which substring matching missed; but "ploy" no longer matches
+       "deploy", which substring matching caught. For a knowledge store
+       queried in natural language that trade is the right one -- mid-word
+       substring hits are mostly noise -- but it IS a behavior change, not
+       a transparent optimization.
+
+       Ranking follows from the same change: with a query, results come
+       back by relevance (ts_rank) and then recency; with no query, purely
+       by recency as before.
+    """
+    limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
+    offset = max(0, int(offset))
+
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
     if query:
-        like = f"%{query}%"
-        stmt = stmt.where(
-            (Trace.title.ilike(like)) | (Trace.context_text.ilike(like)) | (Trace.solution_text.ilike(like))
-        )
+        # plainto_tsquery (not to_tsquery) because the input is arbitrary
+        # user text: it tokenizes plain words and cannot raise a syntax
+        # error on stray operators like '&' or '!'.
+        tsquery = func.plainto_tsquery(TEXT_SEARCH_CONFIG, query)
+        stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
+        stmt = stmt.order_by(func.ts_rank(Trace.search_vector, tsquery).desc(), Trace.created_at.desc())
+    else:
+        stmt = stmt.order_by(Trace.created_at.desc())
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
-    stmt = stmt.order_by(Trace.created_at.desc()).limit(_SEARCH_LIMIT)
 
-    traces = (await session.execute(stmt)).scalars().all()
+    # Fetch one more than asked so has_more is exact without a COUNT(*).
+    stmt = stmt.offset(offset).limit(limit + 1)
+    rows = (await session.execute(stmt)).scalars().all()
+    has_more = len(rows) > limit
+    traces = list(rows[:limit])
+
     if traces:
         await session.execute(
             update(Trace)
             .where(Trace.id.in_([t.id for t in traces]))
             .values(retrievals=Trace.retrievals + 1)
         )
-    return [await _to_wire(session, t) for t in traces]
+    return {
+        "traces": await _hydrate(session, traces),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 async def contribute_trace(
@@ -112,6 +201,7 @@ async def contribute_trace(
     solution_text: str,
     tags: list[str] | None = None,
     agent_type: str = "",
+    actor: str = AUDIT_ACTOR_UNKNOWN,
 ) -> dict:
     """Returns {"id": ..., "quarantined": bool, "quarantine_reason": str}.
     Raises TraceRejected (bad schema/oversized) or RateLimited (429-shaped)
@@ -147,6 +237,20 @@ async def contribute_trace(
     )
     session.add(trace)
     await session.flush()
+    # Bounded, content-free summary -- audit rows outlive an org purge, so
+    # they must never carry the trace body. See hub/audit.py.
+    await audit.record(
+        session,
+        actor=actor,
+        action="contribute_trace",
+        org_id=org_id,
+        target_type="trace",
+        target_id=trace.id,
+        summary=(
+            f"agent_type={agent_type or '?'} title_len={len(title)} "
+            f"n_tags={len(tags)} quarantined={trace.quarantined}"
+        ),
+    )
     return {"id": trace.id, "quarantined": trace.quarantined, "quarantine_reason": trace.quarantine_reason}
 
 
@@ -160,7 +264,7 @@ async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict |
         # the id exists at all.
         return None
     await session.execute(update(Trace).where(Trace.id == trace_id).values(retrievals=Trace.retrievals + 1))
-    return await _to_wire(session, trace)
+    return await _hydrate_one(session, trace)
 
 
 async def vote_trace(
@@ -170,6 +274,7 @@ async def vote_trace(
     vote_type: str,
     feedback_tag: str = "",
     feedback_text: str = "",
+    actor: str = AUDIT_ACTOR_UNKNOWN,
 ) -> dict | None:
     if vote_type not in ("up", "down"):
         raise ValueError(f"vote_type must be 'up' or 'down', got {vote_type!r}")
@@ -212,7 +317,16 @@ async def vote_trace(
     trace.trust = (len(up) / total) if total else 0.5
 
     await session.flush()
-    return await _to_wire(session, trace)
+    await audit.record(
+        session,
+        actor=actor,
+        action="vote_trace",
+        org_id=org_id,
+        target_type="trace",
+        target_id=trace_id,
+        summary=f"vote={vote_type} feedback_tag={feedback_tag or '-'} new_trust={trace.trust:.3f}",
+    )
+    return await _hydrate_one(session, trace)
 
 
 async def amend_trace(
@@ -224,6 +338,7 @@ async def amend_trace(
     context_text: str | None = None,
     solution_text: str | None = None,
     tags: list[str] | None = None,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
 ) -> dict | None:
     """Creates a new Trace that supersedes `trace_id`, rather than mutating
     history in place -- consistent with Trace.supersedes_trace_id /
@@ -253,7 +368,24 @@ async def amend_trace(
         TraceRelation(trace_id=original.id, related_trace_id=amended.id, relationship_type="SUPERSEDED_BY")
     )
     await session.flush()
-    return await _to_wire(session, amended)
+    changed = [
+        name
+        for name, value in (
+            ("title", title), ("context_text", context_text),
+            ("solution_text", solution_text), ("tags", tags),
+        )
+        if value is not None
+    ]
+    await audit.record(
+        session,
+        actor=actor,
+        action="amend_trace",
+        org_id=org_id,
+        target_type="trace",
+        target_id=amended.id,
+        summary=f"supersedes={original.id} depth={amended.depth} changed={','.join(changed) or 'nothing'}",
+    )
+    return await _hydrate_one(session, amended)
 
 
 async def list_tags(session: AsyncSession, org_id: str) -> list[str]:

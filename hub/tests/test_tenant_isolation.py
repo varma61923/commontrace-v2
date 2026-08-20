@@ -88,7 +88,8 @@ def _assert_no_org_b_leakage(payload, org_b_trace_id: str, org_b_id: str):
 async def test_search_traces_excludes_other_org(session_factory, config, two_orgs_with_overlapping_content):
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
-        results = await crud.search_traces(session, fixture["org_a_id"], query="shared incident")
+        page = await crud.search_traces(session, fixture["org_a_id"], query="shared incident")
+    results = page["traces"]
 
     assert len(results) == 1
     assert results[0]["id"] == fixture["org_a_trace_id"]
@@ -100,7 +101,8 @@ async def test_search_traces_by_shared_tag_excludes_other_org(
 ):
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
-        results = await crud.search_traces(session, fixture["org_a_id"], tags=["shared-tag"])
+        page = await crud.search_traces(session, fixture["org_a_id"], tags=["shared-tag"])
+    results = page["traces"]
 
     assert len(results) == 1
     assert results[0]["id"] == fixture["org_a_trace_id"]
@@ -210,7 +212,7 @@ async def test_all_six_tools_as_org_a_never_return_org_b_rows(
 
     async with session_scope(session_factory) as session:
         search_result = await crud.search_traces(session, org_a, query="")
-    _assert_no_org_b_leakage(search_result, org_b_trace_id, org_b_id)
+    _assert_no_org_b_leakage(search_result, org_b_trace_id, org_b_id)  # walks the whole payload
 
     async with session_scope(session_factory) as session:
         contribute_result = await crud.contribute_trace(
@@ -273,4 +275,4 @@ async def test_quarantined_traces_still_scoped_to_owning_org(session_factory, co
 
     async with session_scope(session_factory) as session:
         search_results = await crud.search_traces(session, org_id, query="spammy")
-    assert search_results == []
+    assert search_results["traces"] == []

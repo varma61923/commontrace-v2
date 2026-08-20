@@ -19,7 +19,7 @@ from __future__ import annotations
 import contextvars
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -39,23 +39,36 @@ class IssuedKey:
     key_id: str
     org_id: str
     raw_key: str  # only ever available at issuance time; caller must display/store it now
+    key_prefix: str = ""  # non-secret; safe to log / use as an audit actor
 
 
 def generate_raw_key() -> str:
     return _KEY_PREFIX + secrets.token_urlsafe(32)
 
 
-async def issue_api_key(session: AsyncSession, org_id: str) -> IssuedKey:
+async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | None = None) -> IssuedKey:
+    """`expires_days=None` (the default) issues a non-expiring key, matching
+    the behavior before expiry existed. A positive value sets `expires_at`,
+    after which verify_api_key rejects the key with no revocation job
+    needing to run."""
     org = await session.get(Organization, org_id)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
 
+    expires_at = None
+    if expires_days is not None:
+        if expires_days <= 0:
+            raise ValueError(f"expires_days must be positive, got {expires_days}")
+        expires_at = datetime.now(timezone.utc) + timedelta(days=expires_days)
+
     raw_key = generate_raw_key()
     key_hash = _hasher.hash(raw_key)
-    api_key = ApiKey(org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash)
+    api_key = ApiKey(
+        org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash, expires_at=expires_at
+    )
     session.add(api_key)
     await session.flush()
-    return IssuedKey(key_id=api_key.id, org_id=org_id, raw_key=raw_key)
+    return IssuedKey(key_id=api_key.id, org_id=org_id, raw_key=raw_key, key_prefix=api_key.key_prefix)
 
 
 async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
@@ -68,7 +81,14 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     if old is None:
         raise ValueError(f"no such api key: {old_key_id}")
     old.revoked_at = datetime.now(timezone.utc)
-    return await issue_api_key(session, old.org_id)
+    # Carry the old key's expiry *policy* forward: a key that was issued to
+    # expire in 90 days rotates into another 90-day key, rather than
+    # silently becoming a non-expiring one.
+    expires_days = None
+    if old.expires_at is not None:
+        span = old.expires_at - old.created_at
+        expires_days = max(1, round(span.total_seconds() / 86400))
+    return await issue_api_key(session, old.org_id, expires_days=expires_days)
 
 
 async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
@@ -77,13 +97,21 @@ async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
     )
 
 
-async def verify_api_key(session: AsyncSession, raw_key: str) -> str | None:
-    """Return the org_id the key belongs to, or None if invalid/revoked.
+@dataclass(frozen=True)
+class AuthenticatedKey:
+    org_id: str
+    key_prefix: str  # non-secret; used to attribute audit-log entries
+
+
+async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKey | None:
+    """Return the authenticated org (plus the key's non-secret prefix, for
+    audit attribution), or None if the key is invalid, revoked, or expired.
     Never raises on a bad key -- an unrecognized or malformed key is simply
     "not authenticated", not a server error."""
     if not raw_key or not raw_key.startswith(_KEY_PREFIX):
         return None
     prefix = raw_key[:_PREFIX_LEN]
+    now = datetime.now(timezone.utc)
     candidates = (
         await session.execute(
             select(ApiKey).where(ApiKey.key_prefix == prefix, ApiKey.revoked_at.is_(None))
@@ -94,8 +122,12 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> str | None:
             _hasher.verify(candidate.key_hash, raw_key)
         except VerifyMismatchError:
             continue
-        candidate.last_used_at = datetime.now(timezone.utc)
-        return candidate.org_id
+        if candidate.expires_at is not None and candidate.expires_at <= now:
+            # Expired reads exactly like invalid: an expired key must not be
+            # distinguishable from a wrong one at the transport layer.
+            return None
+        candidate.last_used_at = now
+        return AuthenticatedKey(org_id=candidate.org_id, key_prefix=candidate.key_prefix)
     return None
 
 
@@ -113,9 +145,21 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> str | None:
 
 current_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_org_id", default=None)
 
+# Set alongside current_org_id by the same middleware. Carries the
+# authenticated key's non-secret prefix so mutating tool calls can attribute
+# their audit-log rows (hub/audit.py) without re-reading the key.
+current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_actor", default=None)
+
 
 def get_current_org_id() -> str:
     org_id = current_org_id.get()
     if org_id is None:
         raise PermissionError("no authenticated organization in request context")
     return org_id
+
+
+def get_current_actor() -> str:
+    from hub.audit import actor_for_api_key
+
+    prefix = current_actor.get()
+    return actor_for_api_key(prefix) if prefix else "unknown"

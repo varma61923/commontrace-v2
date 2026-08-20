@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Production deployment artifacts.** `Dockerfile` (multi-stage, non-root,
+  no build toolchain in the runtime layer), `docker-compose.yml` (with
+  migrations as a one-shot service the app waits on, so replicas can't race
+  the same DDL), `.dockerignore`, and `hub/DEPLOYMENT.md` covering probes,
+  scaling, backup/restore, and a pre-client security checklist. **The image
+  has not been built or run** — the authoring environment had no Docker
+  daemon — so CI gained a `docker-build` job that builds it and asserts the
+  container serves `/healthz`; treat it as reviewed-but-unbuilt until that
+  job passes.
+- **Observability** (`hub/observability.py`): JSON logs on stdout, a
+  request-correlation id (honoring an inbound `X-Request-ID`, echoed back in
+  the response) on every log line, and one structured line per request with
+  method/path/status/duration — deliberately never query strings or bodies,
+  which carry customer content.
+- **`/readyz`, split from `/healthz`.** `/healthz` (liveness) answers "is
+  this process alive" and does **not** touch the database on purpose;
+  `/readyz` (readiness) runs `SELECT 1` and returns 503 when Postgres is
+  unreachable. Previously a single `/healthz` returned 200 even with the
+  database down, so a load balancer kept routing to instances that could not
+  serve a single request.
+- **Audit log** (`hub/audit.py`, `audit_log` table): every MCP write and
+  every `hub/manage.py` admin command is recorded. Rows deliberately survive
+  an org purge (`org_id` is not a cascading FK — the purge is exactly the
+  event a trail must retain) and carry only bounded metadata, never trace
+  content. Viewable with `python -m hub.manage audit-log [org_id]`.
+- **API-key expiry.** `issue-key <org_id> [days]`; expired keys are rejected
+  at verification with no revocation job needed, and are indistinguishable
+  from invalid ones. Rotation carries the expiry *policy* forward, so a
+  90-day key never silently rotates into a never-expiring one.
+- **Search pagination.** `search_traces` takes `limit`/`offset` (clamped to
+  `MAX_SEARCH_LIMIT`) and returns `has_more`. It previously hard-capped at 50
+  with no offset, so a client could not reach result 51 at all.
+- **Client resilience.** `commontrace/hub_client.py` now sets a finite
+  request timeout (it had none, so a stalled Hub hung `sync` forever) and
+  retries transport failures with exponential backoff — never retrying auth
+  or validation failures, which cannot succeed on a second attempt.
+- Connection-pool sizing, graceful shutdown (the engine is now disposed on
+  exit rather than dropping pooled connections), and a CI step that applies
+  every migration to an empty database plus `alembic check` — migrations
+  were previously never exercised by CI at all.
+
 - **Hub admin/monitoring commands** (`hub/manage.py`): `stats` (org/key/
   trace/vote counts, mean trust), `list-quarantined [org_id]` (the
   abuse-control review queue), `release-quarantine <trace_id>`, and —
@@ -105,6 +146,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout) — previously these were indistinguishable from real `[WARN]`s.
 
 ### Changed
+- **`search_traces` matching is full-text, not substring — a visible
+  behavior change, not a transparent optimization.** The old
+  `ILIKE '%query%'` could not use any index (a leading wildcard defeats
+  B-tree prefix matching), so every search sequentially scanned the org's
+  traces. Matching now goes through a `GENERATED ... STORED` tsvector column
+  and a GIN index. Measured on 50k traces in one org with a selective query:
+  **113 ms sequential scan → 9 ms index scan**, and the cost stops growing
+  linearly with the store. The trade cuts both ways: "deploy" now also
+  matches "deployed" (stemming), but "ploy" no longer matches "deploy".
+  Results with a query are ordered by relevance then recency.
+- **`search_traces` returns a dict** (`{"traces", "limit", "offset",
+  "has_more"}`) rather than a bare list, to carry pagination state.
+- **Fixed an N+1 in trace hydration.** Votes and relations were fetched
+  per trace, so a 50-result search issued 101 queries; they are now
+  batch-loaded in 2 queries regardless of result count.
+- `hub/tests/conftest.py` drops and recreates the schema per session:
+  `create_all` never ALTERs existing tables, so a test database left on an
+  older revision silently kept stale columns.
 - `ruff` added to the `dev` optional-dependency group, with an explicit
   `[tool.ruff.lint] select = ["E", "F", "W", "I"]` policy rather than
   whatever a given `ruff` release's default rule set happens to include —

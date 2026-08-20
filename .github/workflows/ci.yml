@@ -86,6 +86,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install postgres client (for createdb)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -94,5 +97,56 @@ jobs:
       - name: Install Hub server dependencies
         run: python -m pip install -r hub/requirements.txt pytest pytest-asyncio
 
+      # Applies every migration to an empty database. The hub/tests/ suite
+      # builds its schema from the models (see hub/tests/conftest.py), so
+      # without this step a model change with no matching migration would
+      # pass CI and only fail on a real deploy.
+      - name: Verify migrations apply from scratch
+        env:
+          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations
+        run: |
+          PGPASSWORD=commontrace createdb -h localhost -U commontrace commontrace_migrations
+          python -m alembic -c hub/alembic.ini upgrade head
+          # And that models and migrations agree -- catches a model edited
+          # without `alembic revision --autogenerate`.
+          python -m alembic -c hub/alembic.ini check
+
       - name: Run Hub tests (including test_tenant_isolation.py)
         run: python -m pytest hub/tests/ -q
+
+  docker-build:
+    # The image could not be built where it was authored (no Docker daemon),
+    # so CI is the first thing that actually proves it builds and that the
+    # server starts inside it. Kept separate from the test jobs: it needs no
+    # Python matrix and no database.
+    name: docker image builds and starts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Hub image
+        run: docker build -t commontrace-hub:ci .
+
+      - name: Container starts and serves /healthz
+        run: |
+          # No database configured on purpose: liveness must come up without
+          # one (see hub/DEPLOYMENT.md §4). A HUB_DATABASE_URL is still
+          # required for the process to boot at all.
+          docker run -d --name hub-ci -p 8420:8420 \
+            -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
+            commontrace-hub:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
+            sleep 1
+          done
+          echo "--- container logs ---"; docker logs hub-ci; exit 1
+
+      - name: Readiness reports unhealthy without a database
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
+          test "$code" = "503" || { echo "expected 503 from /readyz, got $code"; exit 1; }
+          echo "readyz correctly reports 503 with no database"
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f hub-ci || true

@@ -1,11 +1,13 @@
 """Operator CLI for org/API-key management and Hub monitoring:
 `python -m hub.manage <command>`.
 
-    create-org <name>              -> prints the new org's id
-    issue-key <org_id>             -> prints the raw key ONCE (see warning below)
-    rotate-key <key_id>            -> revokes <key_id>, issues + prints a new raw key for the same org
-    revoke-key <key_id>            -> revokes a key immediately
-    list-orgs                      -> id, name, created_at, active_keys
+    create-org <name>               -> prints the new org's id
+    issue-key <org_id> [days]       -> prints the raw key ONCE (see warning below);
+                                        optional expiry in days (default: never expires)
+    rotate-key <key_id>             -> revokes <key_id>, issues + prints a new raw key for the same org
+    revoke-key <key_id>             -> revokes a key immediately
+    list-orgs                       -> id, name, created_at, active_keys
+    audit-log [org_id]              -> 100 most recent audited actions
 
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
@@ -44,10 +46,10 @@ import sys
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from hub import auth
+from hub import audit, auth
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
-from hub.models import ApiKey, Organization, Trace, TraceRelation, Vote
+from hub.models import ApiKey, AuditLogEntry, Organization, Trace, TraceRelation, Vote
 
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -60,14 +62,28 @@ async def create_org(name: str, session_factory=None) -> None:
         org = Organization(name=name)
         session.add(org)
         await session.flush()
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="create_org",
+            org_id=org.id, target_type="org", target_id=org.id, summary=f"name={name!r}",
+        )
         print(f"org_id: {org.id}")
 
 
-async def issue_key(org_id: str, session_factory=None) -> None:
+async def issue_key(org_id: str, expires_days: str | None = None, session_factory=None) -> None:
+    days = int(expires_days) if expires_days is not None else None
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        issued = await auth.issue_api_key(session, org_id)
+        issued = await auth.issue_api_key(session, org_id, expires_days=days)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="issue_key",
+            org_id=org_id, target_type="api_key", target_id=issued.key_id,
+            summary=f"prefix={issued.key_prefix} expires_days={days if days is not None else 'never'}",
+        )
     print(f"key_id: {issued.key_id}")
+    if days is None:
+        print("expires: never  (consider --expires-days for a client-facing key)")
+    else:
+        print(f"expires: in {days} day(s)")
     print(f"api_key (shown once, store it now): {issued.raw_key}")
 
 
@@ -75,6 +91,11 @@ async def rotate_key(key_id: str, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         issued = await auth.rotate_api_key(session, key_id)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="rotate_key",
+            org_id=issued.org_id, target_type="api_key", target_id=issued.key_id,
+            summary=f"replaces={key_id}",
+        )
     print(f"revoked: {key_id}")
     print(f"new key_id: {issued.key_id}")
     print(f"new api_key (shown once, store it now): {issued.raw_key}")
@@ -83,7 +104,12 @@ async def rotate_key(key_id: str, session_factory=None) -> None:
 async def revoke_key(key_id: str, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
+        key = await session.get(ApiKey, key_id)
         await auth.revoke_api_key(session, key_id)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="revoke_key",
+            org_id=key.org_id if key else None, target_type="api_key", target_id=key_id,
+        )
     print(f"revoked: {key_id}")
 
 
@@ -145,6 +171,11 @@ async def release_quarantine(trace_id: str, session_factory=None) -> None:
         await session.execute(
             update(Trace).where(Trace.id == trace_id).values(quarantined=False, quarantine_reason="")
         )
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="release_quarantine",
+            org_id=trace.org_id, target_type="trace", target_id=trace_id,
+            summary=f"was={trace.quarantine_reason[:100]}",
+        )
     print(f"released from quarantine: {trace_id}")
 
 
@@ -162,7 +193,12 @@ async def purge_trace(trace_id: str, session_factory=None) -> None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
             return
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id == trace_id))
+        org_id = trace.org_id
         await session.delete(trace)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_trace",
+            org_id=org_id, target_type="trace", target_id=trace_id, summary="irreversible",
+        )
     print(f"permanently deleted trace: {trace_id}")
 
 
@@ -181,16 +217,47 @@ async def purge_org(org_id: str, session_factory=None) -> None:
             # Same dangling-reference cleanup as purge_trace, batched for every
             # trace this org owns, before the cascade deletes them.
             await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
+        org_name = org.name
         await session.delete(org)
+        # Recorded AFTER the delete and deliberately NOT cascaded away with
+        # it -- see AuditLogEntry's docstring: the purge is exactly the event
+        # the trail must retain.
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_org",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+        )
     print(f"permanently deleted organization {org_id} and all its api_keys/traces/votes.")
+
+
+async def audit_log(org_id: str | None = None, session_factory=None) -> None:
+    """Most recent audit entries, optionally filtered to one org."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        stmt = select(AuditLogEntry)
+        if org_id:
+            stmt = stmt.where(AuditLogEntry.org_id == org_id)
+        rows = (
+            await session.execute(stmt.order_by(AuditLogEntry.created_at.desc()).limit(100))
+        ).scalars().all()
+
+    if not rows:
+        print("no audit entries" + (f" for org {org_id}" if org_id else ""))
+        return
+    for r in rows:
+        target = f"{r.target_type}:{r.target_id}" if r.target_type else "-"
+        print(f"{r.created_at.isoformat()}  {r.actor:24s} {r.action:20s} {target}")
+        if r.summary:
+            print(f"    {r.summary}")
 
 
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
-    "issue-key": (issue_key, 1, 1),
+    "issue-key": (issue_key, 1, 2),
     "rotate-key": (rotate_key, 1, 1),
     "revoke-key": (revoke_key, 1, 1),
     "list-orgs": (list_orgs, 0, 0),
+    "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
