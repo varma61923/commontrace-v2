@@ -172,7 +172,27 @@ matched — a slug like `lesson_stripe_idempotency` describes itself. Add
 unchanged. This is not a cryptographic privacy guarantee — see
 `commontrace/overlap.py` for exactly what it does and does not protect.
 
-### 7 — Retrieve a lesson for an incoming task
+### 7 — Check whether your lessons actually work
+
+```bash
+commontrace reliability                 # score lessons against outcomes
+commontrace reliability --strict        # non-zero exit if any lesson is HARMFUL
+```
+
+Joins *which lessons were injected* to *how the task turned out*, and
+reports four verdicts: **RELIABLE**, **UNPROVEN** (not enough evidence yet
+— stated rather than guessed), **MISCALIBRATED** (fires often, rarely helps
+→ tighten `applies_when`), and **HARMFUL** (tasks go measurably worse when
+it is injected → the rule may be wrong). Precision uses a Wilson lower
+bound, so one lucky hit never outranks a long track record.
+
+It also flags **contradictions** — pairs of `active` lessons that fire in
+overlapping situations but pull in opposite directions, which an agent can
+otherwise receive both of at once.
+
+Nothing is changed automatically; the Validator gate stays human.
+
+### 8 — Retrieve a lesson for an incoming task
 
 ```bash
 commontrace query "customer is escalating about a delayed refund"

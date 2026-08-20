@@ -16,6 +16,7 @@ from commontrace.commands import (
     lesson_cmd,
     overlap_cmd,
     query_cmd,
+    reliability_cmd,
     sync_cmd,
     trace_cmd,
 )
@@ -33,6 +34,7 @@ _SUBCOMMANDS = [
     query_cmd,
     index_cmd,
     bench_cmd,
+    reliability_cmd,
     sync_cmd,
     doctor_cmd,
 ]

@@ -136,20 +136,64 @@ commons across mutually distrustful orgs needs private set intersection or
 differential privacy, and that is called out as a follow-up rather than
 quietly assumed.
 
-## 7. The second gap, smaller but real: nothing learns from outcomes
+## 7. The deeper gap: the corpus could not tell a good lesson from a bad one
 
-`Trace.trust` is `upvotes / (upvotes + downvotes)`. Nothing in the system
-observes whether an injected lesson *actually prevented the failure*.
+This one turned out to be more fundamental than "a missing feature", and
+`commontrace reliability` now addresses the core of it.
 
-The pieces are all present and unconnected: `Trace.outcome.resolved`,
-`outcome.repeated_error`, `Lesson.uses`, `Lesson.last_hit`, and the
-retrieval telemetry in `memory/alpha_telemetry.jsonl`. Joining them closes
-the flywheel — retrieval quality improving automatically as the corpus
-grows — which is the compounding the deck's final panel promises and which
-currently depends on humans voting.
+The deck's own headline is *"Raw memory remembers. CommonTrace
+generalizes."* The first half was delivered — a `Lesson` is a generalized
+rule with an explicit activation condition, not a stored episode. The
+second half had a hole: **nothing ever checked whether the generalization
+was correct.** There was no way to represent, let alone detect:
 
-This is the highest-value *technical* follow-up. It is smaller than the
-commons question but it is what makes the product get better on its own.
+- a lesson that is simply wrong;
+- a lesson whose `applies_when` is too broad, so it fires where it does not
+  help;
+- two `active` lessons that contradict each other and get injected into the
+  same decision.
+
+`Lesson.status` was human-set and never revisited; `Trace.trust` is an
+up/down vote count. That made the corpus a **retrieval system** — it
+returns what was written, and quality is fixed at authoring time and can
+only decay. A learning system also answers *"and was it right?"*.
+
+Everything needed for that second question was already being recorded and
+joined by nothing: `lessons_retrieved_by_alpha`, `lessons_hit`, `verdict`,
+`Trace.outcome.resolved`, `outcome.repeated_error`.
+
+### Why this is the actual moat
+
+The protocol is copyable in a weekend. Storage is a commodity. What is not
+copyable is knowing **which accumulated knowledge is reliable**, because
+that judgment is derived from outcome data a competitor does not have. More
+usage → better calibration → better retrieval → more usage. That is the
+compounding loop the deck's final panel promises, and it is a data
+advantage rather than a code advantage.
+
+It is also a **precondition for the commons**, not a follow-up to it:
+pooling knowledge across organizations amplifies contradiction rather than
+averaging it out, because two fleets can hold opposite rules that are each
+correct in their own unstated context. A commons that injects contradictory
+guidance is worse than no commons.
+
+### What is built, and what is not
+
+Built: outcome-linked credit assignment with Wilson lower bounds (so a
+young corpus reads as honestly UNPROVEN rather than falsely good), the
+HARMFUL-vs-MISCALIBRATED distinction (a wrong rule and an over-broad
+trigger need opposite remedies), and contradiction detection from
+activation overlap plus lexical polarity plus empirical divergence.
+
+Not built, and worth knowing:
+- Contradiction detection is partly lexical, so it misses conflicts phrased
+  without always/never-style markers.
+- Two lessons that *always* co-fire cannot be told apart empirically — they
+  share every outcome. That is the hard case and it needs either an
+  intervention (withhold one and compare) or human judgment.
+- Nothing feeds these scores back into retrieval ranking yet. Doing so is
+  the step that makes the loop actually close, and it should wait until the
+  scores have been validated against a real corpus.
 
 ## 8. Decisions I cannot make for you
 
