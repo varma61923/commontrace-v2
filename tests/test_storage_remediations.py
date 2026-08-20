@@ -14,8 +14,14 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
 
 from commontrace import frontmatter, paths
 from commontrace.commands import lesson_cmd, trace_cmd
@@ -293,6 +299,7 @@ class TestUtf8BomHandling:
         assert fm["status"] == "active"
         assert "## Rule" in body
 
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_attention_build_index_iter_active_lessons_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
@@ -326,6 +333,7 @@ class TestUtf8BomHandling:
         assert "BOM test lesson" in query_text
         assert "Strip BOM transparently." in query_text
 
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_attention_query_load_importances_handles_bom(self, tmp_path, monkeypatch):
         _ensure_mock_st(monkeypatch)
         sys.path.insert(
@@ -360,6 +368,7 @@ class TestUtf8BomHandling:
 class TestAtomicIndexGeneration:
     """MEM-03: build_index.py writes index.npz atomically via temp file + os.replace."""
 
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_build_index_preserves_existing_index_and_cleans_tmp_on_error(
         self, tmp_path, monkeypatch
     ):
@@ -425,6 +434,7 @@ class TestCorruptedIndexHandling:
             b"not_a_zip_file_at_all",
         ],
     )
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_query_main_exits_cleanly_on_corrupted_index(
         self, tmp_path, monkeypatch, capsys, corrupted_content
     ):
@@ -450,6 +460,7 @@ class TestCorruptedIndexHandling:
         assert "is corrupted" in captured.err
         assert "build_index.py --force" in captured.err
 
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
     def test_query_main_handles_missing_keys_in_npz_archive(
         self, tmp_path, monkeypatch, capsys
     ):

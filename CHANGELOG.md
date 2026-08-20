@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **CI was red: two new test files crashed pytest collection with no
+  numpy installed.** `tests/test_m2_empirical_challenger.py` and
+  `tests/test_storage_remediations.py` did `import numpy as np` unconditionally
+  at module scope, so the core-install and dev-extra CI jobs (which don't
+  install the `attention` extra) failed to even collect tests -- not a test
+  failure, a collection error that aborted the whole run in under a second.
+  My own local verification missed this because this sandbox has numpy
+  installed system-wide, so `pytest tests/` never actually exercised a
+  numpy-free environment despite reporting "all passed". Reproduced the
+  failure properly this time in a fresh venv with no numpy at all (matching
+  CI exactly), applied the project's own established pattern
+  (`tests/test_benchmark_reports.py`'s `HAS_NUMPY` guard) to the 11 of 37
+  tests across both files that actually need it, and confirmed: 516
+  passed / 18 skipped where it previously errored out at collection.
 - **`load_schema`'s path-traversal guard missed backslash/colon separators.**
   `os.path.basename` only treats `/` as a separator on POSIX, so a name like
   `C:\trace.schema.json` passed the "is this a bare filename" check

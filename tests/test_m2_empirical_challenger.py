@@ -11,8 +11,14 @@ import sys
 import types
 from unittest.mock import patch
 
-import numpy as np
 import pytest
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
 
 from commontrace import frontmatter, paths, trace_io
 from commontrace.cli import main as cli_main
@@ -28,6 +34,15 @@ def clean_store(tmp_path):
 @pytest.fixture
 def attention_modules():
     """Dynamically loads build_index and query with isolated mock of sentence_transformers if needed."""
+    if not HAS_NUMPY:
+        # build_index.py and query.py both `import numpy` at module scope
+        # (they are the memory/attention/* reference scripts, only meant to
+        # run where the `attention` extra is installed), so every test that
+        # goes through this fixture needs it too. The fixture is the single
+        # choke point every dependent test passes through, so guarding here
+        # once is equivalent to (and less repetitive than) marking each of
+        # the six tests that use it individually.
+        pytest.skip("numpy not installed")
     had_st = "sentence_transformers" in sys.modules
 
     if not had_st:
