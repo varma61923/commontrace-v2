@@ -153,7 +153,26 @@ approve`. Traces already referenced by an existing lesson's `source_traces`
 are skipped on the next run, so re-running `distill` doesn't keep
 re-proposing patterns someone already curated.
 
-### 6 — Retrieve a lesson for an incoming task
+### 6 — Measure what another fleet's lessons would be worth to you
+
+```bash
+commontrace overlap sign --fleet-label acme --out acme.json      # signatures, not content
+commontrace overlap report --ours acme.json --theirs partner.json
+```
+
+Answers *"of the failures we keep hitting, how many has another fleet
+already solved?"* — the quantity the cross-org value proposition depends on
+and which has never been measured (see [`STRATEGY.md`](STRATEGY.md)).
+Neither side sends the other any lesson or trace text; only MinHash
+signatures are exchanged.
+
+Lesson slugs and tags **do** travel by default so the report can name what
+matched — a slug like `lesson_stripe_idempotency` describes itself. Add
+`--redact-labels --redact-tags` to strip them; the measurement is
+unchanged. This is not a cryptographic privacy guarantee — see
+`commontrace/overlap.py` for exactly what it does and does not protect.
+
+### 7 — Retrieve a lesson for an incoming task
 
 ```bash
 commontrace query "customer is escalating about a delayed refund"
