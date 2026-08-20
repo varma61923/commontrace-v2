@@ -102,7 +102,14 @@ def compute_bucket(traces):
 
 def split_baseline(traces):
     baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline")]
-    current = [t for t in traces if t not in baseline]
+    # Identity, not equality. `t not in baseline` is an O(n) dict comparison
+    # per trace -- O(n^2) overall with a full field-by-field compare at each
+    # step -- and it is correct today only because load_traces happens to set
+    # fm["_path"], making every dict unique. That is a load-bearing side
+    # effect of an unrelated line: drop or move `_path` and two traces with
+    # identical content would silently collapse into one.
+    baseline_ids = {id(t) for t in baseline}
+    current = [t for t in traces if id(t) not in baseline_ids]
     return baseline, current
 
 

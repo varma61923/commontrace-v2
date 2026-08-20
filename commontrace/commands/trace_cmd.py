@@ -5,6 +5,7 @@ import glob
 import os
 
 from commontrace import paths, trace_io, validate
+from commontrace.commands._format import cell
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -59,5 +60,11 @@ def run_list(args: argparse.Namespace) -> int:
         instance, _ = trace_io.read(path)
         if args.agent_type and instance.get("agent_type") != args.agent_type:
             continue
-        print(f"{instance.get('id', '?'):36s} [{instance.get('agent_type', '?'):9s}] {instance.get('title', '')}")
+        # See lesson_cmd._cell: a present-but-empty YAML key parses to None,
+        # which cannot be formatted with a width spec.
+        print(
+            f"{cell(instance.get('id')):36s} "
+            f"[{cell(instance.get('agent_type')):9s}] "
+            f"{instance.get('title') or ''}"
+        )
     return 0

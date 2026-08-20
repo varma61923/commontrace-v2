@@ -3,6 +3,7 @@ import os
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmark"))
 import measure_performance as bm
@@ -146,11 +147,26 @@ class TestMinimalYamlParser:
         result = bm.parse_yaml_minimal(text)
         assert result["items"] == ["first part: second part", "plain"]
 
-    def test_scientific_notation_requires_a_decimal_point(self):
-        """Regression: matches PyYAML's own resolver -- '7E3' (no dot) stays a string,
-        only a form with a literal '.' in the mantissa (e.g. '7.0e3') is a float."""
-        assert bm.parse_yaml_minimal("a: 7E3\n")["a"] == "7E3"
-        assert bm.parse_yaml_minimal("a: 7.0e3\n")["a"] == 7.0e3
+    def test_scientific_notation_follows_pyyamls_resolver(self):
+        """Regression: PyYAML's YAML-1.1 float resolver needs BOTH a literal '.'
+        in the mantissa AND a signed exponent.
+
+        This test previously asserted that '7.0e3' parsed as a float and said
+        it matched PyYAML. It does not -- real PyYAML resolves '7.0e3' to the
+        string '7.0e3', because the exponent sign is mandatory. The assertion
+        was encoding the bug, so the ground truth is now read from PyYAML here
+        rather than hard-coded from memory.
+        """
+        for literal in ("7E3", "7.0e3", "7.0e+3", "1e5", "1.5e-3"):
+            text = f"a: {literal}\n"
+            assert bm.parse_yaml_minimal(text)["a"] == yaml.safe_load(text)["a"], literal
+
+    def test_integer_forms_follow_pyyamls_resolver(self):
+        """Bare-leading-zero octal is the dangerous one: '010' is 8, and
+        reading it as 10 produces a plausible wrong number, not an error."""
+        for literal in ("0", "007", "010", "0x1f", "0b101", "1_000", "-42", "+7"):
+            text = f"a: {literal}\n"
+            assert bm.parse_yaml_minimal(text)["a"] == yaml.safe_load(text)["a"], literal
 
     def test_flow_list_of_dicts_not_shredded_by_naive_comma_split(self):
         # date is an unquoted YAML date scalar -- real PyYAML resolves it to

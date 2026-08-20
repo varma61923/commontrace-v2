@@ -22,13 +22,22 @@ a small, universal **protocol core** (this file + the two schemas next to
 it), and any number of **profiles** that add domain-specific fields on top
 without touching the core.
 
-## 2. The pipeline (five stages, one loop)
+## 2. The pipeline (seven stages, one loop)
+
+The table below is normative. Any restatement of the pipeline elsewhere in
+this repository (AGENTS.md, SKILL.md, `commontrace install`'s generated
+files) reproduces these seven stage names verbatim and in this order.
 
 ```
-Capture experience → Structure context → Extract lessons → Store reusable knowledge → Reinject the right lesson
-                                                    ↑                                          |
-                                                    └──────────────── Measure ←─────────────────┘
+Capture → Structure → Extract → Validate → Store → Inject
+                         ↑                            |
+                         └────────── Measure ←────────┘
 ```
+
+`Validate` is a stage, not a formality: it is the human gate where a
+candidate lesson becomes one that can affect a live decision. Omitting it
+from a restatement of the pipeline misrepresents the protocol's central
+safety property.
 
 | Stage | What happens | Who does it (generic role) | Reference impl |
 |---|---|---|---|

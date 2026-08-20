@@ -17,7 +17,7 @@ _GENERIC_POINTER_SKILL = """---
 name: commontrace
 description: "Pointer skill — no reference pipeline (SKILL.md) was found on disk. \
 Read protocol/PROTOCOL.md for the CommonTrace Protocol spec and implement \
-Capture -> Structure -> Extract -> Validate -> Store -> Inject for this agent."
+Capture -> Structure -> Extract -> Validate -> Store -> Inject -> Measure for this agent."
 ---
 
 # commontrace (generic pointer)

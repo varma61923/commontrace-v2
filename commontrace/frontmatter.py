@@ -16,15 +16,23 @@ _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 class FrontmatterError(ValueError):
     """Raised when a file's frontmatter block is present but not parseable YAML,
-    or does not decode to a mapping. Callers should treat this as a clean,
-    reportable error rather than letting a raw yaml.YAMLError/AttributeError
-    traceback reach the user."""
+    does not decode to a mapping, or the file cannot be opened at all.
+    Callers should treat this as a clean, reportable error rather than letting
+    a raw yaml.YAMLError/AttributeError/OSError traceback reach the user."""
 
 
 def read(path: str) -> tuple[dict[str, Any], str]:
     """Return (frontmatter_dict, body_markdown) for a `---\\nYAML\\n---\\nbody` file."""
-    with open(path, "r", encoding="utf-8") as fh:
-        content = fh.read()
+    # A path the user typed -- `lesson validate /nope/x.md`, or a directory
+    # passed where a file was meant -- is a user error, not a crash. Every
+    # other error path in this CLI prints "[commontrace] ..." and exits
+    # non-zero; letting a raw FileNotFoundError/IsADirectoryError through
+    # made this the odd one out.
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+    except OSError as exc:
+        raise FrontmatterError(f"cannot read {path}: {exc.strerror or exc}") from exc
     if not content.startswith("---"):
         return {}, content
     delims = list(_DELIM_RE.finditer(content))

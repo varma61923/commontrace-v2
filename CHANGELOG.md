@@ -8,6 +8,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`--dest` no longer loses to an exported `$COMMONTRACE_ROOT`.** `run_script`
+  used `env.setdefault`, so a child script inherited the *old* env value and
+  silently discarded an explicit `--dest`, inverting the precedence
+  `paths.py` documents. The failure was invisible: `bench --pilot --dest B`
+  rendered a normal-looking report full of store A's numbers. Affected
+  `bench`, `bench --pilot`, `query`, and `index`.
+- **`protocol/PROTOCOL.md` §2 contradicted itself three ways** — the heading
+  said five stages, the table listed seven, and the diagram showed a
+  different five with **Validate** missing and Inject renamed. The table is
+  now normative at seven stages, the heading and diagram match it, and
+  `install_cmd.py`'s restatement (which dropped Measure) was corrected.
+  Losing Validate from a restatement of the pipeline drops the human
+  approval gate, which is the protocol's central safety property.
+- **`lesson list` and `trace list` crashed on a present-but-empty field.**
+  `.get(k, default)` returns the default only when the key is *absent*;
+  `status:` with no value parses to `None`, which has no `__format__` for a
+  width spec. `lesson validate` diagnosed such a file cleanly while `list`
+  died on it — the browsing command failing on exactly the file you are
+  browsing to find. Both now render via a shared `_format.cell`.
+- **Mistyped paths raised raw tracebacks.** `lesson validate /nope/x.md` and
+  `trace validate <a directory>` reached `open()` unguarded. `frontmatter.read`
+  now converts `OSError` into the existing `FrontmatterError`, so these
+  report `[commontrace] error: cannot read …` and exit 1 like every other
+  error path.
+- **`capture` wrote traces that violate the shipped schema.** `--tokens-used -5`
+  landed on disk and was only caught by a later `trace validate`, while
+  `pilot_metrics` averaged the negative number into a customer-facing cost
+  figure in the meantime. The instance is now validated before the file is
+  written.
+- **The YAML fallback parser disagreed with PyYAML on four numeric forms.**
+  Its docstring claimed `7.0e3` resolved as a float "confirmed against
+  yaml.safe_dump/safe_load"; PyYAML's YAML-1.1 resolver requires a *signed*
+  exponent, so it is the string `'7.0e3'`. `0x1f`, `1_000`, and bare-leading-zero
+  octal were also unhandled — `010` returned 10 where PyYAML returns 8, a
+  plausible wrong number rather than an error. Both resolvers now follow
+  PyYAML, and `tests/test_yaml_fallback.py` differential-tests them across
+  300 generated documents, making good on a claim the docstring had been
+  asserting without a test. The pre-existing test asserted the wrong
+  behaviour and now reads ground truth from PyYAML instead.
+- **`split_baseline` was O(n²).** `t not in baseline` is a full dict
+  comparison per trace, correct only because `load_traces` happens to set
+  `_path` on every dict — a load-bearing side effect of an unrelated line.
+  Now compares identity.
+- **Removed the committed `.devin/skills/commontrace/SKILL.md`.** It was the
+  only install output checked into the tree, and `install --target devin`
+  overwrites that exact path with the root `SKILL.md` — so the committed
+  stub was whatever a Devin user saw until they ran install, at which point
+  it was silently replaced by different content. It also still carried a
+  `/justdoit` trigger. The installer's copy is canonical.
+- **Deleted four stale pre-rename assets** (`justdoit_overall.{dot,png}`,
+  `agent_orchestrateur.{dot,png}`) still carrying French labels and the
+  string `/justdoit v2.3`. Nothing referenced them.
+- **`SKILL.md`'s description was 1013 of 1024 permitted characters.** Eleven
+  characters from silently failing to load. Trimmed to 779 by cutting the
+  per-version changelog — release history is not what a model needs to decide
+  whether a skill is relevant — and a test now enforces the limit.
+
+### Added
+- `validate.assert_supported_schema()` — this validator implements a
+  deliberate subset of JSON Schema, and an unsupported keyword was previously
+  ignored in silence. Adding `pattern` or `maxLength` to a schema would have
+  meant the constraint was enforced nowhere while documents still reported
+  valid. Unknown keywords now raise, and both shipped schemas are checked.
+- A test asserting `protocol/schemas/` and `commontrace/schemas/` stay
+  byte-identical. They are committed twice so a bare `pip install` can
+  validate, and nothing had been keeping them equal.
+- Coverage for `lesson list` / `trace list`, which had none at all.
 - **`commontrace bench` and `bench --pilot` now work from a plain
   `pip install`.** Both reference scripts lived only in the repo checkout, so a
   customer could install the product and still be unable to compute their own

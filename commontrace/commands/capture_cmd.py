@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 
-from commontrace import paths, templates
+from commontrace import paths, templates, validate
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -101,6 +101,23 @@ def run(args: argparse.Namespace) -> int:
     agent_type = args.agent_type or paths.store_agent_type(root)
     fm = templates.trace_frontmatter(trace_id, args.title, agent_type, tags, args.profile, outcome)
     body = templates.trace_body(args.context, args.solution)
+
+    # Validate BEFORE writing, so the store is invalid-by-construction
+    # impossible rather than invalid-until-someone-audits-it. Without this,
+    # `--tokens-used -5` lands on disk, `trace validate` only flags it on a
+    # later separate run, and pilot_metrics averages the negative number in
+    # the meantime -- a wrong cost figure in a customer-facing report.
+    instance = dict(fm)
+    instance["context_text"] = args.context
+    instance["solution_text"] = args.solution
+    errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
+    if errors:
+        print(
+            "[commontrace] refusing to write an invalid trace:\n"
+            + "\n".join(f"  - {e}" for e in errors),
+            file=sys.stderr,
+        )
+        return 1
 
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("---\n")

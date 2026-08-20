@@ -150,6 +150,28 @@ def _strip_inline_comment(line):
     return line
 
 
+def _coerce_int(val):
+    """PyYAML's YAML-1.1 integer resolver, or None if `val` is not an int.
+
+    Ordered so the bare-leading-zero octal form is tested before the decimal
+    form, matching PyYAML: "010" is 8, not 10.
+    """
+    for pattern, base in (
+        (r"[-+]?0b[01_]+", 2),
+        (r"[-+]?0x[0-9a-fA-F_]+", 16),
+        (r"[-+]?0[0-7_]+", 8),
+        (r"[-+]?(?:0|[1-9][\d_]*)", 10),
+    ):
+        if re.fullmatch(pattern, val):
+            cleaned = val.replace("_", "")
+            sign = -1 if cleaned.startswith("-") else 1
+            cleaned = cleaned.lstrip("+-")
+            if base != 10:
+                cleaned = cleaned[2:] if base in (2, 16) else cleaned
+            return sign * int(cleaned, base)
+    return None
+
+
 def _coerce_scalar(val):
     val = val.strip()
     if len(val) >= 2 and val[0] == val[-1] and val[0] == '"':
@@ -183,14 +205,24 @@ def _coerce_scalar(val):
             if m:
                 out[m.group(1).strip()] = _coerce_scalar(m.group(2) or "")
         return out
-    if re.fullmatch(r"[-+]?\d+", val):
-        return int(val)
-    # Floats, including scientific notation, matching PyYAML's own resolver rule: the
-    # mantissa MUST contain a literal '.' for the exponential form to count as a float
-    # -- "7E3" (no dot) resolves as the STRING "7E3" even to real PyYAML, only "7.0e3"
-    # (with a dot) resolves as a float. Confirmed against yaml.safe_dump/safe_load.
-    if re.fullmatch(r"[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?", val):
-        return float(val)
+    # Integers, following PyYAML's YAML-1.1 int resolver: binary, octal (a bare
+    # leading zero!), decimal, and hex, each allowing '_' separators. Getting
+    # octal wrong is the dangerous one -- "010" is 8, and reading it as 10
+    # yields a plausible wrong number rather than a visible failure.
+    coerced = _coerce_int(val)
+    if coerced is not None:
+        return coerced
+    # Floats, following PyYAML's YAML-1.1 float resolver. Two rules matter and
+    # both are easy to get backwards:
+    #   * the mantissa must contain a literal '.'  -> "7E3" is the STRING "7E3"
+    #   * the exponent's sign is MANDATORY         -> "7.0e3" is the STRING
+    #     "7.0e3"; only "7.0e+3" resolves as a float.
+    # Verified against real PyYAML in tests/test_yaml_fallback.py rather than
+    # asserted here -- an earlier version of this comment claimed "7.0e3"
+    # parsed as a float, which is exactly the kind of thing a differential
+    # test catches and a confident comment does not.
+    if re.fullmatch(r"[-+]?(\d[\d_]*\.[\d_]*|\.[\d_]+)([eE][-+]\d+)?", val):
+        return float(val.replace("_", ""))
     if val in (".inf", ".Inf", ".INF", "+.inf"):
         return float("inf")
     if val in ("-.inf", "-.Inf", "-.INF"):
@@ -354,14 +386,29 @@ def _parse_block(lines, start, min_indent):
 def parse_yaml_minimal(text):
     """Fallback parser for our frontmatter format, used only when PyYAML isn't installed.
 
+    WHY THIS EXISTS (do not delete as dead code). `pyproject.toml` declares
+    PyYAML as a hard runtime dependency, so any *installed* commontrace takes
+    the HAS_YAML branch and never reaches this code. It is here for the other
+    way this file is used: executed directly, as a standalone script, in an
+    environment that has not installed the package -- which is exactly how a
+    benchmark gets run on a locked-down box or inside someone else's CI. The
+    guarantee it buys is that `python measure_performance.py` never fails for
+    want of a dependency.
+
+    Its correctness is pinned by tests/test_yaml_fallback.py, which
+    differential-tests it against real PyYAML; that is what makes the
+    behavioural claims below verifiable rather than assertions.
+
     Handles flat 'key: value' pairs, one or more levels of nested mapping ('key:' followed
     by more-indented 'subkey: value' lines -- e.g. Trace.outcome), block lists of scalars
     or of dicts (e.g. tags, importance_history -- PyYAML's default block style, not inline
     '[a, b]'), inline '[a, b]'/'{k: v}' flow collections, quoted strings (single- and
     double-quoted escaping), booleans/null/dates/floats/scientific notation, PyYAML's
     line-wrapped-scalar continuation lines (width=80 default), and trailing '# comment'
-    stripping. Differential-tested against real PyYAML output across hundreds of
-    generated cases.
+    stripping. Integer and float resolution follows PyYAML's YAML-1.1 rules,
+    including bare-leading-zero octal ('010' is 8), 0x/0b bases, '_' digit
+    separators, and the mandatory exponent sign ('7.0e3' is a string, '7.0e+3'
+    is a float).
 
     Known, deliberate gaps (not used by anything this project's own writer emits, so not
     worth the added complexity): a block list nested directly inside another block list

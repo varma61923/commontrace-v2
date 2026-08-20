@@ -62,6 +62,12 @@ def run_script(root: str, relative: str, extra_args: list[str], missing_hint: st
         )
         return 1
     env = dict(os.environ)
-    env.setdefault("COMMONTRACE_ROOT", root)
+    # Assign, never setdefault. `root` is already the resolved winner of
+    # paths.resolve_root() -- --dest beats $COMMONTRACE_ROOT beats cwd. With
+    # setdefault, an exported COMMONTRACE_ROOT survives into the child and
+    # silently overrides an explicit --dest, inverting that documented
+    # priority. The failure is invisible: `bench --pilot --dest B` renders a
+    # normal-looking report full of store A's numbers.
+    env["COMMONTRACE_ROOT"] = root
     result = subprocess.run([sys.executable, script, *extra_args], env=env)
     return result.returncode

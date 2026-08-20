@@ -1,11 +1,13 @@
 """Smoke + contract tests for the `commontrace` CLI (protocol/PROTOCOL.md client)."""
 import json
 import os
+import subprocess
 
 import pytest
 
 from commontrace import frontmatter, paths, trace_io, validate
 from commontrace.cli import main
+from commontrace.commands import _shellout
 
 
 @pytest.fixture
@@ -336,6 +338,33 @@ def test_paths_env_var_override(tmp_path, monkeypatch):
     assert paths.resolve_root() == str(tmp_path)
 
 
+def test_subprocess_handoff_passes_the_resolved_root_not_the_inherited_env(tmp_path, monkeypatch):
+    """--dest must beat an exported COMMONTRACE_ROOT across the subprocess boundary.
+
+    resolve_root() already applies the documented precedence (paths.py: flag,
+    then env, then cwd) on the parent side, so `root` here is the winner. The
+    child previously inherited the *old* env value because run_script used
+    setdefault, which silently discarded an explicit --dest. The failure was
+    invisible -- `bench --pilot --dest B` rendered a normal report full of
+    store A's numbers -- so this asserts the handoff, not just resolve_root.
+    """
+    captured = {}
+
+    def fake_run(cmd, env=None):
+        captured["root"] = env["COMMONTRACE_ROOT"]
+        return subprocess.CompletedProcess(cmd, 0)
+
+    script = tmp_path / "script.py"
+    script.write_text("", encoding="utf-8")
+    monkeypatch.setenv("COMMONTRACE_ROOT", "/some/other/store")
+    monkeypatch.setattr(_shellout.subprocess, "run", fake_run)
+    monkeypatch.setattr(_shellout, "find_reference_script", lambda root, rel: str(script))
+
+    assert _shellout.run_script(str(tmp_path), "whatever.py", [], "hint") == 0
+    assert captured["root"] == str(tmp_path)
+    assert captured["root"] != "/some/other/store"
+
+
 def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, monkeypatch):
     monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
     monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
@@ -410,3 +439,166 @@ def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, 
     assert main(["sync", "--dest", str(store)]) == 0
     out = capsys.readouterr().out
     assert "No Hub is configured" in out
+
+
+def test_packaged_schemas_are_identical_to_the_normative_ones():
+    """protocol/schemas/ is what implementers read; commontrace/schemas/ is what
+    the validator enforces. They are committed twice so a bare `pip install`
+    can validate without a repo checkout, and nothing else keeps them equal.
+
+    Without this test the next schema edit lands in one copy and the spec and
+    the tool disagree silently -- the validator would enforce a constraint the
+    published spec does not state, or vice versa.
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("trace.schema.json", "lesson.schema.json"):
+        normative = os.path.join(repo, "protocol", "schemas", name)
+        packaged = os.path.join(repo, "commontrace", "schemas", name)
+        with open(normative, encoding="utf-8") as fh:
+            a = fh.read()
+        with open(packaged, encoding="utf-8") as fh:
+            b = fh.read()
+        assert a == b, (
+            f"{name} differs between protocol/schemas/ and commontrace/schemas/. "
+            "Edit the normative copy under protocol/ and copy it across."
+        )
+
+
+def test_skill_description_fits_the_claude_code_limit():
+    """A skill whose description exceeds 1024 characters does not load, which
+    would break `install --target claude-code` for every downstream user with
+    nothing in the diff to catch it at review time."""
+    import yaml as _yaml
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo, "SKILL.md"), encoding="utf-8") as fh:
+        front = fh.read().split("---")[1]
+    description = _yaml.safe_load(front)["description"]
+    assert len(description) <= 1024, f"SKILL.md description is {len(description)} chars (limit 1024)"
+
+
+def test_shipped_schemas_use_only_keywords_the_validator_enforces():
+    """commontrace/validate.py implements a deliberate subset of JSON Schema.
+
+    The risk is not today's schemas -- it is the next edit. Adding `pattern`
+    to constrain Trace.id to a UUID, or `maxLength` to description, are
+    natural things to want, and the validator would accept literally anything
+    for that field while still reporting the document valid. This makes that
+    a loud failure at the moment the schema widens.
+    """
+    for name in ("trace.schema.json", "lesson.schema.json"):
+        validate.assert_supported_schema(validate.load_schema(name))
+
+
+def test_an_unenforced_keyword_is_rejected_rather_than_ignored():
+    with pytest.raises(validate.UnsupportedSchemaError, match="pattern"):
+        validate.assert_supported_schema(
+            {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[0-9a-f-]+$"}}}
+        )
+
+
+def test_a_permissive_additional_properties_is_accepted_as_a_genuine_no_op():
+    """`additionalProperties: true` means "anything else is fine", which is
+    exactly what ignoring it does -- so it is not a silent unenforced rule."""
+    validate.assert_supported_schema({"type": "object", "additionalProperties": True})
+    with pytest.raises(validate.UnsupportedSchemaError):
+        validate.assert_supported_schema({"type": "object", "additionalProperties": False})
+
+
+class TestListingCommands:
+    """`lesson list` and `trace list` had no coverage at all, which is how a
+    crash on a present-but-empty YAML field reached the branch."""
+
+    def _lesson(self, store, name, **overrides):
+        fm = {
+            "name": name, "description": "d", "tags": ["t"], "agent_type": "support",
+            "domain": "other", "importance": 3, "applies_when": "when",
+            "do_not_apply_when": "not", "uses": 0, "last_hit": "NEVER",
+            "source_traces": [], "status": "active", "importance_rationale": "r",
+            "importance_history": [],
+        }
+        fm.update(overrides)
+        import yaml as _yaml
+        path = store / "memory" / "lessons" / f"{name}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\n" + _yaml.safe_dump(fm) + "---\n\nbody\n", encoding="utf-8")
+        return path
+
+    def test_lists_a_lesson(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        self._lesson(store, "lesson_alpha")
+        capsys.readouterr()
+        assert main(["lesson", "list", "--dest", str(store)]) == 0
+        assert "lesson_alpha" in capsys.readouterr().out
+
+    def test_a_present_but_empty_field_does_not_crash_the_listing(self, store, capsys):
+        """`status:` with no value is valid YAML and parses to None, which has
+        no __format__ for a width spec. A half-finished edit is exactly when
+        someone runs a listing to find the file that needs fixing, and
+        `lesson validate` already reports such a file cleanly -- the two
+        commands disagreeing was the defect."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        self._lesson(store, "lesson_broken", status=None, agent_type=None, description=None)
+        capsys.readouterr()
+        assert main(["lesson", "list", "--dest", str(store)]) == 0
+        assert "lesson_broken" in capsys.readouterr().out
+
+    def test_status_filter_selects(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        self._lesson(store, "lesson_active", status="active")
+        self._lesson(store, "lesson_review", status="review")
+        capsys.readouterr()
+        assert main(["lesson", "list", "--status", "review", "--dest", str(store)]) == 0
+        out = capsys.readouterr().out
+        assert "lesson_review" in out and "lesson_active" not in out
+
+    def test_trace_list_survives_an_empty_field(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        path = store / "memory" / "traces" / "2026-01-01_broken.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\nid:\nagent_type:\ntitle: still listable\n---\n\n## Context\nc\n\n## Solution\ns\n",
+            encoding="utf-8",
+        )
+        capsys.readouterr()
+        assert main(["trace", "list", "--dest", str(store)]) == 0
+        assert "still listable" in capsys.readouterr().out
+
+
+class TestBadPathsAreReportedNotRaised:
+    """Every other error path in this CLI prints "[commontrace] ..." and exits
+    non-zero; a mistyped path reaching open() as a raw traceback was the odd
+    one out."""
+
+    def test_missing_file(self, store, capsys):
+        assert main(["lesson", "validate", "/nope/does-not-exist.md", "--dest", str(store)]) == 1
+        assert "cannot read" in capsys.readouterr().err
+
+    def test_directory_where_a_file_was_meant(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        capsys.readouterr()
+        assert main(["trace", "validate", str(store / "memory"), "--dest", str(store)]) == 1
+        assert "cannot read" in capsys.readouterr().err
+
+
+class TestCaptureRefusesInvalidTraces:
+    def test_a_negative_cost_is_refused_at_write_time(self, store, capsys):
+        """Otherwise the invalid record lands on disk and pilot_metrics
+        averages it into a customer-facing cost figure before `trace validate`
+        ever runs."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        capsys.readouterr()
+        rc = main(["capture", "--title", "t", "--context", "c", "--solution", "s",
+                   "--tokens-used", "-5", "--dest", str(store)])
+        assert rc == 1
+        assert "refusing to write an invalid trace" in capsys.readouterr().err
+        written = list((store / "memory" / "traces").glob("*.md"))
+        assert [p.name for p in written if p.name != "README.md"] == []
+
+    def test_a_valid_trace_still_writes_and_validates(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        capsys.readouterr()
+        assert main(["capture", "--title", "t", "--context", "c", "--solution", "s",
+                     "--tokens-used", "10", "--resolved", "--dest", str(store)]) == 0
+        capsys.readouterr()
+        assert main(["trace", "validate", "--dest", str(store)]) == 0

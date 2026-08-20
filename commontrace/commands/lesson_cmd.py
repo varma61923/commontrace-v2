@@ -8,6 +8,7 @@ import re
 import sys
 
 from commontrace import frontmatter, paths, templates, validate
+from commontrace.commands._format import cell
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -200,11 +201,16 @@ def run_list(args: argparse.Namespace) -> int:
             continue
         if args.status and fm.get("status") != args.status:
             continue
+        # `.get(k, default)` returns the default only when the key is ABSENT.
+        # A key present with an empty YAML value parses to None, which has no
+        # __format__ for ":8s" -- so a half-finished edit (`status:`) crashed
+        # the browsing command with a traceback while `lesson validate`
+        # diagnosed the same file cleanly. Coerce before formatting.
         print(
-            f"{fm.get('name', '?'):45s} "
-            f"[{fm.get('agent_type', '?'):9s}] "
-            f"imp={fm.get('importance', '?')} "
-            f"status={fm.get('status', '?'):8s} "
-            f"{fm.get('description', '')}"
+            f"{cell(fm.get('name')):45s} "
+            f"[{cell(fm.get('agent_type')):9s}] "
+            f"imp={cell(fm.get('importance'))} "
+            f"status={cell(fm.get('status')):8s} "
+            f"{fm.get('description') or ''}"
         )
     return 0

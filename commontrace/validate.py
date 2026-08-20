@@ -47,6 +47,61 @@ def _check_type(value: Any, expected: str | list) -> bool:
     return False
 
 
+# Every keyword `_validate_value` and `validate` actually act on, plus the
+# purely descriptive ones that carry no constraint. Anything outside this set
+# is silently ignored by this validator -- so a schema edit adding `pattern`,
+# `format`, or `maxLength` would report OK while enforcing nothing.
+# `assert_supported_schema` turns that silent no-op into a loud failure at
+# exactly the moment someone widens a schema.
+_SUPPORTED_KEYWORDS = frozenset({
+    # structural
+    "type", "properties", "required", "items",
+    # constraints this file implements
+    "enum", "minLength", "minimum", "maximum",
+    # descriptive only -- no runtime effect, safe to ignore
+    "$schema", "$id", "title", "description", "default", "examples",
+})
+
+# Keywords whose only permissive value is a no-op. `additionalProperties: true`
+# means "anything else is fine", which is exactly what ignoring it does; any
+# other value would be a real constraint this validator cannot enforce.
+_PERMISSIVE_ONLY = {"additionalProperties": (True,)}
+
+
+class UnsupportedSchemaError(ValueError):
+    """A schema uses a keyword this minimal validator does not implement.
+
+    Raised rather than ignored because the failure mode is invisible: the
+    validator would accept any value at all for the constrained field while
+    reporting the document valid.
+    """
+
+
+def assert_supported_schema(schema: dict, path: str = "<root>") -> None:
+    """Raise if `schema` uses a keyword this validator does not enforce."""
+    for key, value in schema.items():
+        if key in _PERMISSIVE_ONLY:
+            if value not in _PERMISSIVE_ONLY[key]:
+                raise UnsupportedSchemaError(
+                    f"{path}: '{key}: {value!r}' is a constraint this validator "
+                    f"does not enforce (only {_PERMISSIVE_ONLY[key]} is a no-op)"
+                )
+            continue
+        if key not in _SUPPORTED_KEYWORDS:
+            raise UnsupportedSchemaError(
+                f"{path}: unsupported schema keyword {key!r}. commontrace/validate.py "
+                "implements a deliberate subset; add support there before using it, "
+                "or the constraint will be silently unenforced."
+            )
+
+    for name, sub in (schema.get("properties") or {}).items():
+        if isinstance(sub, dict):
+            assert_supported_schema(sub, f"{path}.{name}")
+    items = schema.get("items")
+    if isinstance(items, dict):
+        assert_supported_schema(items, f"{path}[]")
+
+
 def validate(instance: dict, schema: dict) -> list[str]:
     """Return a list of human-readable error strings; empty list = valid."""
     errors: list[str] = []
