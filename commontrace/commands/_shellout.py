@@ -19,18 +19,33 @@ def has_attention_deps() -> bool:
     )
 
 
+def packaged_reference_dir() -> str:
+    """Where reference scripts that ship inside the wheel live.
+
+    The benchmark scripts need nothing beyond PyYAML, so they are packaged
+    (see pyproject.toml's package-data) and a plain `pip install commontrace`
+    can run `commontrace bench` without a repo checkout. The attention
+    scripts are not packaged -- they need numpy + sentence-transformers.
+    """
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reference")
+
+
 def find_reference_script(root: str, relative: str) -> str | None:
     """Locate a reference-implementation script (attention/query.py, benchmark/...).
 
-    These live in the commontrace-v2 repo checkout, not in the pip package
-    (they carry heavier optional dependencies — see pyproject.toml's
-    `attention` extra). A pure `pip install commontrace` without a repo
-    checkout nearby won't have them; callers should fail with a clear
-    message rather than a traceback.
+    Checked in order: the store root, the working directory, then the copy
+    bundled in the installed package. The first two let a repo checkout's
+    edited copy win, which is what a contributor expects; the third is what
+    makes the command work for someone who only ran `pip install commontrace`.
+
+    Scripts with heavy optional dependencies (memory/attention/*, needing the
+    `attention` extra) are deliberately not bundled, so they still resolve to
+    None here and callers report the install hint rather than a traceback.
     """
     candidates = [
         os.path.join(root, relative),
         os.path.join(os.getcwd(), relative),
+        os.path.join(packaged_reference_dir(), os.path.basename(relative)),
     ]
     for c in candidates:
         if os.path.isfile(c):

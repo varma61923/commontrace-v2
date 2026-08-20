@@ -5,9 +5,12 @@ import sys
 import pytest
 import yaml
 
-# Ensure scripts can be imported without installing as a package
+# The benchmark reference scripts are run as subprocesses in production, so they
+# are not importable as `commontrace.reference.*` (that directory deliberately has
+# no __init__.py -- it ships as package data). Tests import them directly, so put
+# their directory on the path.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, "benchmark"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "memory", "attention"))
 
 

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`commontrace bench` and `bench --pilot` now work from a plain
+  `pip install`.** Both reference scripts lived only in the repo checkout, so a
+  customer could install the product and still be unable to compute their own
+  pilot metrics — the one number they most need, and the whole point of the
+  before/after story. They now ship inside the wheel at
+  `commontrace/reference/` (declared as `package-data`; the directory has no
+  `__init__.py` because they are executed as subprocesses, not imported).
+  Script resolution checks the store root and cwd first, so a contributor's
+  edited copy still wins. Verified by installing the built wheel into a clean
+  venv and running both commands from a directory with no checkout anywhere
+  near it. `doctor` now reports a missing benchmark script as a real failure
+  (damaged install) rather than the expected-for-clients `[INFO]`.
 - **`capture` and `lesson new` now inherit the store's `agent_type`.** `init
   --agent-type support` stamps the type into `memory/INDEX.md`, but both
   commands hard-defaulted to `code`, so a support/sales/ops fleet silently

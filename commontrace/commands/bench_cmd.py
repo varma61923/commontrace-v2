@@ -41,9 +41,9 @@ def run(args: argparse.Namespace) -> int:
             root,
             "benchmark/pilot_metrics.py",
             extra,
-            "The pilot benchmark requires the reference script from the commontrace-v2 "
-            "repo checkout (benchmark/pilot_metrics.py). It has no extra dependencies "
-            "beyond PyYAML, which ships with `commontrace` already.",
+            "pilot_metrics.py ships inside the commontrace package, so this usually "
+            "means a damaged install -- try `pip install --force-reinstall commontrace`. "
+            "It needs nothing beyond PyYAML.",
         )
     extra = []
     if args.n:
@@ -58,7 +58,7 @@ def run(args: argparse.Namespace) -> int:
         root,
         "benchmark/measure_performance.py",
         extra,
-        "The benchmark requires the reference script from the commontrace-v2 repo "
-        "checkout (benchmark/measure_performance.py). It has no extra dependencies "
-        "beyond PyYAML, which ships with `commontrace` already.",
+        "measure_performance.py ships inside the commontrace package, so this usually "
+        "means a damaged install -- try `pip install --force-reinstall commontrace`. "
+        "It needs nothing beyond PyYAML.",
     )

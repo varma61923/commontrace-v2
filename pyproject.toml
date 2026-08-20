@@ -55,7 +55,12 @@ commontrace = "commontrace.cli:main"
 include = ["commontrace*"]
 
 [tool.setuptools.package-data]
-commontrace = ["schemas/*.json"]
+# reference/*.py are executed as subprocesses by `commontrace bench`, not
+# imported, so they ship as data rather than as an importable subpackage
+# (reference/ deliberately has no __init__.py). Without this the benchmark
+# commands only worked from a repo checkout -- a plain `pip install`
+# customer could not compute their own pilot metrics.
+commontrace = ["schemas/*.json", "reference/*.py"]
 
 [tool.ruff]
 line-length = 120

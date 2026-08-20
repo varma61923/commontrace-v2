@@ -38,11 +38,11 @@ Capture experience → Structure context → Extract lessons → Store reusable 
 | **Validate** | Candidate lessons are audited before they can affect a live decision (formal quality, non-duplicate, generalization, importance). | Validator | Lambda (code-review profile) |
 | **Store** | Validated lessons persist in a queryable store — local files, or the Hub. | Store (§5) | `memory/` or CommonTrace Hub |
 | **Inject** | Before an agent acts, relevant lessons are retrieved and placed in its context. | Retriever | Alpha (code-review profile) |
-| **Measure** | Compare behavior with vs. without injected lessons (repeated-error rate, resolution rate, escalation rate, cost). | — | `benchmark/measure_performance.py` |
+| **Measure** | Compare behavior with vs. without injected lessons (repeated-error rate, resolution rate, escalation rate, cost). | — | `commontrace bench` |
 
 Everything left of "Store" is about **generation quality**; everything right
 of it is about **retrieval quality**. Both are independently measurable —
-that split is what `benchmark/measure_performance.py`'s three axes
+that split is what `commontrace bench`'s three axes
 (`lesson_quality`, `implicit_retrieval`, `transfer_gap`) actually measure,
 and it holds regardless of agent type.
 
@@ -194,7 +194,7 @@ retrieval — a pilot needs to show, in the fleet's own business terms, that
 injecting lessons changed outcomes. These are five specific, computable
 metrics, deliberately distinct from the internal §2 generation/retrieval
 axes (`lesson_quality`, `implicit_retrieval`, `transfer_gap`, computed by
-`benchmark/measure_performance.py`), which measure whether the *protocol
+`commontrace bench`), which measure whether the *protocol
 machinery itself* is healthy (is Omega proposing good lessons, is Alpha
 retrieving the right ones). The pilot metrics below measure whether the
 *fleet's behavior* actually changed — the thing a customer is paying for.
@@ -219,7 +219,7 @@ counterpart, e.g. `--not-escalated`, so a definite "no" can be recorded, not
 just "yes" or "unknown" — a field's rate denominator only counts traces
 where it was actually set one way or the other), plus `--tokens-used`,
 `--llm-calls`, and `--baseline` to populate this at capture time;
-`commontrace bench --pilot` (backed by `benchmark/pilot_metrics.py`)
+`commontrace bench --pilot`
 computes and reports the five metrics, baseline-vs-current, from whatever
 `memory/traces/` currently holds. Populating `outcome` is optional and
 additive — a fleet that only wants the generation/retrieval axes from §2

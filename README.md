@@ -294,13 +294,13 @@ generic concepts map to your specific agent platform.
 
 ```bash
 # Markdown summary to stdout (scripts auto-detect their root, or: commontrace bench)
-python3 benchmark/measure_performance.py
+commontrace bench
 
 # Last 5 episodes only
-python3 benchmark/measure_performance.py --n=5
+commontrace bench --n 5
 
 # HTML report
-python3 benchmark/measure_performance.py --html
+commontrace bench --html
 ```
 
 ---
@@ -370,7 +370,7 @@ are running from a different location than the memory store).
 ```bash
 export COMMONTRACE_ROOT=/opt/commontrace
 python3 memory/attention/query.py "my task"
-python3 benchmark/measure_performance.py
+commontrace bench
 ```
 
 ---
@@ -408,7 +408,7 @@ cached under `~/.cache/huggingface/`.
 
 ## Benchmark
 
-`benchmark/measure_performance.py` measures memory health across three axes:
+`commontrace bench` measures memory health across three axes:
 
 | Metric | What it measures |
 |---|---|
@@ -428,7 +428,7 @@ business-facing question — see the next section.
 
 ## Pilot Metrics
 
-`benchmark/pilot_metrics.py` (via `commontrace bench --pilot`) computes the
+`commontrace bench --pilot` computes the
 five business-outcome metrics from the pilot deck, from `Trace.outcome` data
 (see `protocol/schemas/trace.schema.json` and
 [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md#11-pilot-outcome-metrics)):

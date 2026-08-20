@@ -40,7 +40,6 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     info_labels = {
         "attention extra installed",
         "reference attention/query.py found",
-        "reference benchmark script found",
         "protocol/ spec present",
     }
     for label in info_labels:
@@ -49,6 +48,11 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     # None of the informational conditions leaked through as [WARN].
     for label in info_labels:
         assert not any(label in line for line in warn_lines), f"{label} should not be [WARN]"
+
+    # The benchmark script ships inside the wheel, so a client with no repo
+    # checkout still gets [OK] -- `commontrace bench --pilot` works for them.
+    # Absence would mean a damaged install, which is a real problem, not info.
+    assert "[OK  ] benchmark script found" in out
 
 
 def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
@@ -65,5 +69,5 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     assert main(["doctor", "--dest", repo_root]) == 0
     out = capsys.readouterr().out
     assert "[OK  ] reference attention/query.py found" in out
-    assert "[OK  ] reference benchmark script found" in out
+    assert "[OK  ] benchmark script found" in out
     assert "[OK  ] protocol/ spec present" in out

@@ -75,9 +75,12 @@ def run(args: argparse.Namespace) -> int:
 
     bench_script = find_reference_script(root, "benchmark/measure_performance.py")
     if bench_script is not None:
-        _check("reference benchmark script found", True, bench_script)
+        _check("benchmark script found", True, bench_script)
     else:
-        _info("reference benchmark script found", "not in a repo checkout (expected for a pip-installed client)")
+        # It ships inside the package now, so absence means a damaged install
+        # rather than "you are not in a repo checkout".
+        _check("benchmark script found", False,
+               "missing from the installed package - try `pip install --force-reinstall commontrace`")
 
     protocol_dir = os.path.join(root, "protocol")
     if os.path.isdir(protocol_dir):
