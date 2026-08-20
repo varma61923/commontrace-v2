@@ -57,6 +57,18 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # /readyz, not /healthz: readiness checks the database, which is what
+    # "can this container serve a request" actually depends on. Using the
+    # liveness endpoint here would report healthy while every call 500s.
+    # Python rather than curl: the runtime image has no curl, and adding one
+    # to a production image just for a probe widens its attack surface.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8420/readyz', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
 volumes:

@@ -66,6 +66,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a skill is relevant — and a test now enforces the limit.
 
 ### Added
+- **`python -m hub.smoke` — post-deploy verification against a live server.**
+  CI proves the code and the compose stack work; it cannot prove *your*
+  deployment works — your TLS terminator, your managed Postgres, your
+  ingress — and that gap is where deployments actually fail. Exercises all
+  six MCP tools over real HTTP, confirms an invalid key is refused, and with
+  `--other-api-key` confirms one tenant cannot read, vote on, or amend
+  another's trace. A raw HTTP preflight runs first because the MCP client
+  collapses a 401 into a generic internal error, so without it an operator
+  cannot tell a rejected credential from a crashed server; each failure mode
+  now yields one actionable sentence. Documented as DEPLOYMENT.md §12.
+- **`compose-stack` CI job — the deployment path, end to end.** Brings up the
+  documented stack, waits on `/readyz`, asserts migrations created every
+  table, provisions two orgs through the operator CLI, drives the running
+  server over real HTTP (all six tools, 401 without a key, cross-tenant reads
+  refused), restarts the app and checks data survived, and asserts the logs
+  are structured JSON containing no API key or database password. Every other
+  job tested a piece; this is the only one proving the pieces compose.
+- **Readiness healthcheck on the `hub` compose service.** It probes `/readyz`
+  rather than `/healthz` — readiness checks the database, which is what "can
+  this container serve a request" actually depends on; the liveness endpoint
+  would report healthy while every call failed. Implemented with `python`
+  rather than `curl`, which the runtime image deliberately does not carry.
 - `validate.assert_supported_schema()` — this validator implements a
   deliberate subset of JSON Schema, and an unsupported keyword was previously
   ignored in silence. Adding `pattern` or `maxLength` to a schema would have

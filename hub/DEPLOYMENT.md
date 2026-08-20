@@ -8,13 +8,22 @@ local-checkout instructions in [`hub/README.md`](README.md).
 > tenant isolation), on Python 3.10/3.11/3.12, and CI additionally applies
 > every migration to an empty database and runs `alembic check` for drift.
 >
-> The **container image is built and smoke-tested in CI** (`docker-build`
-> job): it builds, the container starts, `/healthz` serves, and `/readyz`
-> correctly returns 503 with no database reachable. Two honest caveats
-> remain: the **compose stack** (`docker-compose.yml`) is not exercised by
-> CI — only the image is — and neither has been run against a production-
-> like environment (TLS, managed Postgres, multiple replicas). Do a
-> rehearsal deploy before a client's data lands.
+> The **container image** is built and started in CI (`docker-build` job):
+> it builds, the container comes up, `/healthz` serves, and `/readyz`
+> correctly returns 503 with no database reachable.
+>
+> The **compose stack is exercised end to end in CI** (`compose-stack` job):
+> it brings up the documented stack, waits on `/readyz`, asserts the
+> migrations created every table, provisions two organizations through the
+> operator CLI, then drives the running server over real HTTP — all six MCP
+> tools, an unauthenticated request refused with 401, and cross-tenant reads
+> refused — restarts the app and checks the data survived, and asserts the
+> logs are structured JSON containing no API key or database password.
+>
+> One honest caveat remains: none of this has run against a
+> production-*like* environment — real TLS termination, a managed Postgres,
+> more than one replica. Do a rehearsal deploy before a client's data lands,
+> and run `python -m hub.smoke` (§12) against it.
 
 ---
 
@@ -197,5 +206,52 @@ re-display a key anyone has lost — rotate instead
 | No self-service data deletion (operator CLI only) | `DATA_RETENTION.md` |
 | Cross-org sharing not implemented (every read is org-scoped) | `hub/README.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
-| Compose stack not exercised by CI (the image itself is) | top of this file |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
+
+---
+
+## 12. Verify the deployment you just made
+
+CI proves the code and the compose stack work. It cannot prove *your*
+deployment works — your TLS terminator, your managed Postgres, your ingress,
+your secret store. That gap is where deployments actually fail, so verify it
+directly:
+
+```bash
+pip install "commontrace[hub-sync]"
+
+python -m hub.smoke \
+  --url https://your-hub-host/mcp \
+  --api-key ct_live_...            \
+  --other-api-key ct_live_...        # a SECOND org's key
+```
+
+It exercises all six MCP tools against the live server, confirms an invalid
+key is refused, and — with `--other-api-key` — confirms one tenant cannot
+read, vote on, or amend another's trace. Exit code 0 means every check
+passed; each check prints its own line, so a failure names the property that
+broke rather than making you bisect.
+
+**Pass the second key.** Without it the isolation checks are skipped, and
+isolation is the property most worth proving before a customer's data lands
+in a deployment. Issue a throwaway org for the purpose:
+
+```bash
+python -m hub.manage create-org "smoke-check-throwaway"
+python -m hub.manage issue-key <org_id> 1        # expires tomorrow
+```
+
+The run writes a small number of traces tagged `commontrace-smoke` under the
+calling org and nothing else. It prints the `purge-trace` command to remove
+them. Running it against production is safe; running it against a fresh
+deployment before you hand out the first customer key is the point.
+
+### What a failure means
+
+| Message | Cause |
+|---|---|
+| `could not reach <url>` | DNS, ingress, or the service is down. Check `/readyz` directly. |
+| `HTTP 404 at <url>` | Wrong endpoint path. It defaults to `/mcp` (`HUB_STREAMABLE_HTTP_PATH`). |
+| `rejected the API key (HTTP 401)` | Key is wrong, revoked, or expired. |
+| `HTTP 5xx` | Reachable but failing. Check the container logs and `/readyz`. |
+| A named `[FAIL]` check | The server is up but a behavioural guarantee broke. Do not hand out keys. |

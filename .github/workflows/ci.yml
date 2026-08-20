@@ -150,3 +150,115 @@ jobs:
       - name: Clean up
         if: always()
         run: docker rm -f hub-ci || true
+
+  compose-stack:
+    # The deployment path a customer actually follows, end to end: bring the
+    # documented stack up, let the one-shot migration gate the app, then drive
+    # the running server over real HTTP through the published port. Every
+    # other job tests a piece -- this is the only one that proves the pieces
+    # compose. It was the last remaining "verified by hand, not by CI" caveat
+    # in hub/DEPLOYMENT.md.
+    name: docker compose stack serves real MCP traffic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring up the documented stack
+        run: |
+          docker compose up -d --build
+          echo "--- services ---"
+          docker compose ps
+
+      - name: Wait for readiness
+        run: |
+          # /readyz, not /healthz: this must not pass until the database is
+          # genuinely reachable, which is the whole point of the split.
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
+            sleep 2
+          done
+          echo "--- compose ps ---";      docker compose ps
+          echo "--- hub logs ---";        docker compose logs hub
+          echo "--- migrate logs ---";    docker compose logs migrate
+          exit 1
+
+      - name: Migrations actually ran and the schema is present
+        run: |
+          docker compose exec -T db psql -U commontrace -d commontrace_hub -c '\dt' | tee /tmp/tables.txt
+          for table in organizations api_keys traces votes trace_relations audit_log; do
+            grep -q " $table " /tmp/tables.txt || { echo "missing table: $table"; exit 1; }
+          done
+          echo "all expected tables present"
+
+      - name: Provision two orgs through the operator CLI
+        id: provision
+        run: |
+          set -euo pipefail
+          org_a=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org A" | awk '/org_id/{print $2}')
+          org_b=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org B" | awk '/org_id/{print $2}')
+          key_a=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_a" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
+          key_b=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_b" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
+          test -n "$key_a" && test -n "$key_b"
+          echo "::add-mask::$key_a"
+          echo "::add-mask::$key_b"
+          echo "key_a=$key_a" >> "$GITHUB_OUTPUT"
+          echo "key_b=$key_b" >> "$GITHUB_OUTPUT"
+
+      - name: Unauthenticated requests are refused
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
+          test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
+          echo "unauthenticated -> 401"
+
+      - name: Smoke check the live stack over MCP
+        env:
+          KEY_A: ${{ steps.provision.outputs.key_a }}
+          KEY_B: ${{ steps.provision.outputs.key_b }}
+        run: |
+          python -m pip install --quiet ".[hub-sync]"
+          # Two keys, so the tenant-isolation checks actually run rather than
+          # being skipped -- isolation is the property worth proving before a
+          # customer's data lands in a deployment.
+          python -m hub.smoke \
+            --url http://127.0.0.1:8420/mcp \
+            --api-key "$KEY_A" \
+            --other-api-key "$KEY_B"
+
+      - name: The stack survives a restart with its data intact
+        run: |
+          # A deploy restarts containers. Traces must still be there, and the
+          # named volume is what makes that true.
+          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          docker compose restart hub
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
+          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
+          test "$after" -gt 0 || { echo "expected traces to exist after the smoke run"; exit 1; }
+          echo "$after trace(s) survived the restart"
+
+      - name: Logs are structured JSON, and carry no secrets
+        run: |
+          docker compose logs hub --no-log-prefix > /tmp/hub.log
+          python - <<'PY'
+          import json, sys
+          lines = [l for l in open("/tmp/hub.log") if l.strip().startswith("{")]
+          assert lines, "no JSON log lines found -- structured logging is not active"
+          for line in lines:
+              json.loads(line)          # every one must parse
+          body = open("/tmp/hub.log").read()
+          assert "ct_live_" not in body, "an API key was written to the logs"
+          assert "change-me-not-for-production" not in body, "the database password was logged"
+          print(f"{len(lines)} structured log line(s), no credentials present")
+          PY
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
