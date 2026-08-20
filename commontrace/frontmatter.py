@@ -16,6 +16,42 @@ import yaml
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 
+class _StrictBoolLoader(yaml.SafeLoader):
+    """SafeLoader, but a bare `yes`/`no`/`on`/`off` (any case) resolves as
+    the plain string it looks like, not a bool.
+
+    Every field this protocol declares as a string -- agent_type, domain,
+    tags entries, a lesson's applies_when -- is one PyYAML's default
+    resolver can silently misparse: `domain: NO` or `tags: [on, off]`
+    become {'domain': False} / {'tags': [True, False]} with no error,
+    because YAML 1.1 treats those tokens as booleans. `commontrace`'s own
+    write path (yaml.safe_dump) auto-quotes them on output, so a
+    round-tripped file is never at risk -- the exposure is a *hand-edited*
+    file, which this protocol explicitly relies on (e.g. `lesson approve`/
+    `reject` instruct manual edits).
+
+    Rebuilds the resolver table on a SUBCLASS rather than mutating
+    `yaml.SafeLoader.yaml_implicit_resolvers` in place: that dict is
+    process-global, so patching it here would silently change bool
+    resolution for every other `yaml.safe_load` call anywhere in the
+    process (including third-party code), not just this module's reads.
+    """
+
+    yaml_implicit_resolvers = {
+        first_char: [
+            (tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:bool"
+        ]
+        for first_char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
+
+
+_StrictBoolLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+
+
 class FrontmatterError(ValueError):
     """Raised when a file's frontmatter block is present but not parseable YAML,
     does not decode to a mapping, or the file cannot be opened at all.
@@ -42,7 +78,7 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         return {}, content
     fm_text = content[delims[0].end():delims[1].start()]
     try:
-        fm = yaml.safe_load(fm_text)
+        fm = yaml.load(fm_text, Loader=_StrictBoolLoader)
     except yaml.YAMLError as exc:
         raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
     if fm is None:

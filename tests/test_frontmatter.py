@@ -280,6 +280,87 @@ class TestFrontmatterMalformedInput:
         assert body.strip() == "body"
 
 
+class TestFrontmatterYaml11BoolCoercion:
+    """PyYAML's default (YAML 1.1) resolver silently coerces a bare
+    yes/no/on/off (any case) to a Python bool. Every protocol field that
+    should be a string -- agent_type, domain, tags entries -- is exposed
+    to this if a lesson/trace file is hand-edited (this protocol's
+    approve/reject workflow explicitly relies on manual edits). The CLI's
+    own write path (yaml.safe_dump) auto-quotes these on output, so a
+    round-tripped file is never at risk; these tests are specifically
+    about content nobody generated through this CLI.
+    """
+
+    def test_no_stays_a_string_not_a_bool(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "no.md"
+        path.write_text("---\ncountry: NO\n---\nbody\n", encoding="utf-8")
+        fm, _ = frontmatter.read(str(path))
+        assert fm["country"] == "NO"
+        assert isinstance(fm["country"], str)
+
+    def test_on_off_yes_stay_strings_in_a_list(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "tags.md"
+        path.write_text("---\ntags: [on, off, yes, Off, YES]\n---\nbody\n", encoding="utf-8")
+        fm, _ = frontmatter.read(str(path))
+        assert fm["tags"] == ["on", "off", "yes", "Off", "YES"]
+        assert all(isinstance(t, str) for t in fm["tags"])
+
+    def test_true_false_variants_still_parse_as_real_booleans(self, tmp_path):
+        """The fix must narrow the bool resolver, not disable it -- an
+        actual boolean field must still come back as bool, not string."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "bools.md"
+        path.write_text(
+            "---\na: true\nb: True\nc: TRUE\nd: false\ne: False\nf: FALSE\n---\nbody\n",
+            encoding="utf-8",
+        )
+        fm, _ = frontmatter.read(str(path))
+        assert fm == {"a": True, "b": True, "c": True, "d": False, "e": False, "f": False}
+        assert all(isinstance(v, bool) for v in fm.values())
+
+    def test_other_scalar_resolution_is_unaffected(self, tmp_path):
+        """Only the bool resolver narrows -- ints, nulls, and normal
+        strings must resolve exactly as plain yaml.safe_load would."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "mixed.md"
+        path.write_text(
+            "---\nimportance: 3\nlast_hit: NEVER\nnothing: null\nname: lesson_x\n---\nbody\n",
+            encoding="utf-8",
+        )
+        fm, _ = frontmatter.read(str(path))
+        assert fm == {"importance": 3, "last_hit": "NEVER", "nothing": None, "name": "lesson_x"}
+
+    def test_does_not_mutate_pyyamls_global_resolver_state(self, tmp_path):
+        """Regression guard for the wrong fix: patching
+        yaml.SafeLoader.yaml_implicit_resolvers in place would silently
+        change bool resolution for every other yaml.safe_load call in the
+        process, including third-party code, not just this module."""
+        from commontrace import frontmatter  # noqa: F401  (import triggers class definition)
+
+        assert yaml.safe_load("x: NO") == {"x": False}, (
+            "plain yaml.safe_load must be unaffected by importing commontrace.frontmatter"
+        )
+
+    def test_cli_written_file_round_trips_through_the_stricter_loader(self, tmp_path):
+        """The write path already auto-quotes ambiguous tokens
+        (yaml.safe_dump), so round-tripping CLI-generated content through
+        the narrowed loader must be a no-op -- this isn't just a read-side
+        change, it must not break the write/read cycle."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "roundtrip.md"
+        frontmatter.write(str(path), {"domain": "NO", "tags": ["on", "off"]}, "body text")
+        fm, body = frontmatter.read(str(path))
+        assert fm == {"domain": "NO", "tags": ["on", "off"]}
+        assert body.strip() == "body text"
+
+
 class TestTraceIoSectionParsing:
     """commontrace/trace_io.py must not truncate Context/Solution at an unrelated '## '
     sub-heading embedded inside the section's own text.
