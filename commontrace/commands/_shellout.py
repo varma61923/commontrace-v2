@@ -53,14 +53,28 @@ def find_reference_script(root: str, relative: str) -> str | None:
     return None
 
 
-def run_script(root: str, relative: str, extra_args: list[str], missing_hint: str) -> int:
+def run_script(
+    root: str,
+    relative: str,
+    extra_args: list[str],
+    missing_hint: str,
+    capture: bool = False,
+) -> int | tuple[int, str]:
+    """Run a reference script as a subprocess.
+
+    With `capture=True` returns (returncode, stdout) instead of streaming
+    stdout straight through, so a caller can post-process the result --
+    `query --experiment` needs the emitted lesson list in order to apply the
+    randomized holdout to it. stderr is never captured: warnings and errors
+    should reach the user immediately either way.
+    """
     script = find_reference_script(root, relative)
     if script is None:
         print(
             f"[commontrace] Could not find {relative}. {missing_hint}",
             file=sys.stderr,
         )
-        return 1
+        return (1, "") if capture else 1
     env = dict(os.environ)
     # Assign, never setdefault. `root` is already the resolved winner of
     # paths.resolve_root() -- --dest beats $COMMONTRACE_ROOT beats cwd. With
@@ -69,5 +83,11 @@ def run_script(root: str, relative: str, extra_args: list[str], missing_hint: st
     # priority. The failure is invisible: `bench --pilot --dest B` renders a
     # normal-looking report full of store A's numbers.
     env["COMMONTRACE_ROOT"] = root
+    if capture:
+        result = subprocess.run(
+            [sys.executable, script, *extra_args], env=env,
+            stdout=subprocess.PIPE, text=True,
+        )
+        return result.returncode, result.stdout
     result = subprocess.run([sys.executable, script, *extra_args], env=env)
     return result.returncode

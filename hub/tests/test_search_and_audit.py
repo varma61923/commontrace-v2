@@ -155,7 +155,10 @@ class TestAuditLog:
         async with session_scope(session_factory) as session:
             await crud.vote_trace(session, org, trace["id"], "up", actor="a")
         async with session_scope(session_factory) as session:
-            await crud.amend_trace(session, org, trace["id"], title="new title", actor="a")
+            await crud.amend_trace(
+                session, org, trace["id"], config, make_rate_limiter(config),
+                title="new title", actor="a",
+            )
 
         async with session_scope(session_factory) as session:
             rows = (await session.execute(select(AuditLogEntry))).scalars().all()

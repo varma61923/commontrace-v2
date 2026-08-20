@@ -120,14 +120,19 @@ fi
 # 3. Verify core dependencies
 # --------------------------------------------------------------------------- #
 echo "[3/4] Verifying dependencies ..."
-MISSING=()
+# A space-separated string, not an array. Under `set -u`, bash < 4.4 -- which
+# is what stock macOS still ships (3.2) -- treats ${#ARR[@]} on an empty array
+# as an unbound variable and aborts. That fires only on the SUCCESS path, so
+# the installer would die precisely when every dependency was already present.
+# A string has no such edge case and this is only ever a warning list.
+MISSING=""
 for pkg in numpy yaml sentence_transformers; do
   if ! "${PYTHON}" -c "import ${pkg}" 2>/dev/null; then
-    MISSING+=("${pkg}")
+    MISSING="${MISSING}${MISSING:+ }${pkg}"
   fi
 done
-if [[ ${#MISSING[@]} -gt 0 ]]; then
-  echo "      [WARN] Missing packages: ${MISSING[*]}"
+if [[ -n "${MISSING}" ]]; then
+  echo "      [WARN] Missing packages: ${MISSING}"
   echo "      Run:  ${PYTHON} -m pip install -r ${DEST}/requirements.txt"
 else
   echo "      All core packages found."
@@ -165,7 +170,8 @@ echo "  COMMONTRACE_ROOT env var is only needed to override the auto-detected pa
 echo ""
 echo "  Quick start:"
 echo "    # Run benchmark"
-echo "    ${PYTHON} ${DEST}/benchmark/measure_performance.py"
+echo "    commontrace bench            # memory health"
+echo "    commontrace bench --pilot    # business-outcome metrics"
 echo ""
 echo "    # Query memory"
 echo "    ${PYTHON} ${DEST}/memory/attention/query.py \"my task description\""

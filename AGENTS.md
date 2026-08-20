@@ -42,7 +42,7 @@ The full pipeline spec lives in `SKILL.md`. Architecture diagrams are in `assets
 | `memory/INDEX.md` | Index of all stored lessons/traces/episodes |
 | `memory/attention/build_index.py` | Rebuild semantic embedding index |
 | `memory/attention/query.py` | Query lessons by cosine similarity |
-| `benchmark/measure_performance.py` | Memory health benchmark |
+| `commontrace bench` | Memory health benchmark (ships in the package) |
 
 ---
 
@@ -66,13 +66,13 @@ python3 memory/attention/build_index.py
 python3 memory/attention/query.py "test query" --top-k=5
 
 # Run benchmark
-python3 benchmark/measure_performance.py
+commontrace bench
 
 # Save benchmark snapshot (JSON + markdown)
-python3 benchmark/measure_performance.py --save
+commontrace bench --save
 
 # HTML benchmark report
-python3 benchmark/measure_performance.py --html
+commontrace bench --html
 ```
 
 The test suite (`tests/`) is the primary code quality gate. The benchmark

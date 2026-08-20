@@ -163,6 +163,23 @@ def benjamini_hochberg(p_values: list[float], alpha: float = 0.05) -> list[bool]
     return keep
 
 
+def _z_for_power(power: float) -> float:
+    """One-sided normal quantile z such that P(Z <= z) == power.
+
+    Bisection on the CDF rather than a table lookup: it is a handful of lines,
+    exact to well past the precision anyone reads off an MDE, and keeps the
+    module stdlib-only (no scipy.stats.norm.ppf).
+    """
+    low, high = 0.0, 10.0
+    for _ in range(200):
+        mid = (low + high) / 2
+        if _norm_cdf(mid) < power:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2
+
+
 def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.80) -> float | None:
     """Smallest true effect this sample size could reliably detect.
 
@@ -173,8 +190,12 @@ def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.
     """
     if n_per_arm <= 0 or not (0 < baseline < 1):
         return None
-    z_beta = _Z_80_POWER if abs(power - 0.80) < 1e-9 else _Z_80_POWER
-    return (_Z_95 + z_beta) * math.sqrt(2 * baseline * (1 - baseline) / n_per_arm)
+    if not 0.5 <= power < 1.0:
+        raise ValueError(f"power must be in [0.5, 1.0), got {power}")
+    # Both branches of the ternary this replaces were _Z_80_POWER, so `power`
+    # was accepted and ignored: asking for 95% power silently returned the 80%
+    # answer, understating the sample size a real experiment needs.
+    return (_Z_95 + _z_for_power(power)) * math.sqrt(2 * baseline * (1 - baseline) / n_per_arm)
 
 
 # --- Analysis ---------------------------------------------------------------

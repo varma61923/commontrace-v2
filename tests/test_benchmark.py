@@ -1,4 +1,4 @@
-"""Tests for benchmark/measure_performance.py."""
+"""Tests for commontrace/reference/measure_performance.py."""
 import os
 
 # Import the benchmark module under test

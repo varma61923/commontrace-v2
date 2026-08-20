@@ -67,16 +67,23 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     return out
 
 
-def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], float, int, int]:
+def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], float, int, int, int]:
     log = holdout_log_path(root)
     if not os.path.isfile(log):
-        return [], experiment.DEFAULT_HOLDOUT_RATE, 0, 0
+        return [], experiment.DEFAULT_HOLDOUT_RATE, 0, 0, 0
 
     outcomes = _outcomes_by_occasion(root)
     obs: list[experiment.HoldoutObservation] = []
     rate = experiment.DEFAULT_HOLDOUT_RATE
     n_lines = 0
     n_no_outcome = 0
+    # (lesson, occasion) is the unit of assignment, and the log is append-only,
+    # so a retried task writes the same pair again. Counting it twice inflates
+    # the arm and deflates the p-value -- a retry storm would manufacture
+    # significance out of nothing. Assignment is a deterministic hash of the
+    # pair, so duplicates are always identical and keeping the first is safe.
+    seen_pairs: set[tuple[str, str]] = set()
+    n_duplicate = 0
 
     with open(log, encoding="utf-8") as fh:
         for line in fh:
@@ -90,23 +97,28 @@ def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], 
             n_lines += 1
             rate = float(rec.get("rate", rate))
             occ = str(rec.get("occasion_id", ""))
+            slug = str(rec.get("lesson", ""))
+            if (slug, occ) in seen_pairs:
+                n_duplicate += 1
+                continue
+            seen_pairs.add((slug, occ))
             if occ not in outcomes:
                 n_no_outcome += 1
                 continue
             obs.append(
                 experiment.HoldoutObservation(
-                    lesson_slug=str(rec.get("lesson", "")),
+                    lesson_slug=slug,
                     occasion_id=occ,
                     injected=bool(rec.get("injected", True)),
                     succeeded=outcomes[occ],
                 )
             )
-    return obs, rate, n_lines, n_no_outcome
+    return obs, rate, n_lines, n_no_outcome, n_duplicate
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    obs, rate, n_lines, n_no_outcome = _load_observations(root)
+    obs, rate, n_lines, n_no_outcome, n_duplicate = _load_observations(root)
 
     if n_lines == 0:
         print(
@@ -149,6 +161,11 @@ def run(args: argparse.Namespace) -> int:
         if n_no_outcome:
             print(
                 f"\n_{n_no_outcome} assignment(s) skipped: no recorded outcome for that occasion yet._"
+            )
+        if n_duplicate:
+            print(
+                f"\n_{n_duplicate} duplicate assignment(s) collapsed: the same lesson was logged "
+                "more than once for one occasion (a retry). Counting them would inflate the arms._"
             )
 
     if args.strict:

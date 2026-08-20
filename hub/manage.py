@@ -168,13 +168,20 @@ async def release_quarantine(trace_id: str, session_factory=None) -> None:
         if trace is None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
             return
+        # Read the reason BEFORE the UPDATE. SQLAlchemy synchronizes the
+        # in-session object with the values it just wrote, so reading
+        # trace.quarantine_reason afterwards yields the new "" -- every audit
+        # row recorded `was=`, losing precisely the fact the row exists to
+        # preserve: why this trace was quarantined in the first place.
+        previous_reason = trace.quarantine_reason
+        org_id = trace.org_id
         await session.execute(
             update(Trace).where(Trace.id == trace_id).values(quarantined=False, quarantine_reason="")
         )
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="release_quarantine",
-            org_id=trace.org_id, target_type="trace", target_id=trace_id,
-            summary=f"was={trace.quarantine_reason[:100]}",
+            org_id=org_id, target_type="trace", target_id=trace_id,
+            summary=f"was={previous_reason[:100]}",
         )
     print(f"released from quarantine: {trace_id}")
 

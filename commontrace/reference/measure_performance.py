@@ -501,7 +501,10 @@ def compute_implicit_retrieval(episodes):
 
 def compute_transfer_gap(episodes, lessons):
     """% of hits whose source_episodes are from a different project than current."""
-    episode_project = {ep["name"]: ep.get("project") for ep in episodes}
+    # `.get`, not `[...]`: an episode file missing `name` is malformed, but a
+    # malformed file must not crash `commontrace bench` for the whole store --
+    # the benchmark exists to report on a corpus, including a messy one.
+    episode_project = {ep["name"]: ep.get("project") for ep in episodes if ep.get("name")}
 
     def resolve_project(slug):
         if slug in episode_project:
@@ -1200,7 +1203,12 @@ def _md_to_html_fragment(md_text):
 def render_html(md_content, timestamp, alerts=None):
     alert_html = ""
     if alerts:
-        items = "\n".join(f"<li>{a}</li>" for a in alerts)
+        # Escape, as every other text path in this file does. Alert strings
+        # interpolate frontmatter values (a lesson's `importance`, its slug),
+        # which are attacker-controllable by whoever can write a lesson file --
+        # so an unescaped banner is the one hole in the escaping this module
+        # otherwise applies consistently.
+        items = "\n".join(f"<li>{html.escape(str(a))}</li>" for a in alerts)
         alert_html = f'<div class="alerts"><h2>Alerts</h2><ul>{items}</ul></div>'
     # Strip the markdown "## Alerts" section so we don't duplicate the banner.
     body_md = re.sub(

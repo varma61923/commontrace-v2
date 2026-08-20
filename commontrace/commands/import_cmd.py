@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 
-from commontrace import import_data, paths, templates
+from commontrace import import_data, paths, templates, validate
 
 _SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -89,6 +89,8 @@ def run(args: argparse.Namespace) -> int:
     date = datetime.date.today().isoformat()
 
     written = 0
+    rejected: list[tuple[int, list[str]]] = []
+    schema = validate.load_schema("trace.schema.json")
     for row in imported:
         trace_id = str(uuid.uuid4())
         slug = _slugify(row.title)
@@ -100,6 +102,20 @@ def run(args: argparse.Namespace) -> int:
         fm = templates.trace_frontmatter(
             trace_id, row.title, args.agent_type, row.tags, args.profile, row.outcome or None
         )
+
+        # Validate before writing, exactly as `capture` does. A bulk import is
+        # the likeliest source of malformed records -- it is someone else's
+        # export, not this tool's output -- so accepting what `capture` refuses
+        # would make the importer the one hole in the store's invariants, and
+        # a bad row would be averaged into `bench --pilot` until an audit ran.
+        instance = dict(fm)
+        instance["context_text"] = row.context_text
+        instance["solution_text"] = row.solution_text
+        errors = validate.validate(instance, schema)
+        if errors:
+            rejected.append((row.line_no, errors))
+            continue
+
         body = templates.trace_body(row.context_text, row.solution_text)
         if row.source_id:
             body = f"<!-- imported from source id: {row.source_id} -->\n" + body
@@ -112,7 +128,18 @@ def run(args: argparse.Namespace) -> int:
 
     print(
         f"[commontrace] wrote {written} trace(s) to {tdir}. "
-        "Run `commontrace distill` to find repeated patterns across them, "
-        "or `commontrace trace validate` to confirm they're schema-conformant."
+        "Run `commontrace distill` to find repeated patterns across them."
     )
+    if rejected:
+        print(
+            f"[commontrace] {len(rejected)} row(s) rejected as schema-invalid "
+            "and NOT written:",
+            file=sys.stderr,
+        )
+        for line_no, errors in rejected:
+            for err in errors:
+                print(f"  [REJECT] line {line_no}: {err}", file=sys.stderr)
+        # Non-zero: a partial import that looks successful is how bad rows get
+        # discovered a month later, in a report.
+        return 1
     return 0

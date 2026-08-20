@@ -23,7 +23,7 @@ What it concretely provides:
 
 Invocation:
 ```bash
-python3 benchmark/measure_performance.py
+commontrace bench
 ```
 
 See §6 for flags and recommended frequency.
@@ -34,7 +34,7 @@ See §6 for flags and recommended frequency.
 
 ### 2.1 Script `measure_performance.py`
 
-Single canonical source: `$COMMONTRACE_ROOT/benchmark/measure_performance.py` (~430 lines, of which ~100 are markdown/HTML rendering). Standalone, no package, no tests, no external config.
+Single canonical source: `commontrace/reference/measure_performance.py` (run it via `commontrace bench`) (~430 lines, of which ~100 are markdown/HTML rendering). Standalone, no package, no tests, no external config.
 
 **Architecture** (logical modules in the same file):
 
@@ -340,7 +340,7 @@ Effort: ~30 min (already documented in DOCUMENTATION.md §6.4 as a snippet).
 
 ```bash
 # Markdown stdout, all episodes (default)
-python3 benchmark/measure_performance.py
+commontrace bench
 
 # Limit to the N most recent episodes
 ... measure_performance.py --n=10
@@ -537,7 +537,7 @@ is a deliberate, manual, one-episode-at-a-time edit:
    retro-tagging an episode's `project:` automatically changes what `compute_transfer_gap`
    resolves for every lesson that cites it (`resolve_project()` reads the episode file live,
    not a cached copy) -- no separate lesson-file edit is needed for this step.
-4. **Re-run the benchmark and sanity-check the delta.** `python3 benchmark/measure_performance.py --diff`
+4. **Re-run the benchmark and sanity-check the delta.** `commontrace bench --diff`
    after a retro-tagging batch will flag if `transfer_gap` (or any other main metric) moved by
    more than 5 points, which is expected and desired here -- confirm the new value makes
    sense before treating it as a reliable signal (§4.3: variance is still high at N=12).

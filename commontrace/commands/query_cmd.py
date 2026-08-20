@@ -86,6 +86,29 @@ def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set
     return withheld
 
 
+def _slug_of_semantic_line(line: str) -> str | None:
+    """The slug from one `memory/attention/query.py` result line, or None.
+
+    That script emits `<slug> | cosine=<x> | importance=<n>` for hits and
+    `#`-prefixed header/warning lines for everything else.
+    """
+    if line.startswith("#") or "|" not in line:
+        return None
+    slug = line.split("|", 1)[0].strip()
+    return slug or None
+
+
+def _slugs_from_semantic_output(stdout: str) -> list[str]:
+    seen: list[str] = []
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        # A slug can legitimately appear twice (top-k hit plus importance-floor
+        # override); the holdout must treat it as one eligible lesson.
+        if slug is not None and slug not in seen:
+            seen.append(slug)
+    return seen
+
+
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons = _iter_active_lessons(root, args.agent_type)
     ranked = retrieval.rank_lessons(args.task, lessons, top_k=args.top_k)
@@ -136,11 +159,69 @@ def run(args: argparse.Namespace) -> int:
             )
         return _run_lexical(args, root)
 
-    return run_script(
-        root,
-        os.path.join("memory", "attention", "query.py"),
-        [args.task, "--top-k", str(args.top_k)],
+    if args.agent_type:
+        # The semantic script has no agent_type filter. Saying so beats
+        # silently returning unfiltered results that look filtered.
+        print(
+            "[commontrace] --agent-type is not supported by the semantic retriever and "
+            "was NOT applied. Use --lexical to filter by agent type.",
+            file=sys.stderr,
+        )
+
+    missing_hint = (
         "Retrieval requires the reference attention scripts from the commontrace-v2 "
         "repo checkout (memory/attention/) plus `pip install commontrace[attention]`. "
-        "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view.",
+        "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view."
     )
+    script_args = [args.task, "--top-k", str(args.top_k)]
+    script_path = os.path.join("memory", "attention", "query.py")
+
+    if not args.experiment:
+        return run_script(root, script_path, script_args, missing_hint)
+
+    if not args.occasion_id:
+        print(
+            "[commontrace] --experiment requires --occasion-id: without it the holdout "
+            "assignment cannot be joined to an outcome, so nothing could be measured.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # The holdout has to apply on BOTH retrieval paths. Previously only the
+    # lexical branch honoured it, so a fleet with the attention extra
+    # installed -- the recommended production setup -- ran `--experiment` and
+    # silently measured nothing: no arms were ever logged, and `commontrace
+    # experiment` reported "no holdout assignments recorded yet" forever.
+    #
+    # Rather than duplicate the assignment logic into the reference script,
+    # capture what it ranked and apply the same _apply_holdout the lexical
+    # path uses. Ranking stays in one place; arm assignment stays in one place.
+    rc, stdout = run_script(root, script_path, script_args, missing_hint, capture=True)
+    if rc != 0:
+        sys.stdout.write(stdout)
+        return rc
+
+    slugs = _slugs_from_semantic_output(stdout)
+    if not slugs:
+        sys.stdout.write(stdout)
+        print(
+            "[commontrace] --experiment: the semantic retriever returned no lessons, "
+            "so no holdout arms were recorded for this occasion.",
+            file=sys.stderr,
+        )
+        return 0
+
+    withheld = _apply_holdout(args, root, slugs)
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        if slug is not None and slug in withheld:
+            print(f"{slug} | [WITHHELD - holdout]")
+        else:
+            print(line)
+    print(
+        f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
+        f"{len(withheld)} withheld at {args.holdout_rate:.0%} for occasion "
+        f"{args.occasion_id!r}. Record the outcome under that id, then run "
+        "`commontrace experiment`."
+    )
+    return 0

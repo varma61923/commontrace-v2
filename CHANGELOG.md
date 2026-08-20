@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`query --experiment` silently did nothing on the semantic path.** Only
+  the lexical branch honoured the holdout flags; the semantic branch
+  forwarded just the query and `--top-k` to the reference script. A fleet
+  with the `attention` extra installed - the recommended production setup -
+  could run `--experiment` on every task forever while `commontrace
+  experiment` reported "no holdout assignments recorded yet". The causal
+  feature no-opped exactly where it was meant to run. The holdout is now
+  applied in the parent to whatever the ranker returned, so ranking stays in
+  one place and arm assignment stays in one place. `--agent-type`, which the
+  semantic script genuinely cannot honour, is now announced rather than
+  silently ignored.
+- **`amend_trace` bypassed every write guard.** It skipped schema validation,
+  size limits, the rate limiter, and quarantine - all of which
+  `contribute_trace` enforces - making it the way around all of them:
+  unbounded writes, and a title past the column width returning a hard 500
+  instead of a clean rejection. All three guards now apply; verified live
+  that an oversized amend is rejected as `invalid_request` and a spammy one
+  is quarantined and invisible to search.
+- **`import` wrote schema-invalid traces that `capture` refuses.** A bulk
+  import is the likeliest source of malformed records - it is someone else's
+  export - so accepting what `capture` rejects made the importer the one hole
+  in the store's invariants, and a bad row was averaged into `bench --pilot`
+  until an audit ran. Invalid rows are now rejected individually, named on
+  stderr, and the command exits non-zero.
+- **Holdout assignments were not de-duplicated on retry.** The log is
+  append-only, so a retried task rewrote the same `(lesson, occasion)` pair;
+  counting it twice inflated the arm and deflated the p-value, meaning a
+  retry storm could manufacture significance. Duplicates are collapsed and
+  the count is reported rather than hidden.
+- **`minimum_detectable_effect(power=...)` was accepted and ignored** - both
+  branches of a ternary were the 80% constant, so asking for 95% power
+  silently returned the 80% answer and understated the sample size an
+  experiment needs. Now computes the normal quantile by bisection (matching
+  scipy to six decimals, still stdlib-only) and rejects an impossible power.
+- **`release-quarantine` audited an empty reason.** It read
+  `quarantine_reason` after the UPDATE had already synchronized it to `""`,
+  so every audit row recorded `was=` - losing precisely the fact the row
+  exists to preserve.
+- **Alert text was interpolated into the HTML report unescaped**, bypassing
+  the `html.escape` the same file applies to all other frontmatter text.
+  Alert strings carry attacker-controllable values (a lesson's `importance`,
+  its slug).
+- **`commontrace bench` crashed on an episode with no `name`.** A malformed
+  file must not take down a report about the whole corpus.
+- **`install.sh` aborted on its own success path on bash < 4.4** (stock
+  macOS): `${#ARR[@]}` on an empty array under `set -u` is an unbound
+  variable. Replaced with a string accumulator, which has no such edge case.
+- **Stale `benchmark/...` paths** in `install.sh`, `AGENTS.md`, and
+  `benchmark/STATUS.md`, left behind when those scripts moved into the
+  package. README had been updated; these had not.
 - **`--dest` no longer loses to an exported `$COMMONTRACE_ROOT`.** `run_script`
   used `env.setdefault`, so a child script inherited the *old* env value and
   silently discarded an explicit `--dest`, inverting the precedence

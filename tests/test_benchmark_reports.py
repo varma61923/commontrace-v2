@@ -1,4 +1,4 @@
-"""Tests for benchmark/measure_performance.py's Phase 3 additions:
+"""Tests for commontrace/reference/measure_performance.py's Phase 3 additions:
 
 - P3: run persistence by default + --diff + --history
 - P4: alert thresholds (STATUS.md §5 defaults) incl. unimodal importance distribution,

@@ -16,10 +16,12 @@ assert on the query layer without needing a running HTTP server.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
-from hub import crud
+from hub import auth, crud
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import Organization
@@ -159,7 +161,10 @@ async def test_amend_trace_cannot_target_other_orgs_trace(
 ):
     fixture = two_orgs_with_overlapping_content
     async with session_scope(session_factory) as session:
-        result = await crud.amend_trace(session, fixture["org_a_id"], fixture["org_b_trace_id"], title="hijacked")
+        result = await crud.amend_trace(
+            session, fixture["org_a_id"], fixture["org_b_trace_id"],
+            config, make_rate_limiter(config), title="hijacked",
+        )
     assert result is None
 
     async with session_scope(session_factory) as session:
@@ -237,7 +242,9 @@ async def test_all_six_tools_as_org_a_never_return_org_b_rows(
     assert vote_result is None
 
     async with session_scope(session_factory) as session:
-        amend_result = await crud.amend_trace(session, org_a, org_b_trace_id, title="x")
+        amend_result = await crud.amend_trace(
+            session, org_a, org_b_trace_id, config, make_rate_limiter(config), title="x"
+        )
     assert amend_result is None
 
     async with session_scope(session_factory) as session:
@@ -276,3 +283,68 @@ async def test_quarantined_traces_still_scoped_to_owning_org(session_factory, co
     async with session_scope(session_factory) as session:
         search_results = await crud.search_traces(session, org_id, query="spammy")
     assert search_results["traces"] == []
+
+
+async def test_org_identity_is_per_request_not_per_session(session_factory, config):
+    """A review raised that org identity might be bound at MCP *session*
+    creation rather than per request -- if tool handlers ran in a long-lived
+    task whose context was copied at spawn, `get_current_org_id()` would
+    return the initialize request's org forever, and any valid key plus
+    another org's `mcp-session-id` would read that org's traces.
+
+    Driven against a live server it does NOT reproduce: the contextvar the
+    middleware sets is the one the handler observes, including under
+    concurrent interleaved requests from two orgs. But the safety of that
+    depends on how the MCP SDK schedules handlers, which is an implicit
+    dependency on a library internal that an upgrade could change silently.
+
+    So this pins the property directly at the layer that matters: whatever the
+    contextvar says when a crud call runs is the org it operates on, and two
+    interleaved callers never observe each other's value. If an SDK upgrade
+    ever breaks the request-scoping, this fails instead of a customer finding
+    out.
+    """
+    rate_limiter = make_rate_limiter(config)
+
+    async with session_scope(session_factory) as session:
+        org_a = Organization(name="ctx-org-a")
+        org_b = Organization(name="ctx-org-b")
+        session.add_all([org_a, org_b])
+        await session.flush()
+        org_a_id, org_b_id = str(org_a.id), str(org_b.id)
+
+    async with session_scope(session_factory) as session:
+        a_trace = await crud.contribute_trace(
+            session, org_a_id, config, rate_limiter,
+            title="ctx-a-secret", context_text="org a only", solution_text="s", tags=["ctx-a"],
+        )
+    a_trace_id = a_trace["id"]
+
+    observed: list[tuple[str, str | None]] = []
+
+    async def act_as(org_id: str, label: str) -> None:
+        """Set the contextvar, yield to the loop, then read it back."""
+        token = auth.current_org_id.set(org_id)
+        try:
+            await asyncio.sleep(0)  # force interleaving with the other task
+            seen = auth.get_current_org_id()
+            observed.append((label, seen))
+            async with session_scope(session_factory) as session:
+                # The org the handler acts on must be the one IT set, never
+                # whatever a concurrently-running caller set.
+                result = await crud.get_trace(session, seen, a_trace_id)
+            if label == "a":
+                assert result is not None and result["title"] == "ctx-a-secret"
+            else:
+                assert result is None, "org B observed org A's trace"
+        finally:
+            auth.current_org_id.reset(token)
+
+    await asyncio.gather(
+        *[act_as(org_a_id, "a") for _ in range(20)],
+        *[act_as(org_b_id, "b") for _ in range(20)],
+    )
+
+    for label, seen in observed:
+        expected = org_a_id if label == "a" else org_b_id
+        assert seen == expected, f"caller {label} observed org {seen}, expected {expected}"

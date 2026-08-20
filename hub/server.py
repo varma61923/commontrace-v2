@@ -203,6 +203,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     session,
                     org_id,
                     id,
+                    config,
+                    rate_limiter,
                     title=title,
                     context_text=context_text,
                     solution_text=solution_text,

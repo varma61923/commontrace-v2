@@ -333,6 +333,8 @@ async def amend_trace(
     session: AsyncSession,
     org_id: str,
     trace_id: str,
+    config: HubConfig,
+    rate_limiter: RateLimiter,
     *,
     title: str | None = None,
     context_text: str | None = None,
@@ -348,17 +350,46 @@ async def amend_trace(
     if original is None:
         return None
 
+    # amend_trace is a WRITE path and carries caller-supplied content, so it
+    # gets the same three guards contribute_trace does. Without them it was
+    # the way around all of them: unlimited writes, unvalidated payloads
+    # (a title past the column width became a hard 500 rather than a clean
+    # rejection), and spam that quarantine would have caught on the way in.
+    if not rate_limiter.allow(org_id):
+        raise RateLimited(f"org {org_id} exceeded write rate limit")
+
+    resolved_title = title if title is not None else original.title
+    resolved_context = context_text if context_text is not None else original.context_text
+    resolved_solution = solution_text if solution_text is not None else original.solution_text
+    resolved_tags = tags if tags is not None else list(original.tags or [])
+
+    amended_id = str(uuid.uuid4())
+    wire = {
+        "id": amended_id,
+        "title": resolved_title,
+        "context_text": resolved_context,
+        "solution_text": resolved_solution,
+        "tags": resolved_tags,
+        "agent_type": original.agent_type,
+    }
+    validate_trace(wire)
+    validate_size(wire, config)
+    reason = suspicion_reason(wire, config)
+
     amended = Trace(
+        id=amended_id,
         org_id=org_id,
-        title=title if title is not None else original.title,
-        context_text=context_text if context_text is not None else original.context_text,
-        solution_text=solution_text if solution_text is not None else original.solution_text,
-        tags=tags if tags is not None else list(original.tags or []),
+        title=resolved_title,
+        context_text=resolved_context,
+        solution_text=resolved_solution,
+        tags=resolved_tags,
         agent_type=original.agent_type,
         profile=original.profile,
         extensions=dict(original.extensions or {}),
         supersedes_trace_id=original.id,
         depth=original.depth + 1,
+        quarantined=reason is not None,
+        quarantine_reason=reason or "",
     )
     session.add(amended)
     await session.flush()
@@ -383,7 +414,8 @@ async def amend_trace(
         org_id=org_id,
         target_type="trace",
         target_id=amended.id,
-        summary=f"supersedes={original.id} depth={amended.depth} changed={','.join(changed) or 'nothing'}",
+        summary=(f"supersedes={original.id} depth={amended.depth} "
+                 f"changed={','.join(changed) or 'nothing'} quarantined={reason is not None}"),
     )
     return await _hydrate_one(session, amended)
 

@@ -10,6 +10,7 @@ module has no reason to exist.
 """
 import json
 import math
+import os
 
 import pytest
 import yaml
@@ -483,3 +484,177 @@ class TestExperimentCLI:
         capsys.readouterr()
         assert main(["experiment", "--dest", str(store), "--json"]) == 0
         assert json.loads(capsys.readouterr().out)["n_observations"] == 1
+
+
+class TestMinimumDetectableEffectPower:
+    """`power` was accepted and ignored -- both branches of a ternary were the
+    80% constant -- so asking for 95% power silently returned the 80% answer
+    and understated the sample size a real experiment needs."""
+
+    def test_higher_power_demands_a_larger_effect_to_detect(self):
+        at80 = ex.minimum_detectable_effect(100, 0.5, power=0.80)
+        at90 = ex.minimum_detectable_effect(100, 0.5, power=0.90)
+        at95 = ex.minimum_detectable_effect(100, 0.5, power=0.95)
+        assert at80 < at90 < at95
+
+    def test_the_default_is_still_eighty_percent(self):
+        assert ex.minimum_detectable_effect(100, 0.5) == ex.minimum_detectable_effect(100, 0.5, power=0.80)
+
+    @pytest.mark.parametrize("power,expected_z", [
+        (0.80, 0.8416212335729143),
+        (0.90, 1.2815515655446004),
+        (0.95, 1.6448536269514722),
+    ])
+    def test_the_normal_quantile_matches_the_standard_value(self, power, expected_z):
+        assert ex._z_for_power(power) == pytest.approx(expected_z, abs=1e-6)
+
+    def test_an_impossible_power_is_rejected_rather_than_silently_clamped(self):
+        for bad in (0.0, 0.4, 1.0, 1.5):
+            with pytest.raises(ValueError, match="power"):
+                ex.minimum_detectable_effect(100, 0.5, power=bad)
+
+
+class TestHoldoutLogDeduplication:
+    """The holdout log is append-only, so a retried task writes the same
+    (lesson, occasion) pair again. Counting it twice inflates the arm and
+    deflates the p-value -- a retry storm would manufacture significance."""
+
+    def test_a_retried_occasion_is_counted_once(self, store, capsys):
+        from commontrace.commands.experiment_cmd import holdout_log_path
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        log = holdout_log_path(str(store))
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        rows = []
+        for i in range(40):
+            occ = f"task{i}"
+            withheld = ex.is_held_out("l", occ, rate=0.5)
+            # three identical rows per occasion, as three retries would write
+            for _ in range(3):
+                rows.append(json.dumps({"occasion_id": occ, "lesson": "l",
+                                        "injected": not withheld, "rate": 0.5, "salt": "default"}))
+            _write_episode(store, occ, "CONFORM" if ex._uniform_from("o", occ) < 0.6 else "ABANDON",
+                           (i % 28) + 1)
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(rows) + "\n")
+
+        capsys.readouterr()
+        assert main(["experiment", "--dest", str(store), "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        # 40 occasions, not 120 rows
+        assert data["n_observations"] == 40
+        total_arms = sum(e["n_injected"] + e["n_withheld"] for e in data["effects"])
+        assert total_arms == 40
+
+    def test_the_collapse_is_reported_not_silent(self, store, capsys):
+        from commontrace.commands.experiment_cmd import holdout_log_path
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        log = holdout_log_path(str(store))
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        row = json.dumps({"occasion_id": "t1", "lesson": "l", "injected": True, "rate": 0.5})
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(row + "\n" + row + "\n")
+        _write_episode(store, "t1", "CONFORM", 1)
+        capsys.readouterr()
+        assert main(["experiment", "--dest", str(store)]) == 0
+        assert "duplicate assignment" in capsys.readouterr().out
+
+
+class TestSemanticPathRunsTheExperiment:
+    """The holdout must apply on BOTH retrieval paths.
+
+    Only the lexical branch honoured `--experiment`; the semantic branch
+    forwarded just the query and --top-k to the reference script. So a fleet
+    with the `attention` extra installed -- the recommended production setup --
+    could run `query --experiment` on every task forever and `commontrace
+    experiment` would keep reporting "no holdout assignments recorded yet".
+    The causal feature silently did nothing exactly where it was meant to run.
+    """
+
+    SEMANTIC_STDOUT = (
+        "# Top-10 retrieval (+ importance>=4 override)\n"
+        "# Index: 3 lessons, model=all-MiniLM-L6-v2\n"
+        "# Query: 'refund delayed'\n"
+        "lesson_alpha | cosine=0.812 | importance=4\n"
+        "lesson_beta | cosine=0.640 | importance=3\n"
+        "lesson_gamma | cosine=0.501 | importance=2\n"
+    )
+
+    @pytest.fixture
+    def semantic(self, monkeypatch):
+        from commontrace.commands import query_cmd
+        monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
+        monkeypatch.setattr(
+            query_cmd, "run_script",
+            lambda root, rel, args, hint, capture=False: (
+                (0, self.SEMANTIC_STDOUT) if capture else 0
+            ),
+        )
+        return query_cmd
+
+    def test_arms_are_logged_on_the_semantic_path(self, store, semantic, capsys):
+        from commontrace.commands.experiment_cmd import holdout_log_path
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        capsys.readouterr()
+        rc = main(["query", "refund delayed", "--experiment",
+                   "--occasion-id", "task-1", "--holdout-rate", "0.5", "--dest", str(store)])
+        assert rc == 0
+
+        records = [
+            json.loads(line)
+            for line in open(holdout_log_path(str(store)), encoding="utf-8")
+            if line.strip()
+        ]
+        assert {r["lesson"] for r in records} == {"lesson_alpha", "lesson_beta", "lesson_gamma"}
+        assert all(r["occasion_id"] == "task-1" for r in records)
+
+    def test_withheld_lessons_are_marked_in_the_output(self, store, semantic, capsys):
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        capsys.readouterr()
+        assert main(["query", "refund delayed", "--experiment", "--occasion-id", "t",
+                     "--holdout-rate", "1.0", "--dest", str(store)]) == 0
+        out = capsys.readouterr().out
+        # rate 1.0 withholds everything
+        assert out.count("[WITHHELD - holdout]") == 3
+        assert "cosine=" not in out.replace("# ", "")
+
+    def test_header_lines_are_not_mistaken_for_lessons(self, store, semantic, capsys):
+        from commontrace.commands.experiment_cmd import holdout_log_path
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        capsys.readouterr()
+        main(["query", "q", "--experiment", "--occasion-id", "t", "--dest", str(store)])
+        slugs = {
+            json.loads(line)["lesson"]
+            for line in open(holdout_log_path(str(store)), encoding="utf-8") if line.strip()
+        }
+        assert not any(s.startswith("#") for s in slugs)
+        assert len(slugs) == 3
+
+    def test_occasion_id_is_still_required(self, store, semantic, capsys):
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        capsys.readouterr()
+        assert main(["query", "q", "--experiment", "--dest", str(store)]) == 1
+        assert "requires --occasion-id" in capsys.readouterr().err
+
+    def test_without_experiment_the_path_is_unchanged(self, store, semantic, capsys, monkeypatch):
+        """No capture, no post-processing: plain passthrough as before."""
+        calls = []
+        from commontrace.commands import query_cmd
+        monkeypatch.setattr(
+            query_cmd, "run_script",
+            lambda root, rel, args, hint, capture=False: (calls.append(capture), 0)[1],
+        )
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        assert main(["query", "q", "--dest", str(store)]) == 0
+        assert calls == [False]
+
+    def test_an_unsupported_agent_type_filter_is_announced(self, store, semantic, capsys):
+        """The semantic script has no agent_type filter. Silently returning
+        unfiltered results that look filtered is the worse failure."""
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        capsys.readouterr()
+        main(["query", "q", "--agent-type", "support", "--dest", str(store)])
+        assert "not supported by the semantic retriever" in capsys.readouterr().err

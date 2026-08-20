@@ -1,4 +1,4 @@
-"""Tests for benchmark/pilot_metrics.py — the deck's five business-outcome metrics."""
+"""Tests for commontrace/reference/pilot_metrics.py — the deck's five business-outcome metrics."""
 import pilot_metrics as pm
 import pytest
 
