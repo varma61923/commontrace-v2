@@ -226,3 +226,34 @@ class TestApiKeyExpiry:
         async with session_scope(session_factory) as session:
             with pytest.raises(ValueError):
                 await auth.issue_api_key(session, org, expires_days=0)
+
+
+class TestVoteTrustAggregate:
+    """`vote_trace` recomputes trust from a COUNT/GROUP BY aggregate rather
+    than hydrating every vote row for the trace -- this pins the actual
+    fraction, not just that the call doesn't crash, since the query shape
+    changed.
+
+    `vote_trace` scopes its trace lookup to `Trace.org_id == org_id` (same
+    tenant-isolation rule as `get_trace`, see hub/crud.py:257-265), so only
+    the trace's own owning org can ever vote on it. Combined with the
+    `uq_votes_trace_org` unique constraint, that means a given trace can
+    have at most one Vote row in practice, ever -- there is no reachable
+    multi-org scenario to aggregate across. The only real aggregate
+    behavior to pin is a single org's vote being *replaced*, not
+    accumulated, on revote.
+    """
+
+    async def test_changing_a_vote_recomputes_trust_not_double_counts_it(
+        self, session_factory, config, org
+    ):
+        """One vote per org per trace: revoting up->down must move the
+        tally by one, not add a second row."""
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "up")
+        assert result["trust"] == pytest.approx(1.0)
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "down")
+        assert result["trust"] == pytest.approx(0.0)

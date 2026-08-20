@@ -51,6 +51,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rep.set_defaults(func=run_report)
 
 
+def _safe_tags(raw: object) -> list[str]:
+    """Coerce a frontmatter `tags` value to a list of strings.
+
+    A hand-edited or malformed lesson/trace file can have `tags` as a bare
+    scalar (`tags: 123`, `tags: true`) instead of a list -- valid YAML, and
+    exactly the shape `retrieval.py`/`reliability.py` already guard against
+    for the same reason. Without this, `tags: 123` crashed `overlap sign`
+    with a raw TypeError from `" ".join(...)`, and `tags: true` did too,
+    while `tags: some_string` silently split into individual characters
+    instead of raising -- inconsistent failure modes for the same class of
+    malformed input.
+    """
+    return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
+
+
 def _iter_lessons(root: str):
     ldir = paths.lessons_dir(root)
     for path in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
@@ -91,14 +106,14 @@ def run_sign(args: argparse.Namespace) -> int:
         text = " ".join(
             str(x) for x in (
                 fm.get("applies_when", ""), fm.get("description", ""),
-                fm.get("domain", ""), " ".join(fm.get("tags") or []),
+                fm.get("domain", ""), " ".join(_safe_tags(fm.get("tags"))),
             )
         )
         sig.items.append(
             overlap.SignedItem(
                 label=_label(str(fm.get("name", "")), args), kind="lesson",
                 domain="" if args.redact_tags else str(fm.get("domain", "")),
-                tags=[] if args.redact_tags else list(fm.get("tags") or []),
+                tags=[] if args.redact_tags else _safe_tags(fm.get("tags")),
                 signature=overlap.minhash(text, args.num_perm),
             )
         )
@@ -107,13 +122,13 @@ def run_sign(args: argparse.Namespace) -> int:
         text = " ".join(
             str(x) for x in (
                 tr.get("title", ""), tr.get("context_text", ""),
-                " ".join(tr.get("tags") or []),
+                " ".join(_safe_tags(tr.get("tags"))),
             )
         )
         sig.items.append(
             overlap.SignedItem(
                 label=_label(str(tr.get("id", ""))[:12], args), kind="failure",
-                domain="", tags=[] if args.redact_tags else list(tr.get("tags") or []),
+                domain="", tags=[] if args.redact_tags else _safe_tags(tr.get("tags")),
                 signature=overlap.minhash(text, args.num_perm),
             )
         )

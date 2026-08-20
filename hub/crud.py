@@ -303,18 +303,21 @@ async def vote_trace(
         )
     await session.flush()
 
-    up = (
+    # COUNT, not SELECT: the previous form hydrated every up- and
+    # down-vote row for the trace as ORM objects just to len() the lists.
+    # A trace with thousands of votes made every single new vote cast pull
+    # its entire voting history into memory for two integers.
+    counts = (
         await session.execute(
-            select(Vote).where(Vote.trace_id == trace_id, Vote.vote_type == "up")
+            select(Vote.vote_type, func.count())
+            .where(Vote.trace_id == trace_id)
+            .group_by(Vote.vote_type)
         )
-    ).scalars().all()
-    down = (
-        await session.execute(
-            select(Vote).where(Vote.trace_id == trace_id, Vote.vote_type == "down")
-        )
-    ).scalars().all()
-    total = len(up) + len(down)
-    trace.trust = (len(up) / total) if total else 0.5
+    ).all()
+    tally = dict(counts)
+    up_count, down_count = tally.get("up", 0), tally.get("down", 0)
+    total = up_count + down_count
+    trace.trust = (up_count / total) if total else 0.5
 
     await session.flush()
     await audit.record(

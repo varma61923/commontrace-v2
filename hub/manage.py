@@ -105,10 +105,19 @@ async def revoke_key(key_id: str, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         key = await session.get(ApiKey, key_id)
+        if key is None:
+            # Without this guard, a mistyped or already-revoked key_id still
+            # printed "revoked: <id>" -- a false success telling an operator
+            # a credential was cut off when nothing happened -- and wrote an
+            # audit row with org_id=None for a key that was never resolved,
+            # unlike every other operator command (release_quarantine,
+            # purge_trace, purge_org) which all refuse on a missing row.
+            print(f"error: no such API key: {key_id}", file=sys.stderr)
+            return
         await auth.revoke_api_key(session, key_id)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="revoke_key",
-            org_id=key.org_id if key else None, target_type="api_key", target_id=key_id,
+            org_id=key.org_id, target_type="api_key", target_id=key_id,
         )
     print(f"revoked: {key_id}")
 

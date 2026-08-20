@@ -46,6 +46,7 @@ import hashlib
 import random
 import re
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 
 # Signature length. Standard error of the Jaccard estimate is ~1/sqrt(k),
 # so 128 permutations gives ~8.8% -- fine for "is the overlap 5% or 40%?",
@@ -103,23 +104,45 @@ def _stable_hash(token: str) -> int:
     return int.from_bytes(hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(), "big")
 
 
+@lru_cache(maxsize=8)
 def _permutations(num_perm: int) -> list[tuple[int, int]]:
     """(a, b) coefficients for the universal hash family h_i(x) = a_i*x + b_i
     mod prime. Seeded so every fleet derives the identical family -- signatures
-    are only comparable if both sides used the same permutations."""
+    are only comparable if both sides used the same permutations.
+
+    Pure function of `num_perm` (fixed seed), so cached: `minhash()` calls
+    this once per lesson/failure signed, and `find_contradictions` signs
+    every active lesson in one process -- redrawing the identical 128-pair
+    table from scratch each time was pure waste that scaled with fleet size.
+    maxsize=8 covers realistic distinct num_perm values in one run (the CLI
+    default plus the rare custom --num-perm) without unbounded growth.
+    """
     rng = random.Random(0xC0FFEE)
     return [(rng.randrange(1, _MERSENNE_61), rng.randrange(0, _MERSENNE_61)) for _ in range(num_perm)]
 
 
 def minhash(text: str, num_perm: int = DEFAULT_NUM_PERM) -> list[int]:
     """MinHash signature of `text`'s token set. Empty/stopword-only text
-    yields an all-max signature, which compares as similarity 0 against
-    anything with content -- an empty activation condition should never
-    match everything."""
+    yields a freshly-drawn random signature, which compares as similarity
+    ~0 against anything -- including another empty/stopword-only text.
+
+    An earlier version returned the same fixed all-max-value signature for
+    every empty input, so two DIFFERENT lessons/failures that both happened
+    to have blank or stopword-only activation text compared as Jaccard=1.0
+    -- exactly the "matches everything" failure the docstring warned
+    against, just triggered by another empty signature instead of by real
+    content. `reliability.py:find_contradictions` hashes every active
+    lesson in one process and compares them pairwise, so this reliably
+    produced false "high severity" contradiction candidates between
+    lessons that share nothing but an unset `applies_when`. A random draw
+    per call has the same near-zero collision probability against real
+    content that two genuinely unrelated real texts already rely on, and
+    additionally never coincides with another empty draw.
+    """
     toks = _tokens(text)
     perms = _permutations(num_perm)
     if not toks:
-        return [_MERSENNE_61] * num_perm
+        return [random.SystemRandom().randrange(0, _MERSENNE_61) for _ in range(num_perm)]
 
     hashes = [_stable_hash(t) for t in toks]
     return [min((a * h + b) % _MERSENNE_61 for h in hashes) for a, b in perms]
