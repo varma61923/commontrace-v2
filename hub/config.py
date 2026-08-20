@@ -45,6 +45,18 @@ class HubConfig:
     host: str = "127.0.0.1"
     port: int = 8420
     streamable_http_path: str = "/mcp"
+    # The MCP SDK's own transport already rejects an oversized request body
+    # (checking bytes actually received, not just a client-supplied
+    # Content-Length, so chunked transfer-encoding can't bypass it) -- but
+    # that protection comes from an *upstream default*
+    # (mcp.server.streamable_http_manager.DEFAULT_MAX_REQUEST_BODY_SIZE),
+    # not a value this module chose or tested. Set it explicitly so it's
+    # this project's own decision, and tighter than the SDK's generic 4MiB:
+    # a trace can never legitimately exceed max_trace_bytes (64KiB)
+    # serialized, so 1MiB leaves generous room for JSON-RPC/MCP envelope
+    # overhead while still rejecting anything trying to smuggle a much
+    # larger payload through.
+    max_request_body_bytes: int = 1_048_576
 
     # --- Abuse controls (contribute_trace) ---
     max_title_chars: int = 500
@@ -87,6 +99,7 @@ class HubConfig:
             host=os.environ.get("HUB_HOST", "127.0.0.1"),
             port=_env_int("HUB_PORT", 8420),
             streamable_http_path=os.environ.get("HUB_STREAMABLE_HTTP_PATH", "/mcp"),
+            max_request_body_bytes=_env_int("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576),
             max_title_chars=_env_int("HUB_MAX_TITLE_CHARS", 500),
             max_text_chars=_env_int("HUB_MAX_TEXT_CHARS", 20_000),
             max_tags=_env_int("HUB_MAX_TAGS", 20),

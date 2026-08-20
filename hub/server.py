@@ -53,7 +53,14 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         self._protected_path = protected_path
 
     async def dispatch(self, request: Request, call_next):
-        if not request.url.path.startswith(self._protected_path):
+        path = request.url.path
+        # Exact match or a path *segment* under it -- plain startswith()
+        # would also treat e.g. "/mcpadmin" as "under /mcp", which happens
+        # to be harmless today only because no such route exists in this
+        # app's route table (/mcp, /healthz, /readyz). Matching on the
+        # segment boundary makes that true by construction instead of by
+        # coincidence, so it stays true if a route is ever added later.
+        if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
         header = request.headers.get("authorization", "")
@@ -246,7 +253,11 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
     rate_limiter = make_rate_limiter(config)
     mcp = build_mcp_server(config, session_factory, rate_limiter)
-    inner_app = mcp.streamable_http_app(streamable_http_path=config.streamable_http_path, host=config.host)
+    inner_app = mcp.streamable_http_app(
+        streamable_http_path=config.streamable_http_path,
+        host=config.host,
+        max_request_body_size=config.max_request_body_bytes,
+    )
 
     add_health_routes(inner_app, session_factory)
     inner_app.add_middleware(

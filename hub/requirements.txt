@@ -2,13 +2,24 @@
 # (the Hub is a service you deploy from a checkout, not a pip-installed
 # library). Install with: pip install -r hub/requirements.txt
 #
-# Pinned to major-version floors only; see hub/README.md for the exact
-# versions this was developed and tested against.
+# Exact-pinned direct dependencies: a floor like "mcp>=1.2" means a fresh
+# install can silently resolve a different mcp than the one this Hub was
+# actually built and tested against -- concretely, the request-body-size
+# guard hub/config.py's max_request_body_bytes relies on
+# (StreamableHTTPSessionManager.max_request_body_size) comes from the mcp
+# SDK itself, so which version resolves is a real behavioral question, not
+# just a version-number one. Bump these deliberately (test against the new
+# version, then edit the pin) rather than letting them float.
+#
+# This still isn't full transitive-dependency reproducibility (that needs
+# a proper lock file, e.g. pip-tools/uv, pinning every indirect dependency
+# too) -- treat that as a known follow-up, not something exact-pinning the
+# direct list alone achieves.
 
-mcp>=1.2                  # MCP server transport (streamable-http), also pulls starlette + uvicorn
-httpx2
-sqlalchemy[asyncio]>=2.0
-asyncpg>=0.29              # async Postgres driver
-alembic>=1.13
-argon2-cffi>=23.1          # API key hashing
-jsonschema>=4.20           # protocol/schemas/*.json validation
+mcp==2.0.0                 # MCP server transport (streamable-http), also pulls starlette + uvicorn
+httpx2==2.12.0
+sqlalchemy[asyncio]==2.0.52
+asyncpg==0.31.0            # async Postgres driver
+alembic==1.19.1
+argon2-cffi==25.1.0        # API key hashing
+jsonschema==4.26.0         # protocol/schemas/*.json validation

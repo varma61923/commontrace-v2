@@ -54,6 +54,44 @@ class TestJsonLogFormatter:
         )
 
 
+class TestResolveRequestId:
+    """A client-supplied X-Request-ID is echoed verbatim into every log
+    line and the response header -- it must be bounded and validated
+    rather than accepted unconditionally."""
+
+    def test_accepts_a_reasonable_client_supplied_id(self):
+        assert observability._resolve_request_id("req-abc-123") == "req-abc-123"
+
+    def test_accepts_a_uuid(self):
+        rid = "550e8400-e29b-41d4-a716-446655440000"
+        assert observability._resolve_request_id(rid) == rid
+
+    def test_generates_one_when_absent(self):
+        rid = observability._resolve_request_id(None)
+        assert rid and rid != ""
+
+    def test_rejects_an_oversized_id(self):
+        oversized = "a" * 500
+        rid = observability._resolve_request_id(oversized)
+        assert rid != oversized
+        assert len(rid) < len(oversized)
+
+    def test_rejects_embedded_newline(self):
+        hostile = "legit-id\nfake_log_line=injected"
+        rid = observability._resolve_request_id(hostile)
+        assert rid != hostile
+        assert "\n" not in rid
+
+    def test_rejects_embedded_control_characters(self):
+        hostile = "id\x00\x1b[31mred"
+        rid = observability._resolve_request_id(hostile)
+        assert rid != hostile
+
+    def test_rejects_empty_string(self):
+        rid = observability._resolve_request_id("")
+        assert rid != ""
+
+
 class TestConfigureLogging:
     def test_is_idempotent(self):
         """Called twice (e.g. app reload) must not stack handlers and emit

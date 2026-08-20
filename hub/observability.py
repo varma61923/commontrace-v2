@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -93,6 +94,24 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(level.upper())
 
 
+# A client-supplied X-Request-ID is echoed into every log line for this
+# request and back into the response header verbatim -- accepting it
+# unbounded would let a client put an arbitrarily long or arbitrarily
+# encoded value into both. The JSON log encoding already prevents newline
+# log-forging (control characters get escaped inside a string field, not
+# emitted as raw line breaks), but bounding length and character set here
+# is still cheap defense-in-depth against oversized values and anything
+# that could misbehave in a raw (non-JSON) log consumer or a header value.
+_MAX_CLIENT_REQUEST_ID_LEN = 128
+_VALID_CLIENT_REQUEST_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,%d}$" % _MAX_CLIENT_REQUEST_ID_LEN)
+
+
+def _resolve_request_id(client_supplied: str | None) -> str:
+    if client_supplied and _VALID_CLIENT_REQUEST_ID.match(client_supplied):
+        return client_supplied
+    return str(uuid.uuid4())
+
+
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assigns/propagates a request id, logs one structured line per request
     with its outcome and duration, and echoes the id back in the response so
@@ -103,7 +122,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         self._logger = logging.getLogger(logger_name)
 
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+        request_id = _resolve_request_id(request.headers.get(REQUEST_ID_HEADER))
         token = current_request_id.set(request_id)
         started = time.perf_counter()
         status = 500
