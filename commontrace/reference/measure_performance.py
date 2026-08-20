@@ -70,7 +70,7 @@ SCHEMA_VERSION = "1.2.0"
 # Example: export COMMONTRACE_ROOT=/opt/commontrace
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_AUTO_ROOT = os.path.dirname(_SCRIPT_DIR)  # benchmark → ROOT
+_AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # reference -> commontrace -> ROOT
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 BASE_DIR = os.path.join(_ROOT, "memory")
 
@@ -107,7 +107,9 @@ _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 
 def parse_frontmatter(content):
-    if not content.startswith("---"):
+    if isinstance(content, str) and content.startswith("\ufeff"):
+        content = content[1:]
+    if not isinstance(content, str) or not content.startswith("---"):
         return None
     delims = list(_DELIM_RE.finditer(content))
     if len(delims) < 2:
@@ -428,7 +430,7 @@ def load_episodes(n=None):
         paths = paths[-n:]
     episodes = []
     for p in paths:
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8-sig") as fh:
             fm = parse_frontmatter(fh.read())
         if fm:
             fm["_path"] = p
@@ -443,7 +445,7 @@ def load_lessons():
         name = os.path.basename(p).replace(".md", "")
         if name.endswith("_template"):
             continue
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8-sig") as fh:
             fm = parse_frontmatter(fh.read())
         if fm:
             fm["_path"] = p
@@ -511,7 +513,7 @@ def compute_transfer_gap(episodes, lessons):
             return episode_project[slug]
         path = os.path.join(BASE_DIR, "episodes", f"{slug}.md")
         if os.path.exists(path):
-            with open(path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8-sig") as fh:
                 fm = parse_frontmatter(fh.read())
             return (fm or {}).get("project")
         return None
@@ -669,7 +671,7 @@ def compute_operational_cost(telemetry_path=None):
     latencies, tokens = [], []
     n_lines = 0
     n_malformed = 0
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         for raw in fh:
             line = raw.strip()
             if not line:
@@ -797,7 +799,7 @@ def load_stored_reports(reports_dir=None):
     out = []
     for p in sorted(glob.glob(os.path.join(d, "*.json"))):
         try:
-            with open(p, encoding="utf-8") as fh:
+            with open(p, encoding="utf-8-sig") as fh:
                 out.append((p, json.load(fh)))
         except (OSError, json.JSONDecodeError) as exc:
             print(f"[WARN] Skipping unreadable stored report {p}: {exc}", file=sys.stderr)
@@ -969,8 +971,9 @@ def render_markdown(r, alerts=None):
     out.append("| Date / slug | Verdict | Imp | Retrieved | Hit | Proposed | Validated | Project |")
     out.append("|---|---|---|---|---|---|---|---|")
     for ep in r["episodes"]:
+        ep_name = ep.get("name") or ep.get("id") or (os.path.basename(ep.get("_path", "")) if ep.get("_path") else "unnamed")
         out.append(
-            f"| `{ep['name']}` | {ep.get('verdict', '?')} | "
+            f"| `{ep_name}` | {ep.get('verdict', '?')} | "
             f"{ep.get('importance', '?')} | "
             f"{len(ep.get('lessons_retrieved_by_alpha') or [])} | "
             f"{len(ep.get('lessons_hit') or [])} | "
@@ -1315,6 +1318,26 @@ def main():
         metavar="FLOAT",
         help=f"Unimodal importance-distribution alert threshold (default: {DEFAULT_THRESHOLD_UNIMODAL})",
     )
+    parser.add_argument(
+        "--threshold-semantic", type=float, default=None,
+        metavar="FLOAT",
+        help=f"Semantic similarity threshold (default: {SEMANTIC_DUP_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--threshold-lexical", type=float, default=None,
+        metavar="FLOAT",
+        help="Lexical similarity threshold",
+    )
+    parser.add_argument(
+        "--threshold-freshness", type=float, default=None,
+        metavar="FLOAT",
+        help="Freshness threshold",
+    )
+    parser.add_argument(
+        "--threshold-composite", type=float, default=None,
+        metavar="FLOAT",
+        help="Composite threshold",
+    )
     args = parser.parse_args()
     if args.json and args.html:
         parser.error("--json and --html are mutually exclusive (choose one output format).")
@@ -1344,7 +1367,12 @@ def main():
     tg_value, tg_n, tg_untraceable = compute_transfer_gap(episodes, lessons)
     extras = compute_extras(episodes, lessons)
     operational_cost = compute_operational_cost()
-    semantic_duplicates = compute_semantic_duplicates()
+    dup_threshold = (
+        args.threshold_semantic
+        if args.threshold_semantic is not None
+        else SEMANTIC_DUP_THRESHOLD
+    )
+    semantic_duplicates = compute_semantic_duplicates(threshold=dup_threshold)
 
     report = {
         "schema_version": SCHEMA_VERSION,

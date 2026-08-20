@@ -76,7 +76,8 @@ def run_new(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     ldir = paths.lessons_dir(root)
     os.makedirs(ldir, exist_ok=True)
-    out_path = os.path.join(ldir, f"{args.slug}.md")
+    filename = f"{args.slug}.md" if args.slug.startswith("lesson_") else f"lesson_{args.slug}.md"
+    out_path = os.path.join(ldir, filename)
     if os.path.exists(out_path):
         print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
         return 1
@@ -112,12 +113,17 @@ def _iter_lesson_paths(root: str, explicit: str | None):
 def run_validate(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     schema = validate.load_schema("lesson.schema.json")
+    if args.path and not os.path.isfile(args.path):
+        frontmatter.read(args.path)
     n_checked = 0
     n_failed = 0
     for path in _iter_lesson_paths(root, args.path):
         n_checked += 1
-        fm, _ = frontmatter.read(path)
-        errors = validate.validate(fm, schema)
+        try:
+            fm, _ = frontmatter.read(path)
+            errors = validate.validate(fm, schema)
+        except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError) as exc:
+            errors = [str(exc)]
         if errors:
             n_failed += 1
             print(f"FAIL {path}")
@@ -132,8 +138,15 @@ def run_validate(args: argparse.Namespace) -> int:
 def _resolve_lesson_path(root: str, slug: str) -> str | None:
     if not _SLUG_RE.match(slug):
         return None
-    path = os.path.join(paths.lessons_dir(root), f"{slug}.md")
-    return path if os.path.isfile(path) else None
+    ldir = paths.lessons_dir(root)
+    filename = f"{slug}.md" if slug.startswith("lesson_") else f"lesson_{slug}.md"
+    path = os.path.join(ldir, filename)
+    if os.path.isfile(path):
+        return path
+    legacy_path = os.path.join(ldir, f"{slug}.md")
+    if os.path.isfile(legacy_path):
+        return legacy_path
+    return None
 
 
 def _append_body_note(body: str, heading: str, text: str) -> str:

@@ -47,10 +47,12 @@ class RankedLesson:
 def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
     """(field text, weight) pairs -- tags and applies_when are the strongest
     activation-condition signal, description is a secondary summary."""
+    tags = fm.get("tags")
+    tags_list = [str(t) for t in tags if t is not None] if isinstance(tags, (list, tuple)) else []
     return [
         (str(fm.get("description", "")), 1.0),
         (str(fm.get("applies_when", "")), 1.5),
-        (" ".join(fm.get("tags") or []), 2.0),
+        (" ".join(tags_list), 2.0),
         (str(fm.get("domain", "")), 1.0),
     ]
 

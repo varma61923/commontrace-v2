@@ -27,7 +27,16 @@ def load_schema(name: str) -> dict:
     """Load a bundled schema by file name, e.g. 'trace.schema.json'."""
     from commontrace.paths import schemas_dir
 
-    path = os.path.join(schemas_dir(), name)
+    if not isinstance(name, str) or os.path.basename(name) != name or not (
+        name.endswith(".schema.json") or name.endswith(".json")
+    ):
+        raise ValueError(f"Invalid or unsafe schema file name: {name!r}")
+
+    base_dir = os.path.abspath(schemas_dir())
+    path = os.path.abspath(os.path.join(base_dir, name))
+    if not (path == base_dir or path.startswith(base_dir + os.sep)):
+        raise ValueError(f"Path traversal detected in schema name: {name!r}")
+
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -104,6 +113,9 @@ def assert_supported_schema(schema: dict, path: str = "<root>") -> None:
 
 def validate(instance: dict, schema: dict) -> list[str]:
     """Return a list of human-readable error strings; empty list = valid."""
+    if not isinstance(instance, dict):
+        return ["Instance must be a dictionary / JSON object"]
+
     errors: list[str] = []
     properties = schema.get("properties", {})
     required = schema.get("required", [])

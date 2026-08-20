@@ -287,10 +287,11 @@ def find_contradictions(
     by_slug = {str(fm.get("name", "")): fm for fm in lessons if fm.get("status") == "active"}
     lift_by_slug = {r.slug: r.lift for r in (reliability or [])}
 
-    sigs = {
-        slug: minhash(f"{fm.get('applies_when', '')} {' '.join(fm.get('tags') or [])} {fm.get('domain', '')}")
-        for slug, fm in by_slug.items()
-    }
+    sigs = {}
+    for slug, fm in by_slug.items():
+        tags = fm.get("tags")
+        tags_list = [str(t) for t in tags if t is not None] if isinstance(tags, (list, tuple)) else []
+        sigs[slug] = minhash(f"{fm.get('applies_when', '')} {' '.join(tags_list)} {fm.get('domain', '')}")
     pol = {slug: polarity(str(fm.get("description", ""))) for slug, fm in by_slug.items()}
 
     found: list[Contradiction] = []

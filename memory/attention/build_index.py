@@ -82,11 +82,11 @@ def build_query_text(frontmatter: dict, body: str) -> str:
     if not isinstance(tags, list):
         tags = []
     parts = [
-        f"Description: {frontmatter.get('description', '')}",
-        f"Domain: {frontmatter.get('domain', '')}",
+        f"Description: {frontmatter.get('description') or ''}",
+        f"Domain: {frontmatter.get('domain') or ''}",
         f"Tags: {', '.join(str(t) for t in tags)}",
-        f"Applies when: {frontmatter.get('applies_when', '')}",
-        f"Do not apply when: {frontmatter.get('do_not_apply_when', '')}",
+        f"Applies when: {frontmatter.get('applies_when') or ''}",
+        f"Do not apply when: {frontmatter.get('do_not_apply_when') or ''}",
         f"Rule: {extract_rule(body)}",
     ]
     return " | ".join(parts)
@@ -98,7 +98,7 @@ def iter_active_lessons(lessons_dir: str):
         fname = os.path.basename(path)
         if fname == "lesson_template.md":
             continue
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             content = fh.read()
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
@@ -171,15 +171,25 @@ def main() -> int:
     )
 
     os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
-    np.savez(
-        INDEX_PATH,
-        slugs=np.array(slugs),
-        embeddings=embeddings.astype(np.float32),
-        model_name=np.array(MODEL_NAME),
-        encoded_field=np.array(ENCODED_FIELD),
-        timestamp=np.array(datetime.datetime.now().isoformat(timespec="seconds")),
-        n_lessons=np.array(len(slugs)),
-    )
+    tmp_path = INDEX_PATH + ".tmp.npz"
+    try:
+        np.savez(
+            tmp_path,
+            slugs=np.array(slugs),
+            embeddings=embeddings.astype(np.float32),
+            model_name=np.array(MODEL_NAME),
+            encoded_field=np.array(ENCODED_FIELD),
+            timestamp=np.array(datetime.datetime.now().isoformat(timespec="seconds")),
+            n_lessons=np.array(len(slugs)),
+        )
+        os.replace(tmp_path, INDEX_PATH)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
     print(
         f"Index built: {len(slugs)} lessons, "
         f"model={MODEL_NAME}, dim={embeddings.shape[1]}, "

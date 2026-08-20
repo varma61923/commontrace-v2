@@ -33,10 +33,10 @@ def packaged_reference_dir() -> str:
 def find_reference_script(root: str, relative: str) -> str | None:
     """Locate a reference-implementation script (attention/query.py, benchmark/...).
 
-    Checked in order: the store root, the working directory, then the copy
-    bundled in the installed package. The first two let a repo checkout's
-    edited copy win, which is what a contributor expects; the third is what
-    makes the command work for someone who only ran `pip install commontrace`.
+    Checked in order: the store root, then the copy bundled in the installed
+    package. The first lets a repo checkout's edited copy win, which is what a
+    contributor expects; the second is what makes the command work for someone
+    who only ran `pip install commontrace`.
 
     Scripts with heavy optional dependencies (memory/attention/*, needing the
     `attention` extra) are deliberately not bundled, so they still resolve to
@@ -44,7 +44,6 @@ def find_reference_script(root: str, relative: str) -> str | None:
     """
     candidates = [
         os.path.join(root, relative),
-        os.path.join(os.getcwd(), relative),
         os.path.join(packaged_reference_dir(), os.path.basename(relative)),
     ]
     for c in candidates:

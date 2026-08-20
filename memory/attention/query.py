@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+import zipfile
 
 import numpy as np
 import yaml
@@ -77,7 +78,7 @@ def load_importances() -> "tuple[dict[str, int], int]":
     for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             content = fh.read()
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
@@ -138,11 +139,19 @@ def main() -> int:
         )
         return 1
 
-    data = np.load(INDEX_PATH, allow_pickle=False)
-    model_name = str(data["model_name"])
-    embeddings = data["embeddings"]  # already L2-normalized
-    slugs = data["slugs"]
-    n_lessons = int(data["n_lessons"])
+    try:
+        data = np.load(INDEX_PATH, allow_pickle=False)
+        model_name = str(data["model_name"])
+        embeddings = data["embeddings"]  # already L2-normalized
+        slugs = data["slugs"]
+        n_lessons = int(data["n_lessons"])
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
+        print(
+            f"[ERR] Index file at {INDEX_PATH} is corrupted ({exc}). "
+            "Please rebuild the index: python memory/attention/build_index.py --force",
+            file=sys.stderr,
+        )
+        return 1
 
     if model_name != _TRUSTED_MODEL_NAME:
         print(

@@ -173,11 +173,11 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                 api_key,
                 "contribute_trace",
                 {
-                    "title": fm.get("description", slug),
-                    "context_text": fm.get("applies_when", ""),
+                    "title": fm.get("description") or slug,
+                    "context_text": fm.get("applies_when") or "",
                     "solution_text": solution_text,
-                    "tags": fm.get("tags", []),
-                    "agent_type": fm.get("agent_type", ""),
+                    "tags": list(fm.get("tags") or []) if isinstance(fm.get("tags"), list) else [],
+                    "agent_type": fm.get("agent_type") or "",
                 },
             )
         except (HubClientUnavailable, HubConnectionError) as exc:
@@ -207,26 +207,31 @@ async def pull_search_results(
     traces = response.get("traces", [])
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
+    tdir_abs = os.path.abspath(tdir)
 
     written: list[str] = []
     for trace in traces:
-        trace_id = trace.get("id", "")
-        slug = re.sub(r"[^a-z0-9]+", "-", trace.get("title", "trace").lower()).strip("-")[:60] or "trace"
-        filename = f"hub_{slug}_{trace_id[:8]}.md" if trace_id else f"hub_{slug}.md"
-        out_path = os.path.join(tdir, filename)
+        raw_trace_id = str(trace.get("id", "")) if trace.get("id") is not None else ""
+        clean_trace_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_trace_id)[:64]
+        raw_title = str(trace.get("title") or "trace")
+        slug = re.sub(r"[^a-z0-9]+", "-", raw_title.lower()).strip("-")[:60] or "trace"
+        filename = f"hub_{slug}_{clean_trace_id[:8]}.md" if clean_trace_id else f"hub_{slug}.md"
+        out_path = os.path.abspath(os.path.join(tdir_abs, filename))
+        if not (out_path == tdir_abs or out_path.startswith(tdir_abs + os.sep)):
+            raise ValueError(f"Path traversal detected in trace id: {raw_trace_id!r}")
         if os.path.exists(out_path):
             continue  # already pulled in a previous sync
 
         fm = templates.trace_frontmatter(
-            trace_id or slug,
-            trace.get("title", ""),
-            trace.get("agent_type", ""),
-            list(trace.get("tags", [])),
-            trace.get("profile", ""),
-            trace.get("outcome") or None,
+            clean_trace_id or slug,
+            str(trace.get("title") or ""),
+            str(trace.get("agent_type") or ""),
+            list(trace.get("tags") or []) if isinstance(trace.get("tags"), (list, tuple)) else [],
+            str(trace.get("profile") or ""),
+            trace.get("outcome") if isinstance(trace.get("outcome"), dict) else None,
         )
-        fm["hub_trace_id"] = trace_id
-        body = templates.trace_body(trace.get("context_text", ""), trace.get("solution_text", ""))
+        fm["hub_trace_id"] = raw_trace_id
+        body = templates.trace_body(trace.get("context_text") or "", trace.get("solution_text") or "")
         frontmatter.write(out_path, fm, body)
         written.append(out_path)
 

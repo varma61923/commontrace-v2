@@ -4,7 +4,7 @@ import argparse
 import glob
 import os
 
-from commontrace import paths, trace_io, validate
+from commontrace import frontmatter, paths, trace_io, validate
 from commontrace.commands._format import cell
 
 
@@ -37,12 +37,17 @@ def _iter_trace_paths(root: str, explicit: str | None):
 def run_validate(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     schema = validate.load_schema("trace.schema.json")
+    if args.path and not os.path.isfile(args.path):
+        frontmatter.read(args.path)
     n_checked = 0
     n_failed = 0
     for path in _iter_trace_paths(root, args.path):
         n_checked += 1
-        instance, _ = trace_io.read(path)
-        errors = validate.validate(instance, schema)
+        try:
+            instance, _ = trace_io.read(path)
+            errors = validate.validate(instance, schema)
+        except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError) as exc:
+            errors = [str(exc)]
         if errors:
             n_failed += 1
             print(f"FAIL {path}")

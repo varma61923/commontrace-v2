@@ -40,7 +40,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--query", default="", help="search_traces query text (--pull only).")
     p.add_argument("--tags", default="", help="Comma-separated search_traces tags filter (--pull only).")
     p.add_argument("--hub-url", default=None, help="Default: $COMMONTRACE_HUB_URL")
-    p.add_argument("--hub-api-key", default=None, help="Default: $COMMONTRACE_HUB_API_KEY")
+    p.add_argument(
+        "--hub-api-key",
+        default=None,
+        help="Hub API key ($COMMONTRACE_HUB_API_KEY environment variable is preferred to avoid process table exposure).",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 

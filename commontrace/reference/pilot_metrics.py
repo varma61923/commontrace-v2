@@ -39,7 +39,7 @@ SCHEMA_VERSION = "1.0.0"
 
 _ROOT = (
     os.environ.get("COMMONTRACE_ROOT")
-    or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 TRACES_DIR = os.path.join(_ROOT, "memory", "traces")
 
@@ -52,7 +52,7 @@ def load_traces(root=None, agent_type=None):
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(p) == "README.md":
             continue
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8-sig") as fh:
             fm = mp.parse_frontmatter(fh.read())
         if not fm:
             continue

@@ -1,7 +1,9 @@
 """Read/write Markdown files with YAML frontmatter (the CommonTrace file format)."""
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from typing import Any
 
 import yaml
@@ -22,17 +24,17 @@ class FrontmatterError(ValueError):
 
 
 def read(path: str) -> tuple[dict[str, Any], str]:
-    """Return (frontmatter_dict, body_markdown) for a `---\\nYAML\\n---\\nbody` file."""
+    """Return (frontmatter_dict, body_markdown) for a `---\nYAML\n---\nbody` file."""
     # A path the user typed -- `lesson validate /nope/x.md`, or a directory
     # passed where a file was meant -- is a user error, not a crash. Every
     # other error path in this CLI prints "[commontrace] ..." and exits
     # non-zero; letting a raw FileNotFoundError/IsADirectoryError through
     # made this the odd one out.
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             content = fh.read()
-    except OSError as exc:
-        raise FrontmatterError(f"cannot read {path}: {exc.strerror or exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FrontmatterError(f"cannot read {path}: {exc}") from exc
     if not content.startswith("---"):
         return {}, content
     delims = list(_DELIM_RE.finditer(content))
@@ -55,8 +57,27 @@ def read(path: str) -> tuple[dict[str, Any], str]:
 
 def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
     fm_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("---\n")
-        fh.write(fm_text)
-        fh.write("---\n\n")
-        fh.write(body.rstrip("\n") + "\n")
+    target_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(target_dir, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile(
+        dir=target_dir,
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temp_path = temp_file.name
+    try:
+        with temp_file as fh:
+            fh.write("---\n")
+            fh.write(fm_text)
+            fh.write("---\n\n")
+            fh.write(body.rstrip("\n") + "\n")
+        os.replace(temp_path, path)
+    except BaseException:
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        raise

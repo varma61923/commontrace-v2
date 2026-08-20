@@ -47,13 +47,19 @@ def run(args: argparse.Namespace) -> int:
     _check("memory/ store present", has_mem, paths.memory_dir(root) if has_mem else "run `commontrace init`")
 
     if has_mem:
-        n_lessons = len(
-            [
-                f
-                for f in os.listdir(paths.lessons_dir(root))
-                if f.startswith("lesson_") and f != "lesson_template.md"
-            ]
-        ) if os.path.isdir(paths.lessons_dir(root)) else 0
+        n_lessons = 0
+        ldir = paths.lessons_dir(root)
+        if os.path.isdir(ldir):
+            try:
+                n_lessons = len(
+                    [
+                        f
+                        for f in os.listdir(ldir)
+                        if f.startswith("lesson_") and f != "lesson_template.md"
+                    ]
+                )
+            except OSError:
+                n_lessons = 0
         _check("lessons in store", n_lessons > 0, f"{n_lessons} found")
 
     attention_extra = importlib.util.find_spec("numpy") is not None and importlib.util.find_spec(
