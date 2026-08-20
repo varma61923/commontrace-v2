@@ -81,7 +81,7 @@ async def issue_key(org_id: str, expires_days: str | None = None, session_factor
         )
     print(f"key_id: {issued.key_id}")
     if days is None:
-        print("expires: never  (consider --expires-days for a client-facing key)")
+        print("expires: never  (pass a day count, e.g. `issue-key <org_id> 90`, for a client-facing key)")
     else:
         print(f"expires: in {days} day(s)")
     print(f"api_key (shown once, store it now): {issued.raw_key}")

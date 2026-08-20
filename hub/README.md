@@ -180,18 +180,19 @@ needs session-level co-retrieval tracking that wasn't in scope for this MVP.
 `up / (up + down)` ratio with a neutral `0.5` prior when there are no votes
 yet; treat it as a starting point, not a calibrated reputation model.
 
-### Container image: present, but not yet built by its authors
+### Container image: built and smoke-tested in CI
 
-`Dockerfile` and `docker-compose.yml` now exist at the repo root (an earlier
+`Dockerfile` and `docker-compose.yml` exist at the repo root (an earlier
 revision of this file said they deliberately did not — that is no longer
-true). One caveat worth stating plainly: **they have never been built or
-run.** The environment they were written in had no Docker daemon, so they
-are reviewed-but-unverified. CI has a `docker-build` job that builds the
-image and asserts the container serves `/healthz`; until you've seen that
-pass, treat the image as unproven and prefer the from-a-checkout path above.
+true). They were authored in an environment with no Docker daemon, so CI's
+`docker-build` job is what actually proves them: it builds the image, starts
+the container, and asserts `/healthz` serves while `/readyz` returns 503
+with no database reachable — which also confirms the liveness/readiness
+split behaves correctly in a real container, not just in unit tests.
 
-Everything else in this README describes behavior covered by `hub/tests/`
-against a real Postgres.
+Still unproven, so worth saying: **the compose stack is not exercised by
+CI** (only the image is), and neither has been run against a
+production-like environment. Do a rehearsal deploy first.
 
 ## Operator CLI (`hub/manage.py`)
 

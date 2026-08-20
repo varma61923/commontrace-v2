@@ -91,7 +91,7 @@ class ApiKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # NULL = never expires (the pre-existing behavior, and still the default
-    # for a key issued without --expires-days). A non-NULL value is enforced
+    # for a key issued without a day count). A non-NULL value is enforced
     # at verification time in hub/auth.py, so an expired key stops working
     # without anyone having to run a revocation job.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

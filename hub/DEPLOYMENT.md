@@ -3,15 +3,18 @@
 What an operator needs to run the Hub for real, as opposed to the
 local-checkout instructions in [`hub/README.md`](README.md).
 
-> **Verification status, stated up front.** The application itself is
-> exercised against a real PostgreSQL 16 instance by `hub/tests/` (48 tests,
-> including tenant isolation) and CI runs those on Python 3.10/3.11/3.12
-> against a `postgres:16` service container. The **container image and
-> compose stack in this repo have not been built or run** — the environment
-> they were authored in had no Docker daemon. Treat `Dockerfile` /
-> `docker-compose.yml` as reviewed-but-unbuilt: build them once yourself
-> before relying on them. Everything else below describes behavior that is
-> covered by tests.
+> **Verification status, stated up front.** The application is exercised
+> against a real PostgreSQL 16 instance by `hub/tests/` (69 tests, including
+> tenant isolation), on Python 3.10/3.11/3.12, and CI additionally applies
+> every migration to an empty database and runs `alembic check` for drift.
+>
+> The **container image is built and smoke-tested in CI** (`docker-build`
+> job): it builds, the container starts, `/healthz` serves, and `/readyz`
+> correctly returns 503 with no database reachable. Two honest caveats
+> remain: the **compose stack** (`docker-compose.yml`) is not exercised by
+> CI — only the image is — and neither has been run against a production-
+> like environment (TLS, managed Postgres, multiple replicas). Do a
+> rehearsal deploy before a client's data lands.
 
 ---
 
@@ -93,7 +96,7 @@ readinessProbe:
 ```bash
 docker compose up --build -d
 docker compose run --rm hub python -m hub.manage create-org "Acme Corp"
-docker compose run --rm hub python -m hub.manage issue-key <org_id> --expires-days 90
+docker compose run --rm hub python -m hub.manage issue-key <org_id> 90   # 90-day expiry
 ```
 
 **Without containers:**
@@ -177,7 +180,8 @@ re-display a key anyone has lost — rotate instead
 - [ ] TLS terminated in front of the Hub (API keys are bearer credentials).
 - [ ] `HUB_DATABASE_URL` from a secret store, not a file in the repo.
 - [ ] Postgres not publicly reachable; Hub reaches it over a private network.
-- [ ] API keys issued with `--expires-days` rather than never expiring.
+- [ ] API keys issued with an expiry (`issue-key <org_id> <days>`) rather
+      than never expiring.
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — deletion is
@@ -193,4 +197,5 @@ re-display a key anyone has lost — rotate instead
 | No self-service data deletion (operator CLI only) | `DATA_RETENTION.md` |
 | Cross-org sharing not implemented (every read is org-scoped) | `hub/README.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
-| Container image not yet built/run by its authors | top of this file |
+| Compose stack not exercised by CI (the image itself is) | top of this file |
+| No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |

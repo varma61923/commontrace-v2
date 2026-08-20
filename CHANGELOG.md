@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no build toolchain in the runtime layer), `docker-compose.yml` (with
   migrations as a one-shot service the app waits on, so replicas can't race
   the same DDL), `.dockerignore`, and `hub/DEPLOYMENT.md` covering probes,
-  scaling, backup/restore, and a pre-client security checklist. **The image
-  has not been built or run** — the authoring environment had no Docker
-  daemon — so CI gained a `docker-build` job that builds it and asserts the
-  container serves `/healthz`; treat it as reviewed-but-unbuilt until that
-  job passes.
+  scaling, backup/restore, and a pre-client security checklist. The image
+  could not be built where it was authored (no Docker daemon), so CI gained
+  a `docker-build` job — now passing — that builds it, starts the container,
+  and asserts `/healthz` serves while `/readyz` returns 503 with no database.
+  The compose stack is still not exercised by CI, and neither has had a
+  production-like rehearsal.
 - **Observability** (`hub/observability.py`): JSON logs on stdout, a
   request-correlation id (honoring an inbound `X-Request-ID`, echoed back in
   the response) on every log line, and one structured line per request with
