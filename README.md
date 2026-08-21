@@ -534,10 +534,38 @@ future matches; it cannot retract what another org already retrieved.
 | Your own traces don't inflate your number | The corpus excludes your rows: the question is what you'd *gain* |
 | Ordinary reads are unaffected | All six original tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
 
-Operators can check whether the network effect is real —
-`python -m hub.manage commons-stats` reports how many *distinct* orgs
-contribute and warns when one dominates, because a large corpus from a
-single org is one fleet's memory with extra steps.
+### Why contributing is worth it
+
+A commons where contribution is pure altruism fills with low-value filler —
+the standard reason these plays fail. So the value a contributor *delivers*
+is measured: every time a shared trace covers another fleet's recurring
+failure, that trace's `commons_hits` increments.
+
+```bash
+python -m hub.manage commons-value    # per org: what it shared, what that delivered
+python -m hub.manage commons-stats    # how many DISTINCT orgs contribute
+```
+
+`commons-value` is the honest denominator for pricing or revenue share, and
+it is what makes contributing a position rather than a favour.
+
+### The cold start
+
+An empty commons returns 0% to every prospect — by construction, not as a
+finding — so nobody sees value and nobody contributes. An operator can prime
+it with public substrate knowledge:
+
+```bash
+python -m hub.manage commons-seed public-substrate.jsonl <operator_org_id>
+```
+
+Seeded rows are marked `commons_source='seed'` and are reported **separately
+everywhere it matters**. They answer real queries and deliver real value —
+but they never count toward "how many orgs contribute", because that number
+is the one that says whether a network effect exists, and an operator
+seeding its own corpus is not evidence of one. `commons-stats` says so in
+those words, and warns when one org dominates: a large corpus from a single
+contributor is one fleet's memory with extra steps.
 
 ---
 

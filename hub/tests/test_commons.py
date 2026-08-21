@@ -537,7 +537,7 @@ class TestCommonsStats:
 
         await manage.commons_stats(session_factory=session_factory)
         out = capsys.readouterr().out
-        assert "commons traces:        0" in out
+        assert "commons traces (org):  0" in out
         assert "nothing compounds" in out.lower()
 
     async def test_single_contributor_is_called_out_not_celebrated(
@@ -595,10 +595,194 @@ class TestCommonsStats:
             rows[0].quarantined = True
 
         await manage.commons_stats(session_factory=session_factory)
-        assert "commons traces:        1" in capsys.readouterr().out
+        assert "commons traces (org):  1" in capsys.readouterr().out
 
 
-# --- 7. Untrusted input -------------------------------------------------
+# --- 7. Economics: contribution has to be measurably worth it -----------
+
+
+class TestValueLedger:
+    """A commons where contributing is pure altruism fills with filler
+    (STRATEGY.md §3). Trace.commons_hits makes the value a contributor
+    DELIVERS measurable, which is both the incentive and the pricing
+    denominator -- so it has to be counted correctly."""
+
+    async def _share_one(self, session_factory, config, org_id, title, ctx):
+        t = await _contribute(session_factory, config, org_id, title, ctx, "the fix")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, org_id, t["id"])
+        return t["id"]
+
+    async def test_a_covered_failure_credits_the_contributor(
+        self, session_factory, config, orgs
+    ):
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 0
+
+        async with session_scope(session_factory) as session:
+            await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")],
+            )
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 1
+
+    async def test_a_miss_credits_nobody(self, session_factory, config, orgs):
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f", "CUDA kernel launch", "grid dimensions exceeded")],
+            )
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 0
+
+    async def test_hits_accumulate_across_separate_consumers(
+        self, session_factory, config, orgs
+    ):
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+        for consumer in ("consumer", "contributor-b"):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(session, orgs[consumer], probe)
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 2
+
+    async def test_counting_survives_concurrent_queries(self, session_factory, config, orgs):
+        """The increment is an atomic in-database UPDATE, not a
+        read-modify-write: contributor standing is the basis for pricing,
+        so lost counts under concurrency would be lost revenue."""
+        import asyncio
+
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+
+        async def _query():
+            async with session_scope(session_factory) as session:
+                return await crud.commons_overlap(session, orgs["consumer"], probe)
+
+        await asyncio.gather(*[_query() for _ in range(12)])
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 12, "concurrent queries must not lose contributor credit"
+
+
+class TestSeedProvenance:
+    """Seeding breaks the cold start, but seeded rows must never be
+    counted as evidence of a network effect -- that would make the one
+    metric that decides the company's direction quietly self-referential."""
+
+    async def _seed(self, session_factory, config, org_id, n=2):
+        for i in range(n):
+            t = await _contribute(
+                session_factory, config, org_id, f"Seeded substrate {i}", f"ctx {i}", "fix",
+            )
+            async with session_scope(session_factory) as session:
+                await crud.share_trace(session, org_id, t["id"])
+                row = await session.get(Trace, t["id"])
+                row.commons_source = "seed"
+
+    async def test_seeded_traces_still_answer_queries(self, session_factory, config, orgs):
+        """Seed content is real value to a querying fleet -- it just isn't
+        a network effect. It must still match."""
+        await self._seed(session_factory, config, orgs["contributor-a"], n=1)
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"], [_failure("f", "Seeded substrate 0", "ctx 0")],
+            )
+        assert report["n_covered"] == 1
+
+    async def test_seeded_traces_do_not_count_as_contributing_orgs(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        await self._seed(session_factory, config, orgs["contributor-a"], n=3)
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "commons traces (org):  0" in out
+        assert "commons traces (seed): 3" in out
+        assert "contributing orgs:     0 of 3" in out
+        assert "not a network effect" in out.lower()
+
+    async def test_org_and_seed_are_reported_separately_by_value(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        await self._seed(session_factory, config, orgs["contributor-a"], n=2)
+        t = await _contribute(
+            session_factory, config, orgs["contributor-b"], "Real contribution", "ctx", "fix",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-b"], t["id"])
+
+        await manage.commons_value(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "org-contributed" in out
+        assert "operator-seeded" in out
+
+
+class TestPricingDenominator:
+    async def test_reports_delivered_value_per_org(self, session_factory, config, orgs, capsys):
+        from hub import manage
+
+        t = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], t["id"])
+        async with session_scope(session_factory) as session:
+            await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")],
+            )
+
+        await manage.commons_value(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "contributor-a" in out
+        assert "delivered" in out.lower()
+
+    async def test_says_so_when_nothing_has_been_delivered_yet(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        t = await _contribute(session_factory, config, orgs["contributor-a"], "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], t["id"])
+        await manage.commons_value(session_factory=session_factory)
+        assert "has covered anyone's failure yet" in capsys.readouterr().out
+
+    async def test_empty_commons_reports_cleanly(self, session_factory, orgs, capsys):
+        from hub import manage
+
+        await manage.commons_value(session_factory=session_factory)
+        assert "no value to attribute" in capsys.readouterr().out
+
+
+# --- 8. Untrusted input -------------------------------------------------
 
 
 class TestSubmittedInputIsValidated:

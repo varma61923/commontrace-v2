@@ -173,6 +173,36 @@ class Trace(Base):
     # trace that is not in the commons.
     commons_signature: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
 
+    # --- Commons economics -----------------------------------------------
+    #
+    # How many times this shared trace has actually covered ANOTHER org's
+    # recurring failure. This is the answer to the question that decides
+    # whether a knowledge commons survives contact with self-interest
+    # (STRATEGY.md §3): why would an org contribute knowledge that helps a
+    # competitor? "Because it is nice" does not hold, and a commons where
+    # contribution is undifferentiated fills with low-value filler.
+    #
+    # Making the value a contributor DELIVERS measurable changes that:
+    # contribution stops being altruism and becomes a position, it gives an
+    # operator a defensible basis for pricing or revenue share, and it lets
+    # the highest-value contributors be identified rather than guessed at.
+    #
+    # Deliberately a counter and not a join table of who-matched-what:
+    # the aggregate is what pricing and incentives need, while a per-match
+    # log of "org X's failure resembled org Y's trace" is a far more
+    # sensitive artifact for a marginal gain. Incremented with the same
+    # atomic in-database UPDATE the retrievals counter uses.
+    commons_hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Where this commons entry came from. A commons with no contributors
+    # returns 0% coverage for everyone, which is a cold start, not a
+    # finding -- so an operator may seed it with public substrate knowledge
+    # to make the first query meaningful. That seeded content must stay
+    # DISTINGUISHABLE, or "how many orgs contribute" (the actual
+    # network-effect metric) silently counts the operator's own seeding and
+    # the number stops meaning anything. "org" | "seed".
+    commons_source: Mapped[str] = mapped_column(String(16), default="org", nullable=False)
+
     # Full-text search vector, maintained by Postgres itself (GENERATED ...
     # STORED) so it can never drift from the columns it summarizes -- there
     # is no application-side "remember to reindex on update" step to forget.

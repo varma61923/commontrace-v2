@@ -13,6 +13,12 @@
                                        (total/quarantined), votes, mean trust
     commons-stats                  -> cross-org commons health: corpus size, how many
                                        distinct orgs contribute, concentration risk
+    commons-value                  -> the pricing denominator: per org, what it shared
+                                       and how much that DELIVERED to other fleets
+    commons-seed <file.jsonl> <org_id>
+                                   -> break the cold start with public substrate
+                                       knowledge, marked commons_source='seed' so it
+                                       never counts as a network effect
     list-quarantined [org_id]      -> traces held pending review (id, org_id, title,
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
@@ -45,11 +51,12 @@ from __future__ import annotations
 import asyncio
 import statistics
 import sys
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from hub import audit, auth
+from hub import audit, auth, commons
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
 from hub.models import ApiKey, AuditLogEntry, Organization, Trace, TraceRelation, Vote
@@ -156,6 +163,179 @@ async def stats(session_factory=None) -> None:
     print(f"mean trust:          {mean_trust:.3f}" if mean_trust is not None else "mean trust:          n/a")
 
 
+async def commons_seed(path: str, org_id: str, session_factory=None) -> None:
+    """Seed the commons from a JSONL file of public substrate knowledge.
+
+    THE COLD START, AND WHY THIS IS NOT CHEATING. An empty commons returns
+    0% coverage to every prospect -- by construction, not as a finding --
+    so the first customer sees nothing and never contributes, and the
+    network effect never starts. Seeding breaks that.
+
+    What makes it honest rather than a rigged demo is that every seeded
+    row is marked `commons_source='seed'` and is reported SEPARATELY from
+    org contributions everywhere it matters (commons-stats, commons-value).
+    The metric that decides the company's direction is "how many distinct
+    ORGS contribute", and that number must never quietly count the
+    operator's own seeding. Seed content still delivers real value to a
+    querying fleet -- it just does not count as evidence of a network
+    effect, because it isn't any.
+
+    Each JSONL line: {"title", "context_text", "solution_text", "tags"?,
+    "agent_type"?, "source"?}. `source` should cite where the knowledge
+    came from (a public postmortem, a vendor changelog) and is stored as
+    the trace's shared_rationale so provenance survives.
+
+    Seeded traces are owned by `org_id` -- give this a dedicated operator
+    org, not a customer's, so no customer is credited with authorship they
+    do not have.
+    """
+    import json as _json
+
+    session_factory = session_factory or _default_session_factory()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw_lines = [ln for ln in (line.strip() for line in fh) if ln]
+    except OSError as exc:
+        print(f"error: cannot read {path}: {exc}", file=sys.stderr)
+        return
+
+    records, bad = [], 0
+    for i, line in enumerate(raw_lines, 1):
+        try:
+            rec = _json.loads(line)
+        except ValueError:
+            bad += 1
+            print(f"  line {i}: not valid JSON, skipped", file=sys.stderr)
+            continue
+        if not isinstance(rec, dict) or not rec.get("title") or not rec.get("solution_text"):
+            bad += 1
+            print(f"  line {i}: needs at least 'title' and 'solution_text', skipped", file=sys.stderr)
+            continue
+        records.append(rec)
+
+    if not records:
+        print(f"error: no usable records in {path}", file=sys.stderr)
+        return
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return
+
+        added = 0
+        for rec in records:
+            title = str(rec["title"])[:1000]
+            context_text = str(rec.get("context_text") or "")
+            solution_text = str(rec["solution_text"])
+            tags = [str(t) for t in (rec.get("tags") or []) if t is not None][:20]
+            trace = Trace(
+                org_id=org_id,
+                title=title,
+                context_text=context_text,
+                solution_text=solution_text,
+                tags=tags,
+                agent_type=str(rec.get("agent_type") or "code"),
+                shared_with_commons=True,
+                shared_at=datetime.now(timezone.utc),
+                shared_rationale=str(rec.get("source") or "operator-seeded public substrate knowledge")[:500],
+                commons_signature=commons.signature_for(title, context_text, tags),
+                commons_source="seed",
+            )
+            session.add(trace)
+            added += 1
+        await session.flush()
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="commons_seed",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"seeded={added} skipped={bad} from={path!r}",
+        )
+
+    print(f"seeded {added} trace(s) into the commons as commons_source='seed'.")
+    if bad:
+        print(f"  {bad} line(s) skipped -- see errors above.", file=sys.stderr)
+    print("  These are reported separately from org contributions by "
+          "`commons-stats` and `commons-value`, so the network-effect")
+    print("  metric is not inflated by operator seeding.")
+
+
+async def commons_value(session_factory=None) -> None:
+    """What each org puts into the commons, and what that delivered.
+
+    This is the pricing denominator. Value-based pricing needs measured
+    value, and "traces contributed" is vanity -- the number that matters is
+    how many times a contributor's knowledge actually covered someone
+    else's recurring failure (Trace.commons_hits). That same number is what
+    makes contributing rational rather than altruistic, which is the
+    standard reason knowledge-commons plays fail (STRATEGY.md §3).
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        rows = (
+            await session.execute(
+                select(
+                    Trace.org_id,
+                    Trace.commons_source,
+                    func.count(),
+                    func.coalesce(func.sum(Trace.commons_hits), 0),
+                )
+                .where(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))
+                .group_by(Trace.org_id, Trace.commons_source)
+            )
+        ).all()
+        names = dict(
+            (await session.execute(select(Organization.id, Organization.name))).all()
+        )
+
+    if not rows:
+        print("nothing in the commons yet -- no value to attribute.")
+        return
+
+    by_org: dict[tuple[str, str], tuple[int, int]] = {}
+    for org_id, source, n_traces, hits in rows:
+        by_org[(org_id, source or "org")] = (int(n_traces), int(hits))
+
+    org_rows = sorted(
+        ((k, v) for k, v in by_org.items() if k[1] != "seed"),
+        key=lambda kv: -kv[1][1],
+    )
+    seed_rows = [(k, v) for k, v in by_org.items() if k[1] == "seed"]
+
+    print(f"{'organization':<38} {'shared':>7} {'delivered':>10}")
+    print("-" * 58)
+    for (org_id, _src), (n_traces, hits) in org_rows:
+        label = f"{(names.get(org_id) or '?')[:26]} {org_id[:8]}"
+        print(f"{label:<38} {n_traces:>7} {hits:>10}")
+
+    total_org_hits = sum(v[1] for k, v in by_org.items() if k[1] != "seed")
+    total_seed_hits = sum(v[1] for _k, v in seed_rows)
+    total_org_traces = sum(v[0] for k, v in by_org.items() if k[1] != "seed")
+    total_seed_traces = sum(v[0] for _k, v in seed_rows)
+
+    print("-" * 58)
+    print(f"{'org-contributed':<38} {total_org_traces:>7} {total_org_hits:>10}")
+    if seed_rows:
+        print(f"{'operator-seeded (not a network effect)':<38} {total_seed_traces:>7} {total_seed_hits:>10}")
+
+    print()
+    if total_org_hits == 0 and total_seed_hits == 0:
+        print("No commons trace has covered anyone's failure yet. Either nobody has run")
+        print("`commons_overlap`, or the corpus does not yet overlap what fleets are hitting.")
+        return
+
+    delivered_total = total_org_hits + total_seed_hits
+    if delivered_total and total_seed_hits / delivered_total > 0.5:
+        print(f"Most delivered value ({total_seed_hits}/{delivered_total}) comes from operator")
+        print("seeding, not from orgs. That is a working cold-start primer, not yet a")
+        print("network effect -- the metric to watch is org-contributed value overtaking it.")
+    elif org_rows:
+        top_org, (_n, top_hits) = org_rows[0]
+        if total_org_hits and top_hits / total_org_hits > 0.6:
+            print(f"One org delivers {top_hits}/{total_org_hits} of all org-contributed value.")
+            print("Concentration risk: their withdrawal would take most of the commons' worth")
+            print("with it. Broadening contribution matters more than growing the corpus.")
+
+
 async def commons_stats(session_factory=None) -> None:
     """Is the cross-org commons actually working?
 
@@ -167,33 +347,70 @@ async def commons_stats(session_factory=None) -> None:
     """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
+        # Only org-contributed rows count toward the network-effect metric.
+        # Operator seeding exists to break the cold start and is real value
+        # to a querying fleet, but counting it here would mean "contributing
+        # orgs" silently included ourselves -- and that number is the one
+        # that decides whether (B) is working at all.
         rows = (
             await session.execute(
                 select(Trace.org_id, func.count())
-                .where(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))
+                .where(
+                    Trace.shared_with_commons.is_(True),
+                    Trace.quarantined.is_(False),
+                    Trace.commons_source != "seed",
+                )
                 .group_by(Trace.org_id)
             )
         ).all()
+        n_seeded = (
+            await session.execute(
+                select(func.count()).select_from(Trace).where(
+                    Trace.shared_with_commons.is_(True),
+                    Trace.quarantined.is_(False),
+                    Trace.commons_source == "seed",
+                )
+            )
+        ).scalar_one()
         n_orgs_total = (
             await session.execute(select(func.count()).select_from(Organization))
         ).scalar_one()
+        # Seeded rows are excluded from the share-rate denominator too: they
+        # were never a fleet's own captured experience, so counting them
+        # would make "what fraction of real traces get shared" drift as the
+        # operator seeds more.
         n_traces_total = (
-            await session.execute(select(func.count()).select_from(Trace))
+            await session.execute(
+                select(func.count()).select_from(Trace).where(Trace.commons_source != "seed")
+            )
         ).scalar_one()
 
     n_contributors = len(rows)
     n_shared = sum(c for _, c in rows)
 
-    print(f"commons traces:        {n_shared}")
+    print(f"commons traces (org):  {n_shared}")
+    if n_seeded:
+        print(f"commons traces (seed): {n_seeded}   <- operator-seeded, NOT a network effect")
     print(f"contributing orgs:     {n_contributors} of {n_orgs_total}")
-    print(f"share rate:            {n_shared}/{n_traces_total} traces "
-          f"({(n_shared / n_traces_total * 100) if n_traces_total else 0:.1f}% of all traces)")
+    print(f"share rate:            {n_shared}/{n_traces_total} org trace(s) "
+          f"({(n_shared / n_traces_total * 100) if n_traces_total else 0:.1f}%)")
 
     if n_contributors == 0:
-        print(
-            "\nThe commons is empty, so `commons_overlap` returns 0% for everyone by\n"
-            "construction -- not as a finding. Nothing compounds until orgs contribute."
-        )
+        if n_seeded:
+            # Distinguishing these matters: with a seeded corpus, queries do
+            # return real matches, so saying "the commons is empty" would be
+            # simply false. What is missing is not content -- it is evidence
+            # that anyone other than the operator finds it worth contributing to.
+            print(
+                f"\nNo ORG has contributed yet. Queries do return matches (from {n_seeded} seeded\n"
+                "trace(s)), so the commons is useful -- but a primer an operator loaded is\n"
+                "not a network effect. The number to watch is this line reaching 1, then many."
+            )
+        else:
+            print(
+                "\nThe commons is empty, so `commons_overlap` returns 0% for everyone by\n"
+                "construction -- not as a finding. Nothing compounds until orgs contribute."
+            )
         return
     if n_contributors == 1:
         print(
@@ -376,6 +593,8 @@ _COMMANDS = {
     "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
     "commons-stats": (commons_stats, 0, 0),
+    "commons-value": (commons_value, 0, 0),
+    "commons-seed": (commons_seed, 2, 2),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     "purge-trace": (purge_trace, 1, 1),

@@ -730,11 +730,13 @@ async def commons_overlap(
     by_domain: dict[str, int] = {}
     n_covered = 0
 
+    hit_ids: list[str] = []
     for (label, _sig), (idx, sim) in zip(submitted, best):
         if idx < 0 or sim < threshold:
             continue
         hit = rows[idx]
         n_covered += 1
+        hit_ids.append(hit.id)
         key = hit.agent_type or "(unspecified)"
         by_domain[key] = by_domain.get(key, 0) + 1
         if include_matches:
@@ -749,6 +751,18 @@ async def commons_overlap(
                     "trace": _to_wire(hit, [], []),
                 }
             )
+
+    if hit_ids:
+        # Atomic in-database increment, same pattern as the retrievals
+        # counter: a read-modify-write through the ORM would lose counts
+        # under concurrent queries, and this number is the basis for
+        # contributor value (hub/models.py:Trace.commons_hits). Counted
+        # once per covered failure, not once per query, so an org
+        # re-running the same report does not inflate a contributor's
+        # standing for free -- but a genuinely repeated need does register.
+        await session.execute(
+            update(Trace).where(Trace.id.in_(hit_ids)).values(commons_hits=Trace.commons_hits + 1)
+        )
 
     matches.sort(key=lambda m: m["similarity"], reverse=True)
     n_failures = len(submitted)
