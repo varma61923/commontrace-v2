@@ -142,9 +142,16 @@ def _row_to_trace(line_no: int, row: dict[str, Any], mapping: FieldMapping) -> I
     )
 
 
-def parse_jsonl(lines: Iterator[str], mapping: FieldMapping) -> tuple[list[ImportedRow], list[SkippedRow]]:
-    imported: list[ImportedRow] = []
-    skipped: list[SkippedRow] = []
+def iter_jsonl(lines: Iterator[str], mapping: FieldMapping) -> Iterator[ImportedRow | SkippedRow]:
+    """Row by row, never materializing the whole file.
+
+    `parse_jsonl` below builds on this but collects everything into two
+    lists, which is convenient for a handful of rows and is exactly the
+    shape that reads a multi-gigabyte historical export entirely into
+    memory before writing a single trace file -- a container with a memory
+    limit gets OOM-killed before `import_cmd.py` reports anything. Use this
+    directly (as `import_cmd.py` does) when the input might be large.
+    """
     for i, line in enumerate(lines, start=1):
         line = line.strip()
         if not line:
@@ -152,21 +159,37 @@ def parse_jsonl(lines: Iterator[str], mapping: FieldMapping) -> tuple[list[Impor
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
-            skipped.append(SkippedRow(line_no=i, reason=f"invalid JSON: {exc}"))
+            yield SkippedRow(line_no=i, reason=f"invalid JSON: {exc}")
             continue
         if not isinstance(row, dict):
-            skipped.append(SkippedRow(line_no=i, reason=f"expected a JSON object, got {type(row).__name__}"))
+            yield SkippedRow(line_no=i, reason=f"expected a JSON object, got {type(row).__name__}")
             continue
-        result = _row_to_trace(i, row, mapping)
+        yield _row_to_trace(i, row, mapping)
+
+
+def iter_csv(fh, mapping: FieldMapping) -> Iterator[ImportedRow | SkippedRow]:
+    """Row by row -- see iter_jsonl. `csv.DictReader` itself already reads
+    incrementally; this just avoids collecting its output into a list."""
+    reader = csv.DictReader(fh)
+    for i, row in enumerate(reader, start=2):  # header is line 1
+        yield _row_to_trace(i, dict(row), mapping)
+
+
+def parse_jsonl(lines: Iterator[str], mapping: FieldMapping) -> tuple[list[ImportedRow], list[SkippedRow]]:
+    """List-collecting convenience wrapper over iter_jsonl, kept for small
+    inputs and for callers (including this module's own tests) that want
+    the whole result at once. `import_cmd.py` uses iter_jsonl directly."""
+    imported: list[ImportedRow] = []
+    skipped: list[SkippedRow] = []
+    for result in iter_jsonl(lines, mapping):
         (imported if isinstance(result, ImportedRow) else skipped).append(result)
     return imported, skipped
 
 
 def parse_csv(fh, mapping: FieldMapping) -> tuple[list[ImportedRow], list[SkippedRow]]:
+    """List-collecting convenience wrapper over iter_csv -- see parse_jsonl."""
     imported: list[ImportedRow] = []
     skipped: list[SkippedRow] = []
-    reader = csv.DictReader(fh)
-    for i, row in enumerate(reader, start=2):  # header is line 1
-        result = _row_to_trace(i, dict(row), mapping)
+    for result in iter_csv(fh, mapping):
         (imported if isinstance(result, ImportedRow) else skipped).append(result)
     return imported, skipped

@@ -82,9 +82,26 @@ class TestHubUrlSchemeGuard:
         with pytest.raises(hub_client.HubConnectionError, match="scheme must be http or https"):
             hub_client._validate_hub_url(bad_url)
 
-    @pytest.mark.parametrize("good_url", ["http://hub.example.com/mcp", "https://hub.example.com/mcp"])
-    def test_http_and_https_pass(self, good_url):
+    @pytest.mark.parametrize("good_url", [
+        "https://hub.example.com/mcp",
+        "http://localhost:8420/mcp",
+        "http://127.0.0.1:8420/mcp",
+        "http://[::1]:8420/mcp",
+    ])
+    def test_https_and_loopback_http_pass(self, good_url):
         hub_client._validate_hub_url(good_url)  # must not raise
+
+    def test_plaintext_http_to_a_remote_host_is_rejected(self):
+        """SEC-03: the Authorization: Bearer header carrying the org's API
+        key goes out on every call, and a Hub URL is normally set once and
+        trusted forever with no per-call review. Loopback is exempt because
+        traffic to it never leaves the host."""
+        with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
+            hub_client._validate_hub_url("http://hub.example.com/mcp")
+
+    def test_plaintext_http_to_an_ip_that_is_not_loopback_is_rejected(self):
+        with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
+            hub_client._validate_hub_url("http://10.0.0.5:8420/mcp")
 
     def test_the_rejection_happens_before_any_retry(self, monkeypatch):
         """Fail fast: a bad scheme can never succeed, so it must not consume

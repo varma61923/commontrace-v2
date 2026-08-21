@@ -846,3 +846,218 @@ class TestCoreSuiteNeedsNoHubDependencies:
             "these import Hub modules without a pytest.importorskip guard, so a "
             f"core install fails collection instead of skipping: {offenders}"
         )
+
+
+# ======================================================================
+# The six findings I initially reported as "cosmetic Tier 3" and skipped.
+# Two of them (SEC-03, MEM-03) were not cosmetic; verified and fixed here.
+# ======================================================================
+
+
+class TestHttpsEnforcedForRemoteHub:
+    """Covered more thoroughly in tests/test_hub_client.py -- this is the
+    end-to-end shape: a fleet that points COMMONTRACE_HUB_URL at a real
+    remote host over plain http gets a clear refusal, not a silent
+    plaintext Bearer-token send."""
+
+    def test_remote_http_is_refused(self):
+        from commontrace import hub_client
+
+        with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
+            hub_client._validate_hub_url("http://external-untrusted-server.com/mcp")
+
+    def test_https_is_unaffected(self):
+        from commontrace import hub_client
+
+        hub_client._validate_hub_url("https://hub.example.com/mcp")  # must not raise
+
+
+class TestSemanticQueryDetectsIndexMismatch:
+    """query.py's `embeddings @ q_emb` previously ran unguarded, so an index
+    built by a different model (different embedding width) crashed with
+    numpy's own matmul error, from deep inside a matrix multiply, with no
+    mention of build_index.py or how to fix it."""
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_query_probe", Path(REPO_ROOT) / "memory" / "attention" / "query.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        return module, spec
+
+    def test_dimension_mismatch_is_a_clear_error_not_a_numpy_traceback(self):
+        pytest.importorskip("numpy", reason="attention extra not installed in this env")
+        pytest.importorskip("sentence_transformers", reason="attention extra not installed in this env")
+        import numpy as np
+
+        module, spec = self._module()
+        spec.loader.exec_module(module)
+
+        embeddings = np.zeros((3, 384), dtype=np.float32)
+        q_emb = np.zeros(768, dtype=np.float32)  # a different model's width
+        assert embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]
+
+    def test_row_count_mismatch_is_detectable_before_indexing(self):
+        pytest.importorskip("numpy", reason="attention extra not installed in this env")
+        import numpy as np
+
+        embeddings = np.zeros((2, 384), dtype=np.float32)  # truncated: only 2 rows
+        slugs = ["a", "b", "c"]  # but 3 slugs on record
+        assert embeddings.shape[0] != len(slugs)
+
+
+class TestTemplateHeadingsMatchWhatIsGenerated:
+    def test_code_agent_type_gets_episodes_not_traces(self):
+        """code scaffolds memory/episodes/ (init_cmd.py); the index it
+        generates for itself previously pointed at the wrong directory."""
+        from commontrace import templates
+
+        idx = templates.index_md("code")
+        assert "#### Episodes" in idx
+        assert "#### Traces" not in idx
+
+    def test_other_agent_types_keep_traces(self):
+        from commontrace import templates
+
+        idx = templates.index_md("sales")
+        assert "#### Traces" in idx
+        assert "#### Episodes" not in idx
+
+    def test_usage_convention_matches_the_generated_heading_level(self):
+        """The instructions said to add `## <Domain>`; the actual generated
+        sections are `### <Domain>`. Following the written instruction
+        produced a section one level above every real one."""
+        from commontrace import templates
+
+        idx = templates.index_md("code")
+        assert "### <Domain>" in idx
+        assert "## <Domain>" not in idx.replace("### <Domain>", "")
+
+
+class TestBuildIndexTempFileIsUniquePerProcess:
+    """Two processes rebuilding the index concurrently previously wrote to
+    the exact same hardcoded `.tmp.npz` path."""
+
+    def test_source_no_longer_hardcodes_the_tmp_path(self):
+        text = (Path(REPO_ROOT) / "memory" / "attention" / "build_index.py").read_text(encoding="utf-8")
+        assert 'INDEX_PATH + ".tmp.npz"' not in text
+        assert "tempfile.mkstemp" in text
+
+
+class TestImportStreamsRatherThanBuffering:
+    """SEC-08: parse_jsonl/parse_csv collected every row into memory before
+    writing a single trace file. import_cmd now consumes iter_jsonl/
+    iter_csv, a single pass, with only counts (not full row content)
+    growing unboundedly."""
+
+    def _run_import(self, tmp_path, jsonl_lines):
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        src = tmp_path / "export.jsonl"
+        src.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", "import", str(src),
+             "--agent-type", "code", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def test_a_bulk_import_still_writes_every_valid_row(self, tmp_path):
+        import json as _json
+
+        rows = [
+            _json.dumps({"title": f"t{i}", "context": "c", "solution": "s"})
+            for i in range(50)
+        ]
+        r = self._run_import(tmp_path, rows)
+        assert r.returncode == 0, r.stderr
+        assert "50 row(s) parseable" in r.stdout
+        written = [
+            p for p in (tmp_path / "memory" / "traces").iterdir()
+            if p.name.endswith(".md") and p.name != "README.md"
+        ]
+        assert len(written) == 50
+
+    def test_skip_detail_lines_are_capped_but_the_count_is_not(self, tmp_path):
+        """Beyond the first 20, only a running count is kept -- the fix for
+        the OTHER half of the memory issue: an export with many bad rows
+        accumulating one detail string per row indefinitely."""
+        rows = ["not valid json"] * 30
+        r = self._run_import(tmp_path, rows)
+        assert "30 skipped" in r.stdout
+        assert r.stderr.count("[SKIP]") == 20
+        assert "10 more skipped" in r.stderr
+
+    def test_iter_jsonl_never_holds_more_than_one_row(self):
+        """The actual streaming property, not just the CLI's summary
+        output: iter_jsonl is a generator, so nothing forces the whole
+        file into memory before the first row is available."""
+        import inspect
+
+        from commontrace import import_data
+
+        assert inspect.isgeneratorfunction(import_data.iter_jsonl)
+        assert inspect.isgeneratorfunction(import_data.iter_csv)
+
+    def test_list_collecting_wrappers_still_work_for_small_inputs(self):
+        """parse_jsonl/parse_csv stay available and behave exactly as
+        before -- this repo's own tests (test_import.py) call them
+        directly, and they are a reasonable convenience for small inputs."""
+        from commontrace import import_data
+
+        mapping = import_data.FieldMapping()
+        imported, skipped = import_data.parse_jsonl(
+            iter(['{"title": "t", "context": "c", "solution": "s"}']), mapping,
+        )
+        assert len(imported) == 1 and len(skipped) == 0
+
+
+class TestFrontmatterWritePreservesPermissions:
+    """SEC-09: NamedTemporaryFile creates its file at 0600 on POSIX
+    regardless of the process umask, and os.replace carries that mode
+    straight through -- so every rewrite of an existing lesson or trace
+    silently tightened its permissions to owner-only, locking a team member
+    or CI checkout out of a file they could read a moment ago."""
+
+    def test_rewriting_an_existing_file_preserves_its_mode(self, tmp_path):
+        from commontrace import frontmatter
+
+        p = tmp_path / "existing.md"
+        p.write_text("---\na: 1\n---\n\nbody\n", encoding="utf-8")
+        os.chmod(p, 0o644)
+
+        fm, body = frontmatter.read(str(p))
+        frontmatter.write(str(p), fm, body)
+
+        assert oct(os.stat(p).st_mode & 0o777) == "0o644"
+
+    def test_rewriting_a_group_writable_file_preserves_that_too(self, tmp_path):
+        """Not just "preserves 644" -- preserves whatever it was, including
+        a shared-repo mode more permissive than NamedTemporaryFile's 0600."""
+        from commontrace import frontmatter
+
+        p = tmp_path / "shared.md"
+        p.write_text("---\na: 1\n---\n\nbody\n", encoding="utf-8")
+        os.chmod(p, 0o664)
+
+        fm, body = frontmatter.read(str(p))
+        frontmatter.write(str(p), fm, body)
+
+        assert oct(os.stat(p).st_mode & 0o777) == "0o664"
+
+    def test_a_brand_new_file_respects_the_process_umask(self, tmp_path, monkeypatch):
+        """A file that does not exist yet is not "restoring" anything --
+        it should behave like a plain `open(path, "w")` would under the
+        current umask, same as before this fix."""
+        from commontrace import frontmatter
+
+        old_umask = os.umask(0o022)
+        try:
+            p = tmp_path / "new.md"
+            frontmatter.write(str(p), {"a": 1}, "body\n")
+            assert oct(os.stat(p).st_mode & 0o777) == "0o644"
+        finally:
+            os.umask(old_umask)

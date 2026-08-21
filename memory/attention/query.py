@@ -169,6 +169,34 @@ def main() -> int:
         return 1
     model = SentenceTransformer(_TRUSTED_MODEL_NAME)
     q_emb = model.encode(args.query, normalize_embeddings=True, convert_to_numpy=True)
+
+    # An index built by a different (or later, wider) embedding model has a
+    # different column count, and `embeddings @ q_emb` raises numpy's own
+    # ValueError -- "matmul: Input operand 1 has a mismatch in its core
+    # dimension" -- with no mention of build_index.py, from deep inside a
+    # matrix multiply rather than from a guard that names the fix. The
+    # model_name check above catches a MISLABELED index; this catches a
+    # correctly-labeled one that is simply the wrong shape, which the
+    # model_name string alone cannot detect. Row count is checked too:
+    # `slugs[idx]` below indexes unconditionally, so an index truncated by a
+    # previous crash mid-write would raise IndexError past the same point.
+    if embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]:
+        print(
+            f"[ERR] {INDEX_PATH} has embedding dimension {embeddings.shape}, which "
+            f"does not match this model's {q_emb.shape[0]}. Rebuild the index: "
+            "python memory/attention/build_index.py --force",
+            file=sys.stderr,
+        )
+        return 1
+    if embeddings.shape[0] != len(slugs):
+        print(
+            f"[ERR] {INDEX_PATH} has {embeddings.shape[0]} embedding row(s) but "
+            f"{len(slugs)} slug(s) -- the index is truncated or corrupted. Rebuild it: "
+            "python memory/attention/build_index.py --force",
+            file=sys.stderr,
+        )
+        return 1
+
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
 

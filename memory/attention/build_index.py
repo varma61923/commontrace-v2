@@ -36,6 +36,7 @@ import glob
 import os
 import re
 import sys
+import tempfile
 
 import numpy as np
 import yaml
@@ -197,7 +198,15 @@ def main() -> int:
     )
 
     os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
-    tmp_path = INDEX_PATH + ".tmp.npz"
+    # A unique per-process/per-call name, not a hardcoded ".tmp.npz". Two
+    # processes rebuilding the index at once -- realistic if a rebuild is
+    # ever triggered from a hook rather than run by hand -- both wrote to
+    # the exact same path, so one process's np.savez could interleave with
+    # or be clobbered by the other's before either reached os.replace.
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(INDEX_PATH), prefix=os.path.basename(INDEX_PATH) + ".", suffix=".tmp.npz"
+    )
+    os.close(tmp_fd)  # np.savez wants a path/fd it opens itself, not this one held open
     try:
         np.savez(
             tmp_path,

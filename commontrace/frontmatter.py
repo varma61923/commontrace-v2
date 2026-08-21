@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import stat
 import tempfile
 from typing import Any
 
@@ -126,6 +127,24 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
     fm_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
     target_dir = os.path.dirname(os.path.abspath(path))
     os.makedirs(target_dir, exist_ok=True)
+
+    # NamedTemporaryFile creates its file at 0600 on POSIX regardless of the
+    # process umask, and os.replace carries that mode straight through to
+    # `path` -- so every rewrite of an existing lesson/trace silently
+    # tightened its permissions to owner-only, locking out anyone else in a
+    # shared team repo or CI checkout who could read/write it a moment ago.
+    # Fixed by restoring the mode the destination already had (a rewrite
+    # should not change who can read a file), or -- for a file that does
+    # not exist yet -- the mode a plain `open(path, "w")` would have
+    # produced under the current umask, so a NEW file's permissions still
+    # respect the umask exactly as everyone expects `open()` to.
+    try:
+        want_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        want_mode = 0o666 & ~umask
+
     temp_file = tempfile.NamedTemporaryFile(
         dir=target_dir,
         delete=False,
@@ -140,6 +159,7 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
             fh.write(fm_text)
             fh.write("---\n\n")
             fh.write(body.rstrip("\n") + "\n")
+        os.chmod(temp_path, want_mode)
         os.replace(temp_path, path)
     except BaseException:
         if os.path.exists(temp_path):

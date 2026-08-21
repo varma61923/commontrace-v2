@@ -89,13 +89,29 @@ def _validate_hub_url(hub_url: str) -> None:
     unchecked, a bad scheme also wastes the full retry budget (3 attempts,
     exponential backoff) on something that can never succeed, and surfaces as
     an opaque "unhandled errors in a TaskGroup" rather than a clear message.
+
+    Also refuses plaintext `http://` to anything that is not loopback. The
+    Authorization: Bearer header carrying the org's API key goes out on
+    every call this client makes, and a Hub URL is normally set once in an
+    environment variable and then trusted forever -- there is no per-call
+    review that would catch a stray `http://` to a real endpoint. Loopback
+    is exempt because it is the standard way to develop against a local
+    Hub without a certificate, and traffic to it never leaves the host.
     """
     from urllib.parse import urlparse
 
-    scheme = urlparse(hub_url).scheme.lower()
+    parsed = urlparse(hub_url)
+    scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
         raise HubConnectionError(
             f"refusing to use Hub URL {hub_url!r}: scheme must be http or https, got {scheme or '(none)'!r}"
+        )
+    hostname = (parsed.hostname or "").lower()
+    if scheme == "http" and hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise HubConnectionError(
+            f"refusing to use plaintext http:// for remote Hub URL {hub_url!r}: "
+            "the API key is sent as a Bearer token on every call. Use https://, "
+            "or connect to localhost/127.0.0.1 for local development."
         )
 
 
