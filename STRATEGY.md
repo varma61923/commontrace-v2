@@ -483,3 +483,160 @@ this and a defensible answer on (B), and if the internal B2B offer keeps
 outperforming, the rational call may be to leave that question closed and
 sell (A) extremely well — which §2 already noted is a good, fundable,
 sellable business, and which is the one the evidence currently supports.
+
+---
+
+## 12. The question §2 never asked: is there a large outcome in (A)?
+
+§11 recommended committing to (A). It did so inside §2's frame — (A) is
+"linear in customers," a "DevTools/observability comp," and (B) is "the
+shape that produces the outcome the user is asking about." I accepted that
+dichotomy without testing it. It deserves testing, because two of its
+load-bearing claims do not survive contact with what this repository now
+contains.
+
+### 12.1 "You cannot get to (B) by doing more of (A)" is false as stated
+
+§2 presents the two as a fork requiring an explicit switch. They are not a
+fork. They are a sequence, and the dependency runs in exactly one
+direction.
+
+§11.4's gate has two requirements, and §11 only named one. A trustworthy
+overlap number needs a working instrument **and** a corpus large enough for
+the measurement to mean anything — §5 said as much ("we need enough
+contributed corpus for the measurement to mean something") and then the
+document stopped treating it as load-bearing.
+
+Where does that corpus come from? Every org running (A) accumulates traces
+as a byproduct of using the product. `share_trace` is one opt-in call away
+from turning accumulated per-org memory into commons corpus, and
+`commontrace commons contribute --tags` already does it in bulk with a
+preview and an explicit `--confirm`.
+
+So (A) is not a consolation prize or a hedge. **(A) is the corpus engine
+for (B).** A large (A) install base is the single asset that makes (B)
+testable at all, and no amount of direct investment in (B) substitutes for
+it. That reframes §11's recommendation: committing to (A) is not deferring
+the large outcome, it is building the only precondition for it that money
+cannot shortcut.
+
+The genuine fork §2 was reaching for is narrower and comes later: *once
+corpus and instrument both exist, does the commons open by default or stay
+opt-in per customer?* That is a terms question (§9.2), and it is still open.
+
+### 12.2 "Linear in customers" measures the wrong unit
+
+Per-org memory compounds along three axes at once, and only one of them is
+customer count:
+
+1. **Agents per fleet.** Every agent connecting to the same Hub reads
+   memory every other agent wrote. Within one customer this is already a
+   network effect — it is simply bounded by the fleet rather than by the
+   market.
+2. **Tasks over time.** The corpus grows with usage, and `reliability`
+   prunes what does not survive contact with evidence, so the corpus gets
+   *better* with age, not merely bigger.
+3. **Fleets per customer.** A large enterprise has many, and each is a
+   separate expansion.
+
+The expansion motion that shape implies is land-one-fleet, expand-by-agent,
+expand-by-fleet. That is the standard enterprise infrastructure shape, and
+it is not linear in customers — it is linear in customers multiplied by a
+per-customer term that itself grows. Calling it "linear" and comping it to
+observability understates it.
+
+**This does not by itself make it a billion-dollar business.** It makes §2's
+ceiling argument wrong about which variable to watch. The variable is
+agents under management, not logos.
+
+### 12.3 The asset that is actually unusual
+
+Most infrastructure cannot prove its own effect. It is bought on
+conviction, defended on conviction, and cut in a downturn on conviction.
+
+§8 built randomized-holdout causal measurement: withhold a lesson from ~10%
+of the occasions where its activation condition matched, join the arms to
+recorded outcomes, and report a causal effect with a confidence interval,
+Benjamini-Hochberg-corrected across all lessons tested, with underpowered
+comparisons reported as UNDERPOWERED rather than as "no effect."
+
+That is unusual enough to be worth stating plainly as the strategic asset:
+
+> This product can prove, on the customer's own data, that it works — and
+> can be shown to have declined to claim it when the data did not support
+> it.
+
+Three consequences, in descending order of confidence:
+
+- **It changes what a renewal conversation is.** "Here is the measured
+  effect on your fleet since we last spoke" is a different conversation from
+  "here is your usage."
+- **It is the pricing basis** (§11.5). Value-based pricing needs measured
+  value, and this is the only quantity here that is causal rather than
+  correlational.
+- **It is hard to copy quickly**, not because the statistics are novel —
+  they are not — but because it requires the activation-condition data model
+  (`applies_when`), the occasion-level join, and the willingness to publish
+  a null result. A competitor bolting memory onto an existing product has
+  none of the three and no incentive to build the third.
+
+### 12.4 Where the large-outcome case is weakest — stated, not buried
+
+An affirmative case that omits these is not worth reading:
+
+1. **The platforms may bundle it.** The most likely competitive outcome is
+   not a startup; it is agent platforms shipping adequate built-in memory.
+   The defence is being provider-agnostic — `install` targets Claude Code,
+   Cursor, Devin, Windsurf and generic MCP, and the Hub needs no
+   CommonTrace-specific SDK (`PROTOCOL.md` §8) — so the product is the
+   layer *across* platforms rather than a feature of one. That is a real
+   defence and an unproven one.
+2. **One confirmed customer.** §2 cites −53% time-to-resolve and −29% churn
+   as customer-confirmed. That is one fleet. §10 already says not to lead
+   with those numbers as evidence for the commons; they are also thin
+   evidence for the category. `--experiment` exists precisely so customer
+   two onward produces its own causal numbers instead of inheriting these.
+3. **Retrieval is the same bottleneck one level down.** The 10.9% recall
+   finding is about the commons matcher, but per-org retrieval uses the same
+   lexical machinery. If a fleet's own memory is hard to retrieve from in
+   its own words, (A)'s value is capped by the same defect that closed (B)'s
+   gate. **This is the most important open question in the document and it
+   is not currently anyone's task.**
+4. **"Substrate failures are shared" is still a hypothesis** (§4). It is
+   plausible and unvalidated, and §11.1 established we cannot currently
+   measure it.
+
+### 12.5 What I will not do, and why that is not evasion
+
+I will not put a TAM figure, a competitor's pricing, or a funding comp in
+this document. Not because those are someone else's job, but because I
+cannot verify them from here, and an unverifiable number in a repository is
+worse than no number — it acquires authority by being written down and gets
+quoted back as fact. That discipline is the same one that produced §11.1's
+10.9% instead of a flattering headline.
+
+What I was wrong about in the previous revision is treating that as licence
+to skip the analysis. Market *structure* is analysable without inventing
+figures, and §12.1–12.4 is that analysis. The distinction: I can reason
+about which variable determines the ceiling; I cannot tell you the ceiling.
+
+### 12.6 Revised bottom line
+
+§11.3 said commit to (A) and gate (B). That stands. What changes:
+
+- **(A) is not the smaller bet.** It is the precondition for (B) and the
+  only one that cannot be bought. Sequencing, not sacrifice.
+- **The metric to run the company on is agents under management**, not
+  customer count — that is the variable §12.2 identifies as compounding.
+- **The differentiator to sell on is causal proof on the customer's own
+  data**, not the network effect (which §11.3 already said to stop citing).
+- **The highest-value open engineering question is retrieval recall** —
+  §12.4.3 — because it caps (A) and gates (B) simultaneously. §11.6 framed
+  funding that research as optional. On this analysis it is not optional
+  for (B); it is the main line for both.
+
+Whether that adds up to a billion-dollar company is not something this
+document can assert, and any version of it that did would be the kind of
+claim the rest of this file exists to avoid making. What it can say is
+which variable to watch, which asset is genuinely rare, and which single
+engineering result would move both.
