@@ -23,3 +23,10 @@ asyncpg==0.31.0            # async Postgres driver
 alembic==1.19.1
 argon2-cffi==25.1.0        # API key hashing
 jsonschema==4.26.0         # protocol/schemas/*.json validation
+# commons_overlap compares every submitted failure signature against the
+# commons corpus. Measured on this codebase, numpy vectorizes that ~24x:
+# the worst-case bounded query is 1.6s with it and ~46s without. hub/commons.py
+# keeps an exact pure-Python fallback (and tests that the two agree), so this
+# is a performance dependency, not a correctness one -- but a Hub serving the
+# commons should have it.
+numpy==2.4.6

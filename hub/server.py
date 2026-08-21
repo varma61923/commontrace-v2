@@ -297,6 +297,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         failures: list[dict] | None = None,
         threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
         include_matches: bool = True,
+        agent_type: str = "",
     ) -> dict:
         """Of the recurring failures your fleet keeps hitting, what fraction
         has some *other* fleet already solved?
@@ -316,6 +317,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                 return await crud.commons_overlap(
                     session, org_id, failures or [],
                     threshold=threshold, include_matches=include_matches,
+                    agent_type=agent_type,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)

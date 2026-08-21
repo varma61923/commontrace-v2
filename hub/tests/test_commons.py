@@ -394,7 +394,127 @@ class TestCoverageNumber:
         assert "no other org has contributed" in report["note"].lower()
 
 
-# --- 5. Untrusted input -------------------------------------------------
+# --- 5. Scaling: the fast path must not diverge from the reference ------
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestMatcherPaths:
+    """commons.best_matches has a numpy fast path and a pure-Python
+    fallback. They must return identical results -- a fast path that
+    quietly disagreed would produce wrong coverage numbers only on hosts
+    that happen to have numpy installed, which is close to undebuggable."""
+
+    def _random_sigs(self, n, seed):
+        import random
+
+        rnd = random.Random(seed)
+        return [
+            [rnd.randrange(0, 1 << 61) for _ in range(commons.COMMONS_NUM_PERM)]
+            for _ in range(n)
+        ]
+
+    def _pure_python(self, submitted, corpus):
+        out = []
+        for _label, sig in submitted:
+            best_idx, best_sim = -1, 0.0
+            for i, cand in enumerate(corpus):
+                sim = commons.estimate(sig, cand)
+                if sim > best_sim:
+                    best_idx, best_sim = i, sim
+            out.append((best_idx, best_sim))
+        return out
+
+    def test_both_paths_agree_on_random_signatures(self):
+        corpus = self._random_sigs(40, seed=1)
+        submitted = [(f"f{i}", s) for i, s in enumerate(self._random_sigs(5, seed=2))]
+        assert commons.best_matches(submitted, corpus) == self._pure_python(submitted, corpus)
+
+    def test_both_paths_agree_when_a_real_match_exists(self):
+        """The case that actually matters: a planted near-duplicate must be
+        found at the same index with the same similarity by both paths."""
+        corpus = self._random_sigs(30, seed=3)
+        planted = corpus[7][:]
+        submitted = [("hit", planted)]
+        fast = commons.best_matches(submitted, corpus)
+        assert fast == self._pure_python(submitted, corpus)
+        assert fast[0][0] == 7
+        assert fast[0][1] == pytest.approx(1.0)
+
+    def test_empty_corpus_is_handled_by_both_paths(self):
+        submitted = [("f", self._random_sigs(1, seed=4)[0])]
+        assert commons.best_matches(submitted, []) == [(-1, 0.0)]
+
+
+class TestBoundedCorpusScan:
+    async def test_a_truncated_scan_is_reported_as_a_lower_bound(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        """Silently truncating would under-report the one number this
+        product's strategy rests on. It must be flagged and framed as a
+        lower bound instead."""
+        monkeypatch.setattr(commons, "max_corpus_scan", lambda: 1)
+        for i in range(3):
+            t = await _contribute(
+                session_factory, config, orgs["contributor-a"],
+                f"Shared substrate {i}", f"context {i}", "fix",
+            )
+            async with session_scope(session_factory) as session:
+                await crud.share_trace(session, orgs["contributor-a"], t["id"])
+
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"], [_failure("f", "Shared substrate 0", "context 0")],
+            )
+
+        assert report["corpus_truncated"] is True
+        assert report["n_commons_traces"] == 1
+        assert report["n_commons_traces_total"] == 3
+        assert "lower bound" in report["note"].lower()
+
+    async def test_an_untruncated_scan_is_not_flagged(self, session_factory, config, orgs):
+        t = await _contribute(
+            session_factory, config, orgs["contributor-a"], "Shared", "ctx", "fix",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], t["id"])
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"], [_failure("f", "Shared", "ctx")],
+            )
+        assert report["corpus_truncated"] is False
+        assert report["n_commons_traces"] == report["n_commons_traces_total"] == 1
+
+
+class TestAgentTypePrefilter:
+    async def test_narrowing_by_agent_type_excludes_other_fleets(
+        self, session_factory, config, orgs
+    ):
+        """Not an approximation -- a support fleet's failures genuinely
+        should not be scored against another agent type's substrate."""
+        t = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500", "idempotency key",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], t["id"])
+
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+
+        async with session_scope(session_factory) as session:
+            matching = await crud.commons_overlap(
+                session, orgs["consumer"], probe, agent_type="code",
+            )
+        assert matching["n_covered"] == 1
+
+        async with session_scope(session_factory) as session:
+            other = await crud.commons_overlap(
+                session, orgs["consumer"], probe, agent_type="support",
+            )
+        assert other["n_commons_traces"] == 0
+        assert other["n_covered"] == 0
+
+
+# --- 6. Untrusted input -------------------------------------------------
 
 
 class TestSubmittedInputIsValidated:

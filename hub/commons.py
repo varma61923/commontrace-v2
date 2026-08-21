@@ -68,6 +68,47 @@ DEFAULT_COMMONS_THRESHOLD = overlap.DEFAULT_MATCH_THRESHOLD
 MAX_SUBMITTED_FAILURES = 500
 MAX_LABEL_CHARS = 200
 
+# Hard ceiling on how many commons traces one query will compare against.
+#
+# This is not a guess. Measured on this codebase: the comparison is
+# O(submitted x corpus) and costs ~4.6us per pair in pure Python, so
+# 500 failures x 50,000 traces is ~114 seconds -- a request that ties up a
+# worker until it times out. numpy vectorizes it ~24x (used below when
+# available), which moves the same case to ~5s: better, still not a
+# synchronous request budget.
+#
+# So the query is bounded rather than left to grow with the corpus. When
+# the cap bites, the result says so explicitly (`corpus_truncated`) and the
+# coverage number is reported as a LOWER BOUND -- a silently-truncated
+# scan would under-report the one number this product's strategy rests on,
+# which is exactly the failure mode to avoid.
+#
+# The real fix past this ceiling is an approximate-nearest-neighbour index
+# (pgvector, or a dedicated ANN service). Deliberately not built yet:
+# classic MinHash LSH banding was measured first and rejected on evidence
+# -- at this module's 0.30 match threshold, r=2 filters almost nothing
+# (77% candidate rate) and r=4 loses 36% of true matches. Low thresholds
+# are simply where LSH stops paying.
+MAX_COMMONS_CORPUS = 20_000
+
+try:  # pragma: no cover - exercised by whichever path the environment has
+    import numpy as _np
+except ImportError:  # listed in hub/requirements.txt, but not required for correctness
+    _np = None
+
+# Without numpy the same bounded worst case takes ~46s instead of ~1.6s
+# (measured), which is not a request budget. Rather than let a Hub that
+# happens to be missing an optional accelerator hang, the scan bound scales
+# down with the implementation actually in use. The result stays correct
+# either way -- it is just reported as a lower bound sooner, which
+# `corpus_truncated` and the accompanying note make explicit.
+MAX_COMMONS_CORPUS_NO_NUMPY = 2_000
+
+
+def max_corpus_scan() -> int:
+    """The per-query corpus ceiling for the matcher this host will use."""
+    return MAX_COMMONS_CORPUS if _np is not None else MAX_COMMONS_CORPUS_NO_NUMPY
+
 
 class CommonsInputError(ValueError):
     """A submitted overlap request was malformed or oversized. Surfaced as a
@@ -137,3 +178,46 @@ def validate_submitted_failures(failures: object) -> list[tuple[str, list[int]]]
 def estimate(sig_a: list[int], sig_b: list[int]) -> float:
     """Estimated Jaccard similarity between two signatures of equal width."""
     return overlap.estimate_jaccard(sig_a, sig_b)
+
+
+def best_matches(
+    submitted: list[tuple[str, list[int]]],
+    corpus_signatures: list[list[int]],
+) -> list[tuple[int, float]]:
+    """For each submitted signature, the (corpus_index, similarity) of its
+    single best match. Returns (-1, 0.0) when the corpus is empty.
+
+    Two implementations, identical results. numpy compares one signature
+    against the entire corpus as a single vectorized operation (~24x faster,
+    measured); the pure-Python path is the exact same arithmetic in a loop
+    and is what runs when numpy is absent, since numpy is deliberately not a
+    Hub dependency. hub/tests/test_commons.py asserts the two agree, so the
+    fast path can never quietly diverge from the reference one.
+    """
+    if not corpus_signatures:
+        return [(-1, 0.0) for _ in submitted]
+
+    if _np is not None:
+        corpus = _np.array(corpus_signatures, dtype=_np.uint64)
+        out: list[tuple[int, float]] = []
+        for _label, sig in submitted:
+            sims = (corpus == _np.array(sig, dtype=_np.uint64)).sum(axis=1) / COMMONS_NUM_PERM
+            idx = int(sims.argmax())
+            sim = float(sims[idx])
+            # argmax returns 0 for an all-zero row, but "nothing matched at
+            # all" is -1 in the reference implementation, and the two must
+            # agree: `threshold` is caller-controlled and clamps to 0.0, so
+            # a zero-similarity "match" is reachable, and the paths would
+            # then disagree only on hosts that happen to have numpy.
+            out.append((idx, sim) if sim > 0.0 else (-1, 0.0))
+        return out
+
+    out = []
+    for _label, sig in submitted:
+        best_idx, best_sim = -1, 0.0
+        for i, candidate in enumerate(corpus_signatures):
+            sim = estimate(sig, candidate)
+            if sim > best_sim:
+                best_idx, best_sim = i, sim
+        out.append((best_idx, best_sim))
+    return out

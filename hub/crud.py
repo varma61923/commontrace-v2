@@ -666,6 +666,7 @@ async def commons_overlap(
     failures: object,
     threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
     include_matches: bool = True,
+    agent_type: str = "",
 ) -> dict:
     """**The number the cross-org thesis lives or dies on** (STRATEGY.md §5):
     of the recurring failures this fleet keeps hitting, what fraction has
@@ -686,42 +687,60 @@ async def commons_overlap(
     submitted = commons.validate_submitted_failures(failures)
     threshold = max(0.0, min(float(threshold), 1.0))
 
-    corpus = (
+    where = [
+        Trace.shared_with_commons.is_(True),
+        Trace.quarantined.is_(False),
+        Trace.commons_signature.isnot(None),
+        Trace.org_id != org_id,
+    ]
+    # Optional semantic narrowing. Not an approximation: a support fleet's
+    # failures genuinely should not be scored against CUDA substrate. It is
+    # also the cheapest way to keep the scan small as the corpus grows,
+    # because it runs in Postgres instead of Python.
+    if agent_type:
+        where.append(Trace.agent_type == agent_type)
+
+    total_corpus = (
+        await session.execute(select(func.count()).select_from(Trace).where(*where))
+    ).scalar_one()
+
+    # Bounded scan. See commons.MAX_COMMONS_CORPUS for why this exists and
+    # what the real fix past it is. Ordered by recency so a truncated scan
+    # is at least a *defined* subset rather than whatever the planner
+    # returned first.
+    rows = (
         await session.execute(
-            select(Trace).where(
-                Trace.shared_with_commons.is_(True),
-                Trace.quarantined.is_(False),
-                Trace.commons_signature.isnot(None),
-                Trace.org_id != org_id,
-            )
+            select(Trace)
+            .where(*where)
+            .order_by(Trace.created_at.desc(), Trace.id.desc())
+            .limit(commons.max_corpus_scan())
         )
     ).scalars().all()
+    corpus_truncated = total_corpus > len(rows)
+
+    best = commons.best_matches(submitted, [r.commons_signature or [] for r in rows])
 
     matches: list[dict] = []
     by_domain: dict[str, int] = {}
     n_covered = 0
 
-    for label, sig in submitted:
-        best, best_sim = None, 0.0
-        for candidate in corpus:
-            sim = commons.estimate(sig, candidate.commons_signature or [])
-            if sim > best_sim:
-                best, best_sim = candidate, sim
-        if best is None or best_sim < threshold:
+    for (label, _sig), (idx, sim) in zip(submitted, best):
+        if idx < 0 or sim < threshold:
             continue
+        hit = rows[idx]
         n_covered += 1
-        key = best.agent_type or "(unspecified)"
+        key = hit.agent_type or "(unspecified)"
         by_domain[key] = by_domain.get(key, 0) + 1
         if include_matches:
             matches.append(
                 {
                     "failure_label": label,
-                    "similarity": round(best_sim, 4),
-                    "agent_type": best.agent_type,
-                    "tags": list(best.tags or []),
-                    # The payoff. Safe to return in full: `best` is only in
-                    # `corpus` because its owning org explicitly shared it.
-                    "trace": _to_wire(best, [], []),
+                    "similarity": round(sim, 4),
+                    "agent_type": hit.agent_type,
+                    "tags": list(hit.tags or []),
+                    # The payoff. Safe to return in full: `hit` is only in
+                    # the corpus because its owning org explicitly shared it.
+                    "trace": _to_wire(hit, [], []),
                 }
             )
 
@@ -729,21 +748,33 @@ async def commons_overlap(
     n_failures = len(submitted)
     return {
         "n_failures": n_failures,
-        "n_commons_traces": len(corpus),
+        "n_commons_traces": len(rows),
+        "n_commons_traces_total": total_corpus,
+        "corpus_truncated": corpus_truncated,
         "n_covered": n_covered,
         "covered_fraction": (n_covered / n_failures) if n_failures else 0.0,
         "threshold": threshold,
         "by_agent_type": dict(sorted(by_domain.items(), key=lambda kv: -kv[1])),
         "matches": matches,
-        "note": _commons_note(n_failures, len(corpus)),
+        "note": _commons_note(n_failures, len(rows), corpus_truncated, total_corpus),
     }
 
 
-def _commons_note(n_failures: int, n_corpus: int) -> str:
+def _commons_note(
+    n_failures: int, n_corpus: int, truncated: bool = False, total: int = 0
+) -> str:
     """Say plainly when a number should not be leaned on. A coverage
     percentage over a handful of failures, or against an almost-empty
     commons, is noise -- and this number is exactly the kind that gets
     quoted once and repeated forever."""
+    if truncated:
+        # Stated first and unambiguously: a truncated scan can only ever
+        # under-count coverage, so the honest framing is a lower bound.
+        return (
+            f"Compared against the {n_corpus:,} most recent of {total:,} commons traces "
+            f"(per-query scan limit). Real coverage is AT LEAST this figure -- treat it "
+            "as a lower bound, and narrow with agent_type for a tighter answer."
+        )
     if n_corpus == 0:
         return (
             "No other org has contributed to the commons yet, so this measures nothing. "
