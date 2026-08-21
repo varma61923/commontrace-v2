@@ -124,3 +124,29 @@ done, and this file does not pretend a number exists for it.
 The measurement that would settle any of this is the same one in every
 case: run it against recurring failures a customer actually collected. Until
 that exists, this file is what is known.
+
+## Addendum: is a better token representation the fix?
+
+`commons/eval/representations.py` tested four alternate tokenizations
+(suffix stemming, character 4-grams, character 5-grams, word+4-gram union)
+against a fresh held-out probe set (`probes-v2.jsonl`, written after the
+original evaluation and never used to shape any candidate) — same corpus,
+same MinHash machinery, same 0.30 threshold, only the token set varies. None
+beat the shipped word-tokenizer on held-out recall; all traded recall away.
+**No change was made** — this was a measurement, not a patch.
+
+The more useful result is diagnostic. Scored independent of the threshold,
+the correct record is ranked **first 85% of the time** (93% for stemming).
+The matcher is not failing to find the right knowledge — it finds and ranks
+it correctly, then a fixed absolute cutoff (0.30) discards the result
+because true-match similarity is intrinsically low: paraphrases of the same
+failure share few literal tokens even when unmistakably the same failure
+(median similarity to the correct record: 0.156). That reframes the defect
+away from "the matcher is bad at finding matches" toward "a fixed Jaccard
+threshold is the wrong decision rule when literal token overlap this low is
+normal for a true match" — which points at ranking/top-k retrieval or a
+learned threshold, not a better tokenizer, as the next thing worth trying.
+That is still a design decision with the same trust and legal
+consequences described above, not a decision this file makes.
+
+Reproduce: `python commons/eval/representations.py`
