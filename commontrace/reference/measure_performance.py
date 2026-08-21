@@ -550,9 +550,31 @@ def compute_transfer_gap(episodes, lessons):
     return cross_hits / total_hits, total_hits, untraceable
 
 
+def _safe_int(value, default=0):
+    """Coerce a hand-authored frontmatter value to int, never raising.
+
+    `.get("uses", 0)` returns the default only when the KEY is missing, so
+    `uses: null` yields None and `uses: "1"` yields a str. Sorting a mix of
+    those against ints raises TypeError, and one hand-edited lesson took the
+    entire benchmark down with a traceback -- in a command whose whole job is
+    to report on a store that may contain anything a human typed.
+    bool is excluded deliberately: it is an int subclass, and `uses: true`
+    silently counting as 1 use would be a wrong number rather than an error.
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def compute_extras(episodes, lessons):
-    by_uses = sorted(lessons.items(), key=lambda kv: kv[1].get("uses", 0), reverse=True)
-    top5 = [(n, lesson.get("uses", 0)) for n, lesson in by_uses[:5] if lesson.get("uses", 0) > 0]
+    by_uses = sorted(lessons.items(), key=lambda kv: _safe_int(kv[1].get("uses")), reverse=True)
+    top5 = [(n, _safe_int(lesson.get("uses"))) for n, lesson in by_uses[:5]
+            if _safe_int(lesson.get("uses")) > 0]
     never_hit = sorted(n for n, lesson in lessons.items() if lesson.get("uses", 0) == 0)
 
     all_proposed = set()

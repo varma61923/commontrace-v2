@@ -260,3 +260,140 @@ class TestPushSkipsAlreadyPushedLessons:
         await hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path))
 
         assert len(calls) == 1, f"expected one contribute_trace across two runs, got {len(calls)}"
+
+
+# ======================================================================
+# Tier 2 findings from the same audit.
+# ======================================================================
+
+
+# --- PROTO-05: Unicode-aware tokenization -------------------------------
+
+
+class TestTokenizersHandleNonAscii:
+    """`[a-z0-9]+` matched ASCII only, so any non-English fleet got zero
+    lexical retrieval, zero distill clustering, and no error explaining
+    why."""
+
+    def test_cjk_and_cyrillic_produce_tokens(self):
+        from commontrace import distill, retrieval
+
+        assert retrieval._tokenize("数据库连接失败") != []
+        assert distill._tokenize("Ошибка подключения") != set()
+
+    def test_accented_latin_is_not_mutilated(self):
+        """`résumé` tokenized to ['sum'] -- the accents split the word and
+        the fragments fell under the len>1 filter."""
+        from commontrace import retrieval
+
+        assert retrieval._tokenize("résumé") == ["résumé"]
+
+    def test_ascii_behaviour_is_unchanged(self):
+        """The fix must not have altered scoring for existing English
+        stores, which is every store that exists today."""
+        from commontrace import retrieval
+
+        assert retrieval._tokenize("The database connection failed") == [
+            "database", "connection", "failed",
+        ]
+
+
+# --- SEC-04 / PROTO-08: section parsing ---------------------------------
+
+
+class TestSectionParsing:
+    def test_first_occurrence_wins_not_last(self):
+        """A dict comprehension kept the LAST match, so a heading quoted
+        later in the body -- inside a fenced block the regex cannot see
+        into -- replaced the real section."""
+        from commontrace import hub_client
+
+        body = "## Rule\nReal rule\n\n## Why\nDocs say:\n```md\n## Rule\nfrom the docs\n```\n"
+        assert hub_client._lesson_sections(body)["rule"] == "Real rule"
+
+    def test_trace_sections_are_case_insensitive(self, tmp_path):
+        from commontrace import trace_io
+
+        p = tmp_path / "t.md"
+        p.write_text(
+            "---\nid: x\ntitle: T\n---\n\n## context\nlower ctx\n\n## solution\nlower sol\n",
+            encoding="utf-8",
+        )
+        inst, _ = trace_io.read(str(p))
+        assert inst["context_text"] == "lower ctx"
+        assert inst["solution_text"] == "lower sol"
+
+    def test_title_case_lesson_headings_match(self):
+        """`## How to Apply` is the spelling a human naturally writes."""
+        from commontrace import hub_client
+
+        sections = hub_client._lesson_sections("## Rule\nr\n\n## How To Apply\nsteps here\n")
+        assert sections.get("how to apply") == "steps here"
+
+
+# --- MEM-04: benchmark must survive hand-authored values ----------------
+
+
+class TestBenchmarkSurvivesBadUsesValues:
+    def test_safe_int_coerces_without_raising(self):
+        from commontrace.reference.measure_performance import _safe_int
+
+        assert _safe_int(1) == 1
+        assert _safe_int("2") == 2
+        assert _safe_int(None) == 0
+        assert _safe_int("nonsense") == 0
+
+    def test_booleans_do_not_count_as_uses(self):
+        """bool is an int subclass, so `uses: true` would silently count as
+        one use -- a wrong number rather than a caught error."""
+        from commontrace.reference.measure_performance import _safe_int
+
+        assert _safe_int(True) == 0
+
+    def test_mixed_types_do_not_crash_the_benchmark(self):
+        """One hand-edited lesson used to take the whole run down with
+        `'<' not supported between instances of 'int' and 'str'`."""
+        from commontrace.reference.measure_performance import compute_extras
+
+        lessons = {"a": {"uses": 3}, "b": {"uses": "2"}, "c": {"uses": None}, "d": {"uses": True}}
+        compute_extras([], lessons)  # not raising is the assertion
+
+
+# --- SEC-05 / PROTO-10: operational errors are messages, not tracebacks --
+
+
+class TestCliReportsOperationalErrorsCleanly:
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", *args],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def test_malformed_json_is_a_message_not_a_traceback(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("not json at all", encoding="utf-8")
+        r = self._run("overlap", "report", "--ours", str(bad), "--theirs", str(bad))
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert "[commontrace] error:" in r.stderr
+
+    def test_a_signature_file_missing_required_keys_is_reported(self, tmp_path):
+        """PROTO-10: FleetSignature.from_dict indexes required keys directly,
+        so a truncated export raised a bare KeyError through the CLI."""
+        import json as _json
+
+        sig = tmp_path / "sig.json"
+        sig.write_text(_json.dumps({"nope": 1}), encoding="utf-8")
+        r = self._run("overlap", "report", "--ours", str(sig), "--theirs", str(sig))
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert "fleet_label" in r.stderr
+
+    def test_a_genuine_bug_still_raises(self):
+        """The handler is narrow on purpose -- catching everything would
+        turn defects into silent exit-1s."""
+        import commontrace.cli as cli
+
+        src = __import__("inspect").getsource(cli.main)
+        assert "except Exception" not in src
+        assert "except BaseException" not in src

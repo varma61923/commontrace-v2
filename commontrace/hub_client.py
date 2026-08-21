@@ -30,7 +30,7 @@ RETRY_BASE_DELAY_SECONDS = 0.5
 _SECTION_NAMES = r"Rule|Why|How to apply|Counter-examples"
 _SECTION_RE = re.compile(
     rf"^##\s*({_SECTION_NAMES})\s*\n(.*?)(?=\n##\s*(?:{_SECTION_NAMES})\s*\n|\Z)",
-    re.DOTALL | re.MULTILINE,
+    re.DOTALL | re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -61,7 +61,15 @@ class PullResult:
 
 
 def _lesson_sections(body: str) -> dict[str, str]:
-    return {m.group(1).lower(): m.group(2).strip() for m in _SECTION_RE.finditer(body)}
+    # First occurrence wins -- see commontrace/trace_io.py:_first_wins. This
+    # path is worse than the trace one if it gets it wrong: the clobbered
+    # `Rule` is what gets contributed to the Hub as solution_text.
+    out: dict[str, str] = {}
+    for m in _SECTION_RE.finditer(body):
+        key = m.group(1).lower()
+        if key not in out:
+            out[key] = m.group(2).strip()
+    return out
 
 
 def _iter_active_lesson_paths(root: str):

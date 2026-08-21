@@ -76,6 +76,24 @@ def extract_rule(body: str) -> str:
     return next_section[0].strip()
 
 
+def _load_frontmatter(fm_text: str):
+    """Parse with commontrace's strict loader when it is importable.
+
+    Plain yaml.safe_load applies YAML 1.1 rules, so `domain: NO` became
+    False and `tags: [on, off]` became [True, False] -- the domain then
+    dropped out of the embedded query text entirely and the tags embedded as
+    booleans. commontrace/frontmatter.py already solved this; this script
+    predates that and kept its own parse. Falls back to safe_load so the
+    script still runs standalone from a checkout without the package
+    installed, which is how it is documented to be usable.
+    """
+    try:
+        from commontrace.frontmatter import _StrictBoolLoader
+    except Exception:  # noqa: BLE001 - standalone use, any import problem
+        return yaml.safe_load(fm_text)
+    return yaml.load(fm_text, Loader=_StrictBoolLoader)
+
+
 def build_query_text(frontmatter: dict, body: str) -> str:
     """Concatenate the 6 lesson fields with explicit labels and separators."""
     tags = frontmatter.get("tags") or []
@@ -107,9 +125,17 @@ def iter_active_lessons(lessons_dir: str):
         fm_text = content[delims[0].end():delims[1].start()]
         body = content[delims[1].end():]
         try:
-            frontmatter = yaml.safe_load(fm_text) or {}
+            frontmatter = _load_frontmatter(fm_text) or {}
         except yaml.YAMLError as exc:
             print(f"[WARN] YAML parse failed for {fname}: {exc}", file=sys.stderr)
+            continue
+        # A frontmatter block that parses to a scalar (`---\njust text\n---`)
+        # yields a str, and `.get()` on it raises AttributeError -- which the
+        # except above does not catch, so one malformed lesson crashed the
+        # whole indexer and took the semantic retrieval pipeline with it.
+        if not isinstance(frontmatter, dict):
+            print(f"[WARN] frontmatter in {fname} is {type(frontmatter).__name__}, "
+                  "not a mapping -- skipping", file=sys.stderr)
             continue
         if frontmatter.get("status", "active") != "active":
             continue

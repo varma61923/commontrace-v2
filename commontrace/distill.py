@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 
 from commontrace.paths import STARTER_DOMAINS
 
-_WORD_RE = re.compile(r"[a-z0-9]+")
+# Unicode-aware -- see commontrace/retrieval.py for why the ASCII-only
+# class was wrong. Clustering non-English traces produced 0.0 Jaccard for
+# every pair, so `distill` reported "no repeated patterns" on a corpus full
+# of them.
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 _STOPWORDS = frozenset(
     """
     a an the of to in on for with and or but is are was were be been being

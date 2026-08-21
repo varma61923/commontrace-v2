@@ -68,6 +68,22 @@ def main(argv: list[str] | None = None) -> int:
     except FrontmatterError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        # 130 is the shell convention for SIGINT; a traceback here is noise.
+        print("\n[commontrace] interrupted.", file=sys.stderr)
+        return 130
+    except (OSError, ValueError, KeyError) as exc:
+        # Operational errors a user can cause with a bad argument or a
+        # corrupt file: a malformed JSON signature file, a directory passed
+        # where a file was meant, a missing key in someone else's export.
+        # These reached sys.excepthook and printed a raw traceback with
+        # absolute paths and interpreter internals -- unreadable as an error
+        # message, and noise in any script wrapping this CLI. Narrow on
+        # purpose: a genuine bug still raises, because silently returning 1
+        # for an unexpected exception would hide defects rather than report
+        # them. json.JSONDecodeError is a ValueError subclass and is covered.
+        print(f"[commontrace] error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

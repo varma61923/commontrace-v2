@@ -87,6 +87,11 @@ def load_importances() -> "tuple[dict[str, int], int]":
             frontmatter = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
+        # Same guard as build_index.py: a scalar frontmatter block parses to
+        # a str, and .get() on it raises AttributeError past the yaml-only
+        # except above.
+        if not isinstance(frontmatter, dict):
+            continue
         n_parsed += 1
         if frontmatter.get("status", "active") != "active":
             continue

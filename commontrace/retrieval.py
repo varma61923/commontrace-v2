@@ -15,7 +15,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_WORD_RE = re.compile(r"[a-z0-9]+")
+# \w with re.UNICODE, not [a-z0-9]: the ASCII-only class silently mutilates
+# any non-English text. "résumé" tokenized to ['sum'] (the accented letters
+# split the word and the fragments were dropped by the len>1 filter), and
+# CJK/Cyrillic/Arabic text tokenized to nothing at all -- so a fleet working
+# in any of those got zero lexical retrieval with no error to explain it.
+# \d is excluded from the strip below only via the stopword/length filters,
+# same as before.
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 # Cheap English stopword list -- filtering these out of both the task query
 # and lesson text keeps scores from being dominated by words that carry no
