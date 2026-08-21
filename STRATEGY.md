@@ -96,6 +96,12 @@ trace whose value lives in `extensions` under your own profile is yours.
 
 ## 5. But is the overlap big enough? Nobody has measured it.
 
+> **Superseded in part — read §11.1 with this section.** The measurement now
+> exists. It returned 10.9% recall against failures the corpus provably
+> contains, which means it measured the *instrument*, not the overlap. The
+> decision rule below ("if 40% ... if 4% ...") cannot be applied to that
+> number, and §11.4 replaces §9.1's instruction to run it on customer stores.
+
 Everything above is a hypothesis. The entire (B) thesis reduces to one
 empirical quantity:
 
@@ -305,8 +311,13 @@ continuously in the background — it is opt-in per retrieval today.
 
 Flagging rather than inventing:
 
-1. **(A) or (B)?** Run the overlap report on 2–3 real customer stores
-   first. Let the number decide; do not decide before the number.
+1. **(A) or (B)?** ~~Run the overlap report on 2–3 real customer stores
+   first. Let the number decide; do not decide before the number.~~
+   **Superseded by §11.3/§11.4.** The report was run against a held-out
+   set and returned matcher recall rather than overlap, so running it on
+   customer stores today would produce a number governed by measurement
+   error. The recommendation is now: commit to (A), keep (B) dormant
+   behind the gate in §11.4.
 2. **Commons terms.** If (B): what is contributed by default, what is opt-in,
    and what does a customer get for contributing? This is a contract
    question with security-review consequences, and it must be settled
@@ -328,3 +339,147 @@ Flagging rather than inventing:
 - **Do not lead with the benchmark numbers.** −53% and 9%→78% are real and
   externally confirmed, and they are per-org results. Citing them as
   evidence for the *commons* would be claiming something they do not show.
+
+---
+
+## 11. Update (2026-08-21): the number came back, and it does not say what §5 expected
+
+§5 said the entire (B) thesis reduces to one measurement, and §9.1 said to
+let that number decide. Two things have since arrived. Neither was
+available when this document was written, and together they change the
+recommendation.
+
+### 11.1 The measurement exists now — and the instrument is the bottleneck
+
+`commons/eval/` runs the shipped corpus against 46 held-out probes written
+symptom-first (the vocabulary an on-call engineer actually uses) plus 22
+substrate failures deliberately absent as negative controls. At the shipped
+threshold:
+
+| | |
+|---|---|
+| Recall on failures the corpus provably contains | **10.9%** (5/46) |
+| Of those matches, the right record | **100%** |
+| False positives on the 22 controls | **0%** |
+
+Read §5's decision rule against that: *"If that number is 40%, the commons
+is worth building. If it is 4%, (B) is a mirage."*
+
+**Neither branch applies, because 10.9% is not the overlap — it is our
+ability to detect the overlap.** Every one of those 46 probes describes a
+failure the corpus demonstrably holds. True overlap in that experiment was
+100% by construction, and the matcher found one case in nine. So the
+honest statement is not "overlap is low." It is:
+
+> We still do not know the overlap. We now know our instrument cannot
+> measure it, and we know that precisely.
+
+That is a materially different finding from either branch §5 anticipated,
+and it invalidates §9.1's instruction as currently written. Running the
+report on 2–3 customer stores today would return a number governed by
+matcher recall, not by how much those fleets actually share — and whoever
+saw it would reasonably conclude the commons is empty when it is not.
+
+**Why no threshold fixes this.** Recall only becomes useful near 0.10,
+where 23% of *absent* failures are reported as present. Precision and
+recall do not trade off into a usable operating point anywhere on the
+curve, because the problem is the representation: Jaccard similarity over
+content words is lexical, and two engineers describing the same substrate
+failure share almost no words. The credible fix is semantic similarity, and
+it carries a cost this document must name — embeddings require a model to
+read the failure text, which retracts the *"failure text never leaves your
+fleet"* guarantee the entire privacy story rests on. That is a trust and
+legal decision, not an engineering one, and it is unresolved.
+
+### 11.2 The field signal points the same way
+
+Independently of the measurement, the person selling this reports: the B2B
+offer being sold today is entirely internal (single-organization
+deployments), traction is materially better there than for the commons, and
+the explicit instruction is **no cross-org knowledge sharing until traction
+is proven.**
+
+That is not a constraint to route around. It is (A) winning on evidence,
+from the only source that counts — someone trying to sell both.
+
+### 11.3 Revised recommendation
+
+**Commit to (A) now. Keep (B) as a live option behind a falsifiable gate.
+Do not spend on (B) until the gate opens.**
+
+This is a change from this document's original posture, which treated the
+choice as pending a cheap measurement. The measurement turned out to be
+cheap to *run* and not yet cheap to *trust*, and the market moved first.
+
+What that means concretely, all of it already implemented:
+
+- **(A) is the product.** Per-org agent memory, with `HUB_COMMONS_ENABLED=false`
+  making "no cross-org sharing" a property of the deployment rather than a
+  promise about behaviour — the three commons tools are absent from the MCP
+  surface entirely, not merely unused. `hub/DEPLOYMENT.md` §13 documents the
+  single-org deployment as a first-class shape, not a stripped-down mode.
+- **(B) stays built but dormant**, so choosing it later is a config change
+  and a decision, not a re-architecture. The cost of keeping it is one
+  boolean and the tests that pin both modes.
+- **The moat for (A) is switching cost, not network effect.** A fleet's
+  accumulated, validated, causally-measured memory lives here. §8's
+  randomized-holdout machinery is what makes that defensible rather than
+  sticky-by-inertia: nobody rips out the thing with a measured effect size
+  on their own data.
+
+**Stop citing the network effect in positioning.** Until §11.4's gate
+opens, it is an unvalidated hypothesis, and `commons-stats` deliberately
+reports contributing-orgs separately from seeded rows precisely so nobody —
+including us — can mistake operator seeding for a network effect.
+
+### 11.4 The gate that would reopen (B)
+
+Three conditions, in order. All are falsifiable and none is a matter of
+opinion:
+
+1. **The instrument works.** Recall above ~60% on the held-out set in
+   `commons/eval/`, with false positives on the negative controls still at
+   or near zero. Until then any coverage number quoted to a customer is
+   measurement noise. This is the binding constraint and it is a research
+   task, not a feature.
+2. **The privacy question is answered before the recall problem is fixed,
+   not after.** If the answer is embeddings, someone has to decide where
+   the model runs and what the customer is told, and that has to be settled
+   while it is still a design choice rather than a shipped surprise.
+3. **Then, and only then, re-run §9.1** — the overlap report against 2–3
+   real customer stores, and let the number decide as originally intended.
+
+If (1) proves intractable, (B) is closed and this becomes an excellent (A)
+company. That is not a failure mode; it is the answer §5 asked for,
+arriving via the instrument instead of via the corpus.
+
+### 11.5 What the entitlement model is, and what it deliberately is not
+
+`hub/plans.py` implements metered entitlements — storage and commons
+queries, free/team/scale, enforced at the query layer with an atomic usage
+counter — and **prints no currency anywhere.** That omission is deliberate
+and worth defending, because it looks like an oversight.
+
+A price is a claim about value. The one denominator this product can defend
+is measured effect on the customer's own data (§8.4) and, if (B) ever
+opens, delivered commons hits (`commons-value`). Both are now computable.
+Attaching a dollar figure in the repository would encode a number nobody
+has agreed to, in the one place people treat as authoritative, and it would
+be quoted. So the mechanism ships and the number stays a business decision.
+
+The pricing *hypothesis* worth testing, stated as a hypothesis: for (A),
+price against measured resolution-rate improvement per fleet, because that
+is the only quantity this product can prove causally and it scales with
+the customer's own benefit rather than with seats or trace volume. Whether
+the market accepts that shape is unknown and is not answerable from this
+repository.
+
+### 11.6 What is still not mine to decide
+
+Unchanged from §9, minus §9.1 which §11.4 now supersedes: commons terms,
+open-source posture, and the actual price. Added by this update: **whether
+to fund the recall research at all.** It is the only thing standing between
+this and a defensible answer on (B), and if the internal B2B offer keeps
+outperforming, the rational call may be to leave that question closed and
+sell (A) extremely well — which §2 already noted is a good, fundable,
+sellable business, and which is the one the evidence currently supports.
