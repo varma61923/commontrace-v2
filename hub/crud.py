@@ -28,8 +28,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from hub import audit
-from hub.abuse import RateLimited, RateLimiter, suspicion_reason, validate_size
+from hub import audit, commons
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
 from hub.models import TEXT_SEARCH_CONFIG, Trace, TraceRelation, Vote
 from hub.schema_validation import validate_trace
@@ -570,3 +570,196 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
     for tags in rows:
         tag_set.update(tags or [])
     return sorted(tag_set)
+
+
+# --- The cross-org commons (opt-in) ------------------------------------
+#
+# These three functions are the ONLY place in this module where a row can
+# cross an org boundary, and they can only ever reach a trace whose owner
+# explicitly put it there. Everything above stays unconditionally
+# org-scoped; hub/tests/test_tenant_isolation.py passes unchanged. See
+# hub/commons.py for why the exchange is signatures-in / consented-text-out.
+
+
+async def share_trace(
+    session: AsyncSession,
+    org_id: str,
+    trace_id: str,
+    rationale: str = "",
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict | None:
+    """Contribute one of your own traces to the cross-org commons.
+
+    Org-scoped lookup, so an org can only ever share a trace it owns -- the
+    same `Trace.org_id == org_id` guard as get_trace, for the same reason.
+    Returns None (not a permission error) for a trace that isn't yours, so
+    this cannot be used as an existence oracle for another org's ids.
+    """
+    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    trace = (await session.execute(stmt)).scalar_one_or_none()
+    if trace is None:
+        return None
+
+    # A quarantined trace is content the Hub already flagged as suspect.
+    # Letting it into a corpus other orgs read would propagate exactly what
+    # quarantine exists to contain.
+    if trace.quarantined:
+        raise TraceRejected(
+            f"trace {trace_id} is quarantined ({trace.quarantine_reason or 'no reason recorded'}) "
+            "and cannot be shared to the commons until an operator releases it"
+        )
+
+    trace.shared_with_commons = True
+    trace.shared_at = datetime.now(timezone.utc)
+    trace.shared_rationale = (rationale or "")[:500]
+    trace.commons_signature = commons.signature_for(trace.title, trace.context_text, trace.tags)
+    await session.flush()
+
+    await audit.record(
+        session,
+        actor=actor,
+        action="share_trace",
+        org_id=org_id,
+        target_type="trace",
+        target_id=trace_id,
+        # Content-free, like every other audit summary: records that the
+        # decision was made and whether a rationale was given, not the text.
+        summary=f"shared_to_commons rationale_len={len(rationale or '')}",
+    )
+    return {"id": trace.id, "shared_with_commons": True, "shared_at": _iso(trace.shared_at)}
+
+
+async def unshare_trace(
+    session: AsyncSession,
+    org_id: str,
+    trace_id: str,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict | None:
+    """Withdraw a trace from the commons. Clears the signature too, so it
+    stops matching immediately rather than lingering in results."""
+    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    trace = (await session.execute(stmt)).scalar_one_or_none()
+    if trace is None:
+        return None
+
+    trace.shared_with_commons = False
+    trace.shared_at = None
+    trace.shared_rationale = ""
+    trace.commons_signature = None
+    await session.flush()
+
+    await audit.record(
+        session,
+        actor=actor,
+        action="unshare_trace",
+        org_id=org_id,
+        target_type="trace",
+        target_id=trace_id,
+        summary="withdrawn_from_commons",
+    )
+    return {"id": trace.id, "shared_with_commons": False}
+
+
+async def commons_overlap(
+    session: AsyncSession,
+    org_id: str,
+    failures: object,
+    threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
+    include_matches: bool = True,
+) -> dict:
+    """**The number the cross-org thesis lives or dies on** (STRATEGY.md §5):
+    of the recurring failures this fleet keeps hitting, what fraction has
+    some *other* fleet already solved?
+
+    The caller sends MinHash signatures of its own failures -- computed
+    locally, no failure text leaves the client. What comes back is drawn
+    only from traces whose owners explicitly shared them.
+
+    Two deliberate scoping decisions:
+
+    1. **The caller's own traces are excluded from the corpus.** The
+       question is what you would *gain* from everyone else, so counting
+       your own contributions would inflate the headline number into
+       something meaningless for exactly the decision it informs.
+    2. **Quarantined traces are excluded**, same as every other read path.
+    """
+    submitted = commons.validate_submitted_failures(failures)
+    threshold = max(0.0, min(float(threshold), 1.0))
+
+    corpus = (
+        await session.execute(
+            select(Trace).where(
+                Trace.shared_with_commons.is_(True),
+                Trace.quarantined.is_(False),
+                Trace.commons_signature.isnot(None),
+                Trace.org_id != org_id,
+            )
+        )
+    ).scalars().all()
+
+    matches: list[dict] = []
+    by_domain: dict[str, int] = {}
+    n_covered = 0
+
+    for label, sig in submitted:
+        best, best_sim = None, 0.0
+        for candidate in corpus:
+            sim = commons.estimate(sig, candidate.commons_signature or [])
+            if sim > best_sim:
+                best, best_sim = candidate, sim
+        if best is None or best_sim < threshold:
+            continue
+        n_covered += 1
+        key = best.agent_type or "(unspecified)"
+        by_domain[key] = by_domain.get(key, 0) + 1
+        if include_matches:
+            matches.append(
+                {
+                    "failure_label": label,
+                    "similarity": round(best_sim, 4),
+                    "agent_type": best.agent_type,
+                    "tags": list(best.tags or []),
+                    # The payoff. Safe to return in full: `best` is only in
+                    # `corpus` because its owning org explicitly shared it.
+                    "trace": _to_wire(best, [], []),
+                }
+            )
+
+    matches.sort(key=lambda m: m["similarity"], reverse=True)
+    n_failures = len(submitted)
+    return {
+        "n_failures": n_failures,
+        "n_commons_traces": len(corpus),
+        "n_covered": n_covered,
+        "covered_fraction": (n_covered / n_failures) if n_failures else 0.0,
+        "threshold": threshold,
+        "by_agent_type": dict(sorted(by_domain.items(), key=lambda kv: -kv[1])),
+        "matches": matches,
+        "note": _commons_note(n_failures, len(corpus)),
+    }
+
+
+def _commons_note(n_failures: int, n_corpus: int) -> str:
+    """Say plainly when a number should not be leaned on. A coverage
+    percentage over a handful of failures, or against an almost-empty
+    commons, is noise -- and this number is exactly the kind that gets
+    quoted once and repeated forever."""
+    if n_corpus == 0:
+        return (
+            "No other org has contributed to the commons yet, so this measures nothing. "
+            "Coverage is 0% by construction, not by finding."
+        )
+    if n_failures == 0:
+        return (
+            "No recurring failures submitted. Capture them with "
+            "`commontrace capture --repeated-error` for this to have input."
+        )
+    if n_failures < 20:
+        return (
+            f"Only {n_failures} failures submitted -- treat this as directional. "
+            f"MinHash adds roughly {100 / (commons.COMMONS_NUM_PERM ** 0.5):.0f}% "
+            "standard error per comparison on top of small-sample noise."
+        )
+    if n_corpus < 50:
+        return f"The commons holds only {n_corpus} shared traces from other orgs; coverage will grow with it."
+    return ""

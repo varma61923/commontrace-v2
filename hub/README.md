@@ -108,21 +108,47 @@ That is in real tension with the product pitch elsewhere in this repo
 lessons ... across organizations"): a Hub where every org only ever sees its
 own traces isn't a commons at all.
 
-This implementation resolves that tension conservatively, not by picking a
-side silently: **every read path is unconditionally scoped to the caller's
-own `org_id` today.** `Trace.shared_with_commons` exists as a column in
-`hub/models.py` and is written (always `False` for now) but is never read by
-any query in `hub/crud.py`. It's there so a future "opt-in commons" milestone
-— an org explicitly marking a trace shareable, and `search_traces` gaining
-an opt-in `include_commons` mode once moderation/trust for cross-org exposure
-is designed — doesn't require a schema migration, but no cross-org sharing
-happens until that's built and reviewed on its own merits. Get the walls
-right first; open doors deliberately.
+This implementation resolves that tension by getting the walls right first
+and then opening exactly one door, deliberately.
+
+**The walls.** Every one of the six original read paths —
+`search_traces`, `get_trace`, `vote_trace`, `amend_trace`, `list_tags`,
+`contribute_trace` — is still unconditionally scoped to the caller's own
+`org_id`, and `hub/tests/test_tenant_isolation.py` passes unchanged.
+Nothing about the commons loosened them.
+
+**The door.** `Trace.shared_with_commons` is now live, and it is the only
+field by which a row can cross an org boundary:
+
+- It is `false` by default and is **never** set implicitly. An org opts in
+  per trace via `share_trace`, which records a `shared_rationale` for audit
+  and can only reach traces that org already owns.
+- `unshare_trace` withdraws it, clearing the stored signature so it stops
+  matching immediately.
+- Quarantined traces cannot enter the commons — that would propagate
+  exactly what quarantine exists to contain.
+- The one query that reads across orgs, `commons_overlap`, requires
+  `shared_with_commons AND NOT quarantined` and additionally excludes the
+  caller's own rows.
+
+The boundary being drawn is **substrate failures are shared; business logic
+stays private** (`STRATEGY.md` §4). The Hub cannot judge which is which, so
+that call is the contributing org's, made explicitly and recorded.
+
+**Why it is signatures-in, consented-content-out.** The question a prospect
+wants answered before contributing anything is "how many of the failures my
+fleet keeps hitting has someone else already solved?" Answering it must not
+require uploading those failures. So the client MinHashes locally and sends
+only signatures; what comes back is drawn only from traces whose owners
+explicitly shared them. Stated limitation, not glossed: MinHash is not a
+cryptographic privacy guarantee — a party who can guess a candidate string
+can test whether it is present. Private set intersection is the real fix and
+is a named follow-up, not a quiet assumption.
 
 One consequence worth knowing: because `vote_trace`/`amend_trace`/
-`get_trace` are all scoped to the caller's own org, an org can currently only
-vote on or amend its own traces. That's a correct, if narrow, MVP — not a
-bug — under the isolation-first resolution above.
+`get_trace` remain scoped to the caller's own org, an org can only vote on
+or amend its own traces. That is correct, not a bug — commons participation
+grants visibility, not write access to someone else's history.
 
 ### Why there's no `lessons` table
 

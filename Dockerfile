@@ -46,6 +46,13 @@ WORKDIR /app
 # first contribute_trace.
 COPY --chown=hub:hub hub/ /app/hub/
 COPY --chown=hub:hub protocol/ /app/protocol/
+# hub/commons.py imports commontrace.overlap for MinHash. This is a
+# deliberate shared dependency, not a layering slip: signatures are only
+# comparable if client and server draw the SAME permutations, and a
+# near-copy that drifted by one constant would return confident, wrong
+# similarity numbers rather than failing. commontrace/overlap.py is pure
+# stdlib, so this adds no dependency to the image -- only the source.
+COPY --chown=hub:hub commontrace/ /app/commontrace/
 
 USER hub
 EXPOSE 8420

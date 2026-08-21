@@ -35,6 +35,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -142,12 +143,35 @@ class Trace(Base):
     # Governance / abuse-control fields, not part of the wire Trace object
     quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quarantine_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
-    # Reserved for a future opt-in cross-org "commons" milestone -- see
-    # hub/README.md "Tenant isolation vs. the cross-org commons pitch".
-    # Not read or acted on by any query in hub/crud.py today: every read
-    # path is unconditionally scoped to the caller's own org_id regardless
-    # of this flag's value.
+    # --- Cross-org commons (opt-in, explicit, revocable) -----------------
+    #
+    # This is the ONLY field that can make a trace visible outside its owning
+    # org, and it is false by default and never set implicitly. Every other
+    # read path in hub/crud.py stays unconditionally scoped to the caller's
+    # own org_id regardless of this flag; the commons is a separate, additive
+    # query surface (crud.commons_overlap), not a relaxation of the existing
+    # one. hub/tests/test_tenant_isolation.py passes unchanged.
+    #
+    # The boundary being drawn is the one in STRATEGY.md §4: substrate
+    # failures are shareable ("Stripe webhooks need idempotency keys"),
+    # business logic is not (your pricing rules, your escalation policy).
+    # The Hub cannot judge that for you -- it is the contributing org's
+    # explicit call, recorded per trace, with the classification stored so
+    # the decision is auditable after the fact.
     shared_with_commons: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Free-text, caller-supplied justification for why this trace is
+    # substrate rather than business logic. Not validated by the Hub (it
+    # cannot be); stored so a security reviewer can audit what an org
+    # believed it was sharing and why.
+    shared_rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    # MinHash signature of this trace's matchable text, computed once at
+    # share time by commontrace.overlap. Precomputed rather than derived per
+    # query because commons_overlap compares every submitted failure against
+    # every commons trace -- recomputing signatures on each request would
+    # make the query cost grow with corpus size for no reason. NULL for any
+    # trace that is not in the commons.
+    commons_signature: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
 
     # Full-text search vector, maintained by Postgres itself (GENERATED ...
     # STORED) so it can never drift from the columns it summarizes -- there
@@ -177,6 +201,16 @@ class Trace(Base):
         # the ordering step sorts the whole org partition on every query.
         Index("ix_traces_org_created_at", "org_id", "created_at"),
         UniqueConstraint("org_id", "idempotency_key", name="uq_traces_org_idempotency_key"),
+        # commons_overlap scans the commons corpus -- traces shared, not
+        # quarantined -- across ALL orgs. Partial index: the commons is
+        # expected to be a small minority of rows for a long time, so
+        # indexing only the shared ones keeps it tiny and keeps the scan off
+        # the main table.
+        Index(
+            "ix_traces_commons",
+            "shared_with_commons",
+            postgresql_where=text("shared_with_commons AND NOT quarantined"),
+        ),
     )
 
 

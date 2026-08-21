@@ -121,14 +121,34 @@ open-source contribution model) to "lessons must be re-derivable/
 re-validatable without deleted source traces, with a grace/quarantine
 period." Flagging this, not deciding it, is the point of this section.
 
-Note on current scope: `hub/`'s tenant isolation is deliberately strict
-today (see §1 and `hub/README.md`) — every read is scoped to the caller's
-own `org_id`, so the cross-org scenario above (org B ever seeing a lesson
-derived from org A's trace) cannot happen yet in this codebase as shipped.
-It becomes live the moment a future "opt-in commons" milestone is built on
-top of the `shared_with_commons` column that already exists in
-`hub/models.py` but is not yet acted on by any query — this decision should
-land *before* that milestone ships, not after.
+Note on current scope: `hub/`'s six original read paths remain strictly
+org-scoped (see §1 and `hub/README.md`). The cross-org scenario above is
+now reachable in exactly one way, and only by explicit choice — the
+**opt-in commons**:
+
+- A trace becomes cross-org visible **only** when its owning org calls
+  `share_trace` on it. Default is private; nothing sets the flag
+  implicitly; quarantined traces are refused.
+- The org records a `shared_rationale` at share time. That text is stored
+  so a reviewer can later audit what an org believed it was sharing and
+  why.
+- `unshare_trace` withdraws it, and clears the stored MinHash signature so
+  it stops matching other orgs' queries immediately.
+- The only cross-org query, `commons_overlap`, filters on
+  `shared_with_commons AND NOT quarantined` and excludes the caller's own
+  rows.
+
+**What an org should understand before sharing.** A shared trace's full
+content — title, context, solution, tags — can be returned to another org
+whose recurring failure matches it. That is the point of contributing, but
+it is irreversible in the ordinary sense: withdrawal stops *future*
+matches, and cannot retract what another org already retrieved and may have
+copied into its own store. Share substrate, not business logic, and treat
+the decision as publication rather than as a revocable ACL.
+
+Deletion interacts with this correctly by construction: `purge-trace` and
+`purge-org` hard-delete the row, which removes it from the commons corpus
+along with everything else. There is no separate commons copy to miss.
 
 ## 5. Related open questions for whoever operates a `hub/` deployment
 

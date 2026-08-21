@@ -16,16 +16,28 @@ other org's agents.
 
 The repository implements something different, and does it well:
 
-| The positioning claims | The code does |
+| The positioning claims | What the code did |
 |---|---|
-| Cross-org collective intelligence | Strictly per-org memory. Every read path in `hub/crud.py` is unconditionally scoped to the caller's own `org_id`. |
-| A commons that compounds across companies | `Trace.shared_with_commons` exists as a column and **is never read by a single query.** |
+| Cross-org collective intelligence | Strictly per-org memory. Every read path in `hub/crud.py` was unconditionally scoped to the caller's own `org_id`. |
+| A commons that compounds across companies | `Trace.shared_with_commons` existed as a column and **was never read by a single query.** |
 
-That is not an accident or an oversight — it was the correct conservative
+That was not an accident or an oversight — it was the correct conservative
 call (see `hub/README.md`, "Tenant isolation vs. the cross-org commons
-pitch"). Walls first, doors deliberately. But it means the thing the moat
-rests on has not been built, and — more importantly — **has never been
-measured.**
+pitch"). Walls first, doors deliberately.
+
+**Status update: the door is now open, and the measurement is live.**
+`shared_with_commons` is no longer dead. An org opts a trace in with
+`share_trace` (explicit, rationale recorded, revocable, quarantine-blocked),
+and any org — contributor or not — can ask `commons_overlap` the question
+§5 below says the whole thesis reduces to. The walls held: every original
+read path is still org-scoped and `hub/tests/test_tenant_isolation.py`
+passes unchanged.
+
+What that changes about this document: §5's "nobody has measured it" is now
+a question the product can answer on demand rather than an open research
+task, and §6's overlap report is no longer a bilateral file exchange. The
+strategic conclusion below is unchanged — the *number* still decides which
+company this becomes. It is simply now cheap to obtain.
 
 ## 2. Why this is *the* strategic question, not a roadmap item
 
@@ -94,9 +106,15 @@ If that number is 40%, the commons is worth building and the network effect
 is real. If it is 4%, (B) is a mirage and the honest move is to sell (A)
 extremely well.
 
-Nobody knows this number. It is unmeasured, it is cheap to measure, and it
-is being treated as an assumption. That is the actual bottleneck — not
-features, not scale, not the container image.
+Nobody knew this number. It was unmeasured, cheap to measure, and being
+treated as an assumption. That was the actual bottleneck — not features,
+not scale, not the container image.
+
+**It is now a query.** `commontrace commons report` returns exactly this
+fraction against the live commons, for any org, contributing or not. The
+bottleneck moves from "we cannot measure it" to "we need enough
+contributed corpus for the measurement to mean something" — which is a
+go-to-market problem with a known shape, not an open research question.
 
 Note the benchmark already contains the *within-org* version of exactly
 this question: `transfer_gap` measures whether a lesson learned on project X
@@ -106,11 +124,19 @@ version is the same measurement one level up.
 
 ## 6. What I built, and why it is the highest-leverage thing available
 
-`commontrace overlap` — a **Fleet Overlap Report**.
+Two versions of the same measurement, and the difference between them is
+the difference between a research instrument and a product.
 
-It answers "how much would fleet B gain from fleet A's lessons?" **without
-either fleet sending the other any lesson text**, by exchanging MinHash
-signatures instead of content.
+**`commontrace overlap`** — a bilateral **Fleet Overlap Report**. Answers
+"how much would fleet B gain from fleet A's lessons?" **without either
+fleet sending the other any lesson text**, by exchanging MinHash signatures
+instead of content. Both sides export a file and somebody moves it. Useful
+for a controlled two-party study; it does not scale past one.
+
+**`commontrace commons report`** — the same question asked of the Hub, in
+one call, against every trace every org has opted into the commons. No
+bilateral negotiation, no file exchange, no contribution required first.
+This is the version that can sit in a first meeting.
 
 Why this specific thing:
 

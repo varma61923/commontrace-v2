@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from hub import auth, crud
+from hub import auth, commons, crud
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
@@ -95,6 +95,8 @@ def _error_response(exc: Exception) -> dict:
         return {"error": "rate_limited", "detail": str(exc)}
     if isinstance(exc, crud.IdempotencyKeyConflict):
         return {"error": "conflict", "detail": str(exc)}
+    if isinstance(exc, commons.CommonsInputError):
+        return {"error": "invalid_request", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -244,6 +246,77 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             async with session_scope(session_factory) as session:
                 tags = await crud.list_tags(session, org_id)
             return {"tags": tags}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    # --- Cross-org commons (opt-in) ------------------------------------
+
+    @mcp.tool()
+    async def share_trace(id: str, rationale: str = "") -> dict:
+        """Contribute one of your own traces to the cross-org commons.
+
+        Opt-in and revocable. Only share SUBSTRATE failures -- things like
+        "this API needs an idempotency key" or "this library changed its
+        default" -- that every fleet rediscovers at full cost and nobody
+        considers proprietary. Do NOT share business logic: pricing rules,
+        escalation policy, qualification criteria. The Hub cannot make that
+        judgment for you, so `rationale` records why you decided this trace
+        is substrate.
+
+        Once shared, this trace's full content becomes visible to other orgs
+        whose recurring failures it matches. Withdraw it with unshare_trace.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.share_trace(
+                    session, org_id, id, rationale=rationale, actor=auth.get_current_actor()
+                )
+            if result is None:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def unshare_trace(id: str) -> dict:
+        """Withdraw one of your traces from the cross-org commons. It stops
+        matching other orgs' queries immediately."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.unshare_trace(session, org_id, id, actor=auth.get_current_actor())
+            if result is None:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def commons_overlap(
+        failures: list[dict] | None = None,
+        threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
+        include_matches: bool = True,
+    ) -> dict:
+        """Of the recurring failures your fleet keeps hitting, what fraction
+        has some *other* fleet already solved?
+
+        Send MinHash signatures of your own failures -- generated locally by
+        `commontrace commons sign`, so no failure text ever leaves your
+        machine. Each entry is {"label": str, "signature": [int, ...]}.
+
+        You do not have to contribute anything to ask this. What comes back
+        is drawn only from traces whose owners explicitly shared them, and
+        your own traces are excluded from the corpus so the number reflects
+        what you'd actually *gain* rather than counting your own work.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.commons_overlap(
+                    session, org_id, failures or [],
+                    threshold=threshold, include_matches=include_matches,
+                )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
