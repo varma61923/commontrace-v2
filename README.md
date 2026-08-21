@@ -209,10 +209,14 @@ rather than failing outright.
 
 ```bash
 commontrace query "..." --experiment --occasion-id task-4711   # withhold at random, log the arm
-# ...do the task, then record its outcome under that same id...
+# ...do the task...
+commontrace capture --title "..." --context "..." --solution "..." \
+    --agent-type code --occasion-id task-4711 --resolved        # same id: this is the join
 commontrace experiment                  # causal effect per lesson
 commontrace experiment --strict         # non-zero exit if a lesson significantly HURTS
 ```
+
+**Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
 
 Every other number in this repo — including `reliability`'s `lift` — is
 **correlational**, and the confound is structural: a lesson is retrieved

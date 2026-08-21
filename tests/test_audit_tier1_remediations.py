@@ -16,6 +16,7 @@ import datetime
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -730,3 +731,62 @@ class TestRootResolutionMatchesTheReferenceScripts:
         assert paths.resolve_root(str(tmp_path / "explicit")) == os.path.abspath(
             str(tmp_path / "explicit")
         )
+
+
+# --- The pilot runbook must not drift from the code ---------------------
+
+
+class TestPilotRunbookMatchesTheCode:
+    """PILOT.md publishes sample sizes an operator plans a pilot around. If
+    the power calculation changes and the table does not, someone runs an
+    underpowered pilot and reads UNDERPOWERED as 'no effect'."""
+
+    def _runbook(self) -> str:
+        return (Path(REPO_ROOT) / "PILOT.md").read_text(encoding="utf-8")
+
+    def test_the_runbook_exists_and_is_linked_from_the_readme(self):
+        assert (Path(REPO_ROOT) / "PILOT.md").exists()
+        readme = (Path(REPO_ROOT) / "README.md").read_text(encoding="utf-8")
+        assert "PILOT.md" in readme
+
+    def test_the_published_sample_sizes_match_the_shipped_calculation(self):
+        from commontrace.experiment import minimum_detectable_effect
+
+        import re
+
+        # Parse the PUBLISHED table out of the runbook and compare each cell
+        # against the live calculation. Asserting against hardcoded expected
+        # values would pass even if someone edited PILOT.md, which is the
+        # drift this test exists to catch.
+        text = self._runbook()
+        columns = [25, 50, 100, 200, 400, 800]
+        rows = re.findall(r"^\| (\d+)% \|(.+)\|\s*$", text, re.M)
+        assert len(rows) >= 3, f"could not parse the sample-size table, got {rows}"
+
+        for pct, rest in rows:
+            baseline = int(pct) / 100
+            cells = [c.strip() for c in rest.split("|") if c.strip()]
+            assert len(cells) == len(columns), f"row {pct}% has {len(cells)} cells"
+            for n, cell in zip(columns, cells):
+                published = int(cell.replace("pp", ""))
+                got = minimum_detectable_effect(n, baseline)
+                assert got is not None, f"no MDE for baseline={baseline} n={n}"
+                assert round(got * 100) == published, (
+                    f"PILOT.md publishes {published}pp for baseline={pct}% n={n}, "
+                    f"but the code computes {got * 100:.0f}pp -- update the table"
+                )
+
+    def test_the_runbook_documents_the_join_step(self):
+        """The step that was impossible before `capture --occasion-id`, and
+        the single most likely thing to get wrong."""
+        text = self._runbook()
+        assert "--occasion-id" in text
+        assert "capture" in text
+
+    def test_the_runbook_states_the_cost_and_the_limits(self):
+        """A runbook that omits what the experiment costs, or overstates
+        what it proves, is how a bounded trade becomes a surprise."""
+        text = self._runbook()
+        assert "holdout-rate 0" in text, "the opt-out must be documented"
+        assert "UNDERPOWERED" in text
+        assert "says nothing about" in text, "the limits of the result must be stated"
