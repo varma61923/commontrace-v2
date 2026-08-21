@@ -121,6 +121,12 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         "votes": votes,
         "related": related,
         "outcome": dict(trace.outcome or {}),
+        # Whether this trace is in the cross-org commons. Surfaced so an org
+        # can see its own sharing state (and so `commontrace commons
+        # contribute` can skip what is already shared) without a second
+        # round trip. Not a disclosure: on a commons result this is true by
+        # definition, and on your own traces it is your own decision.
+        "shared_with_commons": trace.shared_with_commons,
     }
 
 

@@ -11,6 +11,8 @@
 
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
+    commons-stats                  -> cross-org commons health: corpus size, how many
+                                       distinct orgs contribute, concentration risk
     list-quarantined [org_id]      -> traces held pending review (id, org_id, title,
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
@@ -44,7 +46,7 @@ import asyncio
 import statistics
 import sys
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hub import audit, auth
@@ -152,6 +154,65 @@ async def stats(session_factory=None) -> None:
     print(f"traces (quarantined): {n_quarantined}")
     print(f"votes:               {n_votes}")
     print(f"mean trust:          {mean_trust:.3f}" if mean_trust is not None else "mean trust:          n/a")
+
+
+async def commons_stats(session_factory=None) -> None:
+    """Is the cross-org commons actually working?
+
+    Corpus size alone is vanity. The number that matters is **how many
+    distinct orgs have contributed**, because the whole thesis is a network
+    effect: value to each participant grows with the number of *others*.
+    A commons of 10,000 traces from one org is a single fleet's memory with
+    extra steps; 500 traces from 40 orgs is the thing compounding.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        rows = (
+            await session.execute(
+                select(Trace.org_id, func.count())
+                .where(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))
+                .group_by(Trace.org_id)
+            )
+        ).all()
+        n_orgs_total = (
+            await session.execute(select(func.count()).select_from(Organization))
+        ).scalar_one()
+        n_traces_total = (
+            await session.execute(select(func.count()).select_from(Trace))
+        ).scalar_one()
+
+    n_contributors = len(rows)
+    n_shared = sum(c for _, c in rows)
+
+    print(f"commons traces:        {n_shared}")
+    print(f"contributing orgs:     {n_contributors} of {n_orgs_total}")
+    print(f"share rate:            {n_shared}/{n_traces_total} traces "
+          f"({(n_shared / n_traces_total * 100) if n_traces_total else 0:.1f}% of all traces)")
+
+    if n_contributors == 0:
+        print(
+            "\nThe commons is empty, so `commons_overlap` returns 0% for everyone by\n"
+            "construction -- not as a finding. Nothing compounds until orgs contribute."
+        )
+        return
+    if n_contributors == 1:
+        print(
+            "\nOnly ONE org has contributed. Every other org's coverage number is\n"
+            "measured against a single fleet's substrate, which is not yet a network\n"
+            "effect -- it is one generous customer. Concentration risk, too: if they\n"
+            "withdraw, the commons empties."
+        )
+        return
+
+    largest = max(c for _, c in rows)
+    concentration = largest / n_shared
+    print(f"largest contributor:   {largest} traces ({concentration:.0%} of the corpus)")
+    if concentration > 0.6:
+        print(
+            "\nOver 60% of the commons comes from one org. The coverage numbers other\n"
+            "orgs see are mostly that one fleet's experience; treat the network effect\n"
+            "as unproven until contribution spreads."
+        )
 
 
 async def list_quarantined(org_id: str | None = None, session_factory=None) -> None:
@@ -314,6 +375,7 @@ _COMMANDS = {
     "list-orgs": (list_orgs, 0, 0),
     "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
+    "commons-stats": (commons_stats, 0, 0),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     "purge-trace": (purge_trace, 1, 1),

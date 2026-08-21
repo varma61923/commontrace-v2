@@ -85,6 +85,32 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     unshare.add_argument("--hub-api-key", default=None)
     unshare.set_defaults(func=run_unshare)
 
+    contrib = sub.add_parser(
+        "contribute",
+        help="Review and bulk-share a selected set of your Hub traces. "
+        "Previews by default; requires --confirm to actually share.",
+    )
+    contrib.add_argument(
+        "--tags", default="",
+        help="Comma-separated tags. Only traces carrying one of these are considered.",
+    )
+    contrib.add_argument("--query", default="", help="Full-text filter on your own traces.")
+    contrib.add_argument(
+        "--limit", type=int, default=50,
+        help="Cap on how many traces to consider in one pass (default 50).",
+    )
+    contrib.add_argument(
+        "--rationale", default="",
+        help="Why this batch is substrate rather than business logic. Recorded per trace.",
+    )
+    contrib.add_argument(
+        "--confirm", action="store_true",
+        help="Actually share. Without this the command only shows what WOULD be shared.",
+    )
+    contrib.add_argument("--hub-url", default=None)
+    contrib.add_argument("--hub-api-key", default=None)
+    contrib.set_defaults(func=run_contribute)
+
 
 def _safe_tags(raw: object) -> list[str]:
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
@@ -255,6 +281,93 @@ def run_share(args: argparse.Namespace) -> int:
     print("  Other orgs whose failures match it can now see this trace in full.")
     print(f"  Withdraw it any time: commontrace commons unshare {result['id']}")
     return 0
+
+
+def run_contribute(args: argparse.Namespace) -> int:
+    """Bulk-share a selected batch, with a mandatory preview step.
+
+    Deliberately NOT a classifier. Deciding what is substrate and what is
+    proprietary is a judgment call with asymmetric cost -- over-sharing is
+    irreversible in the way that matters (another org may already have
+    copied it), while under-sharing costs nothing but a second pass. So the
+    operator states the selection, sees exactly what it resolved to, and
+    has to say --confirm. Nothing is inferred and nothing is shared by
+    default.
+    """
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    if not tags and not args.query:
+        print(
+            "[commontrace] refusing to consider every trace you own.\n"
+            "  Narrow the batch with --tags and/or --query. Sharing is\n"
+            "  effectively publication, so the selection has to be deliberate.",
+            file=sys.stderr,
+        )
+        return 1
+
+    limit = max(1, min(int(args.limit), 200))
+    try:
+        found = asyncio.run(
+            hub_client._call_tool(
+                hub_url, api_key, "search_traces",
+                {"query": args.query, "tags": tags, "limit": limit},
+            )
+        )
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if found.get("error"):
+        print(f"[commontrace] search_traces failed: {found['error']}", file=sys.stderr)
+        return 1
+
+    traces = found.get("traces") or []
+    already = [t for t in traces if t.get("shared_with_commons")]
+    candidates = [t for t in traces if not t.get("shared_with_commons")]
+
+    if not candidates:
+        print("[commontrace] nothing new to share for that selection.")
+        if already:
+            print(f"  ({len(already)} matching trace(s) are already in the commons.)")
+        return 0
+
+    print(f"[commontrace] {len(candidates)} trace(s) selected for the commons:\n")
+    for t in candidates:
+        tag_str = ", ".join(t.get("tags") or []) or "(no tags)"
+        print(f"  {t['id'][:8]}  {str(t.get('title', ''))[:64]}")
+        print(f"            tags: {tag_str}")
+    if found.get("has_more"):
+        print(f"\n  (more matches exist beyond --limit {limit}; re-run to continue)")
+
+    if not args.confirm:
+        print(
+            "\n  PREVIEW ONLY -- nothing has been shared.\n"
+            "  Read the list above carefully. A shared trace's full content (title,\n"
+            "  context, solution) can be returned to another org whose failure matches\n"
+            "  it. Withdrawal stops future matches but cannot retract what someone has\n"
+            "  already retrieved. Share substrate, never business logic.\n"
+            "\n  Re-run with --confirm to share these."
+        )
+        return 0
+
+    shared, failed = 0, 0
+    for t in candidates:
+        try:
+            asyncio.run(hub_client.share_trace(hub_url, api_key, t["id"], args.rationale))
+            shared += 1
+        except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+            failed += 1
+            print(f"[commontrace] could not share {t['id'][:8]}: {exc}", file=sys.stderr)
+
+    print(f"\n[commontrace] shared {shared} trace(s) with the commons.")
+    if failed:
+        print(f"  {failed} failed -- see errors above. Re-running is safe: "
+              "already-shared traces are skipped.", file=sys.stderr)
+    print("  Withdraw any of them with: commontrace commons unshare <trace_id>")
+    return 1 if failed else 0
 
 
 def run_unshare(args: argparse.Namespace) -> int:

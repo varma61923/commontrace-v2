@@ -119,6 +119,84 @@ class TestSignCommandWritesSignaturesOnly:
         assert "no recurring failures" in capsys.readouterr().err.lower()
 
 
+class TestContributeIsSafeByDefault:
+    """Sharing is effectively publication -- withdrawal stops future
+    matches but cannot retract what another org already retrieved. So the
+    bulk path must never share without an explicit, informed instruction.
+    """
+
+    def _args(self, **over):
+        base = dict(
+            tags="", query="", limit=50, rationale="", confirm=False,
+            hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
+        )
+        base.update(over)
+        return type("A", (), base)()
+
+    def test_refuses_an_unnarrowed_selection(self, capsys, monkeypatch):
+        """No tags and no query would mean 'every trace you own'."""
+        called = []
+        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool",
+                            lambda *a, **k: called.append(a))
+        assert commons_cmd.run_contribute(self._args()) == 1
+        assert "refusing" in capsys.readouterr().err.lower()
+        assert called == [], "must not have contacted the Hub at all"
+
+    def test_preview_lists_candidates_but_shares_nothing(self, capsys, monkeypatch):
+        async def fake_call(hub, key, tool, args):
+            assert tool == "search_traces"
+            return {"traces": [
+                {"id": "aaaaaaaa-1111", "title": "Stripe webhook retries",
+                 "tags": ["stripe"], "shared_with_commons": False},
+                {"id": "bbbbbbbb-2222", "title": "CUDA grid limit",
+                 "tags": ["cuda"], "shared_with_commons": False},
+            ], "has_more": False}
+
+        shared = []
+        async def fake_share(*a, **k):
+            shared.append(a)
+            return {"id": "x"}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
+        monkeypatch.setattr(commons_cmd.hub_client, "share_trace", fake_share)
+
+        assert commons_cmd.run_contribute(self._args(tags="stripe,cuda")) == 0
+        out = capsys.readouterr().out
+        assert "Stripe webhook retries" in out
+        assert "PREVIEW ONLY" in out
+        assert shared == [], "preview must not share anything"
+
+    def test_confirm_shares_only_the_unshared_ones(self, capsys, monkeypatch):
+        async def fake_call(hub, key, tool, args):
+            return {"traces": [
+                {"id": "aaaaaaaa-1111", "title": "New", "tags": ["stripe"],
+                 "shared_with_commons": False},
+                {"id": "cccccccc-3333", "title": "Already in commons",
+                 "tags": ["stripe"], "shared_with_commons": True},
+            ], "has_more": False}
+
+        shared = []
+        async def fake_share(hub, key, tid, rationale=""):
+            shared.append(tid)
+            return {"id": tid}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
+        monkeypatch.setattr(commons_cmd.hub_client, "share_trace", fake_share)
+
+        assert commons_cmd.run_contribute(self._args(tags="stripe", confirm=True)) == 0
+        assert shared == ["aaaaaaaa-1111"], "already-shared traces must be skipped"
+
+    def test_nothing_to_share_is_reported_cleanly(self, capsys, monkeypatch):
+        async def fake_call(hub, key, tool, args):
+            return {"traces": [
+                {"id": "cccccccc-3333", "title": "Already", "tags": ["stripe"],
+                 "shared_with_commons": True},
+            ], "has_more": False}
+        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
+        assert commons_cmd.run_contribute(self._args(tags="stripe", confirm=True)) == 0
+        assert "nothing new to share" in capsys.readouterr().out.lower()
+
+
 class TestRender:
     def test_headline_states_the_fraction(self):
         rendered = commons_cmd._render({

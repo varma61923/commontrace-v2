@@ -514,7 +514,91 @@ class TestAgentTypePrefilter:
         assert other["n_covered"] == 0
 
 
-# --- 6. Untrusted input -------------------------------------------------
+# --- 6. Operator view: is the network effect real yet? ------------------
+
+
+class TestCommonsStats:
+    """Corpus size alone is vanity. The operator needs to know how many
+    DISTINCT orgs contribute, because that is what a network effect is --
+    and needs to be told plainly when the answer is "one"."""
+
+    async def _share(self, session_factory, config, org_id, n, prefix):
+        for i in range(n):
+            t = await _contribute(
+                session_factory, config, org_id, f"{prefix} {i}", f"ctx {i}", "fix",
+            )
+            async with session_scope(session_factory) as session:
+                await crud.share_trace(session, org_id, t["id"])
+
+    async def test_empty_commons_says_nothing_compounds_yet(
+        self, session_factory, orgs, capsys
+    ):
+        from hub import manage
+
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "commons traces:        0" in out
+        assert "nothing compounds" in out.lower()
+
+    async def test_single_contributor_is_called_out_not_celebrated(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        await self._share(session_factory, config, orgs["contributor-a"], 3, "A")
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "contributing orgs:     1 of 3" in out
+        assert "not yet a network" in out.lower()
+        assert "concentration risk" in out.lower()
+
+    async def test_reports_concentration_when_one_org_dominates(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        await self._share(session_factory, config, orgs["contributor-a"], 9, "A")
+        await self._share(session_factory, config, orgs["contributor-b"], 1, "B")
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "contributing orgs:     2 of 3" in out
+        assert "90%" in out
+        # the warning wraps across lines, so normalise whitespace first
+        assert "network effect as unproven" in " ".join(out.lower().split())
+
+    async def test_balanced_contribution_gets_no_warning(
+        self, session_factory, config, orgs, capsys
+    ):
+        from hub import manage
+
+        await self._share(session_factory, config, orgs["contributor-a"], 5, "A")
+        await self._share(session_factory, config, orgs["contributor-b"], 5, "B")
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "contributing orgs:     2 of 3" in out
+        assert "unproven" not in out.lower()
+
+    async def test_quarantined_shared_traces_are_not_counted(
+        self, session_factory, config, orgs, capsys
+    ):
+        """Quarantined traces are excluded from commons queries, so counting
+        them here would overstate the corpus an org can actually reach."""
+        from hub import manage
+
+        await self._share(session_factory, config, orgs["contributor-a"], 2, "A")
+        async with session_scope(session_factory) as session:
+            rows = (
+                await session.execute(
+                    select(Trace).where(Trace.org_id == orgs["contributor-a"])
+                )
+            ).scalars().all()
+            rows[0].quarantined = True
+
+        await manage.commons_stats(session_factory=session_factory)
+        assert "commons traces:        1" in capsys.readouterr().out
+
+
+# --- 7. Untrusted input -------------------------------------------------
 
 
 class TestSubmittedInputIsValidated:
