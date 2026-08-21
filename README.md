@@ -37,9 +37,10 @@ MCP, which all of the above already support natively.
 6. [Memory System](#memory-system)
 7. [Benchmark](#benchmark)
 8. [Outcome Metrics](#outcome-metrics)
-9. [Deploying to Production](#deploying-to-production)
-10. [File Layout](#file-layout)
-11. [Requirements](#requirements)
+9. [The Cross-Org Commons](#the-cross-org-commons)
+10. [Deploying to Production](#deploying-to-production)
+11. [File Layout](#file-layout)
+12. [Requirements](#requirements)
 
 ---
 
@@ -463,6 +464,80 @@ first month answers "is it still helping?" a year in, and regressions show
 up as a metric moving the wrong way. For a *causal* rather than
 correlational answer on a specific lesson, see `commontrace experiment`
 (randomized holdout, § [Benchmark](#benchmark)).
+
+---
+
+## The Cross-Org Commons
+
+Everything above compounds a fleet's experience *for that fleet*. The
+commons is the opt-in exception: a shared corpus where one org's solved
+substrate failure can save another org from rediscovering it at full cost.
+
+The line it draws is deliberately narrow:
+
+> **Substrate failures are shared. Business logic stays private.**
+
+"Stripe webhook handlers need idempotency keys" is not a trade secret, and
+every fleet on earth rediscovers it independently. Your pricing rules,
+escalation policy, and qualification criteria are yours and always should
+be. CommonTrace cannot tell those apart — that judgment is yours, made
+explicitly per trace and recorded.
+
+### Ask what you'd gain, before contributing anything
+
+```bash
+commontrace commons sign --out failures.json      # local; signatures only
+commontrace commons report --signatures failures.json
+```
+
+```
+**2 of 3** of your recurring failures (67%) have already been solved by another fleet.
+
+### Postgres connection pool exhausted under retry storm
+- Matches your `c9afa48d-761` at similarity 0.6406
+**Solution:** Bound retries with jittered backoff and set a pool_timeout so callers fail fast.
+```
+
+`sign` MinHashes your recurring failures locally — **no failure text leaves
+your machine**, and text cannot be reconstructed from a signature. What
+comes back is drawn only from traces whose owners explicitly shared them.
+You do not need to contribute anything to ask.
+
+Stated plainly, because it matters: MinHash is not a cryptographic privacy
+guarantee. Someone who can already guess a candidate string can test
+whether it is present. Private set intersection is the real fix for
+mutually distrustful parties and is a known follow-up, not a quiet
+assumption.
+
+### Contribute
+
+```bash
+commontrace commons contribute --tags stripe,webhooks     # previews, shares nothing
+commontrace commons contribute --tags stripe,webhooks --confirm
+commontrace commons unshare <trace_id>                    # withdraw
+```
+
+Contribution is opt-in, previewed, and revocable. It refuses to run without
+an explicit `--tags`/`--query` narrowing rather than defaulting to
+everything you own.
+
+**Treat sharing as publication, not a revocable ACL.** Withdrawal stops
+future matches; it cannot retract what another org already retrieved.
+
+### What is guaranteed
+
+| Property | How |
+|---|---|
+| Private by default | `shared_with_commons` is false unless you set it; nothing shares implicitly |
+| You can only share what you own | Org-scoped lookup, 404-shaped for a foreign id so it can't confirm one exists |
+| Quarantined traces can't enter | Refused — that would propagate exactly what quarantine contains |
+| Your own traces don't inflate your number | The corpus excludes your rows: the question is what you'd *gain* |
+| Ordinary reads are unaffected | All six original tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
+
+Operators can check whether the network effect is real —
+`python -m hub.manage commons-stats` reports how many *distinct* orgs
+contribute and warns when one dominates, because a large corpus from a
+single org is one fleet's memory with extra steps.
 
 ---
 
