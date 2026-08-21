@@ -745,6 +745,18 @@ or underpowered at reasonable n, the product does not work and nothing
 downstream matters. This is the cheapest falsifier in the document and it
 should be run first.
 
+> **§13 originally said "the machinery already ships." That was wrong, and
+> checking it found the blocker.** `query --experiment` logged an arm under
+> an occasion id and `experiment` joined it via the trace's `id` — but
+> `capture` had no flag to set that id, so nothing ever joined and every
+> assignment was reported as having no recorded outcome. The falsifier this
+> section calls cheapest and most gating **could not be run at all.**
+> `capture --occasion-id` now closes the loop, and the pipeline was verified
+> end to end against a synthetic effect: seeded at +45%, it recovered
+> +43% with a 95% CI of [+23%, +64%] and p<0.001, so the interval covers the
+> true value. That validates the instrument. It says nothing about any real
+> lesson — which is the point of running it on a real fleet.
+
 **Link 2 — retrieval finds the right memory when a task is described in
 the operator's own words.** *Status: measured, holds.* 84.8% recall@1,
 95.7%@5, 97.8% findable (§12.7). This was the link I wrongly believed was
@@ -816,4 +828,6 @@ that made §12.7's correction possible, and the same discipline that
 produced 10.9% instead of a number that would have read better.
 
 Run link 1's falsifier first. It is the cheapest, it gates everything
-downstream, and the machinery to run it already ships.
+downstream, and as of `capture --occasion-id` the loop actually closes —
+which it did not when this section was written, and which nobody would have
+discovered without trying to run the thing the section recommends.

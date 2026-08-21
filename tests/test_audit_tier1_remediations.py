@@ -397,3 +397,104 @@ class TestCliReportsOperationalErrorsCleanly:
         src = __import__("inspect").getsource(cli.main)
         assert "except Exception" not in src
         assert "except BaseException" not in src
+
+
+# --- PROTO-07: the causal experiment loop must actually close -----------
+
+
+class TestExperimentLoopCloses:
+    """`query --experiment` logs an arm under an occasion id, and
+    `experiment` joins that to an outcome via the trace's `id`. `capture`
+    had no way to set the id, so nothing ever joined and every assignment
+    was reported as having no recorded outcome -- the randomized-holdout
+    measurement, which is the strongest claim this product makes, could not
+    be run end to end at all.
+
+    trace.schema.json permits this directly: id is any non-empty string,
+    "Locally-only traces MAY use a temporary local id"."""
+
+    def _run(self, *args, dest):
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", *args, "--dest", str(dest)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def _store_with_lesson(self, tmp_path):
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        ldir = tmp_path / "memory" / "lessons"
+        ldir.mkdir(parents=True, exist_ok=True)
+        frontmatter.write(
+            str(ldir / "lesson_pagination.md"),
+            {
+                "name": "lesson_pagination", "description": "Use keyset pagination",
+                "tags": ["pagination"], "agent_type": "code", "domain": "databases",
+                "importance": 4, "applies_when": "paginating a large table",
+                "do_not_apply_when": "small sets", "uses": 0, "last_hit": "NEVER",
+                "status": "active",
+            },
+            "## Rule\nUse keyset pagination.\n\n## How to apply\nPage on an immutable key.\n",
+        )
+        return tmp_path
+
+    def test_capture_accepts_an_occasion_id_and_uses_it_as_the_trace_id(self, tmp_path):
+        self._store_with_lesson(tmp_path)
+        r = self._run("capture", "--title", "t", "--context", "c", "--solution", "s",
+                      "--agent-type", "code", "--resolved",
+                      "--occasion-id", "task-100", dest=tmp_path)
+        assert r.returncode == 0, r.stderr
+        inst, _ = trace_io_read(r.stdout.strip())
+        assert inst["id"] == "task-100"
+
+    def test_the_arm_joins_to_the_outcome(self, tmp_path):
+        """The property that was broken: an assignment logged under an
+        occasion must find that occasion's recorded outcome."""
+        self._store_with_lesson(tmp_path)
+        self._run("query", "paginating a large table", "--experiment",
+                  "--occasion-id", "task-100", dest=tmp_path)
+        self._run("capture", "--title", "t", "--context", "large table", "--solution", "s",
+                  "--agent-type", "code", "--resolved",
+                  "--occasion-id", "task-100", dest=tmp_path)
+        r = self._run("experiment", dest=tmp_path)
+        combined = r.stdout + r.stderr
+        assert "none have a matching" not in combined, "the arm failed to join to its outcome"
+
+    def test_without_an_occasion_id_nothing_joins(self, tmp_path):
+        """The pre-fix behaviour, pinned so a regression is visible as a
+        behaviour change rather than as a silently empty report."""
+        self._store_with_lesson(tmp_path)
+        self._run("query", "paginating a large table", "--experiment",
+                  "--occasion-id", "task-200", dest=tmp_path)
+        self._run("capture", "--title", "t", "--context", "large table", "--solution", "s",
+                  "--agent-type", "code", "--resolved", dest=tmp_path)
+        r = self._run("experiment", dest=tmp_path)
+        # The diagnostic goes to stderr, so check both streams rather than
+        # assuming which one carries it.
+        assert "none have a matching" in (r.stdout + r.stderr)
+
+    def test_an_empty_occasion_id_is_refused(self, tmp_path):
+        self._store_with_lesson(tmp_path)
+        r = self._run("capture", "--title", "t", "--context", "c", "--solution", "s",
+                      "--agent-type", "code", "--occasion-id", "   ", dest=tmp_path)
+        assert r.returncode == 1
+        assert "cannot be empty" in r.stderr
+
+    def test_an_unsafe_occasion_id_cannot_escape_the_traces_directory(self, tmp_path):
+        """A ticket system can emit anything. The id inside the file must be
+        preserved verbatim so the join still works, while the FILENAME
+        fragment derived from it must stay confined."""
+        self._store_with_lesson(tmp_path)
+        r = self._run("capture", "--title", "t", "--context", "c", "--solution", "s",
+                      "--agent-type", "code", "--resolved",
+                      "--occasion-id", "../../etc/pwned", dest=tmp_path)
+        assert r.returncode == 0, r.stderr
+        out_path = os.path.realpath(r.stdout.strip())
+        traces_dir = os.path.realpath(str(tmp_path / "memory" / "traces"))
+        assert out_path.startswith(traces_dir), f"escaped to {out_path}"
+        inst, _ = trace_io_read(out_path)
+        assert inst["id"] == "../../etc/pwned", "the id itself must not be rewritten"
+
+
+def trace_io_read(path):
+    from commontrace import trace_io
+
+    return trace_io.read(path)
