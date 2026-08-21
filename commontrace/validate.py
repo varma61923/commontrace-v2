@@ -114,8 +114,21 @@ def assert_supported_schema(schema: dict, path: str = "<root>") -> None:
     for name, sub in (schema.get("properties") or {}).items():
         if isinstance(sub, dict):
             assert_supported_schema(sub, f"{path}.{name}")
-    items = schema.get("items")
-    if isinstance(items, dict):
+    if "items" in schema:
+        items = schema["items"]
+        # Draft 2020-12 allows `items` to be an ARRAY of subschemas (tuple
+        # validation). This validator only implements the single-subschema
+        # form, and _validate_value would call schema.get() on the list and
+        # die with `AttributeError: 'list' object has no attribute 'get'` --
+        # an unhandled crash rather than the clean "unsupported" this class
+        # exists to raise. assert_supported_schema is the gate that is
+        # supposed to catch exactly this before validate() ever runs.
+        if not isinstance(items, dict):
+            raise UnsupportedSchemaError(
+                f"{path}[]: 'items' must be a single subschema object; tuple-form "
+                f"'items' (an array of subschemas) is not supported, got "
+                f"{type(items).__name__}"
+            )
         assert_supported_schema(items, f"{path}[]")
 
 

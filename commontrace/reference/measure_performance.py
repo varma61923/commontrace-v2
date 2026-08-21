@@ -1181,8 +1181,14 @@ def _md_to_html_fragment(md_text):
             close_list()
             close_para()
             cells = [c.strip() for c in line.strip("|").split("|")]
-            # Skip separator rows like |---|---|
-            if all(re.match(r"^[-:]+$", c) for c in cells if c):
+            # Skip separator rows like |---|---|. Requires 3+ dashes: the
+            # old `^[-:]+$` also matched a DATA row whose cells are a single
+            # "-" used as a not-recorded placeholder, so `| - | - |` was
+            # mistaken for a separator and silently dropped from the report
+            # a customer reads. Markdown itself requires at least three
+            # dashes in a delimiter row, so this is both stricter and more
+            # correct.
+            if all(re.match(r"^:?-{3,}:?$", c) for c in cells if c):
                 i += 1
                 continue
             if not in_table:

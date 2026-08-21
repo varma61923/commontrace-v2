@@ -586,3 +586,147 @@ class TestHoldoutLogIntegrity:
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert "unparseable line" not in r.stderr
+
+
+# ======================================================================
+# Tier 3 findings that touch the pilot path.
+# ======================================================================
+
+
+class TestDoctorReportsFailuresInItsExitCode:
+    """`doctor` returned 0 unconditionally, so a CI gate or container health
+    check could not act on a missing store, no lessons, or an unsupported
+    Python -- it looked like a pass to everything except a human reading
+    the output."""
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", "doctor", *args],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def test_a_missing_store_exits_non_zero(self, tmp_path):
+        r = self._run("--dest", str(tmp_path / "nope"))
+        assert r.returncode == 1
+        assert "critical check(s) failed" in r.stdout
+
+    def test_a_healthy_store_exits_zero(self):
+        assert self._run().returncode == 0
+
+    def test_info_conditions_do_not_fail_the_run(self):
+        """_info marks things normal for a clean client install. If those
+        counted as failures, every `pip install` user's pipeline would go
+        red on a working setup."""
+        r = self._run()
+        assert r.returncode == 0
+        assert "[INFO]" in r.stdout
+
+    def test_a_fresh_store_with_no_lessons_is_not_a_failure(self, tmp_path):
+        """Only CRITICAL checks affect the exit code. A store you just
+        created legitimately has zero lessons -- exiting non-zero for that
+        would make day one of every install look broken, which is how a
+        health check gets ignored and then stops being read at all. The
+        pre-existing tests/test_doctor.py caught this when the first
+        version of the fix counted every [WARN]."""
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code",
+             "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        r = self._run("--dest", str(tmp_path))
+        assert r.returncode == 0
+        assert "[WARN]" in r.stdout, "a fresh store should still SHOW warnings"
+
+
+class TestValidatorRejectsTupleFormItems:
+    def test_list_typed_items_raises_unsupported_not_attribute_error(self):
+        """Draft 2020-12 allows `items` to be an array. This validator only
+        implements the single-subschema form, and the gate that exists to
+        say so let it through -- so it surfaced later as
+        `AttributeError: 'list' object has no attribute 'get'`."""
+        from commontrace import validate
+
+        schema = {"type": "object",
+                  "properties": {"tags": {"type": "array", "items": [{"type": "string"}]}}}
+        with pytest.raises(validate.UnsupportedSchemaError):
+            validate.assert_supported_schema(schema)
+
+    def test_the_supported_form_still_passes(self):
+        from commontrace import validate
+
+        schema = {"type": "object",
+                  "properties": {"tags": {"type": "array", "items": {"type": "string"}}}}
+        validate.assert_supported_schema(schema)  # not raising is the assertion
+
+    def test_the_shipped_schemas_still_load(self):
+        from commontrace import validate
+
+        for name in ("trace.schema.json", "lesson.schema.json"):
+            validate.assert_supported_schema(validate.load_schema(name))
+
+
+class TestReportKeepsPlaceholderRows:
+    def test_a_dash_only_data_row_is_not_mistaken_for_a_separator(self):
+        """`| - | - |` is a not-recorded placeholder, and it was being
+        dropped from the HTML report a customer reads."""
+        from commontrace.reference.measure_performance import _md_to_html_fragment
+
+        html = _md_to_html_fragment(
+            "| Metric | Value |\n|---|---|\n| lexical | 0.42 |\n| - | - |\n| fresh | 0.9 |\n"
+        )
+        assert html.count("<tr>") - 1 == 3, "a data row was dropped"
+        assert "<td>-</td>" in html
+
+    def test_real_separators_are_still_skipped(self):
+        from commontrace.reference.measure_performance import _md_to_html_fragment
+
+        html = _md_to_html_fragment("| A | B |\n|---|---|\n| 1 | 2 |\n")
+        assert "<td>---</td>" not in html
+
+
+class TestDeadThresholdFlagsAnnounceThemselves:
+    def test_an_unimplemented_flag_warns(self):
+        """Accepted, never read by any metric or alert. A fleet could set a
+        quality gate, watch it never fire, and conclude quality was fine."""
+        r = subprocess.run(
+            [sys.executable, "-m", "commontrace", "bench", "--threshold-lexical=0.99"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        assert "not implemented" in r.stderr
+
+    def test_an_implemented_threshold_does_not_warn(self):
+        """--threshold-semantic IS read (measure_performance.py), so it must
+        not be tarred with the same brush."""
+        r = subprocess.run(
+            [sys.executable, "-m", "commontrace", "bench", "--threshold-semantic=0.99"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        assert "--threshold-semantic is accepted but not implemented" not in r.stderr
+
+
+class TestRootResolutionMatchesTheReferenceScripts:
+    def test_legacy_env_var_is_honoured(self, tmp_path, monkeypatch):
+        """measure_performance.py and memory/attention/*.py all read
+        JUSTDOIT_ROOT as a documented legacy fallback. paths.resolve_root
+        did not, so a legacy-configured store had the CLI and the scripts
+        operating on different directories."""
+        from commontrace import paths
+
+        monkeypatch.delenv("COMMONTRACE_ROOT", raising=False)
+        monkeypatch.setenv("JUSTDOIT_ROOT", str(tmp_path))
+        assert paths.resolve_root(None) == os.path.abspath(str(tmp_path))
+
+    def test_the_modern_var_still_wins(self, tmp_path, monkeypatch):
+        from commontrace import paths
+
+        monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path / "modern"))
+        monkeypatch.setenv("JUSTDOIT_ROOT", str(tmp_path / "legacy"))
+        assert paths.resolve_root(None) == os.path.abspath(str(tmp_path / "modern"))
+
+    def test_an_explicit_dest_still_beats_both(self, tmp_path, monkeypatch):
+        from commontrace import paths
+
+        monkeypatch.setenv("COMMONTRACE_ROOT", str(tmp_path / "env"))
+        assert paths.resolve_root(str(tmp_path / "explicit")) == os.path.abspath(
+            str(tmp_path / "explicit")
+        )

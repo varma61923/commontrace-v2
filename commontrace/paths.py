@@ -26,7 +26,14 @@ STARTER_DOMAINS = {
 def resolve_root(explicit: str | None = None) -> str:
     if explicit:
         return os.path.abspath(explicit)
-    env_root = os.environ.get("COMMONTRACE_ROOT")
+    # JUSTDOIT_ROOT is honoured as a legacy fallback because the reference
+    # scripts already do (measure_performance.py, memory/attention/*.py, all
+    # documenting it as "legacy backward compatibility"). Without it here,
+    # a store configured the legacy way had the CLI reading one root and the
+    # reference scripts reading another -- two halves of the same product
+    # silently disagreeing about which store they were operating on.
+    # COMMONTRACE_ROOT wins, matching the scripts' own precedence exactly.
+    env_root = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT")
     if env_root:
         return os.path.abspath(env_root)
     cwd = os.getcwd()

@@ -16,12 +16,31 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-def _check(label: str, ok: bool, detail: str = "") -> None:
+# Accumulates failed checks so run() can exit non-zero. Module-level rather
+# than threaded through every call site because _check is used a dozen times
+# and the alternative is a parameter on each; run() resets it on entry so
+# repeated in-process invocations (tests) do not inherit stale state.
+_FAILURES: list[str] = []
+
+
+def _check(label: str, ok: bool, detail: str = "", critical: bool = False) -> None:
+    """`critical=True` means the tool cannot function, and only those affect
+    the exit code.
+
+    The distinction is load-bearing. A freshly `init`-ed store legitimately
+    has zero lessons and a pip-installed client legitimately has no
+    benchmark script -- both print [WARN] because they are worth seeing, and
+    neither is a failure. Exiting non-zero for them would make day one of
+    every install look broken to CI, which is how a health check gets
+    ignored and then stops being read at all.
+    """
     mark = "OK  " if ok else "WARN"
     line = f"[{mark}] {label}"
     if detail:
         line += f" - {detail}"
     print(line)
+    if not ok and critical:
+        _FAILURES.append(label)
 
 
 def _info(label: str, detail: str = "") -> None:
@@ -36,15 +55,17 @@ def _info(label: str, detail: str = "") -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    _FAILURES.clear()
     root = paths.resolve_root(args.dest)
     print(f"[commontrace] doctor - store root: {root}\n")
 
-    _check("Python >= 3.10", sys.version_info >= (3, 10), sys.version.split()[0])
-    _check("PyYAML importable", importlib.util.find_spec("yaml") is not None)
+    _check("Python >= 3.10", sys.version_info >= (3, 10), sys.version.split()[0], critical=True)
+    _check("PyYAML importable", importlib.util.find_spec("yaml") is not None, critical=True)
     _check("git on PATH", shutil.which("git") is not None)
 
     has_mem = os.path.isdir(paths.memory_dir(root))
-    _check("memory/ store present", has_mem, paths.memory_dir(root) if has_mem else "run `commontrace init`")
+    _check("memory/ store present", has_mem,
+           paths.memory_dir(root) if has_mem else "run `commontrace init`", critical=True)
 
     if has_mem:
         n_lessons = 0
@@ -96,6 +117,17 @@ def run(args: argparse.Namespace) -> int:
             "protocol/ spec present",
             "not in a repo checkout; schemas are mirrored at commontrace/schemas/ for the installed package",
         )
+
+    if _FAILURES:
+        # Non-zero so a CI gate, a container health check, or an onboarding
+        # script can act on this. Returning 0 unconditionally meant `doctor`
+        # could report a missing store, no lessons and an unsupported Python
+        # and still look like a pass to everything except a human reading
+        # the output. _info conditions are deliberately excluded -- they are
+        # normal for a clean client install and must not fail a pipeline.
+        print(f"\nDone. {len(_FAILURES)} critical check(s) failed: "
+              + ", ".join(_FAILURES))
+        return 1
 
     print("\nDone.")
     return 0

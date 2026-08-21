@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from commontrace import paths
 from commontrace.commands._shellout import run_script
@@ -104,12 +105,28 @@ def run(args: argparse.Namespace) -> int:
         extra += [f"--threshold-unimodal={args.threshold_unimodal}"]
     if args.threshold_semantic is not None:
         extra += [f"--threshold-semantic={args.threshold_semantic}"]
-    if args.threshold_lexical is not None:
-        extra += [f"--threshold-lexical={args.threshold_lexical}"]
-    if args.threshold_freshness is not None:
-        extra += [f"--threshold-freshness={args.threshold_freshness}"]
-    if args.threshold_composite is not None:
-        extra += [f"--threshold-composite={args.threshold_composite}"]
+    # These three are accepted by measure_performance's parser but never
+    # read by any metric or alert (only --threshold-semantic is). Passing
+    # one produced no error and no effect, so a fleet could set a quality
+    # gate, watch it never fire, and conclude quality was fine. Warned
+    # rather than removed: removing them would break any script that
+    # already passes them, and a loud no-op is more honest than a silent
+    # one. Implement or delete them deliberately; do not leave them quiet.
+    # Still forwarded -- measure_performance's parser accepts them, so
+    # passing them through is harmless and keeps the two CLIs' surfaces
+    # aligned. The defect was never the forwarding, it was the silence.
+    for flag, value in (
+        ("--threshold-lexical", args.threshold_lexical),
+        ("--threshold-freshness", args.threshold_freshness),
+        ("--threshold-composite", args.threshold_composite),
+    ):
+        if value is not None:
+            extra += [f"{flag}={value}"]
+            print(
+                f"[commontrace] warning: {flag} is accepted but not implemented -- "
+                "it does not affect any metric, alert or exit code.",
+                file=sys.stderr,
+            )
 
     return run_script(
         root,
