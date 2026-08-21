@@ -750,9 +750,9 @@ class TestPilotRunbookMatchesTheCode:
         assert "PILOT.md" in readme
 
     def test_the_published_sample_sizes_match_the_shipped_calculation(self):
-        from commontrace.experiment import minimum_detectable_effect
-
         import re
+
+        from commontrace.experiment import minimum_detectable_effect
 
         # Parse the PUBLISHED table out of the runbook and compare each cell
         # against the live calculation. Asserting against hardcoded expected
