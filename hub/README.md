@@ -20,8 +20,14 @@ names and semantics exactly:
 Four more are Hub-specific and outside the protocol, all org-scoped like
 the six: `share_trace(id)` · `unshare_trace(id)` · `commons_overlap(failures)`
 for the opt-in cross-org commons, and `account_usage()` for the caller's own
-plan and meter. `hub/smoke.py` pins the exact surface, so a tool appearing
-or disappearing fails a post-deploy check rather than surprising a client.
+plan and meter. `hub/smoke.py` pins the tool surface, so a tool appearing or
+disappearing fails a post-deploy check rather than surprising a client.
+
+The three commons tools can be removed from the surface entirely with
+`HUB_COMMONS_ENABLED=false` (hub/config.py) -- an unknown-tool error to any
+client that tries, not a per-call refusal, so "no cross-org sharing" holds
+for a deployment even if every org on it forgets the feature exists. See
+`hub/DEPLOYMENT.md` §13 for an internal-only deployment that wants this.
 
 Any MCP-capable agent (Claude Code, Cursor, Devin, Windsurf, a generic MCP
 client) can attach with a plain config block and an API key — no

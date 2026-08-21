@@ -133,29 +133,46 @@ def _preflight(url: str, api_key: str) -> str | None:
     return None
 
 
-# The complete tool surface, asserted exactly rather than as a subset: a
-# tool appearing that this file does not know about is exactly as
-# interesting as one going missing, since the surface is what a customer's
-# key can reach. Update this list deliberately when the surface changes.
-EXPECTED_TOOLS = [
+# The tool surface, asserted exactly rather than as a subset: a tool
+# appearing that this file does not know about is exactly as interesting
+# as one going missing, since the surface is what a customer's key can
+# reach. Split in two because HUB_COMMONS_ENABLED (hub/config.py) changes
+# what a live deployment actually exposes -- smoke has no access to the
+# operator's env, only what it observes over MCP, so it checks internal
+# consistency (all of COMMONS_TOOLS present together or all absent
+# together) rather than one fixed list. Update these deliberately when
+# the surface changes.
+CORE_TOOLS = [
     # the six org-scoped tools
     "amend_trace", "contribute_trace", "get_trace", "list_tags",
     "search_traces", "vote_trace",
-    # opt-in cross-org commons (hub/commons.py)
-    "commons_overlap", "share_trace", "unshare_trace",
-    # entitlements (hub/plans.py)
+    # entitlements (hub/plans.py) -- unaffected by HUB_COMMONS_ENABLED,
+    # since it reports an org's own plan and usage, never another org's data
     "account_usage",
 ]
+COMMONS_TOOLS = ["commons_overlap", "share_trace", "unshare_trace"]
+EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
 
 
-async def _tool_surface(session, report: Reporter) -> None:
+async def _tool_surface(session, report: Reporter) -> bool:
+    """Returns whether the commons tools are present, so later checks know
+    whether to expect commons_overlap etc. to exist at all."""
     listed = await session.list_tools()
     names = sorted(tool.name for tool in listed.tools)
-    expected = sorted(EXPECTED_TOOLS)
-    report.check(
-        f"all {len(expected)} MCP tools exposed", names == expected,
-        f"got {names}" if names != expected else ", ".join(names),
+    core, commons = sorted(CORE_TOOLS), sorted(COMMONS_TOOLS)
+    commons_enabled = names == sorted(core + commons)
+    core_only = names == core
+    ok = commons_enabled or core_only
+    mode = (
+        "commons enabled" if commons_enabled
+        else "commons disabled (HUB_COMMONS_ENABLED=false)" if core_only
+        else "UNEXPECTED"
     )
+    report.check(
+        f"MCP tool surface is exactly core+commons or core-only -- {mode}", ok,
+        f"got {names}" if not ok else ", ".join(names),
+    )
+    return commons_enabled
 
 
 async def _round_trip(session, report: Reporter, marker: str) -> str | None:
@@ -246,7 +263,8 @@ async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
 
 
 async def _tenant_isolation(
-    url: str, other_key: str, foreign_id: str, marker: str, report: Reporter
+    url: str, other_key: str, foreign_id: str, marker: str, report: Reporter,
+    commons_enabled: bool = True,
 ) -> None:
     """The other org must not be able to read, vote on, or amend our trace."""
     from mcp import ClientSession
@@ -267,6 +285,13 @@ async def _tenant_isolation(
                     # that the id exists, which is itself a disclosure.
                     f"expected error=not_found, got {result!r}",
                 )
+
+            if not commons_enabled:
+                # Nothing to probe: _tool_surface already proved these three
+                # tools are entirely absent from the server, which is a
+                # stronger guarantee than "refused when called" -- there is
+                # no path left to check.
+                return
 
             # The commons is the ONLY path by which a row may cross an org
             # boundary, so a deployment check has to prove it stays shut for
@@ -313,10 +338,11 @@ async def run(args: argparse.Namespace) -> int:
 
     print("\nTool surface and write path")
     trace_id = None
+    commons_enabled = True
     async with _session(args.url, args.api_key) as (read, write, *_):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            await _tool_surface(session, report)
+            commons_enabled = await _tool_surface(session, report)
             trace_id = await _round_trip(session, report, marker)
             print("\nEntitlements")
             await _entitlements(session, report)
@@ -333,7 +359,10 @@ async def run(args: argparse.Namespace) -> int:
     elif not trace_id:
         report.fail("tenant isolation", "no trace was created, so nothing could be tested")
     else:
-        await _tenant_isolation(args.url, args.other_api_key, trace_id, marker, report)
+        await _tenant_isolation(
+            args.url, args.other_api_key, trace_id, marker, report,
+            commons_enabled=commons_enabled,
+        )
 
     print()
     if report.failures:

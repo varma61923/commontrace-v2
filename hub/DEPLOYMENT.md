@@ -276,11 +276,20 @@ not a stripped-down mode. Tenant isolation, migrations, health probes,
 backups, and the security checklist are identical whether one org uses
 the Hub or a thousand do. Two things are specific to running it alone:
 
-- **The cross-org commons defaults to inert.** `share_trace` is per-trace
-  opt-in and nothing is shared unless someone calls it; `commons_overlap`
-  on an empty commons costs nothing and returns 0% with a note explaining
-  why, never an error. Skip `commons-seed` entirely if there is only ever
-  going to be one org — there is no other org for it to compare against.
+- **The cross-org commons defaults to inert, and can be removed outright.**
+  Left at its default, `share_trace` is per-trace opt-in and nothing is
+  shared unless someone calls it — `commons_overlap` on an empty commons
+  costs nothing and returns 0% with a note explaining why, never an error.
+  That is "nobody happens to use it." If the requirement is stronger than
+  that — an internal-only deployment where the commons must not exist,
+  full stop, regardless of what any org's traces do — set
+  `HUB_COMMONS_ENABLED=false`. `share_trace`, `unshare_trace`, and
+  `commons_overlap` are then absent from the MCP tool surface entirely
+  (an unknown-tool error to any client that tries), not merely refused;
+  `python -m hub.smoke`'s tool-surface check reflects whichever mode the
+  server is actually running in. Skip `commons-seed` either way if there
+  is only ever going to be one org — there is no other org for it to
+  compare against.
 - **Entitlements can be ignored.** A new org lands on the `free` plan
   (1,000 traces, 20 commons queries/month — §5). If that is not the
   point of running your own Hub, `python -m hub.manage set-plan <org_id>
