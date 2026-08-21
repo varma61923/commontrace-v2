@@ -596,12 +596,12 @@ An affirmative case that omits these is not worth reading:
    with those numbers as evidence for the commons; they are also thin
    evidence for the category. `--experiment` exists precisely so customer
    two onward produces its own causal numbers instead of inheriting these.
-3. **Retrieval is the same bottleneck one level down.** The 10.9% recall
-   finding is about the commons matcher, but per-org retrieval uses the same
-   lexical machinery. If a fleet's own memory is hard to retrieve from in
-   its own words, (A)'s value is capped by the same defect that closed (B)'s
-   gate. **This is the most important open question in the document and it
-   is not currently anyone's task.**
+3. ~~**Retrieval is the same bottleneck one level down.**~~ **Measured, and
+   this was wrong — see §12.7.** I asserted by analogy that per-org
+   retrieval shares the commons matcher's defect. It does not: on the same
+   corpus and the same probes it gets 84.8% recall@1 and 95.7%@5, against
+   the commons matcher's 10.9%. (A) is not capped by this. What remains
+   true is narrower and is stated in §12.7.
 4. **"Substrate failures are shared" is still a hypothesis** (§4). It is
    plausible and unvalidated, and §11.1 established we cannot currently
    measure it.
@@ -630,13 +630,74 @@ about which variable determines the ceiling; I cannot tell you the ceiling.
   customer count — that is the variable §12.2 identifies as compounding.
 - **The differentiator to sell on is causal proof on the customer's own
   data**, not the network effect (which §11.3 already said to stop citing).
-- **The highest-value open engineering question is retrieval recall** —
-  §12.4.3 — because it caps (A) and gates (B) simultaneously. §11.6 framed
-  funding that research as optional. On this analysis it is not optional
-  for (B); it is the main line for both.
+- **The highest-value open question is the commons OUTPUT CONTRACT, not
+  retrieval recall** — see §12.7. Measurement moved this: recall is fine
+  where it is ranked and poor only where it is thresholded, so the research
+  §11.6 called optional is narrower and cheaper than it looked.
 
 Whether that adds up to a billion-dollar company is not something this
 document can assert, and any version of it that did would be the kind of
 claim the rest of this file exists to avoid making. What it can say is
 which variable to watch, which asset is genuinely rare, and which single
 engineering result would move both.
+
+### 12.7 Correction: I measured the claim in §12.4.3 and it was false
+
+§12.4.3 asserted that per-org retrieval "runs on the same lexical
+machinery" as the commons matcher and is therefore capped by the same
+defect, and §12.6 promoted that to the highest-value open question. I
+reached it by analogy — same tokenizer, therefore same problem — and did
+not measure it. `commons/eval/retrieval_tiers.py` measures it, on the same
+corpus and the same probes:
+
+| | Commons | Per-org |
+|---|---|---|
+| Recall on the 46 paraphrased positives | 10.9% | **84.8% @1, 95.7% @5** |
+| The 22 absent failures return *something* | 0% | **100%** |
+
+The tokenizer is shared. Nothing else that matters is. The commons
+compares Jaccard against a **threshold** and emits covered/not-covered; the
+per-org tier **ranks and returns top-k** with no threshold, so one shared
+content word is enough to surface a lesson.
+
+**Neither tier is broken.** Each made the correct trade for what it emits.
+A coverage percentage quoted to a customer must not over-claim, so it buys
+0% false positives with recall. A ranked list a human or agent skims must
+not hide the answer, so it buys recall with the certainty that something
+always comes back — where a weak match costs a glance, not a wrong
+decision.
+
+**What this changes strategically, in order of consequence:**
+
+1. **(A) is not capped by a retrieval defect.** §12.4.3 named that as the
+   most important open question in this document; measurement removed it.
+   The per-org product's core loop — find the relevant memory when the task
+   is described in the operator's own words — works.
+2. **(B)'s problem is smaller and cheaper than §11.1 concluded.** That
+   section reasoned from 10.9% to "the representation is wrong, and the
+   credible fix is semantic embeddings, which retracts the privacy
+   guarantee." That inference no longer holds unchallenged: the corpus
+   contains the answer and lexical ranking finds it 97.8% of the time. What
+   discards it is collapsing the ranking to a binary at a cutoff. Embeddings
+   may still be worth it; they are no longer *required* to get value out of
+   the commons, and §11.4's gate should be re-derived rather than assumed.
+3. **The honest open question is the output contract, not the matcher.**
+   Should `commons_overlap` return ranked candidates alongside — never
+   instead of — the coverage figure?
+
+**The constraint on (3), which is why it is a question and not a patch.**
+The top-1 score distributions overlap (true median 7.0, range 2.5–16.0;
+absent median 3.0, range 1.5–10.5). The score separates on average, not
+case by case, and every absent failure still returns something. So ranked
+candidates can be offered as *candidates to judge* and can never be
+reported as coverage. Shipping them mislabelled would recreate exactly the
+over-claiming the threshold exists to prevent. The shipped coverage number
+and its threshold are unchanged by this finding, and I have not touched
+either.
+
+**Why this correction is in the document rather than quietly fixed.** The
+discipline this file runs on is that a claim is worth what its evidence is
+worth. §12.4.3 was an inference presented with the same confidence as
+§11.1's measurement, and it was wrong for a reason worth remembering:
+sharing a component is not sharing a failure mode. Deleting it would remove
+the evidence that the method works.

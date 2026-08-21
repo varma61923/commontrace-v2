@@ -1008,3 +1008,56 @@ class TestHeldOutEvaluation:
             )
         assert "by construction, not by finding" in report["note"]
         assert "FLOOR" not in report["note"]
+
+
+# --- 11. The two retrieval tiers make opposite trades --------------------
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestRetrievalTiersDiffer:
+    """STRATEGY.md §12.4.3 claimed per-org retrieval shared the commons
+    matcher's recall defect because it shares a tokenizer. Measurement
+    (commons/eval/retrieval_tiers.py) showed the opposite, and §12.7 records
+    the correction. These pin the property that correction rests on, so the
+    strategy document cannot quietly drift away from its own evidence.
+
+    What is asserted is the SHAPE of each tier's trade, not exact figures --
+    pinning 84.8% would make any corpus improvement look like a failure."""
+
+    def _evaluate(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_retrieval_tiers", SEED_CORPUS.parent.parent / "eval" / "retrieval_tiers.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.evaluate()
+
+    def test_per_org_retrieval_has_high_recall(self):
+        """It ranks instead of thresholding, so a paraphrase still surfaces.
+        If this drops toward the commons figure, the per-org product's core
+        loop is broken and §12.7's conclusion no longer holds."""
+        r = self._evaluate()
+        assert r["recall"][5] > 0.7, f"per-org recall@5 collapsed to {r['recall'][5]:.1%}"
+
+    def test_per_org_retrieval_pays_for_that_with_no_precision(self):
+        """The other half of the trade, asserted so it is never mistaken for
+        a coverage signal: with no threshold, failures the corpus cannot
+        answer still come back with a result."""
+        r = self._evaluate()
+        assert r["neg_returns_something"][1] > 0.5, (
+            "negative controls stopped returning results -- if a threshold was "
+            "added to rank_lessons, §12.7's analysis needs redoing"
+        )
+
+    def test_the_two_tiers_are_not_interchangeable(self):
+        """The finding in one line: same tokenizer, opposite outcomes. A
+        change that made these converge would invalidate the reasoning in
+        both RESULTS.md and STRATEGY.md §12.7."""
+        r = self._evaluate()
+        assert r["recall"][1] > 0.5, "per-org tier should rank, not threshold"
+        assert r["recall_anywhere"] > 0.9, (
+            "the corpus should contain findable answers for nearly every probe -- "
+            "if not, the commons' problem really is the corpus after all"
+        )

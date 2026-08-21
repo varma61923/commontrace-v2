@@ -88,6 +88,47 @@ and only the second one predicts what happens in the room.
 That is the single highest-value thing to fix in this codebase, and it is
 not a tuning exercise.
 
+## Two tiers, opposite trades — and only one of them is a defect
+
+`python commons/eval/retrieval_tiers.py` runs the *per-org* lexical ranker
+(`commontrace/retrieval.py`) over this same corpus and these same probes:
+
+| | Commons (`commons_overlap`) | Per-org (`rank_lessons`) |
+|---|---|---|
+| Recall on the 46 paraphrased positives | **10.9%** | **84.8% @1, 95.7% @5** |
+| Right record present anywhere in output | — | 97.8% |
+| The 22 absent failures return *something* | 0% | **100%** |
+
+Same tokenizer. The entire difference is that the commons compares against
+a **threshold** and emits covered/not-covered, while the per-org tier
+**ranks and returns top-k** with no threshold at all — one shared content
+word is enough to put a lesson on the list.
+
+**That is not one tier being broken.** Each made the correct trade for what
+it emits. A coverage *percentage quoted to a customer* must not over-claim,
+so it buys 0% false positives with recall. A *ranked list a human or agent
+skims* must not hide the answer, so it buys recall with the certainty that
+something always comes back — and a weak match there costs a glance, not a
+wrong decision.
+
+So the corpus is not the problem, and neither is lexical matching: the
+answer is present and findable 97.8% of the time. What throws it away is
+collapsing that ranking to a binary at a cutoff.
+
+**This corrects two earlier conclusions in this file and in STRATEGY.md.**
+The claim below that "no threshold fixes this" is right about the coverage
+*percentage* and wrong as a statement about retrieval in general. And
+STRATEGY.md §12.4.3's assertion that per-org retrieval is capped by the
+same defect is simply false — measured, it is not.
+
+**What it does not license.** Returning ranked candidates instead of a
+coverage figure would surface real value that is invisible today, but it
+cannot be reported *as* coverage: the top-1 score distributions overlap
+(true median 7.0, range 2.5–16.0; absent median 3.0, range 1.5–10.5), so
+the score separates on average, not case by case. Any such output has to be
+labelled candidates-to-judge, not coverage. The shipped coverage number and
+its threshold are unchanged by this finding.
+
 ## The honest path forward
 
 Recall is a representation problem, and the fix is semantic rather than
