@@ -2,10 +2,11 @@
 
 Run this against a deployment you just brought up, before you hand a key to
 a customer. It is deliberately end-to-end and deliberately paranoid: it
-exercises every one of the six MCP tools against the live server over real
+exercises the full MCP tool surface against the live server over real
 HTTP, and it verifies the properties that matter more than uptime does --
-that an unauthenticated caller is refused, and that one tenant cannot see
-another's data.
+that an unauthenticated caller is refused, that one tenant cannot see
+another's data, and that a trace not opted into the commons stays private
+to the org that owns it.
 
     python -m hub.smoke --url https://hub.example.com --api-key ct_live_...
 
@@ -127,13 +128,25 @@ def _preflight(url: str, api_key: str) -> str | None:
     return None
 
 
+# The complete tool surface, asserted exactly rather than as a subset: a
+# tool appearing that this file does not know about is exactly as
+# interesting as one going missing, since the surface is what a customer's
+# key can reach. Update this list deliberately when the surface changes.
+EXPECTED_TOOLS = [
+    # the six org-scoped tools
+    "amend_trace", "contribute_trace", "get_trace", "list_tags",
+    "search_traces", "vote_trace",
+    # opt-in cross-org commons (hub/commons.py)
+    "commons_overlap", "share_trace", "unshare_trace",
+]
+
+
 async def _tool_surface(session, report: Reporter) -> None:
     listed = await session.list_tools()
     names = sorted(tool.name for tool in listed.tools)
-    expected = ["amend_trace", "contribute_trace", "get_trace", "list_tags",
-                "search_traces", "vote_trace"]
+    expected = sorted(EXPECTED_TOOLS)
     report.check(
-        "all six MCP tools exposed", names == expected,
+        f"all {len(expected)} MCP tools exposed", names == expected,
         f"got {names}" if names != expected else ", ".join(names),
     )
 
@@ -193,7 +206,9 @@ async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
         report.ok("an invalid API key is refused")
 
 
-async def _tenant_isolation(url: str, other_key: str, foreign_id: str, report: Reporter) -> None:
+async def _tenant_isolation(
+    url: str, other_key: str, foreign_id: str, marker: str, report: Reporter
+) -> None:
     """The other org must not be able to read, vote on, or amend our trace."""
     from mcp import ClientSession
 
@@ -213,6 +228,36 @@ async def _tenant_isolation(url: str, other_key: str, foreign_id: str, report: R
                     # that the id exists, which is itself a disclosure.
                     f"expected error=not_found, got {result!r}",
                 )
+
+            # The commons is the ONLY path by which a row may cross an org
+            # boundary, so a deployment check has to prove it stays shut for
+            # a trace nobody opted in. The round-trip trace above was never
+            # shared, so probing with a signature built from its EXACT text
+            # -- the strongest possible probe -- must still find nothing.
+            from hub import commons
+
+            probe = commons.signature_for(
+                f"smoke check {marker}",
+                f"Automated post-deploy smoke check {marker}. Safe to delete.",
+                [SMOKE_TAG],
+            )
+            overlap = _content(await session.call_tool(
+                "commons_overlap", {"failures": [{"label": "probe", "signature": probe}]},
+            ))
+            leaked = isinstance(overlap, dict) and foreign_id in json.dumps(overlap)
+            report.check(
+                "an unshared trace stays out of the commons",
+                isinstance(overlap, dict) and not leaked,
+                f"the other org's commons_overlap returned our unshared trace: {overlap!r}",
+            )
+
+            # And an org cannot place someone else's trace into the commons.
+            shared = _content(await session.call_tool("share_trace", {"id": foreign_id}))
+            report.check(
+                "share_trace across a tenant boundary is refused",
+                isinstance(shared, dict) and shared.get("error") == "not_found",
+                f"expected error=not_found, got {shared!r}",
+            )
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -247,7 +292,7 @@ async def run(args: argparse.Namespace) -> int:
     elif not trace_id:
         report.fail("tenant isolation", "no trace was created, so nothing could be tested")
     else:
-        await _tenant_isolation(args.url, args.other_api_key, trace_id, report)
+        await _tenant_isolation(args.url, args.other_api_key, trace_id, marker, report)
 
     print()
     if report.failures:
