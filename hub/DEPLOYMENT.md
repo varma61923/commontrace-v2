@@ -15,8 +15,8 @@ local-checkout instructions in [`hub/README.md`](README.md).
 > The **compose stack is exercised end to end in CI** (`compose-stack` job):
 > it brings up the documented stack, waits on `/readyz`, asserts the
 > migrations created every table, provisions two organizations through the
-> operator CLI, then drives the running server over real HTTP — all six MCP
-> tools, an unauthenticated request refused with 401, and cross-tenant reads
+> operator CLI, then drives the running server over real HTTP — every MCP
+> tool, an unauthenticated request refused with 401, and cross-tenant reads
 > refused — restarts the app and checks the data survived, and asserts the
 > logs are structured JSON containing no API key or database password.
 >
@@ -201,8 +201,12 @@ re-display a key anyone has lost — rotate instead
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — deletion is
-      operator-CLI-only by design, and the cross-org "commons" question is
-      an open business decision, not an implemented feature.
+      operator-CLI-only by design.
+- [ ] If the cross-org commons is not wanted for this deployment, do not
+      call `commons-seed` and tell your orgs not to `share_trace` — it is
+      opt-in per trace (§13) and stays empty unless something is shared
+      into it. `commons_overlap` on an empty commons returns 0% with a
+      note saying why, not an error.
 
 ## 11. Known limitations (deliberate, documented)
 
@@ -211,8 +215,9 @@ re-display a key anyone has lost — rotate instead
 | Rate limiting is per-process | §6, `hub/abuse.py` |
 | Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
 | No self-service data deletion (operator CLI only) | `DATA_RETENTION.md` |
-| Cross-org sharing not implemented (every read is org-scoped) | `hub/README.md` |
+| Cross-org commons is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
+| No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
 
 ---
@@ -233,7 +238,7 @@ python -m hub.smoke \
   --other-api-key ct_live_...        # a SECOND org's key
 ```
 
-It exercises all six MCP tools against the live server, confirms an invalid
+It exercises every MCP tool against the live server, confirms an invalid
 key is refused, and — with `--other-api-key` — confirms one tenant cannot
 read, vote on, or amend another's trace. Exit code 0 means every check
 passed; each check prints its own line, so a failure names the property that
@@ -262,3 +267,33 @@ deployment before you hand out the first customer key is the point.
 | `rejected the API key (HTTP 401)` | Key is wrong, revoked, or expired. |
 | `HTTP 5xx` | Reachable but failing. Check the container logs and `/readyz`. |
 | A named `[FAIL]` check | The server is up but a behavioural guarantee broke. Do not hand out keys. |
+
+## 13. Running this for a single organization, privately, on your own fleet
+
+Everything above works unchanged for one org running its own Hub for its
+own fleet — that is the simplest deployment shape this server supports,
+not a stripped-down mode. Tenant isolation, migrations, health probes,
+backups, and the security checklist are identical whether one org uses
+the Hub or a thousand do. Two things are specific to running it alone:
+
+- **The cross-org commons defaults to inert.** `share_trace` is per-trace
+  opt-in and nothing is shared unless someone calls it; `commons_overlap`
+  on an empty commons costs nothing and returns 0% with a note explaining
+  why, never an error. Skip `commons-seed` entirely if there is only ever
+  going to be one org — there is no other org for it to compare against.
+- **Entitlements can be ignored.** A new org lands on the `free` plan
+  (1,000 traces, 20 commons queries/month — §5). If that is not the
+  point of running your own Hub, `python -m hub.manage set-plan <org_id>
+  scale` once and move on; there is no billing system watching this, it
+  is a self-imposed ceiling you can raise for yourself.
+
+What still applies in full: run the migration as its own step (§3), wire
+both health probes correctly (§4), understand that `contribute_trace`
+rate limiting is per-process so a single replica is the simple case
+rather than a limitation to work around (§6), take backups and rehearse a
+restore (§9), work through the security checklist (§10) before any real
+data lands even if "the client" is your own team, and run
+`python -m hub.smoke` against your own deployment (§12) — omit
+`--other-api-key` if there genuinely is only one org, but issue a
+throwaway second org and pass it if you want the tenant-isolation checks
+to run at all; they do not run without it.
