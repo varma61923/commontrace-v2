@@ -28,10 +28,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from hub import audit, commons
+from hub import audit, commons, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
-from hub.models import TEXT_SEARCH_CONFIG, Trace, TraceRelation, Vote
+from hub.models import TEXT_SEARCH_CONFIG, Organization, Trace, TraceRelation, UsageCounter, Vote
 from hub.schema_validation import validate_trace
 
 # Fallback `actor` for a call site that didn't supply one. Recorded
@@ -141,6 +141,116 @@ async def _hydrate(session: AsyncSession, traces: list[Trace]) -> list[dict]:
 
 async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
     return (await _hydrate(session, [trace]))[0]
+
+
+# --- Entitlements: the plan, enforced ----------------------------------
+#
+# The measurement half of the business model already existed
+# (`commons-value`: what each org's shared knowledge delivered). This is the
+# capture half. It lives in crud.py rather than in the MCP layer for the
+# same reason tenant isolation does: a limit checked at the transport is a
+# limit that a second call site forgets, and hub/manage.py is already a
+# second call site.
+
+METRIC_COMMONS_QUERIES = "commons_queries"
+
+
+def billing_period(now: datetime | None = None) -> str:
+    """The current billing period as 'YYYY-MM', in UTC.
+
+    UTC and not local time: the Hub's replicas may sit in different zones,
+    and a period boundary that moves between replicas would let an org get
+    a second month's allowance by hitting the right instance.
+    """
+    now = now or datetime.now(timezone.utc)
+    return f"{now.year:04d}-{now.month:02d}"
+
+
+async def _delivered_hits(session: AsyncSession, org_id: str) -> int:
+    """How many times this org's shared knowledge covered someone else's
+    failure. This is what earns query credit, and it is deliberately not
+    "traces shared": sharing is free and forgeable in bulk, while a hit
+    requires a real match from a corpus that excludes the sharer's own
+    rows. Seeded rows are excluded -- crediting the operator for priming
+    its own commons would be circular (hub/plans.py)."""
+    total = await session.scalar(
+        select(func.coalesce(func.sum(Trace.commons_hits), 0)).where(
+            Trace.org_id == org_id,
+            Trace.commons_source != "seed",
+        )
+    )
+    return int(total or 0)
+
+
+async def _plan_for(session: AsyncSession, org_id: str) -> plans.Plan:
+    org = await session.get(Organization, org_id)
+    return plans.get(org.plan if org is not None else None)
+
+
+async def _usage(session: AsyncSession, org_id: str, metric: str, period: str | None = None) -> int:
+    n = await session.scalar(
+        select(UsageCounter.n).where(
+            UsageCounter.org_id == org_id,
+            UsageCounter.period == (period or billing_period()),
+            UsageCounter.metric == metric,
+        )
+    )
+    return int(n or 0)
+
+
+async def _meter(session: AsyncSession, org_id: str, metric: str) -> int:
+    """Record one unit of usage atomically and return the new total.
+
+    INSERT ... ON CONFLICT DO UPDATE SET n = n + 1, never SELECT-then-UPDATE.
+    Two concurrent queries from one org would otherwise both read n and both
+    write n+1, so every parallel call would be free -- the same lost-update
+    class as the vote race, except this one loses revenue rather than a
+    vote. RETURNING gives the post-increment value from the same statement,
+    so there is no second read to race against either.
+    """
+    period = billing_period()
+    stmt = (
+        pg_insert(UsageCounter)
+        .values(org_id=org_id, period=period, metric=metric, n=1)
+        .on_conflict_do_update(
+            constraint="uq_usage_org_period_metric",
+            set_={"n": UsageCounter.n + 1, "updated_at": datetime.now(timezone.utc)},
+        )
+        .returning(UsageCounter.n)
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def entitlements(session: AsyncSession, org_id: str) -> dict:
+    """Everything an org is entitled to and has used this period.
+
+    Read-only and side-effect free, so a client can render "you have 40 of
+    45 queries left" without that query itself consuming one. A meter that
+    charges you for checking the meter is the kind of detail that ends up
+    in a support thread.
+    """
+    plan = await _plan_for(session, org_id)
+    hits = await _delivered_hits(session, org_id)
+    allowance = plans.query_allowance(plan, hits)
+    used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
+    traces = int(await session.scalar(
+        select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+    ) or 0)
+    return {
+        "plan": plan.name,
+        "period": billing_period(),
+        "commons_queries": {
+            "used": used,
+            "granted": plan.commons_queries_per_month,
+            "earned": allowance - plan.commons_queries_per_month
+                      if allowance != plans.UNLIMITED else 0,
+            "allowance": allowance,
+            "remaining": plans.UNLIMITED if allowance == plans.UNLIMITED
+                         else max(0, allowance - used),
+        },
+        "traces": {"used": traces, "limit": plan.max_traces},
+        "delivered_hits": hits,
+    }
 
 
 # --- The six Hub tools -------------------------------------------------
@@ -270,6 +380,20 @@ async def contribute_trace(
 
     if not rate_limiter.allow(org_id):
         raise RateLimited(f"org {org_id} exceeded contribute_trace rate limit")
+
+    # Checked after the idempotent-replay path above, deliberately: a
+    # replay stores nothing, so refusing it at the storage limit would turn
+    # a safe retry into a failure exactly when the org is at its cap.
+    plan = await _plan_for(session, org_id)
+    if plan.max_traces != plans.UNLIMITED:
+        stored = int(await session.scalar(
+            select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+        ) or 0)
+        if not plans.within(plan.max_traces, stored):
+            raise plans.EntitlementExceeded(
+                metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
+                remedy="Purge traces you no longer need, or move to a plan with more storage.",
+            )
 
     candidate_id = str(uuid.uuid4())
     wire = {
@@ -692,6 +816,39 @@ async def commons_overlap(
     """
     submitted = commons.validate_submitted_failures(failures)
     threshold = max(0.0, min(float(threshold), 1.0))
+
+    # Metered here, and only here: this is the one call whose value comes
+    # from other orgs' contributions rather than the caller's own data.
+    # Validation runs first so a malformed request is a 400 rather than a
+    # silently consumed query -- charging for a call that returned an error
+    # is the kind of thing customers notice and remember.
+    #
+    # An empty submission is not metered either: it compares nothing, so
+    # billing it would be charging for a no-op.
+    if submitted:
+        plan = await _plan_for(session, org_id)
+        if not plan.commons_access:
+            raise plans.EntitlementExceeded(
+                metric="commons_access", limit=0, used=0, plan=plan.name,
+                remedy="The commons is not included in this plan.",
+            )
+        allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
+        if allowance != plans.UNLIMITED:
+            used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
+            if not plans.within(allowance, used):
+                raise plans.EntitlementExceeded(
+                    metric=METRIC_COMMONS_QUERIES, limit=allowance, used=used, plan=plan.name,
+                    remedy=(
+                        "Share traces to the commons: every time your knowledge covers "
+                        f"another fleet's failure you earn {plans.QUERY_CREDIT_PER_HIT} "
+                        "more queries this period. Or move to a larger plan."
+                    ),
+                )
+        # Metered before the scan rather than after: a query that times out
+        # or errors mid-scan still consumed the corpus read it asked for,
+        # and "only charge on success" is an invitation to cancel every
+        # expensive call just before it returns.
+        await _meter(session, org_id, METRIC_COMMONS_QUERIES)
 
     where = [
         Trace.shared_with_commons.is_(True),

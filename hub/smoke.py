@@ -31,6 +31,11 @@ import json
 import sys
 import uuid
 
+# The only hub-side import in this file: the plan table is the definition of
+# what an entitlement check should see, and duplicating the names here would
+# let the smoke check quietly pass against a Hub whose plans have changed.
+from hub import plans
+
 SMOKE_TAG = "commontrace-smoke"
 
 
@@ -138,6 +143,8 @@ EXPECTED_TOOLS = [
     "search_traces", "vote_trace",
     # opt-in cross-org commons (hub/commons.py)
     "commons_overlap", "share_trace", "unshare_trace",
+    # entitlements (hub/plans.py)
+    "account_usage",
 ]
 
 
@@ -192,6 +199,38 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
     report.check("list_tags includes the smoke tag",
                  isinstance(tags, dict) and SMOKE_TAG in tags.get("tags", []))
     return trace_id
+
+
+async def _entitlements(session, report: Reporter) -> None:
+    """The plan is only real if the server can state it.
+
+    Checked post-deploy because an entitlement layer that fails open is
+    invisible until the bill is wrong: every request still succeeds, so
+    nothing looks broken. A misconfigured deployment that reports every org
+    as unlimited passes every other check in this file.
+    """
+    usage = _content(await session.call_tool("account_usage", {}))
+    if usage.get("error"):
+        report.fail("account_usage responds", str(usage))
+        return
+
+    q = usage.get("commons_queries") or {}
+    report.check(
+        "account_usage reports a resolved plan",
+        usage.get("plan") in plans.PLANS,
+        f"plan={usage.get('plan')!r}, period={usage.get('period')!r}",
+    )
+    report.check(
+        "commons queries are metered, not unlimited",
+        q.get("allowance") != plans.UNLIMITED or usage.get("plan") == "operator",
+        f"allowance={q.get('allowance')} (only the operator plan may be unlimited here)",
+    )
+    report.check(
+        "earned allowance is accounted separately from granted",
+        q.get("granted") is not None and q.get("earned") is not None,
+        f"granted={q.get('granted')}, earned={q.get('earned')}, "
+        f"delivered_hits={usage.get('delivered_hits')}",
+    )
 
 
 async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
@@ -279,6 +318,8 @@ async def run(args: argparse.Namespace) -> int:
             await session.initialize()
             await _tool_surface(session, report)
             trace_id = await _round_trip(session, report, marker)
+            print("\nEntitlements")
+            await _entitlements(session, report)
 
     print("\nAuthentication")
     await _rejects_bad_credentials(args.url, report)

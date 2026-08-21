@@ -549,6 +549,68 @@ python -m hub.manage commons-stats    # how many DISTINCT orgs contribute
 `commons-value` is the honest denominator for pricing or revenue share, and
 it is what makes contributing a position rather than a favour.
 
+### Plans, and what they actually enforce
+
+Measuring value is half a business model. The other half is the server
+refusing the request that exceeds the plan, and that is implemented rather
+than described — `hub/plans.py`, enforced in `hub/crud.py`.
+
+Two things are metered, chosen so neither can charge for something the
+customer did not get:
+
+| | `free` | `team` | `scale` |
+|---|---|---|---|
+| Traces stored | 1,000 | 50,000 | unlimited |
+| Commons queries / month | 20 | 1,000 | 25,000 |
+
+Storage is real cost and grows monotonically. **Commons queries are the
+metered unit** because that is the only call whose value comes from *other
+orgs'* contributions — everything else an org does is with its own data,
+and charging per query against your own memory is rent, not price. Purging
+frees storage allowance, so the deletion right in `DATA_RETENTION.md` is
+not a right in name only.
+
+**Contributing earns allowance, mechanically.** Every time a trace you
+shared covers another fleet's failure, you get 25 more commons queries this
+period:
+
+```
+allowance = plan grant + delivered hits × 25
+```
+
+Note what is credited: hits **delivered**, not traces **shared**. Sharing
+is free and trivial to fake in bulk; a hit requires that someone else's
+real failure matched, at the shipped threshold, against a corpus that
+excludes your own rows. It cannot be self-dealt — which is why crediting
+hits is the mechanism and crediting shares would *be* the filler problem.
+
+```bash
+commontrace commons usage                      # what you have, what you earned
+python -m hub.manage set-plan <org_id> team    # operator: move an org
+python -m hub.manage usage                     # operator: every org's meter
+python -m hub.manage revenue                   # billable orgs: consumed vs delivered
+```
+
+Exceeding a limit returns `entitlement_exceeded` — deliberately *not*
+`rate_limited`, because a rate limit clears by waiting and this does not; a
+client that cannot tell them apart retries forever. The error carries
+`metric`, `limit`, `used`, `plan` and `remedy` so a client can render an
+upgrade path instead of a failure.
+
+The meter is a shared table with an atomic `INSERT ... ON CONFLICT DO
+UPDATE`, not a per-process counter. A read-modify-write meter loses
+increments under concurrency, which hands out a discount in exact
+proportion to how parallel — and therefore how large — the customer is;
+`hub/tests/test_plans.py::TestMeteringIsAtomic` fails if that regresses.
+
+**No currency appears anywhere in this repository, and that is deliberate.**
+This implements the entitlement, not the invoice. Payment, tax, dunning,
+refunds and disputes belong to a billing system, and printing a dollar
+figure computed from a hardcoded rate would read as revenue reporting while
+being arithmetic on a number nobody agreed to. `manage revenue` prints the
+denominator a price should be argued from — per paying org, how much they
+consumed from the commons versus how much they delivered to it.
+
 ### The cold start
 
 An empty commons returns 0% to every prospect — by construction, not as a

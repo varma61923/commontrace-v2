@@ -19,6 +19,12 @@
                                    -> break the cold start with public substrate
                                        knowledge, marked commons_source='seed' so it
                                        never counts as a network effect
+    set-plan <org_id> <plan>       -> change an org's entitlements (hub/plans.py):
+                                       free | team | scale | operator
+    usage [org_id]                 -> what each org is entitled to and has used this
+                                       period, including allowance EARNED by contributing
+    revenue                        -> orgs on billable plans, and what the commons
+                                       delivered to each -- price against measured value
     list-quarantined [org_id]      -> traces held pending review (id, org_id, title,
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
@@ -56,10 +62,10 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from hub import audit, auth, commons
+from hub import audit, auth, commons, crud, plans
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization, Trace, TraceRelation, Vote
+from hub.models import ApiKey, AuditLogEntry, Organization, Trace, TraceRelation, UsageCounter, Vote
 
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -584,6 +590,132 @@ async def audit_log(org_id: str | None = None, session_factory=None) -> None:
             print(f"    {r.summary}")
 
 
+async def set_plan(org_id: str, plan_name: str, session_factory=None) -> None:
+    """Move an org between plans (hub/plans.py).
+
+    Refuses an unknown name rather than falling back to the default. The
+    runtime resolver fails *closed* to the smallest plan, which is the
+    right behaviour for a stale row nobody can fix at 3am -- but an
+    operator typing `python -m hub.manage set-plan <id> tema` deserves an
+    error, not a customer silently downgraded to free.
+    """
+    session_factory = session_factory or _default_session_factory()
+    key = (plan_name or "").strip().lower()
+    if key not in plans.PLANS:
+        print(f"error: unknown plan {plan_name!r}. Known: {', '.join(sorted(plans.PLANS))}",
+              file=sys.stderr)
+        return
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return
+        was, org.plan = org.plan, key
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="set_plan",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"{was!r} -> {key!r}",
+        )
+    plan = plans.PLANS[key]
+    print(f"{org_id}: {was} -> {key}")
+    print(f"  traces:         {plans.describe(plan.max_traces)}")
+    print(f"  commons/month:  {plans.describe(plan.commons_queries_per_month)} "
+          f"(+{plans.QUERY_CREDIT_PER_HIT} per delivered hit)")
+    print(f"  {plan.summary}")
+
+
+async def usage(org_id: str | None = None, session_factory=None) -> None:
+    """Entitlements and consumption for the current period.
+
+    Shows granted and EARNED allowance separately, because the difference
+    is the entire argument for contributing: an org that can see it is
+    ahead on credit has a reason to keep sharing, and an org that cannot
+    see it is being asked for a favour.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        q = select(Organization).order_by(Organization.created_at)
+        if org_id:
+            q = q.where(Organization.id == org_id)
+        orgs = (await session.execute(q)).scalars().all()
+        if not orgs:
+            print("no organizations." if not org_id else f"error: no such organization: {org_id}",
+                  file=sys.stderr if org_id else sys.stdout)
+            return
+
+        rows = [await crud.entitlements(session, o.id) for o in orgs]
+
+    period = rows[0]["period"]
+    print(f"billing period {period} (UTC)")
+    print(f"{'organization':<26} {'plan':<9} {'traces':>14} "
+          f"{'commons q':>12} {'granted':>8} {'earned':>7} {'hits':>6}")
+    print("-" * 88)
+    for org, r in zip(orgs, rows):
+        q = r["commons_queries"]
+        traces = f"{r['traces']['used']:,}/{plans.describe(r['traces']['limit'])}"
+        used = f"{q['used']:,}/{plans.describe(q['allowance'])}"
+        print(f"{org.name[:25]:<26} {r['plan']:<9} {traces:>14} "
+              f"{used:>12} {plans.describe(q['granted']):>8} "
+              f"{q['earned']:>7,} {r['delivered_hits']:>6,}")
+    print()
+    print(f"'earned' is allowance nobody paid for: {plans.QUERY_CREDIT_PER_HIT} commons queries "
+          "per time this org's")
+    print("shared knowledge covered another fleet's failure. Seeded rows are excluded.")
+
+
+async def revenue(session_factory=None) -> None:
+    """Who is on a billable plan, and what they measurably got for it.
+
+    Deliberately prints no currency. This repository implements the
+    entitlement, not the invoice -- there is no payment processing here,
+    and printing a dollar figure computed from a hardcoded rate would read
+    as revenue reporting while being arithmetic on a number nobody agreed
+    to. What it does show is the thing a price should be argued from: how
+    much of each paying org's consumption came from other orgs' knowledge,
+    and how much of their own knowledge went the other way.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        orgs = (await session.execute(
+            select(Organization).order_by(Organization.created_at)
+        )).scalars().all()
+        billable = [o for o in orgs if o.plan in plans.BILLABLE_PLANS]
+        rows = [(o, await crud.entitlements(session, o.id)) for o in billable]
+        total_q = int(await session.scalar(
+            select(func.coalesce(func.sum(UsageCounter.n), 0)).where(
+                UsageCounter.metric == crud.METRIC_COMMONS_QUERIES,
+                UsageCounter.period == crud.billing_period(),
+            )
+        ) or 0)
+
+    if not billable:
+        print(f"No org is on a billable plan ({' or '.join(plans.BILLABLE_PLANS)}).")
+        print(f"{len(orgs)} org(s) exist. `set-plan <org_id> team` moves one.")
+        return
+
+    print(f"billing period {crud.billing_period()} (UTC)")
+    print(f"{'organization':<26} {'plan':<9} {'consumed':>10} {'delivered':>11} {'net':>7}")
+    print("-" * 68)
+    for org, r in rows:
+        consumed = r["commons_queries"]["used"]
+        delivered = r["delivered_hits"]
+        print(f"{org.name[:25]:<26} {org.plan:<9} {consumed:>10,} "
+              f"{delivered:>11,} {delivered - consumed:>+7,}")
+    print("-" * 68)
+    print(f"{len(billable)} billable org(s) of {len(orgs)}; "
+          f"{total_q:,} commons queries across all orgs this period.")
+    print()
+    print("'consumed' is commons queries run; 'delivered' is times this org's shared")
+    print("knowledge covered someone else's failure. A negative net is an org taking")
+    print("more than it gives -- which is exactly who a price should fall on hardest,")
+    print("and why the credit mechanism is the discount rather than a separate SKU.")
+    print()
+    print("No currency is printed here on purpose: this implements the entitlement,")
+    print("not the invoice. Attaching a rate is a decision for whoever owns the P&L,")
+    print("and this is the denominator to attach it to.")
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
     "issue-key": (issue_key, 1, 2),
@@ -595,6 +727,9 @@ _COMMANDS = {
     "commons-stats": (commons_stats, 0, 0),
     "commons-value": (commons_value, 0, 0),
     "commons-seed": (commons_seed, 2, 2),
+    "set-plan": (set_plan, 2, 2),
+    "usage": (usage, 0, 1),
+    "revenue": (revenue, 0, 0),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     "purge-trace": (purge_trace, 1, 1),

@@ -71,6 +71,13 @@ class Organization(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    # Which entitlements this org has (hub/plans.py). Stored as the plan
+    # NAME rather than as the limits themselves, so that changing what a
+    # plan grants is a code change reviewed once, not a data migration over
+    # every customer row that can silently half-apply. An unrecognized name
+    # resolves to the smallest plan, never an unlimited one -- see
+    # hub/plans.py:get.
+    plan: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
@@ -328,4 +335,48 @@ class AuditLogEntry(Base):
 
     __table_args__ = (
         Index("ix_audit_log_org_created_at", "org_id", "created_at"),
+    )
+
+
+class UsageCounter(Base):
+    """Metered usage, one row per (org, billing period, metric).
+
+    WHY A TABLE AND NOT A COUNTER IN MEMORY. The Hub runs as more than one
+    process -- that is the whole point of the container -- and a per-process
+    counter multiplies every limit by the replica count. The rate limiter
+    already carries that caveat for throttling, where the failure mode is
+    only "slightly too permissive for a few seconds". For entitlements the
+    failure mode is unbilled usage that scales with how well the service is
+    doing, so it has to be shared state.
+
+    WHY A DENORMALIZED PERIOD STRING. `period` is 'YYYY-MM' in UTC, so the
+    natural key is exact and index-friendly, and the monthly reset needs no
+    job: a new month is simply a row that does not exist yet. Deriving the
+    period from `created_at` at query time instead would make every read a
+    range scan over an ever-growing table, and would put the month boundary
+    at the mercy of the reading session's timezone.
+
+    Increments go through INSERT ... ON CONFLICT DO UPDATE SET n = n + 1
+    (hub/crud.py), never read-modify-write: two concurrent queries from the
+    same org would otherwise both read n and both write n+1, and the org
+    would get a free query every time it ran anything in parallel. That is
+    the same lost-update class as the vote race, and it costs money here.
+    """
+
+    __tablename__ = "usage_counters"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    n: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        # Named explicitly: the atomic upsert in hub/crud.py targets this
+        # constraint by name, and an auto-generated name would break that
+        # silently on a schema rebuild.
+        UniqueConstraint("org_id", "period", "metric", name="uq_usage_org_period_metric"),
     )

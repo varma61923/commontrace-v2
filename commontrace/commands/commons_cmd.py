@@ -111,6 +111,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     contrib.add_argument("--hub-api-key", default=None)
     contrib.set_defaults(func=run_contribute)
 
+    usage = sub.add_parser(
+        "usage",
+        help="What your plan entitles you to this period, and how much "
+        "allowance you have EARNED by contributing.",
+    )
+    usage.add_argument("--hub-url", default=None)
+    usage.add_argument("--hub-api-key", default=None)
+    usage.set_defaults(func=run_usage)
+
 
 def _safe_tags(raw: object) -> list[str]:
     return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
@@ -381,4 +390,48 @@ def run_unshare(args: argparse.Namespace) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
     print(f"[commontrace] withdrew {result['id']} from the commons.")
+    return 0
+
+
+def run_usage(args: argparse.Namespace) -> int:
+    """Show the meter.
+
+    Prints `earned` separately from `granted` on purpose: the difference is
+    the entire argument for contributing. An org that can see it is ahead
+    on credit has a reason to keep sharing; an org that cannot is being
+    asked for a favour.
+    """
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+    try:
+        r = asyncio.run(hub_client.account_usage(hub_url, api_key))
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    q = r["commons_queries"]
+    unlimited = -1
+
+    def fmt(n):
+        return "unlimited" if n == unlimited else f"{n:,}"
+
+    print(f"[commontrace] plan: {r['plan']}   billing period {r['period']} (UTC)")
+    print(f"  traces stored:    {r['traces']['used']:,} of {fmt(r['traces']['limit'])}")
+    print(f"  commons queries:  {q['used']:,} of {fmt(q['allowance'])}"
+          f"   ({fmt(q['remaining'])} remaining)")
+    print(f"    granted by plan:  {fmt(q['granted'])}")
+    print(f"    earned by contributing: {q['earned']:,}")
+    print()
+    if r["delivered_hits"]:
+        print(f"  Your shared traces have covered another fleet's failure "
+              f"{r['delivered_hits']:,} time(s).")
+        print("  That is what earned the allowance above -- it is not a discount "
+              "anyone negotiated.")
+    else:
+        print("  You have not delivered any commons hits yet. Sharing traces that "
+              "cover other")
+        print("  fleets' failures earns query allowance directly: "
+              "`commontrace commons contribute --tags <...>`.")
     return 0

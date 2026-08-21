@@ -265,6 +265,17 @@ async def unshare_trace(hub_url: str, api_key: str, trace_id: str) -> dict:
     return response
 
 
+async def account_usage(hub_url: str, api_key: str) -> dict:
+    """What this org's plan entitles it to, and what it has used.
+
+    Free to call: reading the meter does not consume a commons query.
+    """
+    response = await _call_tool(hub_url, api_key, "account_usage", {})
+    if response.get("error"):
+        raise HubConnectionError(f"account_usage failed: {response['error']}: {response.get('detail', '')}")
+    return response
+
+
 async def pull_search_results(
     hub_url: str, api_key: str, root: str, query: str = "", tags: list[str] | None = None
 ) -> PullResult:

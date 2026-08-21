@@ -12,10 +12,16 @@ exists**). This directory is that server, plus the client wiring in
 
 ## What it is
 
-An MCP server exposing exactly six tools over streamable-HTTP, matching
-`PROTOCOL.md` §5's names and semantics:
+An MCP server over streamable-HTTP. Six tools match `PROTOCOL.md` §5's
+names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
+
+Four more are Hub-specific and outside the protocol, all org-scoped like
+the six: `share_trace(id)` · `unshare_trace(id)` · `commons_overlap(failures)`
+for the opt-in cross-org commons, and `account_usage()` for the caller's own
+plan and meter. `hub/smoke.py` pins the exact surface, so a tool appearing
+or disappearing fails a post-deploy check rather than surprising a client.
 
 Any MCP-capable agent (Claude Code, Cursor, Devin, Windsurf, a generic MCP
 client) can attach with a plain config block and an API key — no
@@ -25,14 +31,15 @@ CommonTrace-specific SDK, per `PROTOCOL.md` §8.
 
 ```
 hub/config.py      env-driven settings, no unsafe defaults
-hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceRelation
+hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceRelation, UsageCounter
 hub/db.py          async engine/session plumbing
 hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates against them
 hub/auth.py        argon2 API-key hashing/verification/rotation/expiry + request-scoped org_id
 hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
-hub/crud.py        the six tools' actual query logic -- ALWAYS org_id-scoped in SQL
+hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
+hub/crud.py        every tool's actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
 hub/main.py        `python -m hub.main` -- run the server
 hub/manage.py       `python -m hub.manage <cmd>` -- org/API-key operator CLI
@@ -99,7 +106,7 @@ bare `pip install -e .`.
 
 The brief this server was built from calls tenant isolation "the
 highest-priority requirement" and specifies a hard test: as `org_a`, zero
-rows belonging to `org_b` may ever appear in any of the six tools' responses,
+rows belonging to `org_b` may ever appear in any tool's responses,
 and `get_trace` on a known `org_b` id must 404, never 403 (never confirm the
 id exists). `hub/tests/test_tenant_isolation.py` enforces exactly that.
 

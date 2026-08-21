@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from hub import auth, commons, crud
+from hub import auth, commons, crud, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
@@ -95,6 +95,21 @@ def _error_response(exc: Exception) -> dict:
         return {"error": "rate_limited", "detail": str(exc)}
     if isinstance(exc, crud.IdempotencyKeyConflict):
         return {"error": "conflict", "detail": str(exc)}
+    if isinstance(exc, plans.EntitlementExceeded):
+        # Distinct from "rate_limited" on purpose. A rate limit clears by
+        # waiting; this one does not, and a client that retries a plan
+        # refusal on a backoff schedule will retry it forever. The extra
+        # fields are what let a client render an upgrade path instead of a
+        # generic failure.
+        return {
+            "error": "entitlement_exceeded",
+            "detail": str(exc),
+            "metric": exc.metric,
+            "limit": exc.limit,
+            "used": exc.used,
+            "plan": exc.plan,
+            "remedy": exc.remedy,
+        }
     if isinstance(exc, commons.CommonsInputError):
         return {"error": "invalid_request", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
@@ -319,6 +334,24 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     threshold=threshold, include_matches=include_matches,
                     agent_type=agent_type,
                 )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def account_usage() -> dict:
+        """What your plan entitles you to, and what you have used this period.
+
+        Free to call and does not consume a commons query -- a meter that
+        charges you for reading the meter is a support ticket waiting to
+        happen. `commons_queries.earned` is allowance you did not pay for:
+        every time a trace you shared covers another fleet's failure, your
+        allowance grows. That is the whole reason contributing is worth
+        doing rather than a favour you do for strangers.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.entitlements(session, org_id)
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 

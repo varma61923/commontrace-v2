@@ -106,7 +106,14 @@ readinessProbe:
 docker compose up --build -d
 docker compose run --rm hub python -m hub.manage create-org "Acme Corp"
 docker compose run --rm hub python -m hub.manage issue-key <org_id> 90   # 90-day expiry
+docker compose run --rm hub python -m hub.manage set-plan <org_id> team  # entitlements
 ```
+
+A new org lands on `free` (1,000 traces, 20 commons queries/month). That is
+deliberate: the migration that added plans defaults every existing org to
+the smallest one, because a migration that silently upgrades every customer
+gives the product away. Move orgs with `set-plan`; see their meters with
+`python -m hub.manage usage`.
 
 **Without containers:**
 
