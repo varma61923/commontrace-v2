@@ -780,20 +780,43 @@ async def commons_overlap(
     }
 
 
+# Measured, not estimated: against 46 held-out failures the corpus provably
+# contains, described in on-call vocabulary rather than the corpus's own,
+# the matcher found 5 -- with zero false positives across 22 deliberately
+# absent failures (commons/eval/RESULTS.md). So the coverage figure this
+# tool returns systematically UNDER-states real coverage, and saying so is
+# not a disclaimer: a customer who reads the number as an estimate rather
+# than a floor will conclude the commons is empty when it is not.
+_FLOOR_CAVEAT = (
+    "This figure is a FLOOR, not an estimate: matching is lexical, so a failure "
+    "the commons does contain but your fleet words differently is counted as "
+    "uncovered. Measured recall against known-present failures is roughly 1 in 9 "
+    "(commons/eval/RESULTS.md). Matches are reliable; misses are not evidence of absence."
+)
+
+
 def _commons_note(
     n_failures: int, n_corpus: int, truncated: bool = False, total: int = 0
 ) -> str:
     """Say plainly when a number should not be leaned on. A coverage
     percentage over a handful of failures, or against an almost-empty
     commons, is noise -- and this number is exactly the kind that gets
-    quoted once and repeated forever."""
+    quoted once and repeated forever.
+
+    Every branch that reports a real comparison also carries
+    `_FLOOR_CAVEAT`, because the dominant error in this number is not
+    sampling noise -- it is the matcher missing knowledge that is present.
+    The two degenerate branches (nothing to compare against, nothing
+    submitted) omit it: there is no measurement there to qualify.
+    """
     if truncated:
         # Stated first and unambiguously: a truncated scan can only ever
         # under-count coverage, so the honest framing is a lower bound.
         return (
             f"Compared against the {n_corpus:,} most recent of {total:,} commons traces "
             f"(per-query scan limit). Real coverage is AT LEAST this figure -- treat it "
-            "as a lower bound, and narrow with agent_type for a tighter answer."
+            "as a lower bound, and narrow with agent_type for a tighter answer. "
+            + _FLOOR_CAVEAT
         )
     if n_corpus == 0:
         return (
@@ -809,8 +832,12 @@ def _commons_note(
         return (
             f"Only {n_failures} failures submitted -- treat this as directional. "
             f"MinHash adds roughly {100 / (commons.COMMONS_NUM_PERM ** 0.5):.0f}% "
-            "standard error per comparison on top of small-sample noise."
+            "standard error per comparison on top of small-sample noise. "
+            + _FLOOR_CAVEAT
         )
     if n_corpus < 50:
-        return f"The commons holds only {n_corpus} shared traces from other orgs; coverage will grow with it."
-    return ""
+        return (
+            f"The commons holds only {n_corpus} shared traces from other orgs; "
+            "coverage will grow with it. " + _FLOOR_CAVEAT
+        )
+    return _FLOOR_CAVEAT

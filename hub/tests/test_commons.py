@@ -17,6 +17,9 @@ loosen.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
@@ -822,3 +825,186 @@ class TestSubmittedInputIsValidated:
             report = await crud.commons_overlap(session, orgs["consumer"], [])
         assert report["n_failures"] == 0
         assert report["covered_fraction"] == 0.0
+
+
+# --- 9. The shipped seed corpus -----------------------------------------
+
+
+SEED_CORPUS = Path(__file__).resolve().parents[2] / "commons" / "seed" / "substrate-v1.jsonl"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestShippedSeedCorpus:
+    """`commons-seed` is a mechanism; commons/seed/substrate-v1.jsonl is the
+    corpus that actually ships with it. A mechanism with no corpus leaves
+    every first prospect looking at a 0% coverage report, so the corpus is
+    part of the product and is tested like it.
+
+    What is pinned here is the corpus being *loadable and honest*, not the
+    coverage number it produces -- that is measured separately and on
+    held-out data (commons/eval/), because a coverage figure computed
+    against the same file that produced the corpus would be meaningless.
+    """
+
+    def test_every_line_is_loadable_by_commons_seed(self):
+        """`commons_seed` silently skips lines it cannot use. A corpus that
+        ships with skipped lines is a corpus nobody checked, so assert the
+        preconditions the loader enforces, line by line."""
+        assert SEED_CORPUS.exists(), f"the shipped corpus is missing: {SEED_CORPUS}"
+        titles = set()
+        for i, raw in enumerate(SEED_CORPUS.read_text(encoding="utf-8").splitlines(), 1):
+            if not raw.strip():
+                continue
+            rec = json.loads(raw)  # a parse failure here is the test failing
+            assert rec.get("title"), f"line {i}: commons_seed requires a title"
+            assert rec.get("solution_text"), f"line {i}: commons_seed requires solution_text"
+            assert isinstance(rec.get("tags"), list) and rec["tags"], f"line {i}: needs tags"
+            key = rec["title"].strip().lower()
+            assert key not in titles, f"line {i}: duplicate title {rec['title']!r}"
+            titles.add(key)
+        assert len(titles) >= 40, "a corpus this small will not move anyone's coverage number"
+
+    def test_every_record_cites_where_it_came_from(self):
+        """Seeded knowledge is stored as `shared_rationale`, which is the
+        only provenance a customer ever sees. A row without a citation is
+        indistinguishable from something we made up."""
+        for i, raw in enumerate(SEED_CORPUS.read_text(encoding="utf-8").splitlines(), 1):
+            if not raw.strip():
+                continue
+            rec = json.loads(raw)
+            assert rec.get("source"), f"line {i}: no provenance for {rec.get('title')!r}"
+
+    async def test_loads_into_a_hub_and_answers_a_query(self, session_factory, orgs):
+        """End to end: the shipped file goes in, and a *different* org gets
+        a real answer out of it."""
+        from hub import manage
+
+        await manage.commons_seed(
+            str(SEED_CORPUS), orgs["contributor-a"], session_factory=session_factory,
+        )
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(select(Trace))).scalars().all()
+            assert len(rows) >= 40
+            assert all(r.commons_source == "seed" for r in rows)
+            assert all(r.shared_with_commons for r in rows)
+            assert all(r.commons_signature for r in rows)
+            assert all(r.shared_rationale for r in rows)
+
+            probe = rows[0]
+            report = await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f", probe.title, probe.context_text, probe.tags)],
+            )
+        assert report["n_covered"] == 1
+
+    async def test_loading_it_does_not_inflate_the_network_effect_metric(
+        self, session_factory, orgs, capsys
+    ):
+        """The honesty invariant, asserted against the real file rather
+        than a fixture: after seeding the shipped corpus, the number that
+        decides the company's direction is still zero."""
+        from hub import manage
+
+        await manage.commons_seed(
+            str(SEED_CORPUS), orgs["contributor-a"], session_factory=session_factory,
+        )
+        capsys.readouterr()
+        await manage.commons_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "commons traces (org):  0" in out
+        assert "contributing orgs:     0 of 3" in out
+
+
+# --- 10. The held-out coverage evaluation -------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestHeldOutEvaluation:
+    """The commons ships a coverage percentage, and a coverage percentage
+    nobody validated is worse than none -- it gets quoted. commons/eval/
+    measures it against probes the corpus was not built from; these tests
+    keep that measurement runnable and keep its conclusions from silently
+    drifting.
+
+    Deliberately NOT asserted: an exact recall figure. The measured value
+    is recorded in commons/eval/RESULTS.md, and pinning it here would make
+    any corpus improvement look like a test failure. What is asserted is
+    the property that must not regress -- the matcher does not report
+    coverage it does not have."""
+
+    def _evaluate(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_commons_eval_run", SEED_CORPUS.parent.parent / "eval" / "run.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_evaluation_still_runs(self):
+        r = self._evaluate().evaluate()
+        assert r["n_positive"] >= 40 and r["n_negative"] >= 20
+        assert r["threshold"] == commons.DEFAULT_COMMONS_THRESHOLD
+
+    def test_no_absent_failure_is_reported_as_covered(self):
+        """The negative controls are the half of this evaluation that
+        author bias cannot flatter, and they are what makes the shipped
+        number safe to quote. If the corpus or the matcher ever starts
+        claiming one of the 22 deliberately-absent failures -- including
+        the near misses -- the coverage report has begun over-claiming and
+        that is worse than low recall."""
+        r = self._evaluate().evaluate()
+        assert r["false_positive_rate"] == 0.0, (
+            "the commons is now reporting coverage it does not have: "
+            + ", ".join(
+                x["label"] for x in r["results"]
+                if x["expect"] == "uncovered" and x["matched"]
+            )
+        )
+
+    def test_matches_point_at_the_right_record(self):
+        """A match that lands on the wrong record is a customer opening a
+        trace that does not solve their problem -- worse than no match,
+        because it spends their trust."""
+        r = self._evaluate().evaluate()
+        assert r["right_row_rate"] == 1.0
+
+    def test_results_are_recorded_with_their_limits(self):
+        """The measured numbers are only safe to quote alongside what
+        produced them. If RESULTS.md ever loses the limitations section,
+        the numbers start travelling on their own."""
+        text = (SEED_CORPUS.parent.parent / "eval" / "RESULTS.md").read_text(encoding="utf-8")
+        assert "Limits of this evaluation" in text
+        assert "Same author" in text
+
+    async def test_the_returned_note_says_the_number_is_a_floor(
+        self, session_factory, config, orgs
+    ):
+        """The evaluation's finding has to reach the person reading the
+        number, not just the repository. A coverage figure that a customer
+        reads as an estimate, when measured recall says it is a floor, is
+        the number that gets quoted and then falls apart."""
+        t = await _contribute(
+            session_factory, config, orgs["contributor-a"], "Some failure", "ctx", "fix",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], t["id"])
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"], [_failure("f", "Some failure", "ctx")],
+            )
+        assert "FLOOR" in report["note"]
+        assert "misses are not evidence of absence" in report["note"]
+
+    async def test_a_measurement_that_measured_nothing_is_not_qualified(
+        self, session_factory, orgs
+    ):
+        """An empty commons has no number to qualify -- appending the
+        recall caveat there would imply a real comparison happened."""
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"], [_failure("f", "anything", "ctx")],
+            )
+        assert "by construction, not by finding" in report["note"]
+        assert "FLOOR" not in report["note"]

@@ -552,12 +552,27 @@ it is what makes contributing a position rather than a favour.
 ### The cold start
 
 An empty commons returns 0% to every prospect — by construction, not as a
-finding — so nobody sees value and nobody contributes. An operator can prime
-it with public substrate knowledge:
+finding — so nobody sees value and nobody contributes. A starter corpus of
+public substrate knowledge ships in the repository to break that:
 
 ```bash
-python -m hub.manage commons-seed public-substrate.jsonl <operator_org_id>
+python -m hub.manage commons-seed commons/seed/substrate-v1.jsonl <operator_org_id>
 ```
+
+`commons/seed/substrate-v1.jsonl` is 46 recurring substrate failures — the
+at-least-once webhook, the exhausted connection pool, the `ADD COLUMN NOT
+NULL` that locks the table, the JWT that fails on clock drift. Every record
+carries a `source` citing where the knowledge comes from (public protocol
+semantics, vendor documentation, standards), stored as the trace's
+`shared_rationale` so a customer can always see the provenance of anything
+it matched. Nothing in it is drawn from any fleet's private data, and
+nothing in it is invented experience. `hub/tests/test_commons.py`
+(`TestShippedSeedCorpus`) asserts the shipped file loads with zero skipped
+lines and that every record is cited.
+
+What it is *not* is a coverage claim. What fraction of a real fleet's
+failures this corpus covers is measured separately, on held-out data, in
+`commons/eval/` — see [Measuring coverage honestly](#measuring-coverage-honestly).
 
 Seeded rows are marked `commons_source='seed'` and are reported **separately
 everywhere it matters**. They answer real queries and deliver real value —
@@ -566,6 +581,56 @@ is the one that says whether a network effect exists, and an operator
 seeding its own corpus is not evidence of one. `commons-stats` says so in
 those words, and warns when one org dominates: a large corpus from a single
 contributor is one fleet's memory with extra steps.
+
+### Measuring coverage honestly
+
+`commons_overlap` returns a percentage, and that percentage is what a
+prospect decides on. So it is measured rather than asserted, against probes
+the corpus was not built from:
+
+```bash
+python commons/eval/run.py        # commons/eval/RESULTS.md records the run
+```
+
+46 held-out positives (real failures the corpus contains, written
+symptom-first in on-call vocabulary rather than the corpus's own wording)
+and 22 negative controls (real substrate failures deliberately absent,
+several chosen as near misses). At the shipped 0.30 threshold:
+
+| Metric | Measured |
+|---|---|
+| Recall on positives | **10.9%** (5/46) |
+| Of those matches, the right record | **100%** (5/5) |
+| False positives on the 22 controls | **0%** |
+
+Read plainly, and it is not the flattering result:
+
+**The number a fleet sees is a floor, not an estimate.** When the commons
+genuinely contains a fleet's failure and the fleet describes it in its own
+words, the matcher finds it about one time in nine. A prospect who sees 5%
+should conclude the commons covers *at least* 5% of their problems, not
+about 5%.
+
+**What it does match, it matches correctly.** Every match landed on the
+exact record it was written against, and not one absent failure was
+reported as covered. The failure mode is silence, not noise — which is the
+right direction for a number that gets quoted, and the reason it is safe to
+quote at all.
+
+**No threshold fixes it, so the threshold was not moved.** Recall only
+becomes useful near 0.10, where 23% of *absent* failures get reported as
+present. This is the representation, not the tuning: Jaccard similarity
+over content words is lexical, and two engineers describing the same
+substrate failure share almost no words. The honest fix is semantic
+similarity, and it is not a tweak — embeddings require a model to see the
+failure text, which is exactly what the current design refuses to transmit.
+That trade is unresolved and is written down as unresolved.
+
+`commons/eval/RESULTS.md` carries the sensitivity table and the limits in
+full — the most important being that the same author wrote both the corpus
+and the probes, which makes 10.9% an optimistic bound rather than an
+estimate of a real fleet. The measurement that would settle it is a run
+against failures a customer actually collected, and it has not happened.
 
 ---
 
