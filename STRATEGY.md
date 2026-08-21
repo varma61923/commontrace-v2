@@ -701,3 +701,119 @@ worth. §12.4.3 was an inference presented with the same confidence as
 §11.1's measurement, and it was wrong for a reason worth remembering:
 sharing a component is not sharing a failure mode. Deleting it would remove
 the evidence that the method works.
+
+---
+
+## 13. The affirmative case, stated as a case
+
+This section exists because §12 stopped one step short. It analysed which
+variable sets the ceiling, which asset is rare, and what the bottleneck
+was — and then declined to assemble those into an argument, on the grounds
+that a repository cannot assert an outcome.
+
+That conflated two different things. *"This will be a large company"* is a
+prediction, unevidenced, and correctly refused. *"Here is the case that it
+could be, what each link requires, and what would break it"* is ordinary
+strategic work that invents nothing. Refusing the second because it
+resembles the first is not rigour, it is avoidance. So: the case, with its
+premises exposed and its falsifiers attached.
+
+### 13.1 The arithmetic, which is an identity and not a claim
+
+Revenue is agents under management × price per agent per year. §12.2
+established the first term is what compounds here — value grows with agents
+per fleet, tasks over time, and fleets per customer, so customer count is
+the wrong denominator.
+
+That identity permits very different shapes, and naming them is not the
+same as picking one: a large outcome needs either a very large number of
+agents at a low per-agent price, or a modest number at an enterprise price.
+**Which of those is reachable is exactly what nobody in this repository
+knows**, and it is the first thing a real pilot would measure. What the
+identity does establish is what to instrument: the Hub already meters
+per-org usage (`hub/plans.py`, `manage usage`), so agents-under-management
+is measurable from day one rather than reconstructed later.
+
+### 13.2 The chain, in dependency order
+
+**Link 1 — per-org memory delivers measurable value.** *Status: evidence
+for, one customer.* §2 cites −53% time-to-resolve and −29% churn,
+customer-confirmed. §8's randomized-holdout machinery exists so customer
+two onward produces its own causal number instead of inheriting that one.
+*Falsifier:* run `--experiment` on the next two fleets; if effects are null
+or underpowered at reasonable n, the product does not work and nothing
+downstream matters. This is the cheapest falsifier in the document and it
+should be run first.
+
+**Link 2 — retrieval finds the right memory when a task is described in
+the operator's own words.** *Status: measured, holds.* 84.8% recall@1,
+95.7%@5, 97.8% findable (§12.7). This was the link I wrongly believed was
+broken. *Falsifier:* recall on a real fleet's own corpus, which is larger
+and messier than 46 curated records.
+
+**Link 3 — value compounds within a customer faster than it costs to
+serve them.** *Status: unmeasured, and the weakest link nobody has looked
+at.* The compounding argument (§12.2) is structural, not measured. Cost to
+serve is knowable — the Hub has connection pooling, per-org metering, and
+operational telemetry. *Falsifier:* per-org gross margin at 10× current
+scale. If serving cost grows with corpus size faster than value does, this
+is a services business wearing infrastructure clothes.
+
+**Link 4 — the layer survives platforms bundling memory.** *Status:
+argued, unproven.* The defence is being the layer *across* providers rather
+than a feature of one: `install` targets Claude Code, Cursor, Devin,
+Windsurf and generic MCP, and the Hub needs no CommonTrace-specific SDK.
+*Falsifier:* a customer consolidating onto one agent platform and dropping
+this because the built-in memory is adequate. One such loss is signal; two
+is the answer.
+
+**Link 5 — the commons opens, and the network effect is real.** *Status:
+gated, and cheaper than §11.1 concluded.* (A) at scale generates the corpus
+(§12.1); §12.7 showed the matcher can already find answers 97.8% of the
+time and the defect is the output contract, not the representation.
+*Falsifier:* §11.4's gate, re-derived per §12.7.
+
+**Links 1–4 are the (A) case and do not require link 5.** Link 5 is
+upside, and §11.3's recommendation stands: do not spend on it until the
+gate opens.
+
+### 13.3 What makes this more than a good DevTools business, if it holds
+
+One thing, and it is link 2 plus §12.3 combined: **a product that retrieves
+the right prior experience reliably, and can prove causally on the
+customer's own data that doing so changed the outcome.**
+
+Most infrastructure is bought on conviction and cut on conviction. A
+renewal conversation that opens with a measured effect size on the
+customer's own fleet is a structurally different conversation — and the
+same machinery makes value-based pricing possible rather than aspirational
+(§11.5). That combination is hard to copy quickly: it needs the
+activation-condition data model, the occasion-level join, and a willingness
+to publish nulls. A competitor bolting memory onto an existing product has
+none of the three and no incentive to build the third.
+
+### 13.4 The honest discount
+
+Link 1 rests on one customer. Link 3 is unmeasured and is where businesses
+of this shape usually die. Link 4 is an argument, not a result. The
+strongest single objection to everything above is that **agent platforms
+bundle adequate memory and this becomes a feature rather than a layer** —
+and no amount of engineering in this repository answers that; only
+customers choosing it over a bundled alternative does.
+
+### 13.5 What this is, precisely
+
+This is a case with five explicit premises, of which one is measured, one
+is evidenced by a single customer, two are argued, and one is gated. It is
+falsifiable at every link, and §13.2 names the test for each.
+
+It is not a forecast, and the difference matters more than it might appear.
+A forecast asserts an outcome and gets quoted. A case says *if these five
+things hold, the outcome is reachable; here is how to find out whether they
+hold, cheapest first.* The second is worth something precisely because it
+can be wrong in a way you can detect early — which is the same property
+that made §12.7's correction possible, and the same discipline that
+produced 10.9% instead of a number that would have read better.
+
+Run link 1's falsifier first. It is the cheapest, it gates everything
+downstream, and the machinery to run it already ships.
