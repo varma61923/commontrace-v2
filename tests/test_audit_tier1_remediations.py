@@ -498,3 +498,91 @@ def trace_io_read(path):
     from commontrace import trace_io
 
     return trace_io.read(path)
+
+
+# --- SEC-06 / PROTO-06: the holdout log is the experiment's evidence ----
+
+
+class TestHoldoutLogIntegrity:
+    """The log is the raw evidence for the causal number. A lost line is not
+    a smaller sample -- it removes one arm's data point from a randomized
+    comparison, biasing the effect size, invisibly."""
+
+    def _store(self, tmp_path):
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "init", "--agent-type", "code",
+             "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        ldir = tmp_path / "memory" / "lessons"
+        ldir.mkdir(parents=True, exist_ok=True)
+        for i in range(6):
+            frontmatter.write(
+                str(ldir / f"lesson_topic{i}.md"),
+                {"name": f"lesson_topic{i}", "description": f"desc {i}",
+                 "tags": ["pagination"], "agent_type": "code", "domain": "databases",
+                 "importance": 3, "applies_when": "paginating a large table",
+                 "do_not_apply_when": "n/a", "uses": 0, "last_hit": "NEVER",
+                 "status": "active"},
+                "## Rule\nr\n\n## How to apply\nh\n",
+            )
+        return tmp_path
+
+    def test_concurrent_writers_produce_only_parseable_lines(self, tmp_path):
+        """Eight processes appending at once. Every line must still parse --
+        an unlocked buffered append can flush mid-line under exactly this
+        load, which is a fleet retrieving concurrently, i.e. normal use."""
+        import concurrent.futures
+        import json as _json
+
+        self._store(tmp_path)
+
+        def one(n):
+            return subprocess.run(
+                [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+                 "--experiment", "--occasion-id", f"occ-{n}", "--dest", str(tmp_path)],
+                cwd=REPO_ROOT, capture_output=True, text=True,
+            ).returncode
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            assert all(rc == 0 for rc in pool.map(one, range(8)))
+
+        log = tmp_path / "memory" / "holdout_log.jsonl"
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert lines, "nothing was logged"
+        for ln in lines:
+            _json.loads(ln)  # a raise here is the test failing
+
+    def test_a_corrupt_line_is_reported_not_silently_dropped(self, tmp_path):
+        """Previously `except json.JSONDecodeError: continue` discarded it
+        with no trace, so a biased number looked like a clean one."""
+        self._store(tmp_path)
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+             "--experiment", "--occasion-id", "occ-1", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        log = tmp_path / "memory" / "holdout_log.jsonl"
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write('{"occasion_id": "occ-2", "lesso\n')  # truncated, as a torn flush would be
+
+        r = subprocess.run(
+            [sys.executable, "-m", "commontrace", "experiment", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        assert "unparseable line" in r.stderr
+        assert "unreliable" in r.stderr
+
+    def test_a_clean_log_produces_no_warning(self, tmp_path):
+        """The warning must mean something when it appears."""
+        self._store(tmp_path)
+        subprocess.run(
+            [sys.executable, "-m", "commontrace", "query", "paginating a large table",
+             "--experiment", "--occasion-id", "occ-1", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        r = subprocess.run(
+            [sys.executable, "-m", "commontrace", "experiment", "--dest", str(tmp_path)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+        assert "unparseable line" not in r.stderr

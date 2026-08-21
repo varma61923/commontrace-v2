@@ -74,15 +74,26 @@ def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set
 
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        for slug in slugs:
-            fh.write(json.dumps({
-                "occasion_id": args.occasion_id,
-                "lesson": slug,
-                "injected": slug not in withheld,
-                "rate": args.holdout_rate,
-                "salt": args.experiment_salt,
-            }) + "\n")
+    # Locked, and flushed inside the lock. O_APPEND makes a single write()
+    # atomic, but Python buffers: a fleet whose agents retrieve concurrently
+    # writes more than one buffer's worth, and a flush boundary can land
+    # mid-line. The corrupted line is then dropped when the log is read --
+    # and a DROPPED OBSERVATION IS NOT NEUTRAL. It removes one arm's data
+    # point from a randomized comparison, which biases the causal number
+    # this whole experiment exists to produce. Cheap to prevent, expensive
+    # and near-impossible to detect after the fact.
+    with frontmatter.locked(path):
+        with open(path, "a", encoding="utf-8") as fh:
+            for slug in slugs:
+                fh.write(json.dumps({
+                    "occasion_id": args.occasion_id,
+                    "lesson": slug,
+                    "injected": slug not in withheld,
+                    "rate": args.holdout_rate,
+                    "salt": args.experiment_salt,
+                }) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
     return withheld
 
 

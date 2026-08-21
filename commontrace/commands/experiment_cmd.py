@@ -67,10 +67,10 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     return out
 
 
-def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], float, int, int, int]:
+def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], float, int, int, int, int]:
     log = holdout_log_path(root)
     if not os.path.isfile(log):
-        return [], experiment.DEFAULT_HOLDOUT_RATE, 0, 0, 0
+        return [], experiment.DEFAULT_HOLDOUT_RATE, 0, 0, 0, 0
 
     outcomes = _outcomes_by_occasion(root)
     obs: list[experiment.HoldoutObservation] = []
@@ -84,6 +84,7 @@ def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], 
     # pair, so duplicates are always identical and keeping the first is safe.
     seen_pairs: set[tuple[str, str]] = set()
     n_duplicate = 0
+    n_corrupt = 0
 
     with open(log, encoding="utf-8") as fh:
         for line in fh:
@@ -93,6 +94,16 @@ def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], 
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                # Counted and surfaced, never silently dropped. A corrupt
+                # line is a LOST OBSERVATION from one arm of a randomized
+                # comparison, so discarding it quietly biases the effect
+                # size rather than merely shrinking the sample -- and it
+                # would do so invisibly, in the one number this command
+                # exists to produce. Writes are locked (query_cmd), so a
+                # non-zero count here means something else corrupted the
+                # log and the result should not be trusted until it is
+                # explained.
+                n_corrupt += 1
                 continue
             n_lines += 1
             rate = float(rec.get("rate", rate))
@@ -113,12 +124,21 @@ def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], 
                     succeeded=outcomes[occ],
                 )
             )
-    return obs, rate, n_lines, n_no_outcome, n_duplicate
+    return obs, rate, n_lines, n_no_outcome, n_duplicate, n_corrupt
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    obs, rate, n_lines, n_no_outcome, n_duplicate = _load_observations(root)
+    obs, rate, n_lines, n_no_outcome, n_duplicate, n_corrupt = _load_observations(root)
+    if n_corrupt:
+        print(
+            f"[commontrace] WARNING: {n_corrupt} unparseable line(s) in the holdout log.\n"
+            "  Each is a lost observation from one arm, which biases the effect size\n"
+            "  rather than just reducing n. Treat the numbers below as unreliable\n"
+            "  until this is explained -- writes are locked, so something else\n"
+            "  wrote to memory/holdout_log.jsonl.",
+            file=sys.stderr,
+        )
 
     if n_lines == 0:
         print(
