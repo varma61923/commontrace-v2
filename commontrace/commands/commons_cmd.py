@@ -23,7 +23,7 @@ import json
 import os
 import sys
 
-from commontrace import hub_client, overlap, paths, trace_io
+from commontrace import failure_import, hub_client, overlap, paths, trace_io
 
 # Kept in step with hub/commons.py's signing. Both sides sign a trace on
 # title + context + tags -- the *situation*, not the fix -- so the
@@ -44,6 +44,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Write this store's recurring failures out as signatures only (no text).",
     )
     sign.add_argument("--out", required=True, help="Where to write the signature JSON.")
+    sign.add_argument(
+        "--from", dest="from_file", default=None, metavar="FILE",
+        help="Sign failures from a file you ALREADY have -- an incident export, a "
+        "postmortem index, a pasted column of alert titles. JSONL, JSON, CSV/TSV "
+        "or one failure per line. Use this to get a coverage number without "
+        "adopting CommonTrace first.",
+    )
     sign.add_argument("--dest", default=None)
     sign.set_defaults(func=run_sign)
 
@@ -54,6 +61,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rep.add_argument(
         "--signatures", default=None,
         help="A file from `commons sign`. Omit to sign this store on the fly.",
+    )
+    rep.add_argument(
+        "--from", dest="from_file", default=None, metavar="FILE",
+        help="Failures you already have, in any of the formats `commons sign --from` "
+        "accepts. Signed locally; no failure text is sent.",
     )
     rep.add_argument("--threshold", type=float, default=None)
     rep.add_argument(
@@ -161,6 +173,40 @@ def build_signatures(root: str) -> list[dict]:
     return failures
 
 
+def signatures_from_file(path: str) -> tuple[list[dict], dict]:
+    """Sign failures a fleet already has, identically to build_signatures().
+
+    Same `overlap.minhash` over the same title+text+tags concatenation, so a
+    signature produced from an incident export is comparable to one produced
+    from a `memory/traces/` store and to a Hub trace. If these ever diverge
+    the numbers stay plausible and become meaningless, which is the worst
+    failure mode available here -- hence one shared code path for the text.
+    """
+    failures, stats = failure_import.read_failures(path)
+    signed = []
+    for f in failures:
+        text = " ".join([f["label"], f["text"], " ".join(f["tags"])])
+        signed.append({
+            "label": f["label"],
+            "signature": overlap.minhash(text, COMMONS_NUM_PERM),
+        })
+    return signed, stats
+
+
+def _describe_import(stats: dict) -> None:
+    """Say what was actually measured. A coverage fraction computed over 400
+    copies of one alert describes that alert, not the fleet, so a collapse
+    or a cap has to be visible next to the number it changed."""
+    print(f"  read {stats['rows']} row(s) as {stats['format']}; "
+          f"{stats['unique']} distinct failure(s).")
+    if stats["deduplicated"]:
+        print(f"  collapsed {stats['deduplicated']} exact duplicate(s) -- otherwise one "
+              "noisy alert would dominate the number.")
+    if stats["truncated"]:
+        print(f"  NOTE: capped at {failure_import.MAX_FAILURES}; "
+              f"{stats['truncated']} failure(s) not measured.", file=sys.stderr)
+
+
 def _resolve_hub(args) -> tuple[str, str] | None:
     hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
     api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
@@ -176,15 +222,35 @@ def _resolve_hub(args) -> tuple[str, str] | None:
 
 
 def run_sign(args: argparse.Namespace) -> int:
-    root = paths.resolve_root(args.dest)
-    failures = build_signatures(root)
+    stats = None
+    if getattr(args, "from_file", None):
+        try:
+            failures, stats = signatures_from_file(args.from_file)
+        except failure_import.FailureImportError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+    else:
+        root = paths.resolve_root(args.dest)
+        failures = build_signatures(root)
+
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump({"num_perm": COMMONS_NUM_PERM, "failures": failures}, fh, indent=2)
 
     print(f"[commontrace] wrote {args.out}")
+    if stats:
+        _describe_import(stats)
     print(f"  {len(failures)} recurring failure(s), as MinHash signatures only.")
     print("  Failure text is NOT in this file and cannot be reconstructed from it.")
+    if stats:
+        # The labels DO travel, and for an imported file they are the
+        # prospect's own incident titles rather than opaque trace ids. Saying
+        # so here rather than in a doc, because this is the moment someone
+        # decides whether to send the file.
+        print("  Labels (your incident titles) ARE in this file and are echoed back "
+              "in the report.")
+        print("  Review it before sending if those titles are themselves sensitive.")
+        return 0
     if not failures:
         print(
             "  NOTE: no recurring failures found (traces with outcome.repeated_error=true).\n"
@@ -236,12 +302,28 @@ def _render(report: dict) -> str:
 
 
 def run_report(args: argparse.Namespace) -> int:
+    if args.signatures and getattr(args, "from_file", None):
+        print("[commontrace] pass --signatures or --from, not both: they are two ways "
+              "of supplying the same input.", file=sys.stderr)
+        return 1
+
     resolved = _resolve_hub(args)
     if resolved is None:
         return 1
     hub_url, api_key = resolved
 
-    if args.signatures:
+    if getattr(args, "from_file", None):
+        try:
+            failures, stats = signatures_from_file(args.from_file)
+        except failure_import.FailureImportError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+        if not args.json:
+            print(f"[commontrace] signing {args.from_file} locally -- "
+                  "no failure text leaves this machine.")
+            _describe_import(stats)
+            print()
+    elif args.signatures:
         try:
             with open(args.signatures, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)

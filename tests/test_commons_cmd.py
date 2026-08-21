@@ -9,7 +9,9 @@ to quote to customers, so it is pinned explicitly.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
 
 import pytest
 
@@ -230,3 +232,62 @@ class TestRender:
         })
         assert "Stripe webhook" in rendered
         assert "Use an idempotency key" in rendered
+
+
+# --- Evaluating without adopting first ---------------------------------
+
+
+class TestSignFromAnExistingExport:
+    """The path that makes the thesis testable on day zero: a prospect with
+    no memory/ directory, no captured traces, and an incident export."""
+
+    def _export(self, tmp_path):
+        p = os.path.join(str(tmp_path), "incidents.csv")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("Summary,Description\n"
+                     "Pool exhausted,spike drained the connection pool\n"
+                     "Duplicate charge,webhook redelivered after a timeout\n")
+        return p
+
+    def test_signs_without_any_commontrace_store(self, tmp_path, capsys):
+        """No `commontrace init`, no captured traces. If this needed either,
+        evaluating the product would require adopting it first."""
+        out = os.path.join(str(tmp_path), "sig.json")
+        rc = commons_cmd.run_sign(argparse.Namespace(
+            out=out, from_file=self._export(tmp_path), dest=str(tmp_path),
+        ))
+        assert rc == 0
+        with open(out, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        assert len(payload["failures"]) == 2
+        assert payload["num_perm"] == commons_cmd.COMMONS_NUM_PERM
+
+    def test_says_what_it_read_and_what_travels(self, tmp_path, capsys):
+        out = os.path.join(str(tmp_path), "sig.json")
+        commons_cmd.run_sign(argparse.Namespace(
+            out=out, from_file=self._export(tmp_path), dest=str(tmp_path),
+        ))
+        printed = capsys.readouterr().out
+        assert "as csv" in printed
+        assert "Failure text is NOT in this file" in printed
+        # The labels DO leave, and for an import they are the prospect's own
+        # incident titles. Saying so at the moment they decide to send it.
+        assert "Labels" in printed and "ARE in this file" in printed
+
+    def test_a_bad_file_fails_with_a_usable_message(self, tmp_path, capsys):
+        bad = os.path.join(str(tmp_path), "bad.jsonl")
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write("{not json}\n")
+        rc = commons_cmd.run_sign(argparse.Namespace(
+            out=os.path.join(str(tmp_path), "sig.json"), from_file=bad, dest=str(tmp_path),
+        ))
+        assert rc == 1
+        assert "line 1" in capsys.readouterr().err
+
+    def test_report_refuses_both_input_flags(self, tmp_path, capsys):
+        rc = commons_cmd.run_report(argparse.Namespace(
+            signatures="a.json", from_file="b.csv", threshold=None, counts_only=False,
+            json=False, hub_url="http://x/mcp", hub_api_key="k", dest=str(tmp_path),
+        ))
+        assert rc == 1
+        assert "not both" in capsys.readouterr().err

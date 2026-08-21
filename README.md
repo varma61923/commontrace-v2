@@ -509,6 +509,37 @@ whether it is present. Private set intersection is the real fix for
 mutually distrustful parties and is a known follow-up, not a quiet
 assumption.
 
+### Evaluate before adopting anything
+
+The commons thesis is one empirical claim — that a meaningful share of what
+your fleet keeps hitting is *substrate* failure someone else already
+solved. Testing it should not require adopting CommonTrace first, so it
+doesn't:
+
+```bash
+commontrace commons report --from incidents.csv    # or .jsonl / .json / .txt
+```
+
+Point it at data you already have — a ticket export, a postmortem index, a
+pasted column of alert titles. It reads JSONL, JSON (bare array or the
+usual `{"issues": [...]}` envelope), CSV/TSV with whatever your tool named
+the columns, or one failure per line. No `commontrace init`, no captured
+traces, no store on disk.
+
+Signing happens locally and **failure text never leaves your machine** —
+the same `overlap.minhash` the Hub uses, so an imported signature and a
+stored trace's signature are the same object. Your incident *titles* do
+travel, as labels echoed back in the report; the command says so before you
+send anything, because for an imported file those titles are yours rather
+than opaque ids. Exact duplicates are collapsed and the count reported —
+otherwise one noisy alert repeated 400 times would dominate the percentage
+and the number would describe that alert instead of your fleet.
+
+**Read the result against [the measured recall](#measuring-coverage-honestly).**
+A low number here is weak evidence: the matcher is lexical and misses most
+failures worded differently from the corpus. A *high* number is strong
+evidence, since false positives measured 0%.
+
 ### Contribute
 
 ```bash

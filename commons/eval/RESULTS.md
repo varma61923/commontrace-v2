@@ -1,6 +1,7 @@
 # Commons coverage: measured, not asserted
 
 Reproduce: `python commons/eval/run.py`
+Reproduce the first-customer scenario: `commontrace commons report --from <your export>`
 
 | | |
 |---|---|
@@ -63,6 +64,29 @@ recall number that reads better in a deck, on evidence from a probe set
 written by the same author as the corpus. That is the wrong trade, and it
 is the specific way this kind of number gets quoted and then falls apart in
 front of a customer.
+
+## What this looks like to a first customer
+
+The numbers above are a lab result. Here is the same defect as a sales
+call, run end to end against a seeded Hub with `commons report --from`:
+
+A prospect's incident export, ten rows, nine distinct after collapsing a
+repeat. Seven of the nine are failures this corpus **provably contains** —
+the redelivered payment webhook, the exhausted connection pool, the JWT
+clock drift, the pod killed mid-rollout, float money, the `ADD COLUMN NOT
+NULL` migration, the retry storm. Two are deliberate non-failures (a
+leaking coffee machine, a broken badge reader).
+
+The report came back **0 of 9. 0%.**
+
+Re-running with the corpus's own wording returns a match, so the import and
+matching path is correct; this is the 10.9% recall, sampled. But 10.9%
+stated as a percentage and 10.9% experienced as "the product told my first
+prospect it knows nothing about any of their problems" are different facts,
+and only the second one predicts what happens in the room.
+
+That is the single highest-value thing to fix in this codebase, and it is
+not a tuning exercise.
 
 ## The honest path forward
 
