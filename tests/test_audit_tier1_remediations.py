@@ -195,8 +195,9 @@ class TestPushSkipsAlreadyPushedLessons:
         frontmatter.write(str(p), fm, "## Rule\nr\n\n## How to apply\nh\n")
         return p
 
-    @pytest.mark.asyncio
-    async def test_a_lesson_with_a_hub_trace_id_is_not_recontributed(self, tmp_path, monkeypatch):
+    def test_a_lesson_with_a_hub_trace_id_is_not_recontributed(self, tmp_path, monkeypatch):
+        import asyncio
+
         from commontrace import hub_client
 
         calls = []
@@ -208,20 +209,21 @@ class TestPushSkipsAlreadyPushedLessons:
         monkeypatch.setattr(hub_client, "_call_tool", _fake_call_tool)
         self._lesson(tmp_path, "lesson_already_pushed", "existing-uuid")
 
-        results = await hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path))
+        results = asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
 
         assert calls == [], "contribute_trace must not be called for an already-pushed lesson"
         assert len(results) == 1
         assert results[0].skipped is True
         assert results[0].hub_trace_id == "existing-uuid"
 
-    @pytest.mark.asyncio
-    async def test_a_never_pushed_lesson_is_contributed_with_an_idempotency_key(
+    def test_a_never_pushed_lesson_is_contributed_with_an_idempotency_key(
         self, tmp_path, monkeypatch
     ):
         """The key is what makes a lost response safe to retry -- the Hub
         already supports it (hub/crud.py:contribute_trace); this call site
         was simply not sending one."""
+        import asyncio
+
         from commontrace import hub_client
 
         calls = []
@@ -233,7 +235,7 @@ class TestPushSkipsAlreadyPushedLessons:
         monkeypatch.setattr(hub_client, "_call_tool", _fake_call_tool)
         self._lesson(tmp_path, "lesson_fresh", None)
 
-        results = await hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path))
+        results = asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
 
         assert len(calls) == 1
         tool, args = calls[0]
@@ -242,10 +244,11 @@ class TestPushSkipsAlreadyPushedLessons:
         assert results[0].skipped is False
         assert results[0].hub_trace_id == "minted-id"
 
-    @pytest.mark.asyncio
-    async def test_pushing_twice_contributes_exactly_once(self, tmp_path, monkeypatch):
+    def test_pushing_twice_contributes_exactly_once(self, tmp_path, monkeypatch):
         """The end-to-end property: run push, run it again, and the Hub is
         called once in total rather than once per run."""
+        import asyncio
+
         from commontrace import hub_client
 
         calls = []
@@ -257,8 +260,8 @@ class TestPushSkipsAlreadyPushedLessons:
         monkeypatch.setattr(hub_client, "_call_tool", _fake_call_tool)
         self._lesson(tmp_path, "lesson_pushed_twice", None)
 
-        await hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path))
-        await hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path))
+        asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
+        asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
 
         assert len(calls) == 1, f"expected one contribute_trace across two runs, got {len(calls)}"
 
@@ -790,3 +793,56 @@ class TestPilotRunbookMatchesTheCode:
         assert "holdout-rate 0" in text, "the opt-out must be documented"
         assert "UNDERPOWERED" in text
         assert "says nothing about" in text, "the limits of the result must be stated"
+
+
+class TestCoreSuiteNeedsNoHubDependencies:
+    """`tests/` must run on a CORE install: `pip install commontrace` with no
+    extras, which is what three of CI's six core jobs do.
+
+    This has now bitten twice. The CHANGELOG records an unconditional
+    `import numpy` breaking collection the same way, and this file added
+    `@pytest.mark.asyncio` tests that pass locally -- because this sandbox
+    has the Hub's dependencies installed -- and fail in CI with "async def
+    functions are not natively supported". Local green is not evidence here;
+    the absence of the dependency is the thing under test.
+    """
+
+    def test_no_test_in_this_suite_requires_pytest_asyncio(self):
+        """pytest-asyncio is a Hub test dependency, not a core one. An async
+        test here is silently skipped-or-failed depending on the runner,
+        which is worse than not having the test."""
+        import re
+
+        offenders = []
+        for path in sorted(Path(REPO_ROOT).glob("tests/test_*.py")):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"^\s*@pytest\.mark\.asyncio", text, re.M):
+                offenders.append(path.name)
+            if re.search(r"^\s*async def test_", text, re.M):
+                offenders.append(path.name)
+        assert not offenders, (
+            "tests/ must run without pytest-asyncio; drive coroutines with "
+            f"asyncio.run() instead. Offending files: {sorted(set(offenders))}"
+        )
+
+    def test_hub_imports_in_this_suite_are_guarded(self):
+        """A core install has no SQLAlchemy, asyncpg or alembic, so an
+        unguarded `from hub import ...` breaks collection for the whole
+        file. Importing Hub code from tests/ is legitimate -- one test
+        checks that the client and the Hub sign identically, which is only
+        meaningful if both are present -- but it must be behind
+        `pytest.importorskip`, so a core install SKIPS rather than fails.
+        That is the pattern tests/test_commons_cmd.py already uses."""
+        import re
+
+        offenders = []
+        for path in sorted(Path(REPO_ROOT).glob("tests/test_*.py")):
+            text = path.read_text(encoding="utf-8")
+            if not re.search(r"^\s*(?:from|import)\s+hub[\s.]", text, re.M):
+                continue
+            if 'importorskip("hub' not in text and "importorskip('hub" not in text:
+                offenders.append(path.name)
+        assert not offenders, (
+            "these import Hub modules without a pytest.importorskip guard, so a "
+            f"core install fails collection instead of skipping: {offenders}"
+        )
