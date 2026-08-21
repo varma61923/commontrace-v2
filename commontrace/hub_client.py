@@ -48,6 +48,10 @@ class PushResult:
     hub_trace_id: str | None
     quarantined: bool = False
     error: str | None = None
+    # True when the lesson was already on the Hub and this run did not
+    # re-contribute it. Distinct from an error: nothing went wrong, there
+    # was simply nothing to do.
+    skipped: bool = False
 
 
 @dataclass
@@ -182,6 +186,18 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
         if fm.get("status") != "active":
             continue
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
+
+        # Already on the Hub -- do not contribute it a second time.
+        # contribute_trace MINTS A NEW TRACE on every call, so without this
+        # guard each `sync --push` re-submitted every active lesson and the
+        # Hub accumulated one duplicate per lesson per run, each with a
+        # fresh id that then overwrote the local hub_trace_id. Updating an
+        # already-pushed lesson is amend_trace's job, not contribute's.
+        existing_hub_id = fm.get("hub_trace_id")
+        if existing_hub_id:
+            results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
+            continue
+
         sections = _lesson_sections(body)
         solution_text = "\n\n".join(
             part for part in (sections.get("rule", ""), sections.get("how to apply", "")) if part
@@ -198,6 +214,16 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                     "solution_text": solution_text,
                     "tags": list(fm.get("tags") or []) if isinstance(fm.get("tags"), list) else [],
                     "agent_type": fm.get("agent_type") or "",
+                    # Belt and braces alongside the hub_trace_id guard
+                    # above. That guard stops a SECOND run from
+                    # re-contributing; this stops THIS run from
+                    # double-writing when the response is lost and the
+                    # transport retries -- the client cannot distinguish
+                    # "never arrived" from "arrived, reply dropped". Keyed
+                    # on the lesson slug so a retry of the same lesson
+                    # collides deliberately, and the Hub returns the
+                    # original trace instead of minting another.
+                    "idempotency_key": f"lesson:{slug}",
                 },
             )
         except (HubClientUnavailable, HubConnectionError) as exc:

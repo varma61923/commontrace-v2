@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 
-from commontrace import paths, templates, validate
+from commontrace import frontmatter, paths, templates, validate
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -92,10 +92,14 @@ def run(args: argparse.Namespace) -> int:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     date = datetime.date.today().isoformat()
     slug = _slugify(args.title)
-    filename = f"{date}_{slug}.md"
-    out_path = os.path.join(tdir, filename)
-    if os.path.exists(out_path):
-        out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
+    # The trace id is in the filename unconditionally, not only as a
+    # collision fallback. `if os.path.exists(): pick another name` is
+    # check-then-act: two agents capturing a same-titled trace in the same
+    # second both see False and both write `<date>_<slug>.md`, so one
+    # silently overwrites the other -- and concurrent capture is the normal
+    # case for a fleet, not an edge case. Including the id makes the name
+    # unique by construction, with no window to lose.
+    out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
 
     outcome = _outcome_from_args(args)
     agent_type = args.agent_type or paths.store_agent_type(root)
@@ -119,11 +123,14 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
 
-    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("---\n")
-        fh.write(templates.dump_frontmatter(fm))
-        fh.write("---\n\n")
-        fh.write(body)
+    # frontmatter.write (NamedTemporaryFile + os.replace), not a raw
+    # open("w"): a direct write leaves the file readable in a torn state for
+    # as long as it takes to flush, so anything scanning memory/traces/
+    # concurrently -- `lesson distill`, `bench`, the attention indexer --
+    # can read a truncated or zero-byte file and fail to parse it. The
+    # rename is atomic, so a reader sees either the old file or the whole
+    # new one, never a partial one.
+    frontmatter.write(out_path, fm, body)
 
     print(f"[commontrace] captured trace {trace_id} -> {out_path}", file=sys.stderr)
     print(out_path)

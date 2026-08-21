@@ -21,7 +21,14 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-_OUTCOME_BOOL_FIELDS = ("resolved", "escalated", "repeated_error", "frustration_signal")
+# Must stay in sync with the `outcome` properties in trace.schema.json. A
+# field missing here is not a validation error -- it is silently dropped from
+# the imported trace, which is worse: `baseline` was absent, so every
+# historical baseline row imported as an ACTIVE trace and `bench --pilot`
+# compared the intervention against a control set that no longer existed.
+_OUTCOME_BOOL_FIELDS = (
+    "resolved", "escalated", "repeated_error", "frustration_signal", "baseline",
+)
 _OUTCOME_INT_FIELDS = ("tokens_used", "llm_calls")
 
 

@@ -67,12 +67,18 @@ def run(args: argparse.Namespace) -> int:
     try:
         if do_push:
             results = asyncio.run(hub_client.push_active_lessons(hub_url, hub_api_key, root))
-            n_ok = sum(1 for r in results if r.hub_trace_id and not r.error)
+            n_ok = sum(1 for r in results if r.hub_trace_id and not r.error and not r.skipped)
             n_err = sum(1 for r in results if r.error)
-            print(f"[commontrace] sync --push: {n_ok} lesson(s) pushed, {n_err} error(s), out of {len(results)}.")
+            n_skip = sum(1 for r in results if r.skipped)
+            print(
+                f"[commontrace] sync --push: {n_ok} lesson(s) pushed, {n_skip} already on the Hub, "
+                f"{n_err} error(s), out of {len(results)}."
+            )
             for r in results:
                 if r.error:
                     print(f"  [ERROR] {r.slug}: {r.error}", file=sys.stderr)
+                elif r.skipped:
+                    print(f"  {r.slug} -> already hub_trace_id={r.hub_trace_id} (unchanged)")
                 else:
                     tag = " (quarantined pending review)" if r.quarantined else ""
                     print(f"  {r.slug} -> hub_trace_id={r.hub_trace_id}{tag}")

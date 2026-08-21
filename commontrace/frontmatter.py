@@ -22,35 +22,60 @@ except ImportError:  # pragma: no cover -- POSIX-only stdlib module
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
 
-class _StrictBoolLoader(yaml.SafeLoader):
-    """SafeLoader, but a bare `yes`/`no`/`on`/`off` (any case) resolves as
-    the plain string it looks like, not a bool.
+# Module scope, not a class attribute: a comprehension nested inside a class
+# body gets its own scope and cannot see class-level names, so referencing
+# this from the `yaml_implicit_resolvers` dict-comp below raises NameError at
+# import time if it lives on the class.
+_DROPPED_YAML_TAGS = frozenset({"tag:yaml.org,2002:bool", "tag:yaml.org,2002:timestamp"})
 
-    Every field this protocol declares as a string -- agent_type, domain,
-    tags entries, a lesson's applies_when -- is one PyYAML's default
-    resolver can silently misparse: `domain: NO` or `tags: [on, off]`
-    become {'domain': False} / {'tags': [True, False]} with no error,
-    because YAML 1.1 treats those tokens as booleans. `commontrace`'s own
-    write path (yaml.safe_dump) auto-quotes them on output, so a
-    round-tripped file is never at risk -- the exposure is a *hand-edited*
-    file, which this protocol explicitly relies on (e.g. `lesson approve`/
-    `reject` instruct manual edits).
+
+class _StrictBoolLoader(yaml.SafeLoader):
+    """SafeLoader, but the two YAML 1.1 implicit conversions that silently
+    violate this protocol's own schemas are disabled.
+
+    1. A bare `yes`/`no`/`on`/`off` (any case) resolves as the plain string
+       it looks like, not a bool. Every field this protocol declares as a
+       string -- agent_type, domain, tags entries, a lesson's applies_when
+       -- is one PyYAML's default resolver can silently misparse:
+       `domain: NO` or `tags: [on, off]` become {'domain': False} /
+       {'tags': [True, False]} with no error, because YAML 1.1 treats those
+       tokens as booleans.
+
+    2. An unquoted ISO date or timestamp resolves as a string, not a
+       `datetime.date`/`datetime.datetime`. `lesson.schema.json` declares
+       `last_hit` as `"type": "string"`, and `trace.schema.json` declares
+       `created_at` and `review_after` the same way -- so a file written
+       the obvious way (`last_hit: 2026-07-01`, no quotes) loaded as a
+       `date` object and then FAILED this project's own validator with
+       "expected type string, got date". The repository's own shipped
+       example lesson failed `commontrace lesson validate` out of the box
+       because of this. Resolving to a string is the fix that matches the
+       schema rather than loosening it: a field the protocol calls a string
+       should be a string in memory, so downstream string operations work
+       and `yaml.safe_dump` round-trips it unchanged.
+
+    Both are only reachable from a *hand-edited* file: `commontrace`'s own
+    write path (yaml.safe_dump) quotes what needs quoting. But this
+    protocol explicitly relies on hand-editing (`lesson approve`/`reject`
+    instruct manual edits), so the read path has to be the safe one.
 
     Rebuilds the resolver table on a SUBCLASS rather than mutating
     `yaml.SafeLoader.yaml_implicit_resolvers` in place: that dict is
-    process-global, so patching it here would silently change bool
+    process-global, so patching it here would silently change bool and date
     resolution for every other `yaml.safe_load` call anywhere in the
     process (including third-party code), not just this module's reads.
     """
 
     yaml_implicit_resolvers = {
         first_char: [
-            (tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:bool"
+            (tag, regexp) for tag, regexp in resolvers if tag not in _DROPPED_YAML_TAGS
         ]
         for first_char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
     }
 
 
+# Re-added narrower than YAML 1.1's: only the six spellings YAML 1.2 core
+# treats as booleans. `yes`/`no`/`on`/`off` fall through to plain strings.
 _StrictBoolLoader.add_implicit_resolver(
     "tag:yaml.org,2002:bool",
     re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),

@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 
-from commontrace import import_data, paths, templates, validate
+from commontrace import frontmatter, import_data, paths, templates, validate
 
 _SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -94,10 +94,11 @@ def run(args: argparse.Namespace) -> int:
     for row in imported:
         trace_id = str(uuid.uuid4())
         slug = _slugify(row.title)
-        filename = f"{date}_{slug}.md"
-        out_path = os.path.join(tdir, filename)
-        if os.path.exists(out_path):
-            out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
+        # Unconditionally id-suffixed, same reasoning as capture_cmd.py: the
+        # `if os.path.exists()` fallback is check-then-act and loses a row
+        # when two imports run at once, which is exactly what a migration
+        # looks like when someone parallelizes it by splitting the file.
+        out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
 
         fm = templates.trace_frontmatter(
             trace_id, row.title, args.agent_type, row.tags, args.profile, row.outcome or None
@@ -119,11 +120,11 @@ def run(args: argparse.Namespace) -> int:
         body = templates.trace_body(row.context_text, row.solution_text)
         if row.source_id:
             body = f"<!-- imported from source id: {row.source_id} -->\n" + body
-        with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("---\n")
-            fh.write(templates.dump_frontmatter(fm))
-            fh.write("---\n\n")
-            fh.write(body)
+        # Atomic (NamedTemporaryFile + os.replace), same reasoning as
+        # capture_cmd.py -- an import writes many files in a loop, so the
+        # window in which a concurrent reader can see a torn file is not one
+        # write long, it is the whole import.
+        frontmatter.write(out_path, fm, body)
         written += 1
 
     print(

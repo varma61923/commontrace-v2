@@ -88,7 +88,30 @@ def _find_skill_md(root: str, dest: str) -> str | None:
     return None
 
 
+def _break_symlink(path: str) -> None:
+    """Replace a symlink at `path` with a normal file, before writing it.
+
+    Both `open(path, "w")` and `shutil.copyfile` FOLLOW a symlink and write
+    through to whatever it points at. `install` writes to fixed, predictable
+    locations inside someone else's workspace (`.claude/skills/commontrace/
+    SKILL.md`, `.cursor/rules/commontrace.mdc`), so a symlink planted at one
+    of those paths -- or left there by an earlier dotfile-manager setup that
+    links config into a repo -- silently redirects the write to an arbitrary
+    file. Reproduced: with SKILL.md symlinked to a file outside the project,
+    `install` overwrote that file's contents and left the symlink in place,
+    so nothing in the output revealed what had happened.
+
+    `os.path.isfile` does not help here -- it follows the link too, and
+    returns True for a symlink to a regular file. `os.path.islink` is the
+    only check that sees the link itself.
+    """
+    if os.path.islink(path):
+        print(f"  [WARN] replacing symlink (not writing through it): {path}")
+        os.unlink(path)
+
+
 def _write(path: str, content: str) -> None:
+    _break_symlink(path)
     if os.path.isfile(path):
         print(f"  [WARN] overwriting existing file: {path}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -98,6 +121,7 @@ def _write(path: str, content: str) -> None:
 
 
 def _copy(src: str, dest: str) -> None:
+    _break_symlink(dest)
     if os.path.isfile(dest):
         print(f"  [WARN] overwriting existing file: {dest}")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
