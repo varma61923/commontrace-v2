@@ -52,6 +52,10 @@ COPY --chown=hub:hub protocol/ /app/protocol/
 # near-copy that drifted by one constant would return confident, wrong
 # similarity numbers rather than failing. commontrace/overlap.py is pure
 # stdlib, so this adds no dependency to the image -- only the source.
+#
+# .dockerignore narrows this to exactly two files (__init__.py and
+# overlap.py); the rest of the client package stays out of the server
+# image. hub/tests/test_commons.py pins that those two are sufficient.
 COPY --chown=hub:hub commontrace/ /app/commontrace/
 
 USER hub

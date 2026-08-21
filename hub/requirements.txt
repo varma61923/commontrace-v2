@@ -29,4 +29,7 @@ jsonschema==4.26.0         # protocol/schemas/*.json validation
 # keeps an exact pure-Python fallback (and tests that the two agree), so this
 # is a performance dependency, not a correctness one -- but a Hub serving the
 # commons should have it.
-numpy==2.4.6
+# 2.2.6 is the newest release that still supports Python 3.10, which this
+# project's CI matrix and ruff target-version both include. numpy >= 2.3.0
+# is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
+numpy==2.2.6

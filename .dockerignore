@@ -13,8 +13,19 @@ env
 memory/
 benchmark/
 tests/
-commontrace/
 assets/
+
+# The client package stays out of the server image -- with two exceptions.
+# hub/commons.py imports commontrace.overlap for MinHash, because client and
+# server signatures are only comparable if both draw the SAME permutations;
+# a near-copy that drifted by one constant would return confident, wrong
+# similarity numbers instead of failing. Excluding the contents rather than
+# the directory itself, so the negations below can re-include specific files
+# (an excluded *directory* is never traversed, so `!commontrace/x.py` under
+# a bare `commontrace/` rule would not match).
+commontrace/**
+!commontrace/__init__.py
+!commontrace/overlap.py
 
 # Secrets must come from the platform's secret store, never be baked in
 .env
