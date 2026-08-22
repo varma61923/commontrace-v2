@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -917,8 +918,29 @@ async def commons_overlap(
         # once per covered failure, not once per query, so an org
         # re-running the same report does not inflate a contributor's
         # standing for free -- but a genuinely repeated need does register.
+        #
+        # `hit_ids` can repeat: two different submitted failures in the same
+        # call can both best-match the same shared trace (a fleet hitting
+        # one substrate failure across several tasks, submitted in one
+        # batch). A flat `+1` under `Trace.id.in_(hit_ids)` credits that
+        # trace once per QUERY regardless of duplicates in the list --
+        # Postgres updates each matching row once per UPDATE statement, not
+        # once per occurrence in the IN-list -- which silently under-counts
+        # exactly the batch case this docstring says is supposed to count.
+        # A CASE-weighted single statement stays one atomic UPDATE (still no
+        # read-modify-write) while crediting each trace by how many
+        # distinct failures in THIS call it covered.
+        hit_counts = Counter(hit_ids)
+        # WHEN clauses as (Trace.id == tid, count) tuples, not a
+        # {tid: count} dict matched against value=Trace.id: the dict form
+        # binds each key as a bare literal with no column to infer its type
+        # from, and asyncpg then sends it as VARCHAR against a UUID column
+        # ("operator does not exist: uuid = character varying"). Comparing
+        # against the column directly (Trace.id == tid) reuses the same
+        # UUID cast `.in_()` already gets right below it.
+        increment = case(*((Trace.id == tid, cnt) for tid, cnt in hit_counts.items()), else_=0)
         await session.execute(
-            update(Trace).where(Trace.id.in_(hit_ids)).values(commons_hits=Trace.commons_hits + 1)
+            update(Trace).where(Trace.id.in_(hit_counts)).values(commons_hits=Trace.commons_hits + increment)
         )
 
     matches.sort(key=lambda m: m["similarity"], reverse=True)

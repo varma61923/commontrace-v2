@@ -667,6 +667,40 @@ class TestValueLedger:
             row = await session.get(Trace, tid)
         assert row.commons_hits == 2
 
+    async def test_two_failures_in_one_query_hitting_the_same_trace_both_count(
+        self, session_factory, config, orgs
+    ):
+        """The batch case `test_hits_accumulate_across_separate_consumers`
+        doesn't cover: TWO submitted failures in the SAME commons_overlap
+        call both best-matching the SAME shared trace -- a fleet hitting one
+        substrate failure across several tasks and submitting them together,
+        which is exactly the batch workflow this API exists to support.
+
+        A naive `UPDATE ... WHERE id IN (hit_ids)` credits the row once per
+        UPDATE STATEMENT regardless of how many times its id repeats in the
+        IN-list -- Postgres does not re-apply the SET clause per duplicate.
+        That silently under-counts this case by construction, contradicting
+        this class's whole premise: value delivered has to be counted
+        correctly, and two distinct failures genuinely covered is two hits,
+        not one."""
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        probe = [
+            _failure("first-occurrence", "Stripe webhook retries", "duplicate delivery on 500"),
+            _failure("second-occurrence", "Stripe webhook retries", "duplicate delivery on 500"),
+        ]
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(session, orgs["consumer"], probe)
+        assert report["n_covered"] == 2
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == 2, (
+            "two failures covered in one call must count as two hits, not one"
+        )
+
     async def test_counting_survives_concurrent_queries(self, session_factory, config, orgs):
         """The increment is an atomic in-database UPDATE, not a
         read-modify-write: contributor standing is the basis for pricing,
