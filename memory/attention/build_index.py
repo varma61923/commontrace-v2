@@ -92,7 +92,13 @@ def _load_frontmatter(fm_text: str):
         from commontrace.frontmatter import _StrictBoolLoader
     except Exception:  # noqa: BLE001 - standalone use, any import problem
         return yaml.safe_load(fm_text)
-    return yaml.load(fm_text, Loader=_StrictBoolLoader)
+    # bandit flags any yaml.load() call regardless of Loader, but
+    # _StrictBoolLoader IS a yaml.SafeLoader subclass (see its docstring in
+    # commontrace/frontmatter.py) that only narrows two implicit-conversion
+    # rules -- it accepts no more of the YAML spec than SafeLoader does, so
+    # this carries none of the arbitrary-object-instantiation risk B506
+    # exists to catch.
+    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
 
 
 def build_query_text(frontmatter: dict, body: str) -> str:

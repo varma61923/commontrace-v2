@@ -84,6 +84,22 @@ class TestFormats:
         assert failures[0]["label"] == "Pool exhausted"
         assert failures[0]["tags"] == ["db", "load"]
 
+    def test_csv_with_a_ragged_extra_column_does_not_crash(self, tmp_path):
+        """Regression test for a real bug: csv.DictReader's default
+        restkey=None stashes a ragged row's overflow columns as a list under
+        record[None] -- a non-string key. _first()/_tags_of() iterated every
+        key in the row calling .lower() on it, so a single row with more
+        commas than the header raised AttributeError on None and took down
+        the whole import, not just that row."""
+        p = _write(tmp_path, "ragged.csv",
+                   "Summary,Description,Components\n"
+                   "Pool exhausted,spike drained it,\"db,load\",unexpected,extra,columns\n"
+                   "Clean row,no ragged columns here,ops\n")
+        failures, stats = failure_import.read_failures(p)
+        assert stats["format"] == "csv"
+        assert [f["label"] for f in failures] == ["Pool exhausted", "Clean row"]
+        assert failures[1]["tags"] == ["ops"]
+
     def test_tsv(self, tmp_path):
         p = _write(tmp_path, "t.tsv", "title\tdescription\nPool exhausted\tspike\n")
         failures, _ = failure_import.read_failures(p)

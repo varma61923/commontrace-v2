@@ -85,16 +85,32 @@ def _parse_bool(raw: Any) -> bool | None:
 
 
 def _extract_outcome(row: dict[str, Any]) -> dict[str, Any]:
+    """Outcome fields can arrive two shapes: flat (a CSV row, or a JSONL
+    row a spreadsheet tool wrote with `resolved`/`baseline`/etc. as
+    top-level columns) or nested under an `outcome` key -- which is what
+    this product's OWN exports look like, since trace.schema.json declares
+    `outcome` as a nested object (see templates.trace_frontmatter). Only
+    checking top-level keys silently dropped every outcome field when
+    re-importing our own JSONL output: `baseline`, `resolved`, and the rest
+    all disappeared with no error, so a re-imported baseline trace looked
+    like an ordinary ACTIVE trace with no outcome recorded at all. A
+    top-level field wins over a nested one of the same name if a row
+    somehow has both."""
+    nested = row.get("outcome")
+    nested = nested if isinstance(nested, dict) else {}
+
     outcome: dict[str, Any] = {}
     for field_name in _OUTCOME_BOOL_FIELDS:
-        if field_name in row:
-            parsed = _parse_bool(row[field_name])
+        source = row if field_name in row else nested
+        if field_name in source:
+            parsed = _parse_bool(source[field_name])
             if parsed is not None:
                 outcome[field_name] = parsed
     for field_name in _OUTCOME_INT_FIELDS:
-        if field_name in row and str(row[field_name]).strip() != "":
+        source = row if field_name in row else nested
+        if field_name in source and str(source[field_name]).strip() != "":
             try:
-                outcome[field_name] = int(row[field_name])
+                outcome[field_name] = int(source[field_name])
             except (ValueError, TypeError):
                 pass
     return outcome

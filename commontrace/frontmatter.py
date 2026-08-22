@@ -6,6 +6,8 @@ import os
 import re
 import stat
 import tempfile
+import time
+import uuid
 from typing import Any
 
 import yaml
@@ -14,6 +16,11 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover -- POSIX-only stdlib module
     fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover -- Windows-only stdlib module
+    msvcrt = None  # type: ignore[assignment]
 
 # Delimiter must be its own line (optionally trailing whitespace / CR), not just the
 # substring "---" anywhere in the file -- a plain `content.split("---", 2)` corrupts
@@ -110,7 +117,13 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         return {}, content
     fm_text = content[delims[0].end():delims[1].start()]
     try:
-        fm = yaml.load(fm_text, Loader=_StrictBoolLoader)
+        # bandit flags any yaml.load() call regardless of Loader, but
+        # _StrictBoolLoader is a yaml.SafeLoader subclass (see its class
+        # docstring above) that only narrows two implicit-conversion
+        # rules -- it accepts no more of the YAML spec than SafeLoader
+        # does, so this carries none of the arbitrary-object-instantiation
+        # risk B506 exists to catch.
+        fm = yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
     except yaml.YAMLError as exc:
         raise FrontmatterError(f"{path}: malformed YAML frontmatter: {exc}") from exc
     if fm is None:
@@ -121,6 +134,28 @@ def read(path: str) -> tuple[dict[str, Any], str]:
         )
     body = content[delims[1].end():].lstrip("\n")
     return fm, body
+
+
+def _new_file_mode(target_dir: str) -> int:
+    """The mode a brand-new file would get under the current process
+    umask -- without the os.umask(0) / os.umask(restore) round-trip this
+    replaced, which briefly sets the umask to 0 *process-wide*. Any OTHER
+    thread that creates a file in that window (via this module or any
+    other code running in the same process) gets one with no umask
+    applied at all, i.e. world-writable -- a race across every thread in
+    the process, not just this call.
+
+    Instead, ask the kernel to apply the umask to a throwaway file: a
+    single open() with O_CREAT combines the requested mode with the
+    umask atomically, with no shared process state mutated in between.
+    """
+    probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
+    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    try:
+        return stat.S_IMODE(os.fstat(fd).st_mode)
+    finally:
+        os.close(fd)
+        os.unlink(probe_path)
 
 
 def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
@@ -141,9 +176,7 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
     try:
         want_mode = stat.S_IMODE(os.stat(path).st_mode)
     except FileNotFoundError:
-        umask = os.umask(0)
-        os.umask(umask)
-        want_mode = 0o666 & ~umask
+        want_mode = _new_file_mode(target_dir)
 
     temp_file = tempfile.NamedTemporaryFile(
         dir=target_dir,
@@ -159,6 +192,14 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
             fh.write(fm_text)
             fh.write("---\n\n")
             fh.write(body.rstrip("\n") + "\n")
+            # Without this, the rename that follows can land before the
+            # write it points at is actually on disk: a crash or power
+            # loss in that window leaves `path` pointing at a zero-byte or
+            # truncated inode even though os.replace() itself is atomic --
+            # atomicity of the rename says nothing about durability of the
+            # data it's renaming.
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(temp_path, want_mode)
         os.replace(temp_path, path)
     except BaseException:
@@ -168,6 +209,97 @@ def write(path: str, frontmatter: dict[str, Any], body: str) -> None:
             except OSError:
                 pass
         raise
+
+
+def _lock_exclusive(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    # msvcrt.locking(LK_LOCK) only retries internally for ~10 seconds
+    # before raising OSError -- looping on that here is what turns it into
+    # an unbounded blocking wait, matching flock(LOCK_EX)'s semantics.
+    while True:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            return
+        except OSError:
+            time.sleep(0.05)
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def _acquire_lock_fd(lock_path: str) -> int:
+    if fcntl is None:
+        # Windows has no equivalent of unlinking a still-open file out from
+        # under a concurrent opener, so there is no analogous "did the path
+        # get swapped to a new inode while I waited" race to recheck for
+        # here -- open, lock, done.
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        _lock_exclusive(fd)
+        return fd
+
+    while True:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        _lock_exclusive(fd)
+        try:
+            fd_stat = os.fstat(fd)
+            path_stat = os.stat(lock_path)
+            same_inode = (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
+        except OSError:
+            same_inode = False
+        if same_inode:
+            return fd
+        # Lost a race with a concurrent release that unlinked this path and
+        # a third opener that recreated it: this fd is locked, but on an
+        # inode `lock_path` no longer names. Let it go and try again
+        # against whatever lives at the path now.
+        _unlock(fd)
+        os.close(fd)
+
+
+def _release_lock_fd(fd: int, lock_path: str) -> None:
+    """Release the lock and best-effort clean up `lock_path` so it does not
+    accumulate one orphaned file per ever-locked path forever.
+
+    POSIX: unlink while STILL HOLDING the lock, and only if `lock_path`
+    still names the inode this fd has open. Unlinking after unlocking (or
+    unconditionally) would race a concurrent opener that already holds a
+    blocked flock() on this same inode: this process's unlink swaps in
+    nothing, a still-later opener creates a THIRD, different inode and
+    locks it uncontended, and now two callers are inside the critical
+    section at once on two different inodes -- exactly the double-lock
+    hazard this module's write() design already guards against for `path`
+    itself. Checking device+inode match right before unlinking (while
+    still exclusive) and pairing it with the recheck loop in
+    _acquire_lock_fd is what keeps that from happening here too.
+
+    Windows: the reverse order. A file with any open handle generally
+    cannot be unlinked at all, so cleanup has to happen after this
+    process's own handle is closed; if another process still has it open
+    at that point the unlink simply (and safely) fails.
+    """
+    if fcntl is not None:
+        try:
+            fd_stat = os.fstat(fd)
+            path_stat = os.stat(lock_path)
+            if (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino):
+                os.unlink(lock_path)
+        except OSError:
+            pass
+        _unlock(fd)
+        os.close(fd)
+    else:
+        _unlock(fd)
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
 
 
 @contextlib.contextmanager
@@ -202,31 +334,31 @@ def locked(path: str):
     temporary files" fix, as opposed to each writer locking its own
     NamedTemporaryFile (which never contends with anyone).
 
-    POSIX only (fcntl.flock). On a platform without fcntl (e.g. native
-    Windows, not WSL) this degrades to no synchronization at all rather
-    than raising -- consistent with this module's existing policy that a
-    robustness feature must never be the reason a capture/approve/write
-    fails outright -- but that means the race this function exists to
-    close is NOT closed there. This is a known, real limitation, not a
-    claim of full cross-platform correctness.
+    Uses fcntl.flock on POSIX and msvcrt.locking on Windows (native, not
+    WSL -- WSL is a real Linux kernel and gets fcntl like any other POSIX
+    platform). On a platform with neither module this degrades to no
+    synchronization at all rather than raising -- consistent with this
+    module's existing policy that a robustness feature must never be the
+    reason a capture/approve/write fails outright -- but that means the
+    race this function exists to close is NOT closed there. This is a
+    known, real limitation, not a claim of full cross-platform
+    correctness.
 
     Does not address: a process crashing while holding the lock (the OS
-    releases flock automatically when the holding process's file
+    releases the lock automatically when the holding process's file
     descriptors close, including on crash, so a stale lock cannot outlive
-    its process); NFS or other network filesystems, where flock semantics
-    are unreliable or unsupported -- this is designed for the local
-    filesystem `memory/` is expected to live on.
+    its process); NFS or other network filesystems, where these locking
+    primitives are unreliable or unsupported -- this is designed for the
+    local filesystem `memory/` is expected to live on.
     """
-    if fcntl is None:
+    if fcntl is None and msvcrt is None:
         yield
         return
 
     lock_path = path + ".lock"
     os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = _acquire_lock_fd(lock_path)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        _release_lock_fd(fd, lock_path)

@@ -125,7 +125,13 @@ class Trace(Base):
     extensions: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     watch_condition: Mapped[str] = mapped_column(Text, default="", nullable=False)
     review_after: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-    supersedes_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    # Not a ForeignKey: the trace it supersedes may already be purged (see
+    # hub/manage.py:purge_trace's amendment-chain walk), and a dangling FK
+    # would block that deletion rather than let the chain be cleaned up.
+    # Indexed anyway -- amend_trace's chain walk and any lookup of "what
+    # superseded this trace" filters on it, and without an index that is a
+    # full table scan that only gets slower as the table grows.
+    supersedes_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True, index=True)
     contributor: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     outcome: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -289,7 +295,12 @@ class TraceRelation(Base):
     trace_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("traces.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    related_trace_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    # Not a ForeignKey (see hub/manage.py:purge_trace -- a relation row
+    # where this trace is the TARGET is not covered by trace_id's own
+    # FK/CASCADE, deliberately, so purge_trace can clean it up explicitly
+    # instead). Indexed anyway: that same purge path, and crud.py's own
+    # relation lookups, filter on it directly.
+    related_trace_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
     relationship_type: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 

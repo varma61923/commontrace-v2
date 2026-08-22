@@ -62,6 +62,13 @@ def _norm(text: str) -> str:
 def _first(record: dict, keys: tuple[str, ...]) -> str:
     for k in keys:
         for actual in record:
+            # csv.DictReader's default restkey is None: a ragged row with
+            # MORE columns than the header stashes the overflow as a list
+            # under record[None], so `record` can hold a non-string key.
+            # actual.lower() on that None crashed every row after the first
+            # ragged one -- one malformed line took down the whole import.
+            if not isinstance(actual, str):
+                continue
             if actual.lower().strip() == k and record[actual] not in (None, ""):
                 return str(record[actual])
     return ""
@@ -71,6 +78,10 @@ def _tags_of(record: dict) -> list[str]:
     raw = None
     for k in _TAG_KEYS:
         for actual in record:
+            # Same ragged-CSV guard as _first(): record[None] from
+            # csv.DictReader's overflow column would otherwise crash here too.
+            if not isinstance(actual, str):
+                continue
             if actual.lower().strip() == k and record[actual]:
                 raw = record[actual]
                 break

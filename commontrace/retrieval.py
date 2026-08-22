@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 # \w with re.UNICODE, not [a-z0-9]: the ASCII-only class silently mutilates
 # any non-English text. "résumé" tokenized to ['sum'] (the accented letters
@@ -64,6 +65,22 @@ def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
     ]
 
 
+def _rank_int(value: Any) -> int:
+    """Coerce a frontmatter field the schema declares as an integer
+    (importance, uses), tolerating a hand-edited file where it isn't one.
+    rank_lessons's sort key compares this across every ranked lesson in
+    the same tuple position, and Python raises TypeError comparing e.g.
+    int and str there -- so one lesson with `importance: high` (a string,
+    not the schema's 1-5 integer) used to crash ranking for every lesson,
+    not just the malformed one. lesson files are explicitly meant to be
+    hand-edited (see commontrace/frontmatter.py) and are not schema
+    validated before reaching this function."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def rank_lessons(
     task: str,
     lessons: list[tuple[str, dict]],
@@ -80,7 +97,14 @@ def rank_lessons(
     if not query_terms:
         return []
 
-    ranked: list[RankedLesson] = []
+    # (RankedLesson, importance, uses) rather than a separate by_slug dict
+    # keyed on fm.get("name"): two lessons with the same (or both missing/
+    # empty) `name` collided in that dict, so the tie-break silently used
+    # the WRONG lesson's importance/uses for one of them. Carrying each
+    # lesson's own sort fields alongside it here instead ties them to the
+    # specific (path, fm) pair that produced them, not to a name that may
+    # not be unique.
+    scored: list[tuple[RankedLesson, int, int]] = []
     for path, fm in lessons:
         score = 0.0
         matched: set[str] = set()
@@ -91,23 +115,17 @@ def rank_lessons(
                 score += weight * len(hits)
                 matched |= hits
         if score > 0:
-            ranked.append(
+            scored.append((
                 RankedLesson(
                     path=path,
                     slug=str(fm.get("name", "")),
                     description=str(fm.get("description", "")),
                     score=score,
                     matched_terms=sorted(matched),
-                )
-            )
+                ),
+                _rank_int(fm.get("importance", 0)),
+                _rank_int(fm.get("uses", 0)),
+            ))
 
-    by_slug = {str(fm.get("name", "")): fm for _, fm in lessons}
-    ranked.sort(
-        key=lambda r: (
-            r.score,
-            by_slug.get(r.slug, {}).get("importance", 0) or 0,
-            by_slug.get(r.slug, {}).get("uses", 0) or 0,
-        ),
-        reverse=True,
-    )
-    return ranked[:top_k]
+    scored.sort(key=lambda item: (item[0].score, item[1], item[2]), reverse=True)
+    return [lesson for lesson, _, _ in scored[:top_k]]

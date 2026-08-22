@@ -41,11 +41,20 @@ async def session_scope(
 ) -> AsyncIterator[AsyncSession]:
     """One transaction per request: commit on success, roll back on any
     exception so a half-applied write never lands (e.g. a trace insert that
-    raises mid-way through an abuse-control check)."""
+    raises mid-way through an abuse-control check).
+
+    Catches BaseException, not Exception: asyncio.CancelledError subclasses
+    BaseException (not Exception, since Python 3.8), so a request cancelled
+    mid-transaction -- a client disconnect, a server shutdown, a timeout
+    cancelling the handling task -- would skip this rollback entirely under
+    an `except Exception` and leave the session's pending writes uncommitted
+    on the connection when it's returned to the pool instead of explicitly
+    rolled back here.
+    """
     async with session_factory() as session:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:
             await session.rollback()
             raise

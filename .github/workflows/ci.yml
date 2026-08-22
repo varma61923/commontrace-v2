@@ -114,6 +114,69 @@ jobs:
       - name: Run Hub tests (including test_tenant_isolation.py)
         run: python -m pytest hub/tests/ -q
 
+  security-scan:
+    # Static security scanning and known-CVE dependency auditing for the
+    # project's actual dependencies -- neither ran in CI before this job
+    # existed, so a new Medium+ bandit finding or a newly disclosed CVE in
+    # a pinned dependency could land and sit unnoticed indefinitely.
+    name: security scan (bandit, pip-audit, mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install commontrace with every extra, plus the Hub's own dependencies
+        run: |
+          python -m pip install -e ".[attention,hub-sync,dev]"
+          python -m pip install -r hub/requirements.txt
+          python -m pip install bandit pip-audit mypy
+
+      # -x excludes tests/: B101 (assert_used) fires on every pytest
+      # `assert` statement, which is normal test code, not a finding. -ll
+      # gates on Medium+ severity -- Low-severity style findings (e.g.
+      # B311's "don't use random.Random for crypto" on overlap.py's
+      # deterministic, non-secret MinHash permutation seed) stay visible
+      # in a full local run but don't fail the build over a non-issue.
+      - name: Bandit static analysis
+        run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
+
+      # A bare `pip-audit` scans every installed package in the active
+      # environment, including pip/setuptools/wheel themselves -- so a CVE
+      # in ambient build tooling that ships nowhere near a customer's
+      # commontrace install would fail this job for a reason unrelated to
+      # any dependency this project actually declares. Scoped to exactly
+      # what pyproject.toml's [project.dependencies] and
+      # [project.optional-dependencies] list instead, the same
+      # pinned-file pattern hub/requirements.txt already uses below.
+      - name: pip-audit -- commontrace's own declared dependencies
+        run: |
+          cat > /tmp/commontrace-audit-requirements.txt <<'REQS'
+          PyYAML>=6.0,<7.0
+          numpy>=1.24,<3.0
+          sentence-transformers>=6.0,<7.0
+          transformers>=5.5.0
+          mcp>=1.2
+          httpx2
+          REQS
+          pip-audit -r /tmp/commontrace-audit-requirements.txt
+
+      - name: pip-audit -- the Hub server's pinned dependencies
+        run: pip-audit -r hub/requirements.txt
+
+      # Informational, not gated: this surfaces genuine pre-existing type
+      # errors this one CI job does not attempt to clear in a single pass,
+      # so it must not fail the build -- the same "visible rather than
+      # silently ignored" policy this repo already applies elsewhere (see
+      # bench_cmd.py's unimplemented --threshold-* flags). Tightening this
+      # to a real gate is follow-up work, deliberately not bundled in here.
+      - name: mypy (known findings, informational only)
+        continue-on-error: true
+        run: mypy commontrace/ hub/ --ignore-missing-imports
+
   docker-build:
     # The image could not be built where it was authored (no Docker daemon),
     # so CI is the first thing that actually proves it builds and that the

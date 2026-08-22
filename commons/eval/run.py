@@ -36,6 +36,7 @@ Run:  python commons/eval/run.py
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -46,15 +47,26 @@ sys.path.insert(0, str(ROOT))
 from hub import commons  # noqa: E402
 
 CORPUS = ROOT / "commons" / "seed" / "substrate-v1.jsonl"
-PROBES = Path(__file__).resolve().parent / "probes-v1.jsonl"
+EVAL_DIR = Path(__file__).resolve().parent
+# v1 is the dev set this file's docstring caveats about (same author wrote
+# corpus and probes, so read its recall as an optimistic bound). v2 is a
+# held-out set written after the corpus was frozen, with no further changes
+# made to the corpus on the strength of it -- the whole point of a held-out
+# set is that it stays unseen by the thing it's evaluating.
+PROBE_SETS = {
+    "v1": EVAL_DIR / "probes-v1.jsonl",
+    "v2": EVAL_DIR / "probes-v2.jsonl",
+}
+PROBES = PROBE_SETS["v1"]
 
 
 def _load(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def evaluate(threshold: float | None = None) -> dict:
-    """Return the measured result at `threshold` (default: the shipped one).
+def evaluate(threshold: float | None = None, probes_path: Path | None = None) -> dict:
+    """Return the measured result at `threshold` (default: the shipped one)
+    against `probes_path` (default: probes-v1.jsonl, the dev set).
 
     Signing on both sides goes through `commons.signature_for`, the same
     call the Hub makes when seeding and the same one the client makes when
@@ -62,8 +74,9 @@ def evaluate(threshold: float | None = None) -> dict:
     would measure something nobody ever runs.
     """
     threshold = commons.DEFAULT_COMMONS_THRESHOLD if threshold is None else threshold
+    probes_path = PROBES if probes_path is None else probes_path
     corpus = _load(CORPUS)
-    probes = _load(PROBES)
+    probes = _load(probes_path)
 
     corpus_titles = [r["title"] for r in corpus]
     corpus_sigs = [
@@ -106,9 +119,19 @@ def evaluate(threshold: float | None = None) -> dict:
 
 
 def main() -> int:
-    r = evaluate()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--probes", choices=sorted(PROBE_SETS), default="v1",
+        help="Probe set to evaluate against: v1 (dev set, written alongside the "
+        "corpus) or v2 (held-out, written after the corpus was frozen). Default: v1.",
+    )
+    args = parser.parse_args()
+    probes_path = PROBE_SETS[args.probes]
+
+    r = evaluate(probes_path=probes_path)
     print(f"corpus:    {r['n_corpus']} records (commons/seed/substrate-v1.jsonl)")
-    print(f"probes:    {r['n_positive']} held-out positives, {r['n_negative']} negative controls")
+    print(f"probes:    {r['n_positive']} held-out positives, {r['n_negative']} negative controls "
+          f"({probes_path.name})")
     print(f"threshold: {r['threshold']} (the shipped default, unmodified)")
     print()
     print(f"recall on positives:      {r['recall']:.1%}  "
@@ -124,7 +147,7 @@ def main() -> int:
     print("sensitivity (informational -- the shipped threshold is not chosen from this):")
     print("  threshold   recall   false-positive")
     for t in (0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5):
-        s = evaluate(t)
+        s = evaluate(t, probes_path=probes_path)
         mark = "  <- shipped" if abs(t - commons.DEFAULT_COMMONS_THRESHOLD) < 1e-9 else ""
         print(f"  {t:<11.2f} {s['recall']:>6.1%}   {s['false_positive_rate']:>12.1%}{mark}")
     print()

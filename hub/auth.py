@@ -16,6 +16,7 @@ Design:
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import secrets
 from dataclasses import dataclass
@@ -62,7 +63,13 @@ async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | 
         expires_at = datetime.now(timezone.utc) + timedelta(days=expires_days)
 
     raw_key = generate_raw_key()
-    key_hash = _hasher.hash(raw_key)
+    # argon2id hashing is deliberately expensive (that is the whole point of
+    # using it) -- tens of milliseconds of pure CPU work. Called inline on
+    # the request coroutine, that blocks THIS event loop, and with it every
+    # other request the single-process Hub is concurrently serving, not just
+    # the one issuing a key. asyncio.to_thread moves it off the loop onto a
+    # worker thread so issuance stays expensive only for its own caller.
+    key_hash = await asyncio.to_thread(_hasher.hash, raw_key)
     api_key = ApiKey(
         org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash, expires_at=expires_at
     )
@@ -119,7 +126,12 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
     ).scalars().all()
     for candidate in candidates:
         try:
-            _hasher.verify(candidate.key_hash, raw_key)
+            # Same reasoning as issue_api_key's to_thread: verify() is the
+            # same expensive argon2id computation run in reverse, and this
+            # path runs on EVERY authenticated request -- inline, it would
+            # stall the event loop (and every concurrent request) on every
+            # single call, not just at key-issuance time.
+            await asyncio.to_thread(_hasher.verify, candidate.key_hash, raw_key)
         except VerifyMismatchError:
             continue
         if candidate.expires_at is not None and candidate.expires_at <= now:

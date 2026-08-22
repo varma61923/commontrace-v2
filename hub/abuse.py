@@ -88,13 +88,34 @@ class _Bucket:
 
 class RateLimiter:
     """Simple per-key token bucket. `per_minute` tokens refill continuously;
-    `burst` is the bucket capacity (how many calls can land back-to-back)."""
+    `burst` is the bucket capacity (how many calls can land back-to-back).
+
+    `_buckets` grows one entry per distinct key ever seen and, without
+    eviction, never shrinks -- a long-running Hub accumulates one bucket per
+    org that has ever called contribute_trace, forever, even for an org that
+    contributed once and never came back. `allow()` periodically sweeps
+    buckets idle long enough to have refilled to full capacity; evicting one
+    of those is a no-op change in behavior (the next call for that key
+    creates a fresh bucket that starts at full capacity too), so the sweep
+    trades a small amount of scan work for bounding memory to roughly the
+    number of RECENTLY active keys rather than all keys ever seen.
+    """
+
+    # A bucket idle this long is guaranteed to have refilled to capacity
+    # (min(capacity, ...) clamps it), so evicting it loses no state a future
+    # call wouldn't reconstruct identically. Long enough that legitimate
+    # bursty traffic minutes apart never sees the sweep.
+    _IDLE_TTL_SECONDS = 3600.0
+    # Sweep at most this often, so eviction is amortized O(1) per allow()
+    # call rather than an O(n) scan of every bucket on every call.
+    _SWEEP_INTERVAL_SECONDS = 300.0
 
     def __init__(self, per_minute: int, burst: int):
         self._rate_per_sec = per_minute / 60.0
         self._capacity = max(burst, 1)
         self._buckets: dict[str, _Bucket] = {}
         self._lock = threading.Lock()
+        self._last_sweep = time.monotonic()
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
@@ -106,10 +127,23 @@ class RateLimiter:
             elapsed = now - bucket.last_refill
             bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._rate_per_sec)
             bucket.last_refill = now
+            if now - self._last_sweep >= self._SWEEP_INTERVAL_SECONDS:
+                self._sweep_idle_buckets(now)
             if bucket.tokens >= 1.0:
                 bucket.tokens -= 1.0
                 return True
             return False
+
+    def _sweep_idle_buckets(self, now: float) -> None:
+        """Evict buckets idle long enough to have fully refilled. Caller
+        already holds self._lock -- this is not re-entrant on its own."""
+        stale_keys = [
+            key for key, bucket in self._buckets.items()
+            if now - bucket.last_refill >= self._IDLE_TTL_SECONDS
+        ]
+        for key in stale_keys:
+            del self._buckets[key]
+        self._last_sweep = now
 
 
 def make_rate_limiter(config: HubConfig) -> RateLimiter:

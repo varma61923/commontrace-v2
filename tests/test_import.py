@@ -58,6 +58,29 @@ class TestParseJsonl:
         imported, _ = import_data.parse_jsonl(iter(lines), FieldMapping())
         assert imported[0].outcome == {"resolved": True, "escalated": False, "tokens_used": 150}
 
+    def test_extracts_nested_outcome_fields(self):
+        """Regression test for a real bug: trace.schema.json declares
+        `outcome` as a nested object, so this product's OWN exports (a
+        `sync --pull` dump, a Hub search_traces JSONL export) write outcome
+        fields nested under an "outcome" key -- but _extract_outcome only
+        ever checked top-level keys, so re-importing our own output
+        silently dropped every outcome field (baseline, resolved, ...) with
+        no error."""
+        lines = [
+            '{"title": "t1", "context": "c1", "solution": "s1", '
+            '"outcome": {"resolved": true, "baseline": true, "tokens_used": 150}}'
+        ]
+        imported, _ = import_data.parse_jsonl(iter(lines), FieldMapping())
+        assert imported[0].outcome == {"resolved": True, "baseline": True, "tokens_used": 150}
+
+    def test_top_level_outcome_field_wins_over_nested(self):
+        lines = [
+            '{"title": "t1", "context": "c1", "solution": "s1", '
+            '"resolved": false, "outcome": {"resolved": true}}'
+        ]
+        imported, _ = import_data.parse_jsonl(iter(lines), FieldMapping())
+        assert imported[0].outcome == {"resolved": False}
+
     def test_custom_field_mapping(self):
         lines = ['{"summary": "t1", "body": "c1", "fix": "s1"}']
         mapping = FieldMapping(title="summary", context="body", solution="fix")
