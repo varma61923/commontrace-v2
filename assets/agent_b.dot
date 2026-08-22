@@ -4,7 +4,7 @@ digraph agent_b {
   fontname="DejaVu Sans";
   labelloc="t";
   fontsize=14;
-  label=<<b>B — reviewer indépendant</b>  ·  Phase 5 (spawn frais à chaque itération)<br/><font point-size="10">Audite le code de A contre les critères, indépendamment des choix de design de A</font>>;
+  label=<<b>B — independent reviewer</b>  ·  Phase 5 (fresh spawn each iteration)<br/><font point-size="10">Audits A's code against success criteria, independent of A's design choices</font>>;
   nodesep=0.28;
   ranksep=0.7;
 
@@ -14,25 +14,25 @@ digraph agent_b {
   subgraph cluster_in {
     label=<<b>Input — brief B</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
-    in_brief [label=<<font point-size="9">• Fichiers à reviewer = diff du commit P4<br align="left"/>• Critères de succès (verbatim utilisateur)<br align="left"/>• Grille d'audit (4 axes)<br align="left"/><b>• NE voit PAS le rapport de A</b> (anti-biais)</font>>];
+    in_brief [label=<<font point-size="9">• Files to review = diff from P4 commit<br align="left"/>• Success criteria (verbatim user)<br align="left"/>• Audit grid (4 axes)<br align="left"/><b>• Does NOT see A's report</b> (anti-bias)</font>>];
   }
 
-  b [label=<<b>B</b><br/><font point-size="9">Grille d'audit :<br/>1. sémantique préservée (pytest)<br/>2. anti-patterns<br/>3. critères user (PASS / FAIL)<br/>4. tests empiriques (lance benchs)</font>>,
+  b [label=<<b>B</b><br/><font point-size="9">Audit grid:<br/>1. semantics preserved (pytest)<br/>2. anti-patterns<br/>3. user criteria (PASS / FAIL)<br/>4. empirical tests (runs benchmarks)</font>>,
      fillcolor="#ea580c", fontcolor="white", penwidth=1.6];
 
-  mandate [label="Mandat : LECTURE SEULE\npeut LANCER tests / benchs\nno Write · no Edit · no git\nspawn frais ⇒ jugement indépendant",
+  mandate [label="Mandate: READ-ONLY\ncan RUN tests / benchmarks\nno Write · no Edit · no git\nfresh spawn => independent judgment",
            shape=note, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d", fontsize=9];
 
   subgraph cluster_out {
     label=<<b>Output — verdict</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#ffedd5", color="#ea580c", fontcolor="#7c2d12"];
-    out_ok  [label=<<b>CONFORME</b><br align="left"/><font point-size="9">points marquants validés (3-5)<br align="left"/>+ recos non-bloquantes (opt.)</font>>, fillcolor="#dcfce7", color="#16a34a", fontcolor="#14532d"];
-    out_ko  [label=<<b>ÉCART</b><br align="left"/><font point-size="9">liste numérotée d'écarts<br align="left"/>sévérité BLOQUANT / MAJEUR / MINEUR<br align="left"/>+ tests qui ont tourné</font>>, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d"];
+    out_ok  [label=<<b>CONFORM</b><br align="left"/><font point-size="9">validated key points (3-5)<br align="left"/>+ non-blocking recommendations (opt.)</font>>, fillcolor="#dcfce7", color="#16a34a", fontcolor="#14532d"];
+    out_ko  [label=<<b>GAP</b><br align="left"/><font point-size="9">numbered list of gaps<br align="left"/>severity BLOCKING / MAJOR / MINOR<br align="left"/>+ tests that were run</font>>, fillcolor="#fee2e2", color="#dc2626", fontcolor="#7f1d1d"];
   }
 
-  in_brief -> b [label=" diff + critères"];
-  b -> out_ok [label=" → Phase 6"];
-  b -> out_ko [label=" → Phase 6"];
+  in_brief -> b [label=" diff + criteria"];
+  b -> out_ok [label=" -> Phase 6"];
+  b -> out_ko [label=" -> Phase 6"];
   b -> mandate [style=invis];
   { rank=same; b; mandate; }
 }

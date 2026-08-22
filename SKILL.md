@@ -1,858 +1,879 @@
 ---
-name: justdoit
-description: "Pattern A+B double-review sous-agents avec loop jusqu'à conformité (max 3 itérations, puis arbitrage Claude). Lance un sous-agent A implementer + commit immédiat + sous-agent B reviewer indépendant. Itère si écart. Idéal pour code architectural, refactor lourd, ports CUDA/GPU, fixes critiques où une review indépendante apporte de la valeur. v2 ajoute un mécanisme d'apprentissage long-terme : Alpha (retrieval mémoire) en Phase 0, Omega (synthèse + propositions de leçons) en Phase 10, validation Lambda automatique du backlog mémoire en Phase 11. v2.1 ajoute l'importance scalaire 1-5 sur épisodes et leçons. v2.2 remplace la validation user par un sous-agent Lambda reviewer indépendant (workflow 100% automatisé). v2.3 ajoute une couche d'attention sémantique (embeddings locaux) en pré-filtre Alpha pour permettre le passage à l'échelle (100+ leçons) sans dégrader latence ni qualité. Invocation : `/justdoit <description tâche + critères de succès inline>`. Triggers : `/justdoit`, `fais le double review`, `justdoit cette tâche`, `lance A+B sur ...`."
+name: commontrace
+description: "A+B double-review pattern with sub-agents, looping until conformity (max 3 iterations, then orchestrator arbitration). Spawns sub-agent A (implementer) + immediate commit + independent sub-agent B (reviewer), and iterates on gaps. Carries long-term memory across runs: Alpha retrieves relevant lessons before work starts, Omega proposes new lessons from what happened, and Lambda validates the backlog independently, with a semantic attention pre-filter so retrieval scales past 100+ lessons. Ideal for architectural code, heavy refactors, CUDA/GPU ports, and critical fixes where an independent review adds value. Invocation: `/commontrace <task description + inline success criteria>`. Triggers: `/commontrace`, `do double review`, `commontrace this task`, `launch A+B on ...`."
 ---
 
-# Skill `/justdoit` — Pattern double-review A+B avec loop + apprentissage long-terme
+# Skill `/commontrace` — A+B double-review pattern with loop + long-term learning
 
-Délègue une tâche à un sous-agent **A implementer** puis un sous-agent **B reviewer indépendant**, avec **commit immédiat après A** et **loop d'itération si écart** (max 3 itérations, puis arbitrage Claude).
+Delegates a task to an **A implementer** sub-agent, then an independent **B reviewer** sub-agent, with **immediate commit after A** and an **iteration loop on gaps** (max 3 iterations, then orchestrator arbitration).
 
-**v2 (2026-05-26)** : ajout d'un mécanisme d'apprentissage long-terme via sous-agents **Alpha (retrieval)** et **Omega (synthèse + proposition d'enrichissement mémoire)** et une base mémoire structurée hiérarchiquement (`memory/`). Ce mécanisme est un terrain d'expérimentation pour le futur projet "Thomas AI" (cf. `project_thomas_ai_long_term_learning.md`).
+## Platform Mapping
 
-**v2.2 (2026-05-27)** : Phase 11 entièrement automatisée via le sous-agent **Lambda** (reviewer indépendant du backlog mémoire). Lambda audit chaque proposition Omega selon 4 critères (qualité formelle, non-doublon, généralisation, calibration importance) et rend un verdict ACCEPTÉ / REJETÉ / À RAFFINER. L'orchestrateur applique les ACCEPTÉ sans humain dans la boucle. Permet à un agent d'exécuter le pipeline complet sans dépendance utilisateur.
+This spec uses generic terms. Here is how they map to specific agent platforms:
 
-## Schéma pipeline (v2.2)
+| Generic concept | Claude Code | Devin | Other agents |
+|---|---|---|---|
+| Spawn sub-agent async | `Agent(subagent_type='general-purpose', run_in_background=true)` | `run_subagent(is_background=true)` | Platform-specific sub-agent spawn |
+| Prompt user | `AskUserQuestion` | `ask_user_question` | Platform-specific user prompt |
+| Task tracker create | `TaskCreate` | `todo_write` | Any task list / tracker |
+| Task tracker update | `TaskUpdate` | `todo_write` (update status) | Any task list / tracker |
+| Read file | `Read` | `read` | File read API |
+| Edit file | `Edit` | `edit` | File edit API |
+| Run command | `Bash` | `exec` | Shell/command API |
+
+**v2 (2026-05-26)**: added a long-term learning mechanism via **Alpha (retrieval)** and **Omega (synthesis + memory enrichment proposals)** sub-agents, and a hierarchically structured memory base (`memory/`). This mechanism is an experimentation ground for the CommonTrace fleet-learning platform.
+
+**v2.2 (2026-05-27)**: Phase 11 fully automated via the **Lambda** sub-agent (independent reviewer of the memory backlog). Lambda audits each Omega proposal against 4 criteria (formal quality, non-duplicate, generalization, importance calibration) and returns a verdict: ACCEPTED / REJECTED / NEEDS REFINEMENT. The orchestrator applies ACCEPTED entries without any human in the loop. Allows an agent to execute the complete pipeline with no user dependency.
+
+## Pipeline diagram (v2.2)
 
 ```
-Phase 0  → Alpha (retrieval mémoire) ────────────┐
-                                                  ↓
-Phase 1  → Parser invocation + complétion        (brief A enrichi par Alpha)
-Phase 2  → Créer tâche TaskList
-Phase 3  → Sous-agent A (implementer)             ──→ rapport A
-Phase 4  → Commit immédiat après A
-Phase 5  → Sous-agent B (reviewer indépendant)    ──→ verdict B
-Phase 6  → Décision selon verdict B
-            ├─ CONFORME → continue Phase 9
-            └─ ÉCART
-                ├─ it < max → Phase 7 (itération A2..An, retour Phase 4)
-                └─ it ≥ max → Phase 8 (arbitrage Claude)
-Phase 7  → Itération (relance A avec brief enrichi des écarts B)
-Phase 8  → Arbitrage Claude (max_iterations atteint)
-                                                  ↓
-Phase 9  → Mini-rétro orchestrateur (3 questions)
-Phase 10 → Omega (synthèse + propositions de leçons)  ──→ écrit episode/, propose lessons
-Phase 11 → Lambda (validation automatique du backlog) ──→ verdicts ACCEPTÉ/REJETÉ/À RAFFINER, orchestrateur applique ACCEPTÉ
+Phase 0  → Alpha (memory retrieval) ──────────────┐
+                                                   ↓
+Phase 1  → Parse invocation + completion          (brief A enriched by Alpha)
+Phase 2  → Create task in the task tracker
+Phase 3  → Sub-agent A (implementer)               ──→ report A
+Phase 4  → Immediate commit after A
+Phase 5  → Sub-agent B (independent reviewer)       ──→ verdict B
+Phase 6  → Decision based on verdict B
+            ├─ CONFORM → continue to Phase 9
+            └─ GAP
+                ├─ it < max → Phase 7 (iteration A2..An, back to Phase 4)
+                └─ it ≥ max → Phase 8 (orchestrator arbitration)
+Phase 7  → Iteration (relaunch A with brief enriched by B's gaps)
+Phase 8  → Orchestrator arbitration (max_iterations reached)
+                                                   ↓
+Phase 9  → Mini-retro by orchestrator (3 questions)
+Phase 10 → Omega (synthesis + lesson proposals)    ──→ writes episode/, proposes lessons
+Phase 11 → Lambda (automatic backlog validation)   ──→ ACCEPTED/REJECTED/NEEDS REFINEMENT verdicts, orchestrator applies ACCEPTED
 ```
 
-## Quand utiliser
+## When to use
 
-- **Code architectural** : refactor, port, redesign (e.g. CUDA port, scan algorithmique)
-- **Tâche risquée** où une review indépendante apporte de la valeur (e.g. modification d'un détecteur, fix bug critique)
-- **Tâche avec critères de succès mesurables** : tests, parité empirique, perf, anti-patterns
+- **Architectural code**: refactor, port, redesign (e.g. CUDA port, algorithmic scan)
+- **Risky task** where an independent review adds value (e.g. modifying a detector, critical bug fix)
+- **Task with measurable success criteria**: tests, empirical parity, perf, anti-patterns
 
-**NE PAS utiliser pour** :
-- Tâches triviales (1-2 fichiers, < 20 lignes modifiées) — voir "Bypass session principale" ci-dessous
-- Tâches exploratoires sans critères clairs
-- Tâches purement de lecture/recherche (utiliser `Explore` ou `general-purpose`)
-- Refactor multi-fichiers en conflit (cf. `feedback_parallel_subagents_file_overlap`)
+**DO NOT use for**:
+- Trivial tasks (1-2 files, < 20 lines modified) — see "Main session bypass" below
+- Exploratory tasks without clear criteria
+- Pure read/research tasks (use an exploratory or general-purpose sub-agent)
+- Multi-file refactors with conflicts (cf. `feedback_parallel_subagents_file_overlap`)
 
-## Bypass session principale (tâches triviales < 20 lignes)
+## Main session bypass (trivial tasks < 20 lines)
 
-Pour les tâches dont le scope mesurable est **< 20 lignes modifiées et < 3 fichiers touchés**, la session principale (Claude orchestrateur) peut traiter directement **SANS** lancer le pattern A+B (Phase 0 Alpha → Phase 10/11 Omega/Lambda). Évite l'overhead injustifié sur des tâches simples.
+For tasks whose measurable scope is **< 20 lines modified and < 3 files touched**, the main session (Orchestrator) can handle them directly **WITHOUT** launching the A+B pattern (Phase 0 Alpha → Phase 10/11 Omega/Lambda). Avoids unjustified overhead on simple tasks.
 
-**Critères d'éligibilité au bypass** :
-- Modification simple : rename, fix typo, ajout literal Pydantic, bump version, fix bug 5-lignes, ajout test ciblé
-- Tests existants couvrent le changement (pas besoin de nouveau test, ou ajout d'un seul test trivial)
-- Pas de logique métier nouvelle
-- Pas de refactor d'API publique
-- Pas de modification d'invariants
+**Bypass eligibility criteria**:
+- Simple modification: rename, fix typo, add Pydantic literal, bump version, 5-line bug fix, add targeted test
+- Existing tests cover the change (no new test needed, or a single trivial test addition)
+- No new business logic
+- No public API refactor
+- No invariant modifications
 
-**Workflow bypass (session principale directe)** :
-1. Orchestrateur lit les fichiers concernés
-2. Présente le diff à l'utilisateur (chat ouvert, validation interactive section par section — cf. `lesson_show_changes_before_editing`)
-3. Applique l'Edit après OK utilisateur
-4. Run les tests existants pour confirmer non-régression
-5. Commit Git ciblé avec message explicite
+**Bypass workflow (direct main session)**:
+1. Orchestrator reads the affected files
+2. Presents the diff to the user (open chat, interactive section-by-section validation — cf. `lesson_show_changes_before_editing`)
+3. Applies the edit after user OK
+4. Runs existing tests to confirm no regression
+5. Targeted Git commit with explicit message
 
-**À ne PAS bypasser (utiliser /justdoit complet)** :
-- Refactor architectural (e.g. changement d'API, nouveau pattern)
-- Port CUDA / GPU
-- Modification d'API publique
-- Fix critique sur code production
-- N'importe quoi qui touche > 20 lignes ou > 3 fichiers
-- Tâche avec critères de succès mesurables multi-dimensionnels
+**DO NOT bypass (use full /commontrace)**:
+- Architectural refactor (e.g. API change, new pattern)
+- CUDA / GPU port
+- Public API modification
+- Critical fix on production code
+- Anything touching > 20 lines or > 3 files
+- Task with multi-dimensional measurable success criteria
 
-**Note** : cette section ajoutée 2026-05-28 suite à la dreamer session OGHAM §4.4 (over-engineering observé sur fixes simples comme `midnight_ny` 5 lignes ou neutralisation T4 magic numbers). Le pattern empirique récent du bypass (e.g. midnight_ny Fix D 2026-05-28 traité en session principale sans /justdoit) a démontré qu'il est efficace.
+**Note**: this section added 2026-05-28 following the dreamer session OGHAM §4.4 (over-engineering observed on simple fixes like `midnight_ny` 5 lines or T4 magic numbers neutralization). The recent empirical bypass pattern (e.g. midnight_ny Fix D 2026-05-28 handled in main session without /commontrace) demonstrated its effectiveness.
 
 ## Workflow
 
-### Phase 0 — Alpha (retrieval mémoire)
+### Phase 0 — Alpha (memory retrieval)
 
-**Objectif** : avant de coder, lire la base mémoire `memory/` pour identifier les leçons et épisodes passés applicables à la tâche entrante. Injecter le résultat dans le brief A.
+**Objective**: before coding, read the `memory/` base to identify past lessons and episodes applicable to the incoming task. Inject the result into the A brief.
 
-Lance un sous-agent **Alpha** (`Agent` avec `subagent_type=general-purpose`, `run_in_background=true`). Alpha est en **lecture seule** sur la mémoire — il ne touche à rien d'autre.
+Spawn a fresh sub-agent **Alpha** asynchronously. Alpha is **read-only** on memory — it does not touch anything else.
 
-**Brief Alpha (template autonome, copiable verbatim)** :
+**Alpha brief (self-contained template, copy verbatim)**:
 
 ```
-Tu es Alpha, sous-agent retrieval mémoire pour /justdoit. Tu travailles en lecture seule.
+You are Alpha, a memory-retrieval sub-agent for /commontrace. You operate in read-only mode.
 
-## Mandat strict
-- LIRE la base mémoire `~/.claude/skills/justdoit/memory/`
-- IDENTIFIER les lessons et episodes pertinents pour la tâche entrante
-- RETOURNER un brief structuré qui sera injecté verbatim dans le brief A
+## Strict mandate
+- READ the memory base at `$COMMONTRACE_ROOT/memory/`
+- IDENTIFY lessons and episodes relevant to the incoming task
+- RETURN a structured brief that will be injected verbatim into the A brief
 
-Tu NE touches à rien d'autre que la lecture de la mémoire. Pas de Write, pas de Edit, pas de git.
+You do NOT touch anything other than reading memory. No file writes, no edits, no git.
 
-## Tâche entrante (verbatim utilisateur)
-[INVOCATION /justdoit verbatim ici]
+## Incoming task (user verbatim)
+[VERBATIM /commontrace INVOCATION HERE]
 
-## Workflow obligatoire
+## Mandatory workflow
 
-### Étape 0 — Pré-filtre attention sémantique (v2.3)
-LANCER en Bash :
+### Step 0 — Semantic attention pre-filter (v2.3)
+RUN via shell:
 ```
-python3 ~/.claude/skills/justdoit/memory/attention/query.py "[invocation /justdoit verbatim, tâche + critères]" --top-k=10 --include-importance-floor=4
+python3 $COMMONTRACE_ROOT/memory/attention/query.py "[verbatim /commontrace invocation, task + criteria]" --top-k=10 --include-importance-floor=4
 ```
-Lire la sortie (une ligne par leçon, format `slug | cosine=0.XXX | importance=N`). Ce sont tes candidats prioritaires pour les étapes 1-2 ci-dessous. L'override `--include-importance-floor=4` garantit que toutes les leçons `importance >= 4` sont présentes dans la sortie, même si absentes du top-K cosine — tu DOIS les conserver comme candidats à considérer (cf. étape 7).
+Read the output (one line per lesson, format `slug | cosine=0.XXX | importance=N`). These are your priority candidates for steps 1-2 below. The override `--include-importance-floor=4` guarantees that all lessons with `importance >= 4` are present in the output, even if absent from the top-K cosine — you MUST keep them as candidates to consider (cf. step 7).
 
-Le score cosine est un COMPLÉMENT au tri qualitatif (importance × tag_match), pas un remplacement. Tu juges toujours `applies_when` / `do_not_apply_when` à l'étape 4. Si le script échoue (fichier index.npz absent, erreur Python), continue avec le workflow classique (étapes 1-8) en signalant l'échec dans le rapport.
+The cosine score is a COMPLEMENT to qualitative sorting (importance × tag_match), not a replacement. You always judge `applies_when` / `do_not_apply_when` at step 4. If the script fails (index.npz file missing, Python error), continue with the classic workflow (steps 1-8) and note the failure in the report.
 
-### Étapes 1-8 (workflow qualitatif classique)
-1. LIRE `memory/INDEX.md` pour vérifier la pertinence des candidats du pré-filtre et compléter par domaine si nécessaire
-2. Sélectionner 3-7 lessons/episodes candidats — priorité au top-K cosine de l'étape 0, complétés des candidats `importance >= 4` non couverts
-3. LIRE le fichier de chaque candidat (frontmatter YAML + corps)
-4. Vérifier `applies_when` et `do_not_apply_when` de chacun contre la tâche entrante
-5. Retenir UNIQUEMENT ceux qui passent ce filtre sémantique
-6. **Trier les leçons retenues par score décroissant** : `score = importance × tag_match`
-   - `importance` = champ frontmatter (entier 1-5 ; défaut 3 si absent — flagger "à caler" dans le rapport)
-   - `tag_match` = nombre de tags lesson présents dans les mots-clés de la tâche entrante (proxy simple, entier ≥ 0)
-7. **Sécurité importance** : toute leçon `importance >= 4` doit être considérée même si `tag_match == 0`, parce qu'elle représente un risque critique/showstopper potentiellement transversal — ne PAS la filtrer faute de tag match, la mentionner avec mention "importance haute, applicabilité à valider"
-8. Synthétiser au format de sortie ci-dessous
+### Steps 1-8 (classic qualitative workflow)
+1. READ `memory/INDEX.md` to verify pre-filter candidate relevance and complement by domain if needed
+2. Select 3-7 candidate lessons/episodes — prioritize the top-K cosine from step 0, complemented by `importance >= 4` candidates not already covered
+3. READ the file for each candidate (YAML frontmatter + body)
+4. Verify `applies_when` and `do_not_apply_when` of each against the incoming task
+5. Retain ONLY those that pass this semantic filter
+6. **Sort retained lessons by descending score**: `score = importance × tag_match`
+   - `importance` = frontmatter field (integer 1-5; default 3 if absent — flag "needs calibration" in the report)
+   - `tag_match` = number of lesson tags present in the incoming task keywords (simple proxy, integer ≥ 0)
+7. **Importance safety net**: any lesson with `importance >= 4` must be considered even if `tag_match == 0`, because it represents a potentially cross-cutting critical/showstopper risk — do NOT filter it out due to tag match failure; mention it with note "high importance, applicability to validate"
+8. Synthesize in the output format below
 
-## Format de sortie EXACT (à respecter scrupuleusement)
+## EXACT output format (follow scrupulously)
 
 ## RETRIEVED MEMORY (Alpha)
 
-### Lessons applicables (3-5 max, triées par importance × tag_match décroissant)
-1. **[lesson_slug]** (cosine: 0.XX, importance: N) — rule en 1 phrase
-   - Why this applies here: [1 phrase ancrée dans la tâche entrante, pas générique]
-   - How to apply: [action concrète dans le code à produire — ce que A doit faire/éviter]
+### Applicable lessons (3-5 max, sorted by importance × tag_match descending)
+1. **[lesson_slug]** (cosine: 0.XX, importance: N) — rule in 1 sentence
+   - Why this applies here: [1 sentence anchored in the incoming task, not generic]
+   - How to apply: [concrete action in the code to produce — what A must do/avoid]
 
 2. **[lesson_slug]** (cosine: 0.XX, importance: N) — ...
 
-Note format : `cosine: 0.XX` est le score retourné par `query.py` à l'étape 0 (mettre `N/A` si la leçon a été remontée uniquement via l'override sécurité importance ≥ 4 sans présence dans le top-K cosine). L'exigence "How to apply spécifique par lesson" est CONSERVÉE — pas un copy-paste de la lesson source, mais une action concrète ancrée dans la tâche entrante.
+Format note: `cosine: 0.XX` is the score returned by `query.py` at step 0 (put `N/A` if the lesson was surfaced only via the importance ≥ 4 safety override without being in the top-K cosine). The requirement "How to apply specific per lesson" is PRESERVED — not a copy-paste of the lesson source, but a concrete action anchored in the incoming task.
 
-### Episodes précédents similaires (0-2)
-- [episode_slug] (importance: N) — résumé 1 phrase + ce qui en avait été retenu
+### Similar previous episodes (0-2)
+- [episode_slug] (importance: N) — 1-sentence summary + what was retained from it
 
-### Recommandations pour le brief A
-- À ajouter dans la section "Contraintes anti-patterns" : ...
-- À ajouter dans la section "Documents à lire" : ...
+### Recommendations for the A brief
+- To add in the "Anti-pattern constraints" section: ...
+- To add in the "Documents to read" section: ...
 
 ### Confidence
-HAUTE | MOYENNE | FAIBLE | AUCUNE
+HIGH | MEDIUM | LOW | NONE
 
-### Lessons consultées (pour traçabilité)
-[Liste complète des slugs consultés, même non sélectionnés — utile pour audit du retrieval. Mentionner importance entre parenthèses, cosine si disponible, et flag "à caler" si importance absente.]
+### Lessons consulted (for traceability)
+[Complete list of slugs consulted, even those not selected — useful for retrieval audit. Mention importance in parentheses, cosine if available, and flag "needs calibration" if importance is absent.]
 
-## Si AUCUN précédent applicable
-Retourne le bloc ci-dessous EXACTEMENT :
+## If NO applicable precedent
+Return the block below EXACTLY:
 
 ## RETRIEVED MEMORY (Alpha)
 
 ### Confidence
-AUCUNE
+NONE
 
-### Lessons consultées
-[liste des slugs lus quand même, avec cosine si disponible]
+### Lessons consulted
+[list of slugs read anyway, with cosine if available]
 
 ### Message
-Pas de précédent applicable. Tâche en territoire neuf — orchestrateur, prudence accrue.
+No applicable precedent. Task in uncharted territory — orchestrator, exercise increased caution.
 
 GO.
 ```
 
-**Échec ou confidence AUCUNE = NON BLOQUANT** :
-- Si Alpha échoue (timeout, erreur), l'orchestrateur continue sans bloquer.
-- Si Alpha retourne `Confidence: AUCUNE`, l'orchestrateur continue avec un signal explicite dans le brief A : `"## RETRIEVED MEMORY (Alpha)\nno memory used — tâche en territoire neuf"`.
+**Failure or confidence NONE = NON-BLOCKING**:
+- If Alpha fails (timeout, error), the orchestrator continues without blocking.
+- If Alpha returns `Confidence: NONE`, the orchestrator continues with an explicit signal in the A brief: `"## RETRIEVED MEMORY (Alpha)\nno memory used — task in uncharted territory"`.
 
-**Skippable** via `--skip-alpha` (cf. paramètres). Si `--alpha-only`, Alpha tourne seul et l'orchestrateur s'arrête après affichage du rapport (utile pour tester le retrieval sans coder).
+**Skippable** via `--skip-alpha` (cf. parameters). If `--alpha-only`, Alpha runs alone and the orchestrator stops after displaying the report (useful for testing retrieval without coding).
 
-### Phase 1 — Parser l'invocation et compléter si besoin
+### Phase 1 — Parse the invocation and complete if needed
 
-L'utilisateur invoque `/justdoit <tâche>`. La tâche peut inclure :
-- Description de la tâche
-- Critères de succès explicites
-- Fichiers à toucher / pas toucher
-- Contraintes spécifiques
+The user invokes `/commontrace <task>`. The task may include:
+- Task description
+- Explicit success criteria
+- Files to touch / not touch
+- Specific constraints
 
-**Si la tâche est ambiguë** ou les critères de succès manquent : pose 1-2 questions complémentaires via `AskUserQuestion` AVANT de lancer A. Critères standards à valider :
-- Tests à faire passer (lesquels ?)
-- Sémantique à préserver (laquelle ?)
-- Fichiers à ne PAS toucher (territoires d'autres sous-agents en parallèle ?)
-- Performance / parité empirique requise ?
+**If the task is ambiguous** or success criteria are missing: prompt the user for 1-2 clarifying questions BEFORE launching A. Standard criteria to validate:
+- Tests to pass (which ones?)
+- Semantics to preserve (which ones?)
+- Files NOT to touch (territories of other parallel sub-agents?)
+- Performance / empirical parity required?
 
-**Si la tâche est suffisamment claire** : passe directement à Phase 2.
+**If the task is sufficiently clear**: proceed directly to Phase 2.
 
-### Phase 2 — Créer la tâche dans `TaskList`
+### Phase 2 — Create the task in the task tracker
 
-`TaskCreate` avec subject = résumé de la tâche, description = critères de succès, status = `in_progress`.
+Create a task entry in the orchestrator's task tracker with subject = task summary, description = success criteria, status = `in_progress`.
 
-### Phase 3 — Lancer le sous-agent A (implementer)
+### Phase 3 — Launch sub-agent A (implementer)
 
-`Agent` avec `subagent_type=general-purpose`, `run_in_background=true`.
+Spawn a fresh sub-agent A asynchronously.
 
-**Brief A (template, enrichi par sortie Alpha si Phase 0 a tourné)** :
+**A brief (template, enriched by Alpha output if Phase 0 ran)**:
 
 ```
-Tu es A, sous-agent implementer pour [TÂCHE]. Un sous-agent B reviewer indépendant auditera ton output. Pattern : feedback_subagent_double_review.
+You are A, an implementer sub-agent for [TASK]. An independent reviewer sub-agent B will audit your output. Pattern: feedback_subagent_double_review.
 
-[INSERTION VERBATIM DE LA SORTIE ALPHA ICI — bloc "## RETRIEVED MEMORY (Alpha)" complet]
+[VERBATIM INSERTION OF ALPHA OUTPUT HERE — complete "## RETRIEVED MEMORY (Alpha)" block]
 
 ## Mission
-[Description précise de la tâche]
+[Precise task description]
 
-## Critères de succès (verbatim utilisateur)
-- [Critère 1]
-- [Critère 2]
+## Success criteria (user verbatim)
+- [Criterion 1]
+- [Criterion 2]
 - ...
 
-## Documents à lire avant de coder
-- [Liste docs canoniques projet]
-- [Spec / CDC si applicable]
-- [+ Docs recommandés par Alpha si applicable]
+## Documents to read before coding
+- [Project canonical docs list]
+- [Spec / requirements doc if applicable]
+- [+ Docs recommended by Alpha if applicable]
 
-## Contraintes anti-patterns (standards)
-- Pas de @property d'alias / back-compat (strict rename si refactor)
-- Pas de magic number sans justification empirique
-- Pas de mock / simulation séparée
-- Pas de output /tmp (utiliser results/<run_name>/)
-- Pas de Python loop évitable si vectorisable
-- Pas de tests skip / xfail pour masquer un bug
-- Sémantique projet préservée (tests existants doivent passer)
-- [+ Anti-patterns recommandés par Alpha si applicable]
+## Anti-pattern constraints (standard)
+- No alias @property / back-compat (strict rename if refactor)
+- No magic number without empirical justification
+- No mock / separate simulation
+- No output to /tmp (use results/<run_name>/)
+- No avoidable Python loop if vectorizable
+- No tests skip / xfail to mask a bug
+- Project semantics preserved (existing tests must pass)
+- [+ Anti-patterns recommended by Alpha if applicable]
 
-## NE PAS faire
-- NE PAS commit (l'orchestrateur le fera)
-- NE PAS faire de git operations (stash, clean, restore) — risque de perte de code
-- NE PAS toucher aux fichiers : [liste exclusions]
+## DO NOT
+- DO NOT commit (the orchestrator will do it)
+- DO NOT perform git operations (stash, clean, restore) — risk of code loss
+- DO NOT touch files: [exclusion list]
 
-## Format rapport final
-[Structure attendue : fichiers modifiés, tests, mesures, surprises]
+## Final report format
+[Expected structure: modified files, tests, measurements, surprises]
 
 ## CWD / Python
-[Standard projet]
+[Project standard]
 
-GO. Vise CONFORME en 1 itération.
+GO. Aim for CONFORM in 1 iteration.
 ```
 
-Attends la notification de complétion. **Pas de polling.**
+Wait for the completion notification. **No polling.**
 
-### Phase 4 — Commit immédiat après A
+### Phase 4 — Immediate commit after A
 
-**Dès qu'A termine**, sans attendre B :
-1. Lis le rapport A (fichiers modifiés)
-2. `git add` les fichiers spécifiés par A
-3. `git status` pour vérifier
-4. `git commit` avec message clair incluant :
-   - Tâche initiale
-   - Verdict A (rapport synthétique)
-   - Tests passants
-   - Itération courante (si > 1)
+**As soon as A finishes**, without waiting for B:
+1. Read the A report (modified files)
+2. `git add` the files specified by A
+3. `git status` to verify
+4. `git commit` with a clear message including:
+   - Initial task
+   - A verdict (synthetic report)
+   - Passing tests
+   - Current iteration (if > 1)
 
-**Justification** : évite la perte de code en cas d'opération git involontaire (incident vécu : sous-agent B0a v3 a fait git clean qui a effacé cuda_v3/*.py).
+**Justification**: avoids code loss in case of involuntary git operation (lived incident: sub-agent B0a v3 ran git clean which erased cuda_v3/*.py).
 
-Si A signale un blocage / abandon : ne pas commit, retour à l'utilisateur.
+If A signals a blocker / abandonment: do not commit, return to the user.
 
-### Phase 5 — Lancer le sous-agent B (reviewer indépendant)
+### Phase 5 — Launch sub-agent B (independent reviewer)
 
-`Agent` avec `subagent_type=general-purpose`, `run_in_background=true`.
+Spawn a fresh sub-agent B asynchronously.
 
-**Brief B (template)** :
+**B brief (template)**:
 
 ```
-Tu es B, sous-agent reviewer indépendant pour [TÂCHE]. Tu N'ES PAS l'auteur du code. Tu juges contre les critères de succès. Pattern : feedback_subagent_double_review.
+You are B, an independent reviewer sub-agent for [TASK]. You are NOT the code author. You judge against the success criteria. Pattern: feedback_subagent_double_review.
 
-## Mandat strict
-1. LIRE le code à reviewer (diff du commit [SHA])
-2. LIRE le CDC / spec / critères de succès
-3. Auditer méthodologiquement (sémantique, tests, anti-patterns, critères user)
-4. Vérifier empiriquement quand possible (lancer pytest, mini-bench)
-5. Émettre verdict : CONFORME ou ÉCART
-6. NE PAS modifier le code (lecture seule)
-7. NE PAS faire de git operations (stash, clean, restore, reset, checkout)
+## Strict mandate
+1. READ the code to review (diff from commit [SHA])
+2. READ the requirements doc / spec / success criteria
+3. Audit methodologically (semantics, tests, anti-patterns, user criteria)
+4. Verify empirically when possible (run pytest, mini-bench)
+5. Issue verdict: CONFORM or GAP
+6. DO NOT modify the code (read-only)
+7. DO NOT perform git operations (stash, clean, restore, reset, checkout)
 
-## Fichiers à reviewer
-[Liste précise : modifs A + nouveaux fichiers, depuis git diff HEAD~1]
+## Files to review
+[Precise list: A's modifications + new files, from git diff HEAD~1]
 
-## Critères de succès (verbatim utilisateur)
-- [Critère 1]
-- [Critère 2]
+## Success criteria (user verbatim)
+- [Criterion 1]
+- [Criterion 2]
 - ...
 
-## Grille d'audit
-### Sémantique préservée (CRITIQUE)
-- Tests existants passent ? Lance pytest et confirme
-- Sémantique projet : vérifier par lecture diff + exécution
+## Audit grid
+### Semantics preserved (CRITICAL)
+- Existing tests pass? Run pytest and confirm
+- Project semantics: verify by diff reading + execution
 
 ### Anti-patterns
-- @property d'alias présent ?
-- Magic number sans justification ?
-- Output /tmp ?
-- Python loop évitable ?
-- Tests skip / xfail ?
+- Alias @property present?
+- Magic number without justification?
+- Output to /tmp?
+- Avoidable Python loop?
+- Tests skip / xfail?
 
-### Critères user
-- Pour chaque critère : PASS / FAIL avec citation précise
+### User criteria
+- For each criterion: PASS / FAIL with precise citation
 
-### Tests empiriques
-- Lance les commandes pertinentes (pytest, bench, smoke)
-- Reporte les résultats chiffrés
+### Empirical tests
+- Run relevant commands (pytest, bench, smoke)
+- Report numerical results
 
-## Format verdict (CRUCIAL)
+## Verdict format (CRUCIAL)
 
 ```
 ## VERDICT B
 
-**Décision** : [CONFORME | ÉCART]
+**Decision**: [CONFORM | GAP]
 
-**Si CONFORME** :
-- Points marquants validés (3-5)
-- Recommandations non-bloquantes optionnelles
+**If CONFORM**:
+- Validated notable points (3-5)
+- Optional non-blocking recommendations
 
-**Si ÉCART** :
-- Liste numérotée d'écarts :
-  1. [section] [fichier:ligne] [exigence] [observé] [correction]
+**If GAP**:
+- Numbered list of gaps:
+  1. [section] [file:line] [requirement] [observed] [correction]
   2. ...
-- Sévérité : BLOQUANT / MAJEUR / MINEUR
+- Severity: BLOCKING / MAJOR / MINOR
 
-**Tests qui ont tourné** : commandes + résultats
+**Tests run**: commands + results
 ```
 
 ## CWD / Python
-[Standard projet]
+[Project standard]
 
-GO. Audit rigoureux, verdict factuel. Ne réécris pas le code.
+GO. Rigorous audit, factual verdict. Do not rewrite the code.
 ```
 
-Attends la notification de complétion. **Pas de polling.**
+Wait for the completion notification. **No polling.**
 
-### Phase 6 — Décision selon verdict B
+### Phase 6 — Decision based on verdict B
 
-**Si CONFORME** :
-1. Mark `TaskUpdate` status=completed
-2. Output un résumé à l'utilisateur (3-5 lignes) :
-   - Tâche complétée
-   - Verdict B
+**If CONFORM**:
+1. Mark the task as completed in the tracker
+2. Output a summary to the user (3-5 lines):
+   - Task completed
+   - B verdict
    - Commit SHA
-   - Tests / mesures clés
-3. **Continue Phase 9** (mini-rétro orchestrateur, sauf si `--skip-omega`).
+   - Key tests / measurements
+3. **Continue to Phase 9** (orchestrator mini-retro, unless `--skip-omega`).
 
-**Si ÉCART** :
-- Si it. < `max_iterations` (default 3) → **Phase 7 : itérer**
-- Si it. ≥ `max_iterations` → **Phase 8 : arbitrage Claude**
+**If GAP**:
+- If iteration < `max_iterations` (default 3) → **Phase 7: iterate**
+- If iteration ≥ `max_iterations` → **Phase 8: orchestrator arbitration**
 
-### Phase 7 — Itération (relance A avec brief enrichi)
+### Phase 7 — Iteration (relaunch A with enriched brief)
 
-Génère un **nouveau brief A** (A2, A3, ...) avec :
-- Brief original (incluant la sortie Alpha de la Phase 0 si elle a tourné)
-- Section additionnelle : **"Écarts B itération précédente à corriger"**
-  - Liste numérotée verbatim de B
-  - Sévérité conservée
-- Instruction : "Corrige les écarts listés ci-dessus tout en préservant les critères de succès initiaux."
+Generate a **new A brief** (A2, A3, ...) with:
+- Original brief (including Alpha output from Phase 0 if it ran)
+- Additional section: **"B gaps from previous iteration to fix"**
+  - Numbered list verbatim from B
+  - Severity preserved
+- Instruction: "Fix the gaps listed above while preserving the initial success criteria."
 
-Lance le sous-agent A2 (background).
+Spawn sub-agent A2 (asynchronously).
 
-**Loop** : retour à Phase 4 (commit immédiat) → Phase 5 (nouveau B) → Phase 6 (verdict).
+**Loop**: back to Phase 4 (immediate commit) → Phase 5 (new B) → Phase 6 (verdict).
 
-### Phase 8 — Arbitrage Claude (max_iterations atteint)
+### Phase 8 — Orchestrator arbitration (max_iterations reached)
 
-Si après 3 itérations toujours ÉCART :
-1. **Lis les écarts persistants** identifiés par B
-2. **Lecture ciblée** du code (Read sur les fichiers concernés)
-3. **Décide** :
-   - Soit fix toi-même les écarts résiduels (si minor) puis commit
-   - Soit présente à l'utilisateur : "Après 3 itérations A+B, écarts résiduels : [liste]. Recommandation : [option A / option B / abandon]."
-4. Mark TaskUpdate status=completed avec note "arbitrage Claude"
+If after 3 iterations still GAP:
+1. **Read the persistent gaps** identified by B
+2. **Targeted reading** of the code (read the affected files)
+3. **Decide**:
+   - Either fix the residual gaps yourself (if minor) then commit
+   - Or present to the user: "After 3 A+B iterations, residual gaps: [list]. Recommendation: [option A / option B / abandon]."
+4. Mark the task as completed in the tracker with note "orchestrator arbitration"
 
-**Continue Phase 9** (mini-rétro orchestrateur).
+**Continue to Phase 9** (orchestrator mini-retro).
 
-### Phase 9 — Mini-rétro orchestrateur (avant Omega)
+### Phase 9 — Orchestrator mini-retro (before Omega)
 
-**Objectif** : capturer 30 secondes de recul méta sur le run qui vient de se terminer, pour alimenter Omega avec un signal qualitatif que les rapports A et B ne contiennent pas (ressenti orchestrateur, surprises, utilité réelle d'Alpha).
+**Objective**: capture 30 seconds of meta-reflection on the run that just completed, to feed Omega with a qualitative signal that the A and B reports do not contain (orchestrator impressions, surprises, actual usefulness of Alpha).
 
-L'orchestrateur produit cette rétro **lui-même par défaut** (auto-réflexion en sortie). Pour runs sensibles (e.g. tâches très ambiguës, conflits A↔B persistants, user présent), l'orchestrateur **peut** demander confirmation/correction à l'user via `AskUserQuestion` (max 3 questions).
+The orchestrator produces this retro **by default on its own** (self-reflection in output). For sensitive runs (e.g. highly ambiguous tasks, persistent A↔B conflicts, user present), the orchestrator **may** ask the user for confirmation/correction by prompting for input (max 3 questions).
 
-**Bloc rétro EXACT** (à produire verbatim) :
-
-```
-## Rétro orchestrateur (avant Omega)
-
-1. Ce qui a bien marché : [phrase courte]
-2. Ce qui m'a surpris / dérangé : [phrase courte]
-3. Le brief Alpha a-t-il été utile ? [OUI / PARTIELLEMENT / NON — pourquoi]
-4. Qu'avons-nous appris sur LE MARCHÉ / domaine projet (vs workflow méta) ? [phrase courte ou "rien de notable côté domaine ce run"]
-```
-
-Ce bloc est injecté verbatim dans le brief Omega à la Phase 10.
-
-**Note sur la 4e question (ajoutée 2026-05-28)** : contre-mesure à l'effet de loupe méta-workflow observé sur les premiers runs OGHAM (cf. dreamer session 2026-05-27_first-dreamer-ogham §1.6) — la majorité des lessons générées étaient méta (`amend_brief_a`, `orchestrator_fix_residual`, etc.) au détriment du domaine (`signal_absence`, `prefer_scalar`). Forcer la réflexion explicite sur le domaine équilibre la base mémoire long-terme. Réponse "rien de notable" est OK et explicite — pas de hallucination.
-
-**Skippable conjointement avec Phase 10/11** via `--skip-omega`.
-
-### Phase 10 — Omega (synthèse + proposition d'enrichissement mémoire)
-
-**Objectif** : écrire systématiquement l'épisode (traçabilité du run) et **proposer** (sans écrire) 0-N leçons candidates et 0-N updates de leçons existantes.
-
-Lance un sous-agent **Omega** (`Agent` avec `subagent_type=general-purpose`, `run_in_background=true`).
-
-**Brief Omega (template autonome, copiable verbatim)** :
+**EXACT retro block** (produce verbatim):
 
 ```
-Tu es Omega, sous-agent synthèse + enrichissement mémoire pour /justdoit.
+## Orchestrator retro (before Omega)
 
-## Mandat
-1. ÉCRIRE l'ÉPISODE du run qui vient de se terminer (TOUJOURS, traçabilité obligatoire) directement dans `memory/episodes/YYYY-MM-DD_slug.md` ; CALER l'importance de l'épisode (1-5 + rationale 1-phrase) selon la rubrique SKILL.md
-2. PROPOSER (NE PAS ÉCRIRE) 0-N leçons candidates nouvelles, avec importance + rationale 1-phrase pour chacune
-3. PROPOSER (NE PAS ÉCRIRE) 0-N updates de leçons existantes
-4. Optionnellement : flag "À RÉVISER" si une leçon retrieve par Alpha s'est révélée non applicable
+1. What went well: [short sentence]
+2. What surprised / bothered me: [short sentence]
+3. Was the Alpha brief useful? [YES / PARTIALLY / NO — why]
+4. What did we learn about THE MARKET / project domain (vs meta-workflow)? [short sentence or "nothing notable domain-wise this run"]
+```
 
-Tu N'AS PAS l'autorisation d'écrire dans `memory/lessons/`. Les fichiers leçons sont écrits par l'orchestrateur APRÈS validation Lambda automatique (Phase 11).
+This block is injected verbatim into the Omega brief at Phase 10.
 
-## Rubrique d'importance (1-5, à appliquer pour épisode ET leçons)
+**Note on the 4th question (added 2026-05-28)**: countermeasure to the meta-workflow magnifying-glass effect observed during the first OGHAM runs (cf. dreamer session 2026-05-27_first-dreamer-ogham §1.6) — the majority of generated lessons were meta (`amend_brief_a`, `orchestrator_fix_residual`, etc.) at the expense of domain lessons (`signal_absence`, `prefer_scalar`). Forcing explicit domain reflection rebalances the long-term memory base. Answer "nothing notable" is OK and explicit — no hallucination.
 
-- **5 (showstopper)** : sans cette leçon, la classe de tâche entière échoue ou cause perte de données / sécurité.
-- **4 (critique)** : ignorer cette leçon → forte probabilité de rework majeur ou de bug subtil difficile à détecter.
-- **3 (utile)** : la leçon évite un anti-pattern courant ou un piège méthodologique. Économise du temps significatif.
-- **2 (mineur)** : leçon valable mais d'impact limité, applicable à un sous-cas spécifique.
-- **1 (anecdotique)** : observation intéressante mais peu actionnable → préférer documenter comme note d'épisode.
+**Skippable together with Phase 10/11** via `--skip-omega`.
 
-Le rationale est OBLIGATOIRE et doit être 1 phrase concrète (pas "important parce qu'utile").
+### Phase 10 — Omega (synthesis + memory enrichment proposals)
+
+**Objective**: systematically write the episode (run traceability) and **propose** (without writing) 0-N candidate lessons and 0-N updates to existing lessons.
+
+Spawn a fresh sub-agent **Omega** asynchronously.
+
+**Omega brief (self-contained template, copy verbatim)**:
+
+```
+You are Omega, a synthesis + memory enrichment sub-agent for /commontrace.
+
+## Mandate
+1. WRITE the EPISODE for the run that just completed (ALWAYS, traceability is mandatory) directly in `memory/episodes/YYYY-MM-DD_slug.md`; CALIBRATE the episode importance (1-5 + 1-sentence rationale) per the SKILL.md rubric
+2. PROPOSE (DO NOT WRITE) 0-N new candidate lessons, with importance + 1-sentence rationale for each
+3. PROPOSE (DO NOT WRITE) 0-N updates to existing lessons
+4. Optionally: flag "NEEDS REVISION" if a lesson retrieved by Alpha proved non-applicable
+
+You do NOT have authorization to write in `memory/lessons/`. Lesson files are written by the orchestrator AFTER automatic Lambda validation (Phase 11).
+
+## Importance rubric (1-5, apply to both episodes AND lessons)
+
+- **5 (showstopper)**: without this lesson, the entire task class fails or causes data loss / security breach.
+- **4 (critical)**: ignoring this lesson → high probability of major rework or a subtle hard-to-detect bug.
+- **3 (useful)**: the lesson avoids a common anti-pattern or methodological trap. Saves significant time.
+- **2 (minor)**: valid lesson but limited impact, applicable to a specific sub-case.
+- **1 (anecdotal)**: interesting observation but not very actionable → prefer documenting as an episode note.
+
+The rationale is MANDATORY and must be 1 concrete sentence (not "important because useful").
 
 ## Inputs (verbatim)
 
-### Tâche initiale (invocation /justdoit)
-[INSERTION VERBATIM ICI]
+### Initial task (/commontrace invocation)
+[VERBATIM INSERTION HERE]
 
-### Rapport Alpha (Phase 0)
-[INSERTION VERBATIM ICI — ou "AUCUN (--skip-alpha)" si skip]
+### Alpha report (Phase 0)
+[VERBATIM INSERTION HERE — or "NONE (--skip-alpha)" if skipped]
 
-### Brief A initial
-[INSERTION VERBATIM ICI]
+### Initial A brief
+[VERBATIM INSERTION HERE]
 
-### Rapports A1..An (toutes les itérations)
-[INSERTION VERBATIM ICI, séparés par "--- ITÉRATION N ---"]
+### A1..An reports (all iterations)
+[VERBATIM INSERTION HERE, separated by "--- ITERATION N ---"]
 
-### Rapports B1..Bn (toutes les itérations)
-[INSERTION VERBATIM ICI, séparés par "--- ITÉRATION N ---"]
+### B1..Bn reports (all iterations)
+[VERBATIM INSERTION HERE, separated by "--- ITERATION N ---"]
 
-### Verdict final
-[CONFORME après N itérations | ARBITRAGE Claude après 3 itérations | ABANDON]
+### Final verdict
+[CONFORM after N iterations | ORCHESTRATOR ARBITRATION after 3 iterations | ABANDON]
 
-### Rétro orchestrateur (Phase 9)
-[INSERTION VERBATIM DU BLOC]
+### Orchestrator retro (Phase 9)
+[VERBATIM INSERTION OF THE BLOCK]
 
-### Métadonnées run
+### Run metadata
 - task_invocation: [verbatim]
-- project: [détecté depuis cwd, e.g. "<votre_projet>"]
-- commit_sha: [SHA final]
+- project: [detected from cwd; tag the SUB-PROJECT distinctly, not just the parent repo — e.g.
+  "module-a" or "module-b", not a single "<your_project>" collapsing every sub-project run
+  together. Collapsing sub-projects under one name makes transfer_gap mechanically 0% forever
+  (see benchmark/STATUS.md §2.4 and §4.2) because no hit can ever look "cross-project" if
+  everything shares the same project tag. Only fall back to the bare repo name when the run
+  genuinely isn't scoped to any sub-project.]
+- commit_sha: [final SHA]
 - duration_minutes: [N]
 - n_iterations: [N]
 
-## Mission 1 — Écrire l'épisode (TOUJOURS)
+## Mission 1 — Write the episode (ALWAYS)
 
-Fichier : `memory/episodes/YYYY-MM-DD_slug.md` où :
-- YYYY-MM-DD = date du run
-- slug = 3-5 mots dérivés de la tâche (lowercase, separator `-`)
+File: `memory/episodes/YYYY-MM-DD_slug.md` where:
+- YYYY-MM-DD = run date
+- slug = 3-5 words derived from the task (lowercase, separator `-`)
 
-Frontmatter YAML STRICT (parsable par yaml.safe_load) :
+STRICT YAML frontmatter (parsable by yaml.safe_load):
 
 ---
 name: YYYY-MM-DD_slug
-description: one-line summary du run
-task_invocation: verbatim invocation /justdoit ...
+description: one-line summary of the run
+task_invocation: verbatim invocation /commontrace ...
 tags: [tag1, tag2]
-project: nom-du-projet
-verdict: CONFORME | ARBITRAGE | ABANDON
-importance: N          # entier 1-5, voir rubrique ci-dessus
-importance_rationale: "1-phrase concrète, justifie le score"
+project: project-name   # tag the SUB-PROJECT distinctly (e.g. "module-a", "module-b"), not
+                         # one shared parent-repo name for every sub-project run -- see the
+                         # "Run metadata" note above and benchmark/STATUS.md §2.4/§4.2
+verdict: CONFORM | ARBITRATION | ABANDON
+importance: N          # integer 1-5, see rubric above
+importance_rationale: "1-sentence concrete, justifies the score"
 n_iterations: N
 commit_sha: xxx
 duration_minutes: N
-lessons_retrieved_by_alpha: [list of lesson slugs retournés par Alpha]
-lessons_hit: [list of lesson slugs effectivement utiles d'après le run + rétro]
-lessons_proposed_by_omega: [list of proposed lesson slugs nouvelles ci-dessous]
-lessons_validated_by_lambda: []  # à compléter par orchestrateur en Phase 11 (post-Lambda)
+lessons_retrieved_by_alpha: [list of lesson slugs returned by Alpha]
+lessons_hit: [list of lesson slugs actually useful based on the run + retro]
+lessons_proposed_by_omega: [list of proposed new lesson slugs below]
+lessons_validated_by_lambda: []  # to be filled by orchestrator in Phase 11 (post-Lambda)
 ---
 
 ## What happened
-[5-10 lignes factuelles : ce qu'on a fait, comment, résultat]
+[5-10 factual lines: what we did, how, result]
 
 ## What surprised me
-[Extrait rétro orchestrateur — verbatim de la Phase 9]
+[Extract from orchestrator retro — verbatim from Phase 9]
 
 ## What worked well
-[Liste 0-N items, basée sur rapports A/B + rétro]
+[List 0-N items, based on A/B reports + retro]
 
 ## What worked less well
-[Liste 0-N items]
+[List 0-N items]
 
-## Mission 2 — Proposer leçons nouvelles (0-N)
+## Mission 2 — Propose new lessons (0-N)
 
-Critères pour PROPOSER une nouvelle leçon (au moins UN des deux doit être VRAI, ET la leçon doit être non couverte par une existante ET généralisable hors de ce projet précis) :
-- **(A)** Importance épisode source ≥ 3 ET généralisable hors de ce projet précis (chercher dans memory/INDEX.md + memory/lessons/ pour vérifier non-doublon)
-- **(B)** Importance 4-5 même sur 1 seule occurrence — un showstopper / critique mérite d'être capturé tout de suite, pas besoin d'attendre une seconde occurrence
+Criteria for PROPOSING a new lesson (at least ONE of the two must be TRUE, AND the lesson must not be covered by an existing one AND must be generalizable beyond this specific project):
+- **(A)** Source episode importance ≥ 3 AND generalizable beyond this specific project (check memory/INDEX.md + memory/lessons/ to verify non-duplicate)
+- **(B)** Importance 4-5 even on a single occurrence — a showstopper / critical item deserves to be captured immediately, no need to wait for a second occurrence
 
-L'importance de la leçon candidate est dérivée de ses `source_episodes` (max ou moyenne des importances source). Tu peux l'ajuster de +/- 1 au moment de proposer (justifier dans la proposition).
+The candidate lesson importance is derived from its `source_episodes` (max or average of source importances). You can adjust it by +/- 1 when proposing (justify in the proposal).
 
-Si rien de notable : dire franchement "Rien de neuf à apprendre, épisode archivé pour traçabilité".
+If nothing notable: state frankly "Nothing new to learn, episode archived for traceability".
 
-## Mission 3 — Proposer updates de leçons existantes (0-N)
+## Mission 3 — Propose updates to existing lessons (0-N)
 
-Pour chaque leçon retrieve par Alpha qui a réellement aidé :
-- Proposer : `uses += 1`, `last_hit = today`, append `source_episodes`
+For each lesson retrieved by Alpha that actually helped:
+- Propose: `uses += 1`, `last_hit = today`, append `source_episodes`
 
-Pour chaque leçon retrieve qui s'est révélée non applicable / mal formulée :
-- Proposer : flag "À RÉVISER" avec raison
+For each retrieved lesson that proved non-applicable / poorly formulated:
+- Propose: flag "NEEDS REVISION" with reason
 
-## Format de sortie EXACT (verbatim)
+## EXACT output format (verbatim)
 
 ## OMEGA OUTPUT
 
 ### Episode written
 - Path: memory/episodes/YYYY-MM-DD_slug.md
 - Status: created
-- Importance: N — "[rationale 1 phrase]"
+- Importance: N — "[1-sentence rationale]"
 
-### Lessons candidates (à valider par Lambda AVANT write)
-1. **[lesson_slug_proposé]**
+### Candidate lessons (to be validated by Lambda BEFORE write)
+1. **[proposed_lesson_slug]**
    - Rule: ...
-   - Why: ... (cite l'épisode source)
+   - Why: ... (cite the source episode)
    - How to apply: ...
    - applies_when: ...
    - do_not_apply_when: ...
-   - Importance: N — "[rationale 1 phrase concrète]" (dérivée des source_episodes, ajustée si pertinent)
-   - Justification "pourquoi nouvelle vs existante" : ...
+   - Importance: N — "[1-sentence concrete rationale]" (derived from source_episodes, adjusted if relevant)
+   - Justification "why new vs existing": ...
 
 2. ...
 
-### Lessons updates (existantes à incrémenter)
-1. [lesson_slug existant] : +1 uses (a aidé sur cet épisode), append source_episode YYYY-MM-DD_slug
+### Lesson updates (existing lessons to increment)
+1. [existing_lesson_slug]: +1 uses (helped on this episode), append source_episode YYYY-MM-DD_slug
 2. ...
 
-### Lessons revisions (existantes à flagger)
-1. [lesson_slug existant] : À RÉVISER — raison concrète
+### Lesson revisions (existing lessons to flag)
+1. [existing_lesson_slug]: NEEDS REVISION — concrete reason
 2. ...
 
-### Aucune leçon nouvelle ?
-[Si rien de notable, le dire franchement et expliquer pourquoi le run n'a pas généré d'apprentissage transférable]
+### No new lessons?
+[If nothing notable, state it frankly and explain why the run did not generate transferable learning]
 
 GO.
 ```
 
-### Phase 11 — Lambda (validation automatique du backlog mémoire)
+### Phase 11 — Lambda (automatic memory backlog validation)
 
-**Objectif** : auditer automatiquement chaque proposition Omega (nouvelles leçons, updates, révisions) via un sous-agent **Lambda reviewer indépendant**, puis l'orchestrateur applique uniquement les propositions ACCEPTÉ. Workflow 100% automatisé, utilisable par un agent sans humain dans la boucle.
+**Objective**: automatically audit each Omega proposal (new lessons, updates, revisions) via an independent **Lambda reviewer** sub-agent, then the orchestrator applies only ACCEPTED proposals. 100% automated workflow, usable by an agent without any human in the loop.
 
-**Lambda est à Omega ce que B est à A** : un reviewer indépendant qui juge contre des critères explicites, pas l'auteur des propositions.
+**Lambda is to Omega what B is to A**: an independent reviewer who judges against explicit criteria, not the author of the proposals.
 
-**Workflow** :
-1. L'orchestrateur lance Lambda en background (`Agent` avec `subagent_type=general-purpose`, `run_in_background=true`) avec le brief verbatim ci-dessous, en injectant la sortie Omega + accès lecture à la base mémoire.
-2. Lambda audit chaque proposition selon 4 critères (qualité formelle, non-doublon, généralisation, calibration importance) et retourne un verdict ACCEPTÉ / REJETÉ / À RAFFINER par proposition.
-3. L'orchestrateur applique les propositions ACCEPTÉ (écriture leçons / updates / révisions).
-4. Les REJETÉ et À RAFFINER sont logués dans le rapport final pour traçabilité (pas appliqués).
+**Workflow**:
+1. The orchestrator spawns Lambda asynchronously as a fresh sub-agent with the verbatim brief below, injecting the Omega output + read access to the memory base.
+2. Lambda audits each proposal against 4 criteria (formal quality, non-duplicate, generalization, importance calibration) and returns an ACCEPTED / REJECTED / NEEDS REFINEMENT verdict per proposal.
+3. The orchestrator applies ACCEPTED proposals (writes lessons / updates / revisions).
+4. REJECTED and NEEDS REFINEMENT entries are logged in the final report for traceability (not applied).
 
-**Brief Lambda (template autonome, copiable verbatim)** :
+**Lambda brief (self-contained template, copy verbatim)**:
 
 ```
-Tu es Lambda, sous-agent reviewer du backlog mémoire pour /justdoit. Indépendant des choix Omega.
+You are Lambda, an independent memory backlog reviewer sub-agent for /commontrace. Independent of Omega's choices.
 
-## Mandat strict
-- LIRE la base mémoire `~/.claude/skills/justdoit/memory/` (lessons existantes, INDEX.md, épisodes récents si besoin)
-- LIRE la rubrique d'importance dans `SKILL.md` section "Rubrique d'importance"
-- LIRE le rapport Omega (verbatim injecté ci-dessous)
-- AUDITER chaque proposition Omega (nouvelles leçons + updates + révisions) selon 4 critères
-- RETOURNER un verdict ACCEPTÉ | REJETÉ | À RAFFINER par proposition avec justification 2-3 phrases
+## Strict mandate
+- READ the memory base at `$COMMONTRACE_ROOT/memory/` (existing lessons, INDEX.md, recent episodes if needed)
+- READ the importance rubric in `SKILL.md` section "Importance rubric"
+- READ the Omega report (verbatim injected below)
+- AUDIT each Omega proposal (new lessons + updates + revisions) against 4 criteria
+- RETURN an ACCEPTED | REJECTED | NEEDS REFINEMENT verdict per proposal with 2-3 sentence justification
 
-Tu N'AS PAS l'autorisation d'écrire dans `memory/`. Tu es strictement en lecture seule. Pas de Write, pas de Edit, pas de git. C'est l'orchestrateur qui applique tes verdicts ACCEPTÉ.
+You do NOT have authorization to write in `memory/`. You are strictly read-only. No file writes, no edits, no git. The orchestrator applies your ACCEPTED verdicts.
 
 ## Inputs (verbatim)
 
-### Rapport Omega
-[INSERTION VERBATIM ICI — bloc "## OMEGA OUTPUT" complet]
+### Omega report
+[VERBATIM INSERTION HERE — complete "## OMEGA OUTPUT" block]
 
-### Format leçon attendu (rappel)
-- Frontmatter YAML strict : name, description, tags, domain, importance (1-5), importance_rationale, importance_history ([]), applies_when, do_not_apply_when, uses, last_hit, source_episodes, status (active|review|archived)
-- Corps : ## Rule, ## Why, ## How to apply, ## Counter-examples
-- Référence : `memory/lessons/README.md` et `memory/lessons/lesson_template.md`
+### Expected lesson format (reminder)
+- Strict YAML frontmatter: name, description, tags, domain, importance (1-5), importance_rationale, importance_history ([]), applies_when, do_not_apply_when, uses, last_hit, source_episodes, status (active|review|archived)
+- Body: ## Rule, ## Why, ## How to apply, ## Counter-examples
+- Reference: `memory/lessons/README.md` and `memory/lessons/lesson_template.md`
 
-### Rubrique importance (rappel verbatim)
-- 5 (showstopper) : sans cette leçon, la classe de tâche entière échoue ou cause perte de données / sécurité.
-- 4 (critique)    : ignorer cette leçon → forte probabilité de rework majeur ou de bug subtil difficile à détecter.
-- 3 (utile)       : la leçon évite un anti-pattern courant ou un piège méthodologique. Économise du temps significatif.
-- 2 (mineur)      : leçon valable mais d'impact limité, applicable à un sous-cas spécifique.
-- 1 (anecdotique) : observation intéressante mais peu actionnable → préférer documenter comme note d'épisode.
+### Importance rubric (verbatim reminder)
+- 5 (showstopper): without this lesson, the entire task class fails or causes data loss / security breach.
+- 4 (critical):    ignoring this lesson → high probability of major rework or a subtle hard-to-detect bug.
+- 3 (useful):      the lesson avoids a common anti-pattern or methodological trap. Saves significant time.
+- 2 (minor):       valid lesson but limited impact, applicable to a specific sub-case.
+- 1 (anecdotal):   interesting observation but not very actionable → prefer documenting as an episode note.
 
-## Workflow audit (par proposition)
+## Audit workflow (per proposal)
 
-### Pour chaque NOUVELLE LEÇON proposée
+### For each NEW LESSON proposed
 
-Vérifier les 4 critères suivants. Verdict ACCEPTÉ uniquement si les 4 passent.
+Verify the following 4 criteria. ACCEPTED verdict only if all 4 pass.
 
-1. **Qualité formelle** :
-   - `applies_when` concret et précis (pas "quand on refactor" mais "quand on fait un refactor architectural touchant ≥ 3 fichiers")
-   - `do_not_apply_when` explicite (pas "sauf cas spéciaux")
-   - `importance` (1-5) ET `importance_rationale` (1-phrase concrète, actionnable, pas "important parce qu'utile")
-   - YAML proposé valide (champs requis présents, types corrects)
+1. **Formal quality**:
+   - `applies_when` concrete and precise (not "when refactoring" but "when doing an architectural refactor touching ≥ 3 files")
+   - `do_not_apply_when` explicit (not "except special cases")
+   - `importance` (1-5) AND `importance_rationale` (1-sentence concrete, actionable, not "important because useful")
+   - Proposed YAML valid (required fields present, correct types)
 
-2. **Non-doublon** :
-   - LIRE `memory/INDEX.md` pour le domaine concerné
-   - Grep sémantique : la Rule proposée chevauche-t-elle une leçon existante (même domain + tags similaires) ?
-   - Si chevauchement → proposer UPDATE de la leçon existante au lieu d'une nouvelle. Verdict : REJETÉ ou À RAFFINER avec mention "remplacer par UPDATE leçon X"
+2. **Non-duplicate**:
+   - READ `memory/INDEX.md` for the relevant domain
+   - Semantic grep: does the proposed Rule overlap with an existing lesson (same domain + similar tags)?
+   - If overlap → propose UPDATE of the existing lesson instead of a new one. Verdict: REJECTED or NEEDS REFINEMENT with note "replace with UPDATE of lesson X"
 
-3. **Généralisation** :
-   - Peut-on imaginer ≥ 3 contextes d'application hors du projet/run courant ? (e.g. autre projet, autre stack, autre type de tâche)
-   - Si trop spécifique → REJETÉ avec mention "trop spécifique au run X, mérite plutôt note d'épisode"
+3. **Generalization**:
+   - Can you imagine ≥ 3 application contexts outside the current project/run? (e.g. other project, other stack, other task type)
+   - If too specific → REJECTED with note "too specific to run X, better suited as an episode note"
 
-4. **Calibration importance** :
-   - Le score est-il défendable contre la rubrique 1-5 ?
-   - Si A et B du run ont divergé sur la calibration (cf. rapports A/B injectés dans le brief Omega), juger l'écart : ±1 acceptable, ≥2 → À RAFFINER avec mention "écart calibration à arbitrer"
+4. **Importance calibration**:
+   - Is the score defensible against the 1-5 rubric?
+   - If A and B from the run diverged on calibration (cf. A/B reports injected in the Omega brief), judge the gap: ±1 acceptable, ≥2 → NEEDS REFINEMENT with note "calibration gap to arbitrate"
 
-### Pour chaque UPDATE proposé (uses += 1, last_hit, etc.)
+### For each proposed UPDATE (uses += 1, last_hit, etc.)
 
-1. **Cohérence** :
-   - `source_episode` proposé non déjà présent dans `source_episodes` de la leçon (sinon double-comptage → REJETÉ)
-   - `last_hit` proposé ≤ date du jour (pas de date future → REJETÉ)
-   - `uses` proposé cohérent avec `uses` actuel + 1 (sinon REJETÉ)
+1. **Consistency**:
+   - Proposed `source_episode` not already present in the lesson's `source_episodes` (otherwise double-counting → REJECTED)
+   - Proposed `last_hit` ≤ today's date (no future date → REJECTED)
+   - Proposed `uses` consistent with current `uses` + 1 (otherwise REJECTED)
 
-2. **Justification** :
-   - La leçon a-t-elle effectivement été utile dans le run ? (vérifier dans le rapport Omega que le slug est dans `lessons_hit` de l'épisode)
-   - Si non confirmable → REJETÉ avec mention "lesson_hit non confirmé par rapport"
+2. **Justification**:
+   - Was the lesson actually useful in the run? (verify in the Omega report that the slug is in the episode's `lessons_hit`)
+   - If not confirmable → REJECTED with note "lesson_hit not confirmed by report"
 
-### Pour chaque RÉVISION proposée (status active → review)
+### For each proposed REVISION (status active → review)
 
-1. **Motif documenté** :
-   - Le motif (raison du flag À RÉVISER) est-il documenté concrètement (citation rapport A/B ou rétro orchestrateur) ?
-   - Si motif générique ou non sourcé → REJETÉ
+1. **Documented reason**:
+   - Is the reason (rationale for the NEEDS REVISION flag) documented concretely (citation from A/B report or orchestrator retro)?
+   - If generic or unsourced reason → REJECTED
 
-## Format de sortie EXACT (verbatim)
+## EXACT output format (verbatim)
 
 ## LAMBDA OUTPUT
 
-### Decisions par proposition
+### Decisions per proposal
 
-#### Nouvelle lesson [lesson_slug_proposé]
-- **Décision** : ACCEPTÉ | REJETÉ | À RAFFINER
-- **Justification** : [2-3 phrases couvrant qualité formelle, non-doublon, généralisation, calibration importance]
-- **Si À RAFFINER** : champs précis à corriger
+#### New lesson [proposed_lesson_slug]
+- **Decision**: ACCEPTED | REJECTED | NEEDS REFINEMENT
+- **Justification**: [2-3 sentences covering formal quality, non-duplicate, generalization, importance calibration]
+- **If NEEDS REFINEMENT**: precise fields to correct
 
-#### Update [lesson_slug existant]
-- **Décision** : ACCEPTÉ | REJETÉ
-- **Justification** : [vérifier source_episode non déjà présent, dates cohérentes, uses cohérent, lesson_hit confirmé]
+#### Update [existing_lesson_slug]
+- **Decision**: ACCEPTED | REJECTED
+- **Justification**: [verify source_episode not already present, dates consistent, uses consistent, lesson_hit confirmed]
 
-#### Révision [lesson_slug existant]
-- **Décision** : ACCEPTÉ | REJETÉ
-- **Justification** : [motif documenté dans épisode source ?]
+#### Revision [existing_lesson_slug]
+- **Decision**: ACCEPTED | REJECTED
+- **Justification**: [reason documented in source episode?]
 
-### Synthèse
-- Total propositions : N
-- ACCEPTÉ : N
-- REJETÉ : N (raisons synthétiques)
-- À RAFFINER : N
+### Summary
+- Total proposals: N
+- ACCEPTED: N
+- REJECTED: N (synthetic reasons)
+- NEEDS REFINEMENT: N
 
 GO.
 ```
 
-**Après le rapport Lambda, l'orchestrateur** :
-1. Pour chaque NOUVELLE LEÇON marquée ACCEPTÉ :
-   - Crée le fichier `memory/lessons/lesson_<slug>.md` avec frontmatter YAML strict (cf. template `memory/lessons/lesson_template.md`)
-   - Champs initiaux : `uses: 0`, `last_hit: NEVER`, `source_episodes: [YYYY-MM-DD_slug_episode_courant]`, `status: active`, `importance_history: []`
-2. Pour chaque UPDATE marqué ACCEPTÉ :
-   - Met à jour le frontmatter du fichier leçon existant : `uses += 1`, `last_hit = today`, append episode courant à `source_episodes`
-3. Pour chaque RÉVISION marquée ACCEPTÉ :
-   - Change `status: active → review` dans le frontmatter
-   - Append un commentaire (## Revision note) dans le corps avec la justification Lambda
-4. Met à jour `memory/INDEX.md` : ajoute les nouvelles lessons dans leurs sections de domaine respectives ; reflète les updates (uses, last_hit) et révisions (status).
-5. Met à jour le frontmatter de l'épisode courant : remplit `lessons_validated_by_lambda` avec la liste effective des slugs validés (champ renommé en v2.2 depuis `lessons_validated_by_user`).
-6. **Trigger rebuild attention layer (v2.3)** : si au moins une création / update (qui modifie le corps ou les champs encodés) / révision a été appliquée aux étapes 1-3, l'orchestrateur lance automatiquement :
+**After the Lambda report, the orchestrator**:
+1. For each NEW LESSON marked ACCEPTED:
+   - Creates the file `memory/lessons/lesson_<slug>.md` with strict YAML frontmatter (cf. template `memory/lessons/lesson_template.md`)
+   - Initial fields: `uses: 0`, `last_hit: NEVER`, `source_episodes: [YYYY-MM-DD_slug_current_episode]`, `status: active`, `importance_history: []`
+2. For each UPDATE marked ACCEPTED:
+   - Updates the frontmatter of the existing lesson file: `uses += 1`, `last_hit = today`, append current episode to `source_episodes`
+3. For each REVISION marked ACCEPTED:
+   - Changes `status: active → review` in the frontmatter
+   - Appends a comment (## Revision note) in the body with the Lambda justification
+4. Updates `memory/INDEX.md`: adds new lessons in their respective domain sections; reflects updates (uses, last_hit) and revisions (status).
+5. Updates the current episode frontmatter: fills `lessons_validated_by_lambda` with the effective list of validated slugs (field renamed in v2.2 from `lessons_validated_by_user`).
+6. **Trigger attention layer rebuild (v2.3)**: if at least one creation / update (that modifies the body or encoded fields) / revision was applied in steps 1-3, the orchestrator automatically runs:
    ```
-   python3 ~/.claude/skills/justdoit/memory/attention/build_index.py
+   python3 $COMMONTRACE_ROOT/memory/attention/build_index.py
    ```
-   Sortie attendue : `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. Si le script échoue (sentence-transformers indisponible, etc.), l'orchestrateur le signale dans le rapport final mais ne bloque pas le run — l'index reste consultable en l'état pour les runs futurs. Manuel possible aussi : `python build_index.py --force` après édition manuelle.
-7. Inclut dans le rapport final user :
-   - Liste des propositions ACCEPTÉ appliquées
-   - Liste des propositions REJETÉ avec raison Lambda (traçabilité)
-   - Liste des propositions À RAFFINER avec champs à corriger (l'utilisateur peut décider de les retravailler manuellement)
-   - Statut du rebuild attention layer (OK / KO / non déclenché si rien appliqué)
+   Expected output: `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. If the script fails (sentence-transformers unavailable, etc.), the orchestrator notes it in the final report but does not block the run — the index remains queryable as-is for future runs. Manual rebuild also possible: `python build_index.py --force` after manual editing.
+7. Includes in the final user report:
+   - List of ACCEPTED proposals applied
+   - List of REJECTED proposals with Lambda reason (traceability)
+   - List of NEEDS REFINEMENT proposals with fields to correct (the user can decide to rework them manually)
+   - Attention layer rebuild status (OK / KO / not triggered if nothing applied)
 
-**Skippable** via `--skip-omega` (skip 9 + 10 + 11 ensemble — le rebuild attention est skippé aussi puisqu'il est conditionné à l'application Lambda).
+**Skippable** via `--skip-omega` (skips 9 + 10 + 11 together — attention rebuild is also skipped since it is conditioned on Lambda application).
 
-## Mémoire
+## Memory
 
-### Chemin de la base
+### Base path
 
-Base mémoire du skill : `memory/` (chemin relatif à ce `SKILL.md`, soit `~/.claude/skills/justdoit/memory/`).
+Skill memory base: `memory/` (path relative to this `SKILL.md`, i.e. `$COMMONTRACE_ROOT/memory/`).
 
-### Rubrique d'importance (v2.1, 1-5)
+### Importance rubric (v2.1, 1-5)
 
-Chaque épisode ET chaque leçon porte un champ scalaire `importance` (entier 1-5) accompagné d'un `importance_rationale` (string 1-phrase concrète obligatoire). La rubrique :
+Each episode AND each lesson carries a scalar field `importance` (integer 1-5) accompanied by an `importance_rationale` (mandatory 1-sentence concrete string). The rubric:
 
 ```
-Importance 5 (showstopper) : sans cette leçon, la classe de tâche entière échoue
-                              ou cause perte de données / sécurité.
-Importance 4 (critique)    : ignorer cette leçon → forte probabilité de rework
-                              majeur ou de bug subtil difficile à détecter.
-Importance 3 (utile)        : la leçon évite un anti-pattern courant ou un piège
-                              méthodologique. Économise du temps significatif.
-Importance 2 (mineur)       : leçon valable mais d'impact limité, applicable à
-                              un sous-cas spécifique.
-Importance 1 (anecdotique) : observation intéressante mais peu actionnable
-                              → préférer documenter comme note d'épisode.
+Importance 5 (showstopper): without this lesson, the entire task class fails
+                             or causes data loss / security breach.
+Importance 4 (critical):    ignoring this lesson → high probability of major
+                             rework or a subtle hard-to-detect bug.
+Importance 3 (useful):      the lesson avoids a common anti-pattern or
+                             methodological trap. Saves significant time.
+Importance 2 (minor):       valid lesson but limited impact, applicable to
+                             a specific sub-case.
+Importance 1 (anecdotal):   interesting observation but not very actionable
+                             → prefer documenting as an episode note.
 ```
 
-**Inspiration** : Park et al. 2023 "Generative Agents: Interactive Simulacra of Human Behavior" (memory stream — eux utilisent 1-10, ici on choisit 1-5 pour calibration plus simple).
+**Inspiration**: Park et al. 2023 "Generative Agents: Interactive Simulacra of Human Behavior" (memory stream — they use 1-10, here we choose 1-5 for simpler calibration).
 
-**Usage** :
-- **Alpha (Phase 0)** trie les leçons retrouvées par `score = importance × tag_match` décroissant et **considère TOUJOURS les leçons `importance >= 4`** même si `tag_match == 0` (sécurité : un showstopper est probablement transversal).
-- **Omega (Phase 10)** cale l'importance de l'épisode produit et propose l'importance des leçons candidates (dérivée des `source_episodes`, ajustable +/- 1 par Omega au moment de proposer).
-- **Critère Omega pour proposer une leçon nouvelle** : (A) importance épisode source ≥ 3 ET généralisable hors-projet, OU (B) importance 4-5 même sur 1 seule occurrence. Remplace l'ancien critère "≥ 2 épisodes le montrent" (trop strict pour les showstoppers).
+**Usage**:
+- **Alpha (Phase 0)** sorts retrieved lessons by `score = importance × tag_match` descending and **ALWAYS considers lessons with `importance >= 4`** even if `tag_match == 0` (safety: a showstopper is likely cross-cutting).
+- **Omega (Phase 10)** calibrates the produced episode's importance and proposes the importance of candidate lessons (derived from `source_episodes`, adjustable +/- 1 by Omega when proposing).
+- **Omega criterion for proposing a new lesson**: (A) source episode importance ≥ 3 AND generalizable beyond the project, OR (B) importance 4-5 even on a single occurrence. Replaces the old criterion "≥ 2 episodes show it" (too strict for showstoppers).
 
-**Rétrocompatibilité** : pour les épisodes/lessons écrits avant v2.1 sans `importance` :
-- Alpha traite l'absence comme `importance = 3` par défaut (médian) et flag "à caler" dans le bloc "Lessons consultées".
-- Omega flag "importance absente — à caler" dans ses propositions d'update.
-- Aucun script existant ne casse : les champs sont additifs.
+**Backward compatibility**: for episodes/lessons written before v2.1 without `importance`:
+- Alpha treats the absence as `importance = 3` by default (median) and flags "needs calibration" in the "Lessons consulted" block.
+- Omega flags "importance absent — needs calibration" in its update proposals.
+- No existing script breaks: the fields are additive.
 
-### Évolutions futures (non implémentées v2.1)
+### Future evolutions (not implemented in v2.1)
 
-Documentées ici pour mémoire — NE PAS implémenter sans validation utilisateur explicite et sans terrain empirique :
+Documented here for reference — DO NOT implement without explicit user validation and without empirical ground:
 
-- **Decay temporel** : pondérer `importance` par `exp(-(today - last_hit) / tau)` pour faire émerger les leçons récemment hit. Risque : faire oublier des leçons rares mais critiques. Probable couplage avec un facteur `recency` séparé.
-- **Recency séparée** : tenir un champ `recency` distinct de `importance` (Park et al. utilisent cette décomposition). À discuter quand on aura plus de données empiriques sur le retrieval Alpha.
-- **Bump auto uses → importance** : si une leçon dépasse N hits sur M runs, auto-incrémenter son importance (signal empirique fort d'utilité). À discuter : risque de drift vers tout en importance 5.
-- **Salience composite** : `salience = α·importance + β·recency + γ·log(uses+1)`. Style Park et al. Demande tuning α/β/γ.
-- **Multi-dimensionnel** : passer de scalaire à vecteur (e.g. `importance = (severity, frequency, generalizability)`). Plus expressif mais demande UI de retrieval plus sophistiqué.
+- **Temporal decay**: weight `importance` by `exp(-(today - last_hit) / tau)` to surface recently-hit lessons. Risk: forgetting rare but critical lessons. Probable coupling with a separate `recency` factor.
+- **Separate recency**: maintain a `recency` field distinct from `importance` (Park et al. use this decomposition). To discuss when we have more empirical data on Alpha retrieval.
+- **Auto bump uses → importance**: if a lesson exceeds N hits over M runs, auto-increment its importance (strong empirical utility signal). To discuss: risk of drift toward everything at importance 5.
+- **Composite salience**: `salience = α·importance + β·recency + γ·log(uses+1)`. Park et al. style. Requires tuning α/β/γ.
+- **Multi-dimensional**: move from scalar to vector (e.g. `importance = (severity, frequency, generalizability)`). More expressive but requires a more sophisticated retrieval UI.
 
-Ces évolutions sont des pistes pour Thomas AI (cf. `project_thomas_ai_long_term_learning.md`). En v2.1, on reste sur scalaire 1-5 + rationale, point.
+These evolutions are future avenues for the CommonTrace platform. In v2.1, we stick with scalar 1-5 + rationale, period.
 
-### Architecture mémoire
+### Memory architecture
 
 ```
 memory/
-├── INDEX.md                  # index hiérarchique par domaine (édité à chaque Phase 11)
+├── INDEX.md                  # hierarchical index by domain (edited at each Phase 11)
 ├── episodes/
-│   ├── README.md             # format épisode + workflow
-│   ├── episode_template.md   # template vide
-│   └── YYYY-MM-DD_<slug>.md  # un fichier par run /justdoit (écrit par Omega Phase 10)
+│   ├── README.md             # episode format + workflow
+│   ├── episode_template.md   # empty template
+│   └── YYYY-MM-DD_<slug>.md  # one file per /commontrace run (written by Omega Phase 10)
 └── lessons/
-    ├── README.md             # format leçon + workflow
-    ├── lesson_template.md    # template vide
-    └── lesson_<slug>.md      # un fichier par leçon (créé par orchestrateur Phase 11 après validation)
+    ├── README.md             # lesson format + workflow
+    ├── lesson_template.md    # empty template
+    └── lesson_<slug>.md      # one file per lesson (created by orchestrator Phase 11 after validation)
 ```
 
-### Quand chaque agent intervient
+### When each agent intervenes
 
-- **Alpha** (Phase 0, par défaut) : retrieval mémoire avant code. Skippable via `--skip-alpha`.
-- **Omega** (Phase 10, par défaut) : synthèse + propositions après verdict B. Skippable via `--skip-omega`.
-- **Lambda** (Phase 11, par défaut) : validation automatique du backlog mémoire après propositions Omega. Couplé à `--skip-omega` (skippé en même temps). La mémoire n'est jamais enrichie sans verdict ACCEPTÉ de Lambda — workflow 100% automatisé, pas de dépendance humaine.
+- **Alpha** (Phase 0, by default): memory retrieval before code. Skippable via `--skip-alpha`.
+- **Omega** (Phase 10, by default): synthesis + proposals after B verdict. Skippable via `--skip-omega`.
+- **Lambda** (Phase 11, by default): automatic memory backlog validation after Omega proposals. Coupled to `--skip-omega` (skipped together). Memory is never enriched without an ACCEPTED verdict from Lambda — 100% automated workflow, no human dependency.
 
-### Lien avec Thomas AI
+### Link with CommonTrace Platform
 
-Ce mécanisme (Alpha + Omega + base mémoire) est un terrain d'expérimentation pour le futur projet "Thomas AI" (cf. `project_thomas_ai_long_term_learning.md`), dont l'objectif est d'évaluer l'apprentissage long-terme des agents (qualité leçon, retrieval contextuel implicite, transfert situation isomorphe).
+This mechanism (Alpha + Omega + memory base) is an experimentation ground for the CommonTrace fleet-learning platform, whose objective is to evaluate long-term agent learning (lesson quality, implicit contextual retrieval, isomorphic situation transfer).
 
-### Choix de design retenus (v2 + v2.2)
+### Design choices retained (v2 + v2.2)
 
-- **Base hiérarchique par domaine** (Option B) : INDEX.md sectionné par domaine (git-safety, cuda-gpu, refactor, testing, subagents, performance, other) pour faciliter pré-filtrage Alpha.
-- **Validation Lambda automatique** (Phase 11, v2.2) : la mémoire n'est jamais enrichie sans verdict ACCEPTÉ d'un reviewer indépendant des choix Omega. Lambda audit qualité formelle, non-doublon, généralisation, calibration importance. Workflow 100% automatisé, exploitable par un agent sans humain dans la boucle (overrides la validation user de v2-v2.1).
-- **Scope global avec tag projet** : la mémoire est partagée entre projets, le champ `project:` dans frontmatter permet filtrage cross-project.
-- **Échec Alpha non bloquant** : si retrieval échoue, on continue avec un signal explicite, on ne bloque pas le run.
-- **Mémoire séparée du MEMORY.md global** : la base `~/.claude/skills/justdoit/memory/` est indépendante du MEMORY.md projet sous `~/.claude/projects/...`. Évolutions découplées.
-- **Omega ne write JAMAIS les leçons** : seul l'épisode est écrit automatiquement (traçabilité), les leçons passent par Phase 11 (audit Lambda + application orchestrateur).
-- **Lambda est à Omega ce que B est à A** : reviewer indépendant qui juge contre des critères explicites, pas l'auteur des propositions. Reproduit le pattern double-review au niveau backlog mémoire.
+- **Hierarchical base by domain** (Option B): INDEX.md sectioned by domain (git-safety, cuda-gpu, refactor, testing, subagents, performance, other) to facilitate Alpha pre-filtering.
+- **Automatic Lambda validation** (Phase 11, v2.2): memory is never enriched without an ACCEPTED verdict from an independent reviewer of Omega's choices. Lambda audits formal quality, non-duplicate, generalization, importance calibration. 100% automated workflow, usable by an agent without any human in the loop (overrides user validation from v2-v2.1).
+- **Global scope with project tag**: memory is shared across projects, the `project:` frontmatter field allows cross-project filtering.
+- **Alpha failure is non-blocking**: if retrieval fails, we continue with an explicit signal, we do not block the run.
+- **Memory separate from global MEMORY.md**: the `$COMMONTRACE_ROOT/memory/` base is independent of any project-level MEMORY.md. Decoupled evolutions.
+- **Omega NEVER writes lessons**: only the episode is written automatically (traceability), lessons go through Phase 11 (Lambda audit + orchestrator application).
+- **Lambda is to Omega what B is to A**: independent reviewer who judges against explicit criteria, not the author of the proposals. Reproduces the double-review pattern at the memory backlog level.
 
-### Note benchmark (hors scope v2)
+### Benchmark note (out of scope v2)
 
-Un script de benchmark mesurant `lesson_quality` / `implicit_retrieval` / `transfer_gap` sera ajouté dans une étape séparée.
+A benchmark script measuring `lesson_quality` / `implicit_retrieval` / `transfer_gap` will be added in a separate step.
 
-## Paramètres optionnels (inline)
+## Optional parameters (inline)
 
-L'utilisateur peut spécifier dans l'invocation :
+The user can specify in the invocation:
 - `max_iterations=N` (default 3)
-- `tests=path/to/tests` (default : projet entier)
-- `skip-commit-after-a` (utiliser si conflit avec autres workflows)
-- `no-loop` (1 cycle A+B sans loop)
-- `--skip-alpha` (skip Phase 0 retrieval mémoire)
-- `--skip-omega` (skip Phases 9 + 10 + 11 — pas de mini-rétro, pas d'Omega, pas de write mémoire)
-- `--alpha-only` (run Alpha seul, afficher son rapport et s'arrêter — utile pour tester le retrieval)
+- `tests=path/to/tests` (default: entire project)
+- `skip-commit-after-a` (use if conflict with other workflows)
+- `no-loop` (1 A+B cycle without loop)
+- `--skip-alpha` (skip Phase 0 memory retrieval)
+- `--skip-omega` (skip Phases 9 + 10 + 11 — no mini-retro, no Omega, no memory write)
+- `--alpha-only` (run Alpha alone, display its report and stop — useful for testing retrieval)
 
-Exemple : `/justdoit refactor xxx --max_iterations=2 --tests=OGHAM/tests/`
-Exemple : `/justdoit fix bug yyy --skip-omega` (urgence : skip apprentissage)
-Exemple : `/justdoit --alpha-only "port CUDA module xxx"` (juste pour voir ce que la mémoire dit)
+Example: `/commontrace refactor xxx --max_iterations=2 --tests=OGHAM/tests/`
+Example: `/commontrace fix bug yyy --skip-omega` (urgency: skip learning)
+Example: `/commontrace --alpha-only "port CUDA module xxx"` (just to see what memory says)
 
-**Rétrocompatibilité** : toutes les invocations historiques continuent de fonctionner. Phases Alpha/Omega sont activées par défaut mais skippables.
+**Backward compatibility**: all historical invocations continue to work. Alpha/Omega phases are enabled by default but skippable.
 
-## Bonnes pratiques
+## Best practices
 
-### Génération des briefs
-- **Brief A doit être autonome** : le sous-agent ne voit pas la conversation. Inclus tout le contexte nécessaire (paths, conventions, exclusions, sortie Alpha si applicable).
-- **Brief B doit être indépendant** : ne pas dire "valide les claims A". Donner les critères + le code, B juge contre les critères.
-- **Brief Alpha / Brief Omega** : copiés verbatim depuis ce SKILL.md, pas reformulés.
-- **Pas de subagent réutilisé** : nouveau Agent à chaque cycle pour garantir indépendance (SendMessage non recommandé).
+### Brief generation
+- **A brief must be self-contained**: the sub-agent does not see the conversation. Include all necessary context (paths, conventions, exclusions, Alpha output if applicable).
+- **B brief must be independent**: do not say "validate A's claims". Provide the criteria + the code, B judges against the criteria.
+- **Alpha / Omega briefs**: copied verbatim from this SKILL.md, not reformulated.
+- **No reused sub-agent**: new sub-agent spawned at each cycle to guarantee independence (sending a message to an existing sub-agent is NOT recommended).
 
-### Parallélisation
-- A et B sont **séquentiels** (B reviewe ce que A a produit). Pas de parallélisation A↔B.
-- **Plusieurs `/justdoit` en parallèle** OK si fichiers disjoints (cf. `feedback_parallel_subagents_file_overlap`). Vérifier explicitement avant de lancer.
-- **Alpha tourne avant** Phase 1 (séquentiel). Pas parallélisable avec A.
-- **Omega tourne après** Phase 9 (séquentiel). Pas parallélisable avec B.
+### Parallelization
+- A and B are **sequential** (B reviews what A produced). No A↔B parallelization.
+- **Multiple `/commontrace` in parallel** OK if files are disjoint (cf. `feedback_parallel_subagents_file_overlap`). Verify explicitly before launching.
+- **Alpha runs before** Phase 1 (sequential). Not parallelizable with A.
+- **Omega runs after** Phase 9 (sequential). Not parallelizable with B.
 
 ### Commit messages
-Format pour les commits intermédiaires :
+Format for intermediate commits:
 ```
-[TÂCHE] : it N (A produit, B pas encore review)
+[TASK]: it N (A produced, B not yet reviewed)
 
-[Résumé court rapport A]
-[Tests passants : N/M]
+[Short summary of A report]
+[Passing tests: N/M]
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-```
-
-Pour le commit final (CONFORME) :
-```
-[TÂCHE] : CONFORME après N itération(s)
-
-[Résumé final : sémantique, perf, tests]
-
-Verdict B reviewer CONFORME.
-[Liens fichiers / résultats]
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: commontrace-agent <noreply@commontrace.dev>
 ```
 
-### Anti-patterns du skill lui-même
-- Ne pas skip Phase 4 (commit immédiat) — risque de perte
-- Ne pas relancer le MÊME Agent via SendMessage (perd l'indépendance B↔A)
-- Ne pas itérer > 3 fois sans arbitrage utilisateur explicite
-- Ne pas lancer plusieurs `/justdoit` sur les mêmes fichiers en parallèle
-- Ne pas laisser Omega écrire les leçons sans validation Lambda (Phase 11 obligatoire si Omega tourne)
-- Ne pas bloquer le run sur échec Alpha (non bloquant par design)
-
-## Mémoires utilisateur de référence
-
-- `feedback_subagent_double_review` — pattern A+B implementer + reviewer indépendant
-- `feedback_no_subagents_for_architectural_code` — exception : OK avec double-review (ce skill)
-- `feedback_parallel_subagents_file_overlap` — sérialiser sur mêmes fichiers
-- `feedback_show_changes_before_editing` — A doit montrer son plan dans son rapport
-- `feedback_transparency_when_deviating` — A doit signaler si dévie de la spec
-- `project_thomas_ai_long_term_learning` — projet lié, ce mécanisme est un terrain d'expérimentation
-
-## Exemples d'invocation
-
+For the final commit (CONFORM):
 ```
-/justdoit refactor InferenceEngine.step() pour accepter step_runtime_kwargs en plus de step_default_kwargs (init). Critères : 33 tests inference existants passent, pas de @property d'alias, default = comportement V0.3 inchangé.
+[TASK]: CONFORM after N iteration(s)
+
+[Final summary: semantics, perf, tests]
+
+Verdict B reviewer CONFORM.
+[File links / results]
+
+Co-Authored-By: commontrace-agent <noreply@commontrace.dev>
 ```
 
+### Anti-patterns of the skill itself
+- Do not skip Phase 4 (immediate commit) — risk of loss
+- Do not relaunch the SAME sub-agent via message (loses B↔A independence)
+- Do not iterate > 3 times without explicit user arbitration
+- Do not launch multiple `/commontrace` on the same files in parallel
+- Do not let Omega write lessons without Lambda validation (Phase 11 mandatory if Omega runs)
+- Do not block the run on Alpha failure (non-blocking by design)
+
+## Reference user memories
+
+- `feedback_subagent_double_review` — A+B implementer + independent reviewer pattern
+- `feedback_no_subagents_for_architectural_code` — exception: OK with double-review (this skill)
+- `feedback_parallel_subagents_file_overlap` — serialize on same files
+- `feedback_show_changes_before_editing` — A must show its plan in its report
+- `feedback_transparency_when_deviating` — A must signal if deviating from spec
+- `commontrace-platform` — CommonTrace fleet-learning platform, this mechanism is its reference implementation
+
+## Invocation examples
+
 ```
-/justdoit fix bug parité multi-instrument Pression dans cuda_v3 (diff 0.16 actuellement). Cause hypothèse : ordering L2-supersede filter ou couplage Exhaustion. Critères : diff < 1e-5 sur 10 inst × H1 × 1 mois, 533 tests passent, ne pas toucher latents/force_relative.py (B0b territory).
+/commontrace refactor InferenceEngine.step() to accept step_runtime_kwargs in addition to step_default_kwargs (init). Criteria: 33 existing inference tests pass, no alias @property, default = V0.3 behavior unchanged.
 ```
 
 ```
-/justdoit port CUDA du module liquidite_gpu.py vers Triton custom kernel. Critères : parité bit-exact CPU/GPU < 1e-4, speedup ≥ ×3 sur smoke 3m, tests existants 526 passent. --max_iterations=2
+/commontrace fix multi-instrument Pressure parity bug in cuda_v3 (diff 0.16 currently). Hypothesized cause: L2-supersede filter ordering or Exhaustion coupling. Criteria: diff < 1e-5 on 10 inst × H1 × 1 month, 533 tests pass, do not touch latents/force_relative.py (B0b territory).
 ```
 
 ```
-/justdoit --alpha-only "refactor module XYZ pour vectoriser update()"   # juste voir ce que la mémoire dit
+/commontrace CUDA port of liquidite_gpu.py module to Triton custom kernel. Criteria: bit-exact CPU/GPU parity < 1e-4, speedup ≥ ×3 on 3m smoke, existing 526 tests pass. --max_iterations=2
 ```
 
 ```
-/justdoit fix urgence prod --skip-omega   # urgence : pas le temps pour mini-rétro + apprentissage
+/commontrace --alpha-only "refactor module XYZ to vectorize update()"   # just see what memory says
+```
+
+```
+/commontrace fix production urgency --skip-omega   # urgency: no time for mini-retro + learning
 ```

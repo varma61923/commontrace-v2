@@ -4,7 +4,7 @@ digraph attention_layer {
   fontname="DejaVu Sans";
   labelloc="t";
   fontsize=14;
-  label=<<b>Attention layer (v2.3)</b>  ·  infrastructure, PAS un 7e agent<br/><font point-size="10">Pré-filtre sémantique consulté synchroniquement par Alpha pour scaler le retrieval à 100+ leçons</font>>;
+  label=<<b>Attention layer (v2.3)</b>  ·  infrastructure, NOT a 7th agent<br/><font point-size="10">Semantic pre-filter consulted synchronously by Alpha to scale retrieval to 100+ lessons</font>>;
   nodesep=0.3;
   ranksep=0.6;
 
@@ -12,29 +12,29 @@ digraph attention_layer {
   edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
 
   // ----- build path -----
-  lessons [label="memory/lessons/\n(leçons actives)", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
-  build [label=<<b>build_index.py</b><br/><font point-size="9">encode : description + domain + tags<br/>+ applies_when + do_not_apply_when + rule<br/>modèle multi-qa-mpnet-base-dot-v1 (768-d)<br/>embeddings L2-normalisés · 100 % local</font>>,
+  lessons [label="memory/lessons/\n(active lessons)", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+  build [label=<<b>build_index.py</b><br/><font point-size="9">encodes: description + domain + tags<br/>+ applies_when + do_not_apply_when + rule<br/>model multi-qa-mpnet-base-dot-v1 (768-d)<br/>L2-normalized embeddings · 100% local</font>>,
          fillcolor="#0d9488", fontcolor="white", penwidth=1.6];
-  index [label=<<b>index.npz</b>  (contrat stable)<br align="left"/><font point-size="9">slugs · embeddings[N,768]<br align="left"/>model_name · encoded_field<br align="left"/>timestamp · n_lessons</font>>,
+  index [label=<<b>index.npz</b>  (stable contract)<br align="left"/><font point-size="9">slugs · embeddings[N,768]<br align="left"/>model_name · encoded_field<br align="left"/>timestamp · n_lessons</font>>,
          shape=component, fillcolor="#ccfbf1", color="#0d9488", fontcolor="#134e4a"];
 
   // ----- query path -----
-  query [label=<<b>query.py</b> "tâche"<br/><font point-size="9">--top-k=10<br/>--include-importance-floor=4</font>>,
+  query [label=<<b>query.py</b> "task"<br/><font point-size="9">--top-k=10<br/>--include-importance-floor=4</font>>,
          fillcolor="#0d9488", fontcolor="white", penwidth=1.6];
   alpha [label="ALPHA (Phase 0)", fillcolor="#2563eb", fontcolor="white"];
-  out [label="top-K candidats par cosine\n+ TOUTES les leçons imp ≥ 4\n(override sécurité)", fillcolor="#dbeafe", color="#2563eb", fontcolor="#1e3a8a"];
+  out [label="top-K candidates by cosine\n+ ALL lessons imp >= 4\n(safety override)", fillcolor="#dbeafe", color="#2563eb", fontcolor="#1e3a8a"];
 
   // ----- triggers / hooks -----
-  rebuild [label="Rebuild :\nauto fin P11 (si Lambda a modifié)\nmanuel : build_index.py --force",
+  rebuild [label="Rebuild:\nauto end P11 (if Lambda modified)\nmanual: build_index.py --force",
            shape=note, fillcolor="#fef9c3", color="#ca8a04", fontcolor="#713f12", fontsize=9];
-  hooks [label="Hooks Dreamer (v2.4) :\nemb @ emb.T = cosine pairwise\nsim > 0.85 ⇒ candidat de fusion",
+  hooks [label="Hooks Dreamer (v2.4):\nemb @ emb.T = cosine pairwise\nsim > 0.85 => fusion candidate",
          shape=note, fillcolor="#ede9fe", color="#7c3aed", fontcolor="#4c1d95", fontsize=9];
 
-  lessons -> build [label=" leçons actives", color="#b45309", fontcolor="#92400e"];
-  build -> index [label=" écrit"];
-  index -> query [label=" charge"];
+  lessons -> build [label=" active lessons", color="#b45309", fontcolor="#92400e"];
+  build -> index [label=" writes"];
+  index -> query [label=" loads"];
   query -> out;
-  out -> alpha [label=" complément\n du tri qualitatif"];
+  out -> alpha [label=" complement\n to qualitative sort"];
   index -> hooks [style=dotted, color="#7c3aed"];
   build -> rebuild [style=invis];
   { rank=same; build; rebuild; }

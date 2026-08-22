@@ -1,0 +1,35 @@
+# CommonTrace Hub server — not packaged/distributed via pyproject.toml
+# (the Hub is a service you deploy from a checkout, not a pip-installed
+# library). Install with: pip install -r hub/requirements.txt
+#
+# Exact-pinned direct dependencies: a floor like "mcp>=1.2" means a fresh
+# install can silently resolve a different mcp than the one this Hub was
+# actually built and tested against -- concretely, the request-body-size
+# guard hub/config.py's max_request_body_bytes relies on
+# (StreamableHTTPSessionManager.max_request_body_size) comes from the mcp
+# SDK itself, so which version resolves is a real behavioral question, not
+# just a version-number one. Bump these deliberately (test against the new
+# version, then edit the pin) rather than letting them float.
+#
+# This still isn't full transitive-dependency reproducibility (that needs
+# a proper lock file, e.g. pip-tools/uv, pinning every indirect dependency
+# too) -- treat that as a known follow-up, not something exact-pinning the
+# direct list alone achieves.
+
+mcp==2.0.0                 # MCP server transport (streamable-http), also pulls starlette + uvicorn
+httpx2==2.12.0
+sqlalchemy[asyncio]==2.0.52
+asyncpg==0.31.0            # async Postgres driver
+alembic==1.19.1
+argon2-cffi==25.1.0        # API key hashing
+jsonschema==4.26.0         # protocol/schemas/*.json validation
+# commons_overlap compares every submitted failure signature against the
+# commons corpus. Measured on this codebase, numpy vectorizes that ~24x:
+# the worst-case bounded query is 1.6s with it and ~46s without. hub/commons.py
+# keeps an exact pure-Python fallback (and tests that the two agree), so this
+# is a performance dependency, not a correctness one -- but a Hub serving the
+# commons should have it.
+# 2.2.6 is the newest release that still supports Python 3.10, which this
+# project's CI matrix and ruff target-version both include. numpy >= 2.3.0
+# is Python >= 3.11 only, so pinning higher silently drops 3.10 support.
+numpy==2.2.6

@@ -4,7 +4,7 @@ digraph agent_omega {
   fontname="DejaVu Sans";
   labelloc="t";
   fontsize=14;
-  label=<<b>Omega — synthèse + propositions</b>  ·  Phase 10<br/><font point-size="10">Écrit l'épisode du run (toujours) + propose l'enrichissement mémoire (leçons / updates / révisions)</font>>;
+  label=<<b>Omega — synthesis + proposals</b>  ·  Phase 10<br/><font point-size="10">Writes the run episode (always) + proposes memory enrichment (lessons / updates / revisions)</font>>;
   nodesep=0.28;
   ranksep=0.7;
 
@@ -12,27 +12,27 @@ digraph agent_omega {
   edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
 
   subgraph cluster_in {
-    label=<<b>Inputs (tout le run)</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    label=<<b>Inputs (full run)</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
-    in_all [label=<<font point-size="9">• Tâche initiale + rapport Alpha + brief A<br align="left"/>• Rapports A1..An (toutes itérations)<br align="left"/>• Rapports B1..Bn + verdict final<br align="left"/>• Rétro orchestrateur (Phase 9)<br align="left"/>• Métadonnées run (commit, durée, n_iter)</font>>];
+    in_all [label=<<font point-size="9">• Initial task + Alpha report + brief A<br align="left"/>• Reports A1..An (all iterations)<br align="left"/>• Reports B1..Bn + final verdict<br align="left"/>• Orchestrator retro (Phase 9)<br align="left"/>• Run metadata (commit, duration, n_iter)</font>>];
   }
 
-  omega [label=<<b>OMEGA</b><br/><font point-size="9">1. écrire l'épisode (TOUJOURS) + calibrer imp. 1-5<br/>2. proposer 0-N leçons nouvelles<br/>3. proposer 0-N updates de leçons<br/>4. flag « À RÉVISER » (opt.)</font>>,
+  omega [label=<<b>OMEGA</b><br/><font point-size="9">1. write episode (ALWAYS) + calibrate imp. 1-5<br/>2. propose 0-N new lessons<br/>3. propose 0-N lesson updates<br/>4. flag "NEEDS REVISION" (opt.)</font>>,
          fillcolor="#7c3aed", fontcolor="white", penwidth=1.6];
 
-  mandate [label="Mandat : écrit memory/episodes/\nPAS d'écriture lessons/ ni INDEX.md (→ Lambda P11)\nCritère leçon : (imp≥3 + généralisable)\nOU (imp 4-5 même sur 1 occurrence)",
+  mandate [label="Mandate: writes memory/episodes/\nNO writing to lessons/ or INDEX.md (-> Lambda P11)\nLesson criteria: (imp>=3 + generalizable)\nOR (imp 4-5 even on 1 occurrence)",
            shape=note, fillcolor="#fef9c3", color="#ca8a04", fontcolor="#713f12", fontsize=9];
 
   subgraph cluster_out {
     label=<<b>Outputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
     node [fillcolor="#ede9fe", color="#7c3aed", fontcolor="#4c1d95"];
-    out_ep [label="episodes/AAAA-MM-JJ_slug.md\n(écrit directement)", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
-    out_ob [label=<<b>## OMEGA OUTPUT</b><br align="left"/><font point-size="9">• Lessons candidates (→ Lambda)<br align="left"/>• Lessons updates (uses += 1)<br align="left"/>• Lessons revisions (À RÉVISER)</font>>];
+    out_ep [label="episodes/YYYY-MM-DD_slug.md\n(written directly)", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+    out_ob [label=<<b>## OMEGA OUTPUT</b><br align="left"/><font point-size="9">• Lesson candidates (-> Lambda)<br align="left"/>• Lesson updates (uses += 1)<br align="left"/>• Lesson revisions (NEEDS REVISION)</font>>];
   }
 
   in_all -> omega;
-  omega -> out_ep [label=" traçabilité", color="#b45309", fontcolor="#92400e"];
-  omega -> out_ob [label=" → validé par Lambda"];
+  omega -> out_ep [label=" traceability", color="#b45309", fontcolor="#92400e"];
+  omega -> out_ob [label=" -> validated by Lambda"];
   omega -> mandate [style=invis];
   { rank=same; omega; mandate; }
 }

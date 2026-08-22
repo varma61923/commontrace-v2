@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commontrace.dev/schemas/trace.schema.json",
+  "title": "CommonTrace Trace",
+  "description": "The universal, agent-agnostic unit of captured experience. Shape is aligned 1:1 with the CommonTrace Hub's live trace object (search_traces / get_trace / contribute_trace) so a local trace and a Hub trace are the same object at different sync states.",
+  "type": "object",
+  "required": ["id", "title", "context_text", "solution_text", "tags", "agent_type"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "UUID once assigned by the Hub. Locally-only traces MAY use a temporary local id (e.g. a YYYY-MM-DD_<slug> string) until synced.",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "description": "Short description of what this trace solves (< ~120 chars recommended).",
+      "minLength": 1
+    },
+    "context_text": {
+      "type": "string",
+      "description": "The problem context: what the agent was trying to do, and the situation it was in.",
+      "minLength": 1
+    },
+    "solution_text": {
+      "type": "string",
+      "description": "What worked. The reusable part of the experience.",
+      "minLength": 1
+    },
+    "tags": {
+      "type": "array",
+      "description": "Free-form categorization tags. No closed taxonomy at the protocol level -- see protocol/PROTOCOL.md#7-taxonomy-open-not-closed for recommended starter tags per agent_type.",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "agent_type": {
+      "type": "string",
+      "description": "The kind of agent that produced this trace. Open vocabulary; 'code' is the reference implementation shipped in this repo.",
+      "examples": ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
+    },
+    "profile": {
+      "type": "string",
+      "description": "Optional name of a domain-specific extension profile that governs the `extensions` payload (e.g. 'code-review' for the Alpha/A/B/Omega/Lambda pipeline shipped in SKILL.md).",
+      "default": ""
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Profile-specific metadata that does not generalize across agent types (e.g. commit_sha, verdict, n_iterations for the code-review profile). MUST be ignored by any consumer that does not recognize `profile`.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "watch_condition": {
+      "type": "string",
+      "description": "Human-readable condition that would make this trace stale (e.g. 'React 19 release').",
+      "default": ""
+    },
+    "review_after": {
+      "type": "string",
+      "description": "ISO-8601 datetime after which this trace should be re-validated.",
+      "default": ""
+    },
+    "supersedes_trace_id": {
+      "type": "string",
+      "description": "UUID of an older trace this one replaces.",
+      "default": ""
+    },
+    "contributor": {
+      "type": "string",
+      "description": "Opaque contributor identity as returned by the Hub (e.g. 'anon-89454a4a'). Not a real identity.",
+      "default": ""
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO-8601 creation timestamp."
+    },
+    "trust": {
+      "type": "number",
+      "description": "Hub-computed reputation score in [0.0, 1.0], derived from votes/amendments. Read-only: never set by a client on contribute.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "retrievals": {
+      "type": "integer",
+      "description": "Hub-computed usage counter (how often this trace was surfaced/used). Read-only. Local equivalent: Lesson.uses.",
+      "minimum": 0
+    },
+    "depth": {
+      "type": "integer",
+      "description": "Hub-computed amendment/supersession chain depth. Read-only.",
+      "minimum": 0
+    },
+    "votes": {
+      "type": "array",
+      "description": "Vote records. Read-only summary; individual votes are cast via vote_trace, not written directly.",
+      "items": {
+        "type": "object",
+        "required": ["vote_type"],
+        "properties": {
+          "vote_type": { "type": "string", "enum": ["up", "down"] },
+          "feedback_tag": {
+            "type": "string",
+            "enum": ["", "outdated", "wrong", "security_concern", "spam"]
+          },
+          "feedback_text": { "type": "string" }
+        }
+      },
+      "default": []
+    },
+    "related": {
+      "type": "array",
+      "description": "Hub-computed relationships to other traces (e.g. CO_RETRIEVED, SUPERSEDES, AMENDS). Read-only.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "relationship": { "type": "string" },
+          "trace_id": { "type": "string" }
+        }
+      },
+      "default": []
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Optional business-outcome data for this trace's underlying task, used to compute the five pilot metrics in protocol/PROTOCOL.md#12-pilot-outcome-metrics (repeated-error rate, resolution rate, escalation rate, frustration rate, token/LLM-call cost). Agent-agnostic: 'resolved' means a closed ticket, a won deal, a passed test suite, or an approved campaign depending on agent_type. Absent/null fields are simply excluded from the corresponding rate, not treated as false.",
+      "properties": {
+        "resolved": {
+          "type": ["boolean", "null"],
+          "description": "Did the underlying task reach a successful conclusion without further human correction?",
+          "default": null
+        },
+        "escalated": {
+          "type": ["boolean", "null"],
+          "description": "Did the underlying task require human escalation?",
+          "default": null
+        },
+        "repeated_error": {
+          "type": ["boolean", "null"],
+          "description": "Is this trace a recurrence of a previously captured failure pattern (i.e. the fleet made the same mistake twice)?",
+          "default": null
+        },
+        "frustration_signal": {
+          "type": ["boolean", "null"],
+          "description": "Was there an explicit negative signal tied to this trace (complaint, downvote, low CSAT, escalation-with-anger)?",
+          "default": null
+        },
+        "tokens_used": {
+          "type": ["integer", "null"],
+          "description": "Input+output tokens consumed producing the underlying task's outcome.",
+          "minimum": 0,
+          "default": null
+        },
+        "llm_calls": {
+          "type": ["integer", "null"],
+          "description": "Number of LLM calls made producing the underlying task's outcome.",
+          "minimum": 0,
+          "default": null
+        },
+        "baseline": {
+          "type": "boolean",
+          "description": "True if this trace was captured during a pre-CommonTrace baseline measurement window (see \"Deploying to Production\" in README.md), for before/after comparison. False (default) means it was captured with CommonTrace lesson injection active.",
+          "default": false
+        }
+      },
+      "default": {}
+    }
+  }
+}

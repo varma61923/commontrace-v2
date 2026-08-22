@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "commontrace"
+version = "2.0.0"
+description = "CommonTrace Protocol client — capture agent experience, validate lessons, and inject them into any agent platform (Claude Code, Cursor, Devin, Windsurf, generic MCP)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "CommonTrace" }]
+keywords = ["agents", "llm", "mcp", "memory", "protocol", "fleet-learning"]
+dependencies = [
+    "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+# Semantic attention layer (Retriever pre-filter). Optional so `pip install commontrace`
+# stays lightweight — no torch download required just to try the protocol.
+attention = [
+    "numpy>=1.24,<3.0",
+    # sentence-transformers pulls in `transformers` transitively; the previous
+    # `<5.0` cap (pip-audit, Phase 2 dependency audit) resolved a transformers
+    # version with 5 known RCE-class CVEs (PYSEC-2025-217, PYSEC-2026-2288/89/90)
+    # in checkpoint/config deserialization, fixed in transformers>=5.5.0. This
+    # codebase never loads an attacker-controlled model (memory/attention/query.py
+    # only ever loads a hardcoded, trusted model name -- see its own hardening
+    # comment), so exploitability here was already low, but pinning to a
+    # resolvable, patched range costs nothing.
+    "sentence-transformers>=6.0,<7.0",
+    "transformers>=5.5.0",
+]
+# `commontrace sync` talking to a CommonTrace Hub (commontrace/hub_client.py).
+# Optional for the same reason `attention` is: most users never need it.
+# The Hub *server* itself (hub/) is not packaged/distributed by this
+# pyproject at all -- see hub/README.md + hub/requirements.txt to run one.
+hub-sync = [
+    "mcp>=1.2",
+    "httpx2",
+]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4,<1.0",
+    # hub/tests/ uses @pytest_asyncio.fixture / async def test_* throughout
+    # (hub/tests/conftest.py). CI's hub-tests job already installs this
+    # directly (.github/workflows/ci.yml), but a contributor who runs
+    # `pip install -e ".[dev]"` and then `pytest hub/tests/` -- the natural
+    # thing to try -- got an immediate collection failure with nothing in
+    # this extra explaining why.
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/denemlabs/commontrace-v2"
+Protocol = "https://github.com/denemlabs/commontrace-v2/blob/main/protocol/PROTOCOL.md"
+
+[project.scripts]
+commontrace = "commontrace.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["commontrace*"]
+
+[tool.setuptools.package-data]
+# reference/*.py are executed as subprocesses by `commontrace bench`, not
+# imported, so they ship as data rather than as an importable subpackage
+# (reference/ deliberately has no __init__.py). Without this the benchmark
+# commands only worked from a repo checkout -- a plain `pip install`
+# customer could not compute their own pilot metrics.
+commontrace = ["schemas/*.json", "reference/*.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# hub/ worktrees Claude Code may create locally under .claude/ are gitignored
+# and not part of the package -- keep them out of lint scope explicitly too.
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+# An explicit, intentional baseline (pycodestyle errors/warnings, pyflakes,
+# isort) rather than whatever ruff's default rule set happens to include on
+# a given ruff version -- newer defaults on some ruff releases pull in much
+# stricter/opinionated categories (datetime-tz-awareness, blind-except,
+# mutable-class-defaults, ...) that represent real, pre-existing style debt
+# across this repo unrelated to any one change. CI should fail on a
+# deliberately-chosen policy, not silently start failing because a ruff
+# upgrade added a new default category.
+select = ["E", "F", "W", "I"]

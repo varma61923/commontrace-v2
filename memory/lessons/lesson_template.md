@@ -1,27 +1,30 @@
 ---
 name: lesson-slug
-description: one-line summary (used by Alpha for relevance check)
+description: one-line summary (used by Alpha / the Retriever for relevance check)
 tags: [tag1, tag2]
-domain: git-safety
-importance: 3            # entier 1-5 OBLIGATOIRE, voir rubrique SKILL.md section "Rubrique d'importance"
-importance_rationale: "" # string 1-phrase concrète OBLIGATOIRE — pourquoi ce score (pas générique)
-importance_history: []   # log des changements: [{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]
-applies_when: condition d'activation sémantique précise (≥ 1 phrase concrète, pas générique)
-do_not_apply_when: contre-condition explicite (évite sur-généralisation)
+agent_type: code         # REQUIRED, open vocabulary: code | support | sales | hr | marketing | ops | custom
+domain: git-safety       # open vocabulary, see protocol/PROTOCOL.md#7-taxonomy-open-not-closed for recommended starter lists per agent_type
+importance: 3            # integer 1-5 REQUIRED, see rubric in protocol/PROTOCOL.md#10-importance-rubric
+importance_rationale: "" # string 1-sentence concrete REQUIRED — why this score (not generic)
+importance_history: []   # log of changes: [{date: YYYY-MM-DD, old: N, new: M, reason: "..."}]
+applies_when: precise semantic activation condition (>= 1 concrete sentence, not generic)
+do_not_apply_when: explicit counter-condition (prevents over-generalization)
 uses: 0
 last_hit: NEVER
-source_episodes: []
+source_traces: []        # IDs/slugs of the Traces (see protocol/schemas/trace.schema.json) that produced this lesson
+source_episodes: []      # deprecated alias, kept for the code-review profile's episode files
+hub_trace_id: null        # set by `commontrace sync` once this lesson is promoted to a Hub trace
 status: active
 ---
 
 ## Rule
-[1 phrase actionnable]
+[1 actionable sentence]
 
 ## Why
-[Observation factuelle ou incident source, ancré dans réalité du projet]
+[Factual observation or source incident, grounded in project reality]
 
 ## How to apply
-[Quand l'invoquer, comment l'utiliser concrètement dans le brief A ou B]
+[When to invoke it, how to use it concretely in the A or B brief]
 
 ## Counter-examples
-[Cas où la règle ne s'applique pas]
+[Cases where the rule does NOT apply]

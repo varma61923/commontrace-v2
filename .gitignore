@@ -1,8 +1,42 @@
 # Embeddings index is regenerated locally by memory/attention/build_index.py
 memory/attention/index.npz
 
+# Benchmark HTML / JSON reports (generated, not source)
+memory/benchmark_reports/
+
 # OS / editor cruft
 .DS_Store
 *.swp
+*~
+.idea/
+.vscode/
+
+# Claude Code local session/worktree state (not project source)
+.claude/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+
+# HuggingFace model cache (large, machine-local)
+# ~/.cache/huggingface/ is outside the repo — this entry is a reminder only
+# .cache/
+
+# Pytest / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter (if anyone runs notebooks locally)
+.ipynb_checkpoints/

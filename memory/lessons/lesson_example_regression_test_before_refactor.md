@@ -1,31 +1,34 @@
 ---
 name: lesson_example_regression_test_before_refactor
-description: Écrire un test de non-régression capturant le comportement actuel AVANT de lancer le refactor, pas après
+description: Write a regression test capturing current behavior BEFORE starting the refactor, not after
 tags: [testing, refactor, regression, example]
+agent_type: code
 domain: testing
 importance: 4
-importance_rationale: "Sans test de capture préalable, B ne peut pas distinguer un changement de comportement voulu d'une régression silencieuse."
+importance_rationale: "Without a pre-capture test, B cannot distinguish an intentional behavior change from a silent regression."
 importance_history: []
-applies_when: le brief A demande un refactor / réécriture d'un module dont le comportement observable doit rester identique
-do_not_apply_when: création d'une fonctionnalité neuve sans comportement antérieur à préserver
+applies_when: the A brief requests a refactor / rewrite of a module whose observable behavior must remain identical
+do_not_apply_when: creating a brand-new feature with no prior behavior to preserve
 uses: 1
 last_hit: 2026-07-01
+source_traces: [2026-07-01_example-api-pagination]
 source_episodes: [2026-07-01_example-api-pagination]
+hub_trace_id: null
 status: active
 ---
 
-> ⚠️ **Exemple illustratif (donnée fictive).** Ce fichier montre le FORMAT d'une leçon
-> capitalisée ; ce n'est pas une leçon issue d'un vrai run. À supprimer une fois vos
-> propres leçons accumulées.
+> **Illustrative example (fictitious data).** This file shows the FORMAT of a
+> capitalized lesson; it is not a lesson from an actual run. Delete it once your
+> own lessons have accumulated.
 
 ## Rule
-Avant tout refactor à comportement constant, faire écrire par A un test qui capture le comportement actuel (golden/caractérisation) et le faire passer sur le code AVANT modification.
+Before any behavior-preserving refactor, have A write a test that captures the current behavior (golden/characterization test) and make it pass on the code BEFORE modification.
 
 ## Why
-Sur le run `2026-07-01_example-api-pagination`, le refactor de la pagination aurait pu changer l'ordre des résultats sans que rien ne le signale. Le test de caractérisation écrit d'abord a servi d'oracle : B a pu vérifier que le comportement observable était préservé plutôt que de relire ligne à ligne.
+On the `2026-07-01_example-api-pagination` run, the pagination refactor could have changed the result order without anything flagging it. The characterization test written first served as an oracle: B was able to verify that the observable behavior was preserved rather than reviewing line by line.
 
 ## How to apply
-Dans le brief A : « Étape 1 — écris un test qui fige le comportement actuel de `<module>` et vérifie qu'il PASSE sur le code non modifié. Étape 2 seulement — refactore. Le test doit rester vert. » Dans le brief B : exiger la preuve que le test existait et passait avant le diff.
+In the A brief: "Step 1 — write a test that freezes the current behavior of `<module>` and verify it PASSES on the unmodified code. Step 2 only — refactor. The test must remain green." In the B brief: require proof that the test existed and passed before the diff.
 
 ## Counter-examples
-Ne s'applique pas quand il n'y a pas de comportement antérieur (feature neuve), ni quand le refactor CHANGE volontairement le comportement — dans ce cas, le test doit être mis à jour explicitement et le diff du test fait partie de la revue.
+Does not apply when there is no prior behavior (new feature), nor when the refactor INTENTIONALLY changes behavior — in that case, the test must be explicitly updated and the test diff is part of the review.

@@ -1,0 +1,327 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-core:
+    # Validates the package as an external user would actually get it: `pip install -e .`
+    # with only the one core dependency (PyYAML) — no dev/lint tooling, no [attention] extra.
+    name: test (core install, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install commontrace (core, no extras)
+        run: python -m pip install -e .
+
+      - name: Install test runner
+        run: python -m pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  test-dev:
+    # The `[dev]` extra (pytest + ruff) is what a contributor installs. Also exercises lint.
+    name: test + lint (dev extra, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install commontrace with the dev extra
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Lint with ruff
+        run: ruff check .
+
+  test-hub:
+    # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
+    # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI
+    # core, so it gets its own job with its own Postgres service container
+    # rather than being folded into test-core/test-dev.
+    name: hub tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: commontrace
+          POSTGRES_PASSWORD: commontrace
+          POSTGRES_DB: commontrace_hub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HUB_TEST_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_hub_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgres client (for createdb)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Hub server dependencies
+        run: python -m pip install -r hub/requirements.txt pytest pytest-asyncio
+
+      # Applies every migration to an empty database. The hub/tests/ suite
+      # builds its schema from the models (see hub/tests/conftest.py), so
+      # without this step a model change with no matching migration would
+      # pass CI and only fail on a real deploy.
+      - name: Verify migrations apply from scratch
+        env:
+          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations
+        run: |
+          PGPASSWORD=commontrace createdb -h localhost -U commontrace commontrace_migrations
+          python -m alembic -c hub/alembic.ini upgrade head
+          # And that models and migrations agree -- catches a model edited
+          # without `alembic revision --autogenerate`.
+          python -m alembic -c hub/alembic.ini check
+
+      - name: Run Hub tests (including test_tenant_isolation.py)
+        run: python -m pytest hub/tests/ -q
+
+  security-scan:
+    # Static security scanning and known-CVE dependency auditing for the
+    # project's actual dependencies -- neither ran in CI before this job
+    # existed, so a new Medium+ bandit finding or a newly disclosed CVE in
+    # a pinned dependency could land and sit unnoticed indefinitely.
+    name: security scan (bandit, pip-audit, mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install commontrace with every extra, plus the Hub's own dependencies
+        run: |
+          python -m pip install -e ".[attention,hub-sync,dev]"
+          python -m pip install -r hub/requirements.txt
+          python -m pip install bandit pip-audit mypy
+
+      # -x excludes tests/: B101 (assert_used) fires on every pytest
+      # `assert` statement, which is normal test code, not a finding. -ll
+      # gates on Medium+ severity -- Low-severity style findings (e.g.
+      # B311's "don't use random.Random for crypto" on overlap.py's
+      # deterministic, non-secret MinHash permutation seed) stay visible
+      # in a full local run but don't fail the build over a non-issue.
+      - name: Bandit static analysis
+        run: bandit -r commontrace/ hub/ memory/ -x "*/tests/*,*/test_*" -ll
+
+      # A bare `pip-audit` scans every installed package in the active
+      # environment, including pip/setuptools/wheel themselves -- so a CVE
+      # in ambient build tooling that ships nowhere near a customer's
+      # commontrace install would fail this job for a reason unrelated to
+      # any dependency this project actually declares. Scoped to exactly
+      # what pyproject.toml's [project.dependencies] and
+      # [project.optional-dependencies] list instead, the same
+      # pinned-file pattern hub/requirements.txt already uses below.
+      - name: pip-audit -- commontrace's own declared dependencies
+        run: |
+          cat > /tmp/commontrace-audit-requirements.txt <<'REQS'
+          PyYAML>=6.0,<7.0
+          numpy>=1.24,<3.0
+          sentence-transformers>=6.0,<7.0
+          transformers>=5.5.0
+          mcp>=1.2
+          httpx2
+          REQS
+          pip-audit -r /tmp/commontrace-audit-requirements.txt
+
+      - name: pip-audit -- the Hub server's pinned dependencies
+        run: pip-audit -r hub/requirements.txt
+
+      # Informational, not gated: this surfaces genuine pre-existing type
+      # errors this one CI job does not attempt to clear in a single pass,
+      # so it must not fail the build -- the same "visible rather than
+      # silently ignored" policy this repo already applies elsewhere (see
+      # bench_cmd.py's unimplemented --threshold-* flags). Tightening this
+      # to a real gate is follow-up work, deliberately not bundled in here.
+      - name: mypy (known findings, informational only)
+        continue-on-error: true
+        run: mypy commontrace/ hub/ --ignore-missing-imports
+
+  docker-build:
+    # The image could not be built where it was authored (no Docker daemon),
+    # so CI is the first thing that actually proves it builds and that the
+    # server starts inside it. Kept separate from the test jobs: it needs no
+    # Python matrix and no database.
+    name: docker image builds and starts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Hub image
+        run: docker build -t commontrace-hub:ci .
+
+      - name: Container starts and serves /healthz
+        run: |
+          # No database configured on purpose: liveness must come up without
+          # one (see hub/DEPLOYMENT.md §4). A HUB_DATABASE_URL is still
+          # required for the process to boot at all.
+          docker run -d --name hub-ci -p 8420:8420 \
+            -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
+            commontrace-hub:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
+            sleep 1
+          done
+          echo "--- container logs ---"; docker logs hub-ci; exit 1
+
+      - name: Readiness reports unhealthy without a database
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/readyz)
+          test "$code" = "503" || { echo "expected 503 from /readyz, got $code"; exit 1; }
+          echo "readyz correctly reports 503 with no database"
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f hub-ci || true
+
+  compose-stack:
+    # The deployment path a customer actually follows, end to end: bring the
+    # documented stack up, let the one-shot migration gate the app, then drive
+    # the running server over real HTTP through the published port. Every
+    # other job tests a piece -- this is the only one that proves the pieces
+    # compose. It was the last remaining "verified by hand, not by CI" caveat
+    # in hub/DEPLOYMENT.md.
+    name: docker compose stack serves real MCP traffic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring up the documented stack
+        run: |
+          docker compose up -d --build
+          echo "--- services ---"
+          docker compose ps
+
+      - name: Wait for readiness
+        run: |
+          # /readyz, not /healthz: this must not pass until the database is
+          # genuinely reachable, which is the whole point of the split.
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8420/readyz; then echo; echo "ready"; exit 0; fi
+            sleep 2
+          done
+          echo "--- compose ps ---";      docker compose ps
+          echo "--- hub logs ---";        docker compose logs hub
+          echo "--- migrate logs ---";    docker compose logs migrate
+          exit 1
+
+      - name: Migrations actually ran and the schema is present
+        run: |
+          docker compose exec -T db psql -U commontrace -d commontrace_hub -c '\dt' | tee /tmp/tables.txt
+          for table in organizations api_keys traces votes trace_relations audit_log; do
+            grep -q " $table " /tmp/tables.txt || { echo "missing table: $table"; exit 1; }
+          done
+          echo "all expected tables present"
+
+      - name: Provision two orgs through the operator CLI
+        id: provision
+        run: |
+          set -euo pipefail
+          org_a=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org A" | awk '/org_id/{print $2}')
+          org_b=$(docker compose run --rm -T hub python -m hub.manage create-org "CI Org B" | awk '/org_id/{print $2}')
+          key_a=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_a" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
+          key_b=$(docker compose run --rm -T hub python -m hub.manage issue-key "$org_b" 30 | grep -o 'ct_live_[A-Za-z0-9_-]*')
+          test -n "$key_a" && test -n "$key_b"
+          echo "::add-mask::$key_a"
+          echo "::add-mask::$key_b"
+          echo "key_a=$key_a" >> "$GITHUB_OUTPUT"
+          echo "key_b=$key_b" >> "$GITHUB_OUTPUT"
+
+      - name: Unauthenticated requests are refused
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8420/mcp \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
+          test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
+          echo "unauthenticated -> 401"
+
+      - name: Smoke check the live stack over MCP
+        env:
+          KEY_A: ${{ steps.provision.outputs.key_a }}
+          KEY_B: ${{ steps.provision.outputs.key_b }}
+        run: |
+          python -m pip install --quiet ".[hub-sync]"
+          # Two keys, so the tenant-isolation checks actually run rather than
+          # being skipped -- isolation is the property worth proving before a
+          # customer's data lands in a deployment.
+          python -m hub.smoke \
+            --url http://127.0.0.1:8420/mcp \
+            --api-key "$KEY_A" \
+            --other-api-key "$KEY_B"
+
+      - name: The stack survives a restart with its data intact
+        run: |
+          # A deploy restarts containers. Traces must still be there, and the
+          # named volume is what makes that true.
+          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          docker compose restart hub
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
+          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
+          test "$after" -gt 0 || { echo "expected traces to exist after the smoke run"; exit 1; }
+          echo "$after trace(s) survived the restart"
+
+      - name: Logs are structured JSON, and carry no secrets
+        run: |
+          docker compose logs hub --no-log-prefix > /tmp/hub.log
+          python - <<'PY'
+          import json, sys
+          lines = [l for l in open("/tmp/hub.log") if l.strip().startswith("{")]
+          assert lines, "no JSON log lines found -- structured logging is not active"
+          for line in lines:
+              json.loads(line)          # every one must parse
+          body = open("/tmp/hub.log").read()
+          assert "ct_live_" not in body, "an API key was written to the logs"
+          assert "change-me-not-for-production" not in body, "the database password was logged"
+          print(f"{len(lines)} structured log line(s), no credentials present")
+          PY
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

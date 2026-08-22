@@ -1,0 +1,75 @@
+# Local / evaluation stack for the CommonTrace Hub.
+#
+# This is a *getting-started and evaluation* stack, not a production
+# deployment: the Postgres password below is a literal placeholder, the
+# database runs in the same compose project as the app, and there is no TLS
+# termination. For a real deployment see hub/DEPLOYMENT.md -- you want a
+# managed/backed-up Postgres and secrets from your platform's secret store,
+# not from this file.
+#
+#   docker compose up --build
+#   docker compose run --rm migrate            # once, before first use
+#   docker compose run --rm hub python -m hub.manage create-org "Acme"
+#   docker compose run --rm hub python -m hub.manage issue-key <org_id>
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: commontrace
+      POSTGRES_PASSWORD: change-me-not-for-production
+      POSTGRES_DB: commontrace_hub
+    volumes:
+      - hub_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commontrace -d commontrace_hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published to the host by default: nothing outside this compose
+    # network needs to reach the database. Uncomment to inspect it locally.
+    # ports:
+    #   - "5432:5432"
+
+  # Migrations run as their own one-shot service rather than on app start,
+  # so N replicas can never race the same migration during a deploy.
+  migrate:
+    build: .
+    command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
+    environment:
+      HUB_DATABASE_URL: postgresql+asyncpg://commontrace:change-me-not-for-production@db:5432/commontrace_hub
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  hub:
+    build: .
+    environment:
+      HUB_DATABASE_URL: postgresql+asyncpg://commontrace:change-me-not-for-production@db:5432/commontrace_hub
+      HUB_HOST: 0.0.0.0
+      HUB_PORT: 8420
+      HUB_LOG_LEVEL: INFO
+    ports:
+      - "8420:8420"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # /readyz, not /healthz: readiness checks the database, which is what
+    # "can this container serve a request" actually depends on. Using the
+    # liveness endpoint here would report healthy while every call 500s.
+    # Python rather than curl: the runtime image has no curl, and adding one
+    # to a production image just for a probe widens its attack surface.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8420/readyz', timeout=5).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  hub_pgdata:

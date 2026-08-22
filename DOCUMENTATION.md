@@ -1,970 +1,970 @@
-# /justdoit — Documentation du projet de mémoire des agents
+# /commontrace — Agent Memory Project Documentation
 
-> Version : v2.3 (+ skill compagnon `/dreamer` v0.1 implémenté 2026-05-27 — voir §6.4)
-> Date : 2026-05-27 (état mis à jour post-runs module-a)
-> Statut : post-amorçage — 15 épisodes (5 méta-skill + 10 module-a), 33 leçons actives au 2026-05-28, mécanisme validé empiriquement bout-en-bout (premier hit cross-run de mémoire fraîche P2.2→P2.3, première application préventive d'une leçon méta sur Task #4, verdict architectural P2.5bis REPORT justifié par convergence multi-stratégies)
+> Version: v2.3 (+ companion skill `/dreamer` v0.1 implemented 2026-05-27 — see §6.4)
+> Date: 2026-05-27 (state updated post-runs module-a)
+> Status: post-bootstrap — 15 episodes (5 meta-skill + 10 module-a), 33 active lessons as of 2026-05-28, mechanism empirically validated end-to-end (first cross-run hit from fresh memory P2.2→P2.3, first preventive application of a meta-lesson on Task #4, architectural verdict P2.5bis REPORT justified by multi-strategy convergence)
 
-Ce document décrit le projet de mémoire long-terme des agents tel qu'instancié dans le skill `/justdoit`. Il s'adresse à G. (utilisateur principal) et aux futurs Claude qui reprendront le projet. Il est descriptif, pas prescriptif : il consigne ce qui existe, comment ça fonctionne, et ce qui a été observé empiriquement après 15 runs en production (5 méta-skill `/justdoit` et `/dreamer` se modifiant eux-mêmes + 10 runs module-a en première utilisation hors-meta).
+This document describes the long-term agent memory project as instantiated in the `/commontrace` skill. It is intended for operators and for future agents that will pick up the project. It is descriptive, not prescriptive: it records what exists, how it works, and what has been empirically observed after 15 production runs (5 meta-skill `/commontrace` and `/dreamer` self-modifying runs + 10 module-a runs as the first non-meta usage).
 
 ---
 
 ## 1. Vision
 
-### 1.1 Problème adressé
+### 1.1 Problem Addressed
 
-Un agent LLM redémarre de zéro à chaque session. Même quand il a déjà rencontré une situation similaire, fait une erreur, ou trouvé une bonne pratique, rien de ce vécu n'est mobilisable au tour suivant. Les seuls leviers disponibles aujourd'hui pour faire persister du savoir entre sessions sont :
+An LLM agent restarts from scratch at each session. Even when it has already encountered a similar situation, made a mistake, or found a best practice, none of that experience is available in the next turn. The only levers currently available to persist knowledge between sessions are:
 
-- Un `CLAUDE.md` projet — instructions statiques, écrites à la main, sans dynamique d'apprentissage. Maintenance manuelle, vite obsolète sur grand projet.
-- Une mémoire utilisateur (`memory/MEMORY.md` sous `~/.claude/projects/...`) — écrite à la main par l'utilisateur, déjà une forme manuelle d'apprentissage long-terme. C'est précisément ce mécanisme manuel que le projet vise à automatiser partiellement, sans le remplacer.
-- Du fine-tuning offline — pas disponible en boucle courte, demande infrastructure, pas adapté à l'usage personnel d'un dev qui veut itérer en quelques heures.
-- L'injection RAG sur une base documentaire — utile pour faits stables (docs API, code historique) mais ne capture pas les leçons procédurales du type "ce que j'ai appris en faisant" (méta-connaissance).
+- A project-level `CLAUDE.md` — static instructions, hand-written, with no learning dynamic. Manual maintenance, quickly obsolete on large projects.
+- A user memory (`memory/MEMORY.md` under the agent platform's project config) — hand-written by the user, already a manual form of long-term learning. It is precisely this manual mechanism that the project aims to partially automate, without replacing it.
+- Offline fine-tuning — not available in a short feedback loop, requires infrastructure, not suited to the personal use of a developer who wants to iterate within hours.
+- RAG injection over a documentation base — useful for stable facts (API docs, historical code) but does not capture procedural lessons of the type "what I learned by doing" (meta-knowledge).
 
-Le projet de mémoire des agents vise un **troisième chemin entre ces options** : un mécanisme d'apprentissage long-terme en boucle courte, où l'agent extrait lui-même les leçons procédurales de ses runs passés, les retrouve quand pertinent dans un run futur, et les applique sans intervention manuelle. La validation reste humaine pour éviter la pollution par hallucination LLM, mais la proposition (Omega), la sélection contextuelle (Alpha) et l'application (injection dans brief A) sont automatisées.
+The agent memory project aims for a **third path between these options**: a short-loop long-term learning mechanism, where the agent itself extracts procedural lessons from its past runs, retrieves them when relevant in a future run, and applies them without manual intervention. Validation remains human to prevent pollution by LLM hallucination, but the proposal (Omega), the contextual selection (Alpha), and the application (injection into A's brief) are automated.
 
-Depuis v2.2, c'est une boucle d'apprentissage **entièrement automatisée** : la validation des propositions Omega est déléguée à Lambda, un sous-agent reviewer indépendant (équivalent du B reviewer pour le code), qui audit chaque proposition contre des critères de qualité formelle, non-doublon, généralisation et calibration importance. L'orchestrateur applique les ACCEPTÉ sans humain dans la boucle — voir Phase 11. L'audit a posteriori par l'utilisateur (lecture INDEX.md, DOCUMENTATION.md, ou benchmark futur) reste possible mais hors workflow.
+Since v2.2, this is a **fully automated** learning loop: validation of Omega proposals is delegated to Lambda, an independent reviewer sub-agent (equivalent to the B reviewer for code), which audits each proposal against formal quality criteria, non-duplication, generalization, and importance calibration. The orchestrator applies ACCEPTED proposals without a human in the loop — see Phase 11. A posteriori audit by the user (reading INDEX.md, DOCUMENTATION.md, or a future benchmark) remains possible but is outside the workflow.
 
-### 1.2 Terrain d'expérimentation : `/justdoit`
+### 1.2 Experimentation Ground: `/commontrace`
 
-`/justdoit` est un skill double-review (sous-agent A implementer + sous-agent B reviewer indépendant + boucle d'itération max 3) pour les tâches architecturales risquées : refactor, port CUDA, fix bug critique, redesign d'API. Son workflow v1 (avant cette extension) incluait déjà des phases bien isolées — déléguer à A, juger via B, itérer ou trancher — qui en font un terrain naturel pour insérer une mémoire : on a déjà des moments précis où une recommandation passée pourrait s'appliquer (brief A) et des moments précis où on pourrait capitaliser sur ce qui vient de se passer (après verdict B).
+`/commontrace` is a double-review skill (sub-agent A implementer + independent sub-agent B reviewer + iteration loop max 3) for risky architectural tasks: refactor, CUDA port, critical bug fix, API redesign. Its v1 workflow (before this extension) already included well-isolated phases — delegate to A, judge via B, iterate or decide — making it a natural ground for inserting a memory: there are already precise moments where a past recommendation could apply (A's brief) and precise moments where one could capitalize on what just happened (after B's verdict).
 
-La v2 (2026-05-26) ajoute deux agents autour de ce noyau :
-- **Alpha** en amont (Phase 0) — retrieval mémoire avant de déléguer à A. Lit la base mémoire et identifie les lessons/episodes pertinents pour la tâche entrante. Injecte le résultat verbatim dans le brief A.
-- **Omega** en aval (Phase 10) — synthèse + propositions de leçons après le verdict B. Écrit systématiquement l'épisode du run (traçabilité obligatoire) et propose 0-N leçons candidates ou updates de leçons existantes, soumises à validation Lambda automatique en Phase 11 (v2.2 — remplace la validation user de v2-v2.1).
+v2 (2026-05-26) adds two agents around this core:
+- **Alpha** upstream (Phase 0) — memory retrieval before delegating to A. Reads the memory base and identifies the relevant lessons/episodes for the incoming task. Injects the result verbatim into A's brief.
+- **Omega** downstream (Phase 10) — synthesis + lesson proposals after B's verdict. Systematically writes the run's episode (mandatory traceability) and proposes 0-N candidate lessons or updates to existing lessons, submitted to automatic Lambda validation in Phase 11 (v2.2 — replaces the user validation of v2–v2.1).
 
-La v2.1 (2026-05-27) ajoute la notion d'**importance scalaire 1-5** sur les épisodes et leçons, calibrée par Omega selon une rubrique explicite (5=showstopper, 4=critique, 3=utile, 2=mineur, 1=anecdotique) et utilisée par Alpha comme signal de priorité dans le retrieval (`score = importance × tag_match`, avec sécurité "toujours considérer si importance ≥ 4"). Inspiration directe de Park et al. 2023 (memory stream avec score scalaire), simplifiée de 1-10 à 1-5 pour calibration plus simple entre agents.
+v2.1 (2026-05-27) adds the notion of a **scalar importance 1-5** on episodes and lessons, calibrated by Omega according to an explicit rubric (5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal) and used by Alpha as a priority signal in retrieval (`score = importance × tag_match`, with a safety rule "always consider if importance ≥ 4"). Direct inspiration from Park et al. 2023 (memory stream with scalar score), simplified from 1-10 to 1-5 for easier calibration across agents.
 
-Le choix d'instancier ce mécanisme dans `/justdoit` plutôt qu'au niveau du `CLAUDE.md` projet ou d'un skill nouveau dédié à la mémoire repose sur trois éléments : (1) `/justdoit` est déjà délégué à des sous-agents, donc l'ajout d'Alpha et Omega ne change pas le mode d'exécution principal, (2) chaque run produit un épisode avec verdict clair (CONFORME/ARBITRAGE/ABANDON) — donnée prête à être capitalisée, (3) le skill est utilisé pour des tâches structurantes, donc les leçons capturées ont une probabilité plus élevée d'être utiles dans les runs futurs (vs anecdotes triviales d'un workflow R&D rapide).
+The choice to instantiate this mechanism in `/commontrace` rather than at the project-level config or in a new skill dedicated to memory rests on three elements: (1) `/commontrace` already delegates to sub-agents, so adding Alpha and Omega does not change the primary execution mode, (2) each run produces an episode with a clear verdict (CONFORM/ARBITRATION/ABANDON) — data ready to be capitalized, (3) the skill is used for structuring tasks, so the captured lessons have a higher probability of being useful in future runs (vs trivial anecdotes from a fast R&D workflow).
 
-### 1.3 Lien avec la recherche bibliographique
+### 1.3 Link with Bibliographic Research
 
-Le mécanisme s'inspire de plusieurs travaux récents :
+The mechanism draws inspiration from several recent works:
 
-| Travail | Apport repris ici |
+| Work | Contribution adopted here |
 |---|---|
-| Park et al. 2023, *Generative Agents: Interactive Simulacra of Human Behavior* (arXiv:2304.03442) | Memory stream avec score scalaire (importance) — eux utilisent 1-10, on choisit 1-5 pour calibration plus simple |
-| Evo-Memory (arXiv:2511.20857) | Format streaming d'épisodes, mémoire qui évolue dans le temps |
-| AgentErrorBench (arXiv:2509.25370) | Taxonomie d'erreurs d'agents — référence pour benchmark futur |
-| MemBench (arXiv:2506.21605), MemoryAgentBench (arXiv:2507.05257), ERL (arXiv:2603.24639) | Benchmarks partiels de mémoire d'agents (aucun ne couvre simultanément qualité de leçon + retrieval contextuel + transfert situation isomorphe + temporalité réaliste) |
+| Park et al. 2023, *Generative Agents: Interactive Simulacra of Human Behavior* (arXiv:2304.03442) | Memory stream with scalar score (importance) — they use 1-10, we choose 1-5 for simpler calibration |
+| Evo-Memory (arXiv:2511.20857) | Streaming format for episodes, memory that evolves over time |
+| AgentErrorBench (arXiv:2509.25370) | Agent error taxonomy — reference for future benchmark |
+| MemBench (arXiv:2506.21605), MemoryAgentBench (arXiv:2507.05257), ERL (arXiv:2603.24639) | Partial agent memory benchmarks (none simultaneously covers lesson quality + contextual retrieval + isomorphic situation transfer + realistic temporality) |
 
-Aucun de ces benchmarks ne couvre la combinaison qu'on vise à mesurer ici : `lesson_quality` (% propositions validées), `implicit_retrieval` (% lessons retrouvées qui ont effectivement aidé), `transfer_gap` (% hits cross-projet). Voir section 8 pour le benchmark prévu.
+None of these benchmarks cover the combination we aim to measure here: `lesson_quality` (% validated proposals), `implicit_retrieval` (% retrieved lessons that actually helped), `transfer_gap` (% cross-project hits). See section 8 for the planned benchmark.
 
-### 1.4 Lien avec Thomas AI
+### 1.4 Link with CommonTrace Platform
 
-Le mécanisme `/justdoit` v2 est un **terrain d'expérimentation pour le projet Thomas AI** (cf. `project_thomas_ai_long_term_learning.md`). Thomas AI est un projet émergent (discussion S. + G., 2026-05-26) dont l'objectif est d'évaluer l'apprentissage long-terme des agents : extraire des leçons NL d'expériences passées, les stocker, les retrouver et les appliquer dans des situations similaires. Le cas d'usage initialement évoqué était "éviter de se refaire scammer" — un contexte différent de la R&D code, ce qui en fait précisément un bon banc d'essai pour vérifier la généralisation.
+The `/commontrace` v2 mechanism is an **experimentation ground for the CommonTrace platform** — a fleet-wide agent learning protocol whose objective is to evaluate long-term agent learning: extract NL lessons from past experiences, store them, retrieve them, and apply them in similar situations.
 
-`/justdoit` v2 fournit à Thomas AI : un format épisode/leçon validé en pratique, des compteurs d'usage (uses, last_hit), une métrique implicite (`lessons_hit` ⊂ `lessons_retrieved_by_alpha`), et un retour empirique sur la pertinence du retrieval contextuel par tags + applies_when. Ce que `/justdoit` v2 ne fournit pas encore : le benchmark dédié (cf. section 8), la mesure quantitative de qualité, la calibration cross-projet (tous les épisodes actuels ont `project: project-x`).
+`/commontrace` v2 provides CommonTrace with: a validated episode/lesson format in practice, usage counters (uses, last_hit), an implicit metric (`lessons_hit` ⊂ `lessons_retrieved_by_alpha`), and empirical feedback on the relevance of contextual retrieval by tags + applies_when. What `/commontrace` v2 does not yet provide: a dedicated benchmark (cf. section 8), quantitative quality measurement, cross-project calibration (all current episodes have `project: <your-project>`).
 
-**Apport additionnel via le skill compagnon `/dreamer` (v0.1, 2026-05-27)** — voir §6.4 : agent autonome qui implémente trois rôles articulés au-delà de la boucle courte `/justdoit` — (1) consolidation mémoire classique style Park 2023 (archive/fuse/reformulate de leçons via similarité cosine sur attention layer), (2) auteur empirique sur le code projet sous commits Git tracés (écrit des scripts de test ad-hoc, modifie code et doc après validation user), (3) arbitre stratégique vs cahier des charges (détecte surcomplexification, trous de lapin, dérives vs objectifs initiaux et suggère des recadrages à l'humain). Pour Thomas AI, Dreamer fournit le pendant "consolidation périodique + audit méthodologique + recadrage stratégique" qui complète le pendant "boucle courte d'apprentissage" de `/justdoit` v2 — l'analogie biologique étant le sommeil paradoxal (consolidation passive) augmenté de la capacité de validation empirique active.
+**Additional contribution via the companion skill `/dreamer` (v0.1, 2026-05-27)** — see §6.4: autonomous agent that implements three articulated roles beyond the `/commontrace` short loop — (1) classic memory consolidation Park 2023 style (archive/fuse/reformulate lessons via cosine similarity on the attention layer), (2) empirical author on the project code under tracked Git commits (writes ad-hoc test scripts, modifies code and docs after user validation), (3) strategic arbiter vs specifications (detects over-complexification, rabbit holes, drifts vs initial objectives and suggests course corrections to the human). For CommonTrace, Dreamer provides the "periodic consolidation + methodological audit + strategic course correction" counterpart that complements the "short-loop learning" counterpart of `/commontrace` v2 — the biological analogy being paradoxical sleep (passive consolidation) augmented with active empirical validation capacity.
 
-### 1.5 Lien avec project-x
+### 1.5 Link with <your-project>
 
-`/justdoit` v2 sert directement la R&D `project-x` : c'est dans ce projet que vivent les sous-agents (module-c v2, module-b, module-a, module-d...) qui ont fourni la matière des 7 leçons seed et qui fourniront la matière des prochaines. Le `project:` field dans le frontmatter épisode permettra plus tard de filtrer ou pondérer cross-projet, mais en pratique le corpus de v2.1 est mono-projet.
+`/commontrace` v2 directly serves the `<your-project>` R&D: it is in this project that the sub-agents live (module-c v2, module-b, module-a, module-d...) which provided the material for the 7 seed lessons and will provide the material for the next ones. The `project:` field in the episode frontmatter will later allow filtering or weighting cross-project, but in practice the v2.1 corpus is mono-project.
 
 ---
 
-## 2. Architecture : les 6 agents (+ attention layer en infrastructure, + skill compagnon `/dreamer`)
+## 2. Architecture: the 6 Agents (+ attention layer as infrastructure, + companion skill `/dreamer`)
 
-Le pipeline `/justdoit` v2.3 met en jeu 6 agents. Un orchestrateur (Claude principal) coordonne ; 5 sous-agents (Alpha, A, B, Omega, Lambda) sont spawn frais via `Agent` (subagent_type=general-purpose, run_in_background=true). Chacun a un brief autonome et un périmètre strict — les briefs sont copiés verbatim depuis `SKILL.md`, pas reformulés par l'orchestrateur (préserve la fidélité au design canonique).
+The `/commontrace` v2.3 pipeline involves 6 agents. An orchestrator (main agent) coordinates; 5 sub-agents (Alpha, A, B, Omega, Lambda) are each a fresh sub-agent spawned asynchronously. Each has an autonomous brief and a strict scope — the briefs are copied verbatim from `SKILL.md`, not reformulated by the orchestrator (preserves fidelity to the canonical design).
 
-S'ajoute en v2.3 une **couche d'attention sémantique** (infrastructure, PAS un 7e agent) sous `memory/attention/` : un index numpy d'embeddings locaux (modèle `multi-qa-mpnet-base-dot-v1`) consulté par Alpha via `query.py` en pré-filtre Phase 0. Cette couche n'a pas de mandat propre, pas de brief, pas d'autonomie — c'est un index appelé synchroniquement par Alpha pour scaler le retrieval à 100+ leçons. Détails techniques en §4.6.
+Added in v2.3 is a **semantic attention layer** (infrastructure, NOT a 7th agent) under `memory/attention/`: a numpy index of local embeddings (model `multi-qa-mpnet-base-dot-v1`) queried by Alpha via `query.py` as a Phase 0 pre-filter. This layer has no mandate of its own, no brief, no autonomy — it is an index called synchronously by Alpha to scale retrieval to 100+ lessons. Technical details in §4.6.
 
-S'ajoute en parallèle un **skill compagnon `/dreamer` v0.1** (2026-05-27) sous `~/.claude/skills/dreamer/` : agent autonome qui consomme la base mémoire et l'attention layer de `/justdoit` (sans modifier `/justdoit` lui-même — Dreamer est un skill séparé invocable via `/dreamer <projet>`). Le sous-agent Dreamer est spawn en Phase 1 d'une session pour une lecture exhaustive autonome (CDC + code + doc + mémoire + état de l'art si pertinent), puis l'orchestrateur Claude dialogue avec l'utilisateur en chat ouvert (pas AskUserQuestion) sur les propositions section par section. Pour les modifications de base mémoire, Dreamer passe par Lambda Phase 11 `/justdoit` (mécanisme existant, pas réinventé). Pour les modifications code/doc, Dreamer applique sous commits Git tracés `[Dreamer] <résumé>` après validation user. Détails complets en §6.4.
+Added in parallel is a **companion skill `/dreamer` v0.1** (2026-05-27) under `$COMMONTRACE_ROOT/../dreamer/`: an autonomous agent that consumes the memory base and attention layer of `/commontrace` (without modifying `/commontrace` itself — Dreamer is a separate skill invocable via `/dreamer <project>`). The Dreamer sub-agent is spawned in Phase 1 of a session for an exhaustive autonomous reading (specs + code + docs + memory + state of the art if relevant), then the orchestrator dialogues with the user in open chat (not via a structured prompt) on the proposals section by section. For memory base modifications, Dreamer goes through Lambda Phase 11 `/commontrace` (existing mechanism, not reinvented). For code/doc modifications, Dreamer applies under tracked Git commits `[Dreamer] <summary>` after user validation. Full details in §6.4.
 
-Les sous-agents tournent **en background** (`run_in_background=true`) et l'orchestrateur attend la notification de complétion. Pas de polling, pas de timeout custom — c'est la harness Claude Code qui gère le cycle de vie. Cette discipline évite les boucles d'attente coûteuses en tokens et garantit une exécution propre.
+The sub-agents run **in background** (asynchronously) and the orchestrator waits for the completion notification. No polling, no custom timeout — the agent platform's harness manages the lifecycle. This discipline avoids token-expensive wait loops and guarantees clean execution.
 
-Chaque sous-agent est **spawn frais à chaque besoin** : nouveau Agent à chaque cycle (notamment B à chaque itération) pour garantir l'indépendance. SendMessage / réutilisation d'un Agent existant n'est PAS recommandé — perd l'indépendance B↔A qui est précisément ce que le pattern double-review cherche à préserver.
+Each sub-agent is **spawned fresh for each need**: a fresh sub-agent spawned asynchronously at each cycle (notably B at each iteration) to guarantee independence. Sending a message to an existing sub-agent / reusing an existing one is NOT recommended — it loses the B↔A independence that is precisely what the double-review pattern seeks to preserve.
 
-![Vue d'ensemble du pipeline /justdoit v2.3 — 12 phases, 6 agents, attention layer, base mémoire](assets/justdoit_overall.png)
+![Pipeline overview /commontrace v2.3 — 12 phases, 6 agents, attention layer, memory base](assets/commontrace_overall.png)
 
-*Figure — Vue d'ensemble : le flot des 12 phases, les 6 agents (couleur), l'attention layer (infra) et la base mémoire. La boucle A↔B (Phase 6 → 7 → 4) itère jusqu'à CONFORME ou `max_iterations`.*
+*Figure — Overview: the flow of 12 phases, the 6 agents (colored), the attention layer (infra), and the memory base. The A↔B loop (Phase 6 → 7 → 4) iterates until CONFORM or `max_iterations`.*
 
-### 2.1 Orchestrateur (Claude principal)
+### 2.1 Orchestrator (Main Agent)
 
-![Architecture de l'orchestrateur — spawn des 5 sous-agents, décisions, écriture mémoire validée](assets/agent_orchestrateur.png)
+![Orchestrator architecture — spawning the 5 sub-agents, decisions, validated memory writes](assets/agent_orchestrator.png)
 
-| Mission | Coordonner le pipeline, parser l'invocation, lancer les sous-agents (Alpha, A, B, Omega, Lambda), prendre les décisions Phase 6/8, écrire la mémoire en Phase 11 après verdicts Lambda ACCEPTÉ |
+| Mission | Coordinate the pipeline, parse the invocation, launch the sub-agents (Alpha, A, B, Omega, Lambda), make Phase 6/8 decisions, write memory in Phase 11 after ACCEPTED Lambda verdicts |
 | --- | --- |
-| Inputs | Invocation `/justdoit <tâche>` verbatim utilisateur |
-| Outputs | TaskList, briefs A/B/Alpha/Omega/Lambda, commits, rapport final user (incluant traçabilité ACCEPTÉ/REJETÉ/À RAFFINER de Lambda) |
-| Fichiers touchés | `memory/episodes/` (lecture seule en Phase 10 — Omega écrit), `memory/lessons/` (écriture Phase 11 après verdict Lambda ACCEPTÉ), `memory/INDEX.md` (édition Phase 11), code projet (commits) |
-| Position workflow | Présent sur toutes les phases (0 à 11) |
+| Inputs | `/commontrace <task>` invocation verbatim from user |
+| Outputs | Task tracker, A/B/Alpha/Omega/Lambda briefs, commits, final user report (including ACCEPTED/REJECTED/NEEDS REFINEMENT traceability from Lambda) |
+| Files touched | `memory/episodes/` (read-only in Phase 10 — Omega writes), `memory/lessons/` (write in Phase 11 after ACCEPTED Lambda verdict), `memory/INDEX.md` (edit in Phase 11), project code (commits) |
+| Workflow position | Present across all phases (0 to 11) |
 
-L'orchestrateur ne touche jamais à la mémoire en lecture pendant un run — c'est Alpha qui s'en charge en amont et Lambda en aval. Il édite la mémoire en Phase 11, uniquement sur les propositions marquées ACCEPTÉ par Lambda. Workflow 100% automatisé : pas de dépendance utilisateur sur la validation backlog mémoire.
+The orchestrator never touches memory for reading during a run — Alpha handles that upstream and Lambda downstream. It edits memory in Phase 11, only on proposals marked ACCEPTED by Lambda. 100% automated workflow: no user dependency on memory backlog validation.
 
-### 2.2 Alpha — retrieval mémoire (Phase 0)
+### 2.2 Alpha — Memory Retrieval (Phase 0)
 
-![Architecture de l'agent Alpha — pré-filtre attention puis jugement qualitatif](assets/agent_alpha.png)
+![Alpha agent architecture — attention pre-filter then qualitative judgment](assets/agent_alpha.png)
 
-| Mission | Lire `memory/` et identifier les lessons et episodes pertinents pour la tâche entrante. Retourner un rapport structuré qui sera injecté verbatim dans le brief A |
+| Mission | Read `memory/` and identify the relevant lessons and episodes for the incoming task. Return a structured report that will be injected verbatim into A's brief |
 | --- | --- |
-| Inputs | Invocation `/justdoit` verbatim + accès lecture à `memory/` |
-| Outputs | Bloc `## RETRIEVED MEMORY (Alpha)` avec Lessons applicables triées par score `importance × tag_match`, Episodes précédents, Recommandations pour le brief A, Confidence (HAUTE/MOYENNE/FAIBLE/AUCUNE), Lessons consultées (traçabilité) |
-| Fichiers touchés | Aucun en écriture — Alpha est strictement en lecture seule (pas de Write, pas de Edit, pas de git) |
-| Position workflow | Phase 0 (avant tout). Skippable via `--skip-alpha`. Si `--alpha-only`, tourne seul et le pipeline s'arrête après affichage du rapport |
+| Inputs | `/commontrace` invocation verbatim + read access to `memory/` |
+| Outputs | `## RETRIEVED MEMORY (Alpha)` block with applicable Lessons sorted by `importance × tag_match` score, Previous episodes, Recommendations for A's brief, Confidence (HIGH/MEDIUM/LOW/NONE), Lessons consulted (traceability) |
+| Files touched | None in write — Alpha is strictly read-only (no Write, no Edit, no git) |
+| Workflow position | Phase 0 (before everything). Skippable via `--skip-alpha`. If `--alpha-only`, runs alone and the pipeline stops after displaying the report |
 
-Workflow Alpha : lire `memory/INDEX.md` pour pré-filtrer par domaine, sélectionner 3-7 candidats par titre/tags, lire chaque candidat (frontmatter + corps), vérifier `applies_when`/`do_not_apply_when` contre la tâche entrante, trier par `score = importance × tag_match` décroissant, considérer toujours les leçons `importance >= 4` même si `tag_match == 0` (sécurité).
+Alpha workflow: read `memory/INDEX.md` to pre-filter by domain, select 3-7 candidates by title/tags, read each candidate (frontmatter + body), verify `applies_when`/`do_not_apply_when` against the incoming task, sort by `score = importance × tag_match` descending, always consider lessons with `importance >= 4` even if `tag_match == 0` (safety).
 
-**Format de sortie Alpha** : bloc `## RETRIEVED MEMORY (Alpha)` structuré avec sections fixes (Lessons applicables 3-5 max, Episodes précédents 0-2, Recommandations pour le brief A, Confidence HAUTE/MOYENNE/FAIBLE/AUCUNE, Lessons consultées pour traçabilité). Chaque lesson listée inclut : slug, importance, rule en 1 phrase, "Why this applies here" (1 phrase ancrée dans la tâche entrante, pas générique), "How to apply" (action concrète dans le code à produire). Les recommandations finales sont structurées en "À ajouter dans la section Contraintes anti-patterns" et "À ajouter dans la section Documents à lire".
+**Alpha output format**: `## RETRIEVED MEMORY (Alpha)` block structured with fixed sections (Applicable lessons 3-5 max, Previous episodes 0-2, Recommendations for A's brief, Confidence HIGH/MEDIUM/LOW/NONE, Lessons consulted for traceability). Each listed lesson includes: slug, importance, rule in 1 sentence, "Why this applies here" (1 sentence anchored in the incoming task, not generic), "How to apply" (concrete action in the code to produce). Final recommendations are structured as "To add in the Anti-pattern constraints section" and "To add in the Documents to read section".
 
-Échec ou confidence AUCUNE = NON BLOQUANT. L'orchestrateur continue avec un signal explicite dans le brief A : `"## RETRIEVED MEMORY (Alpha)\nno memory used — tâche en territoire neuf"`. Pas de retry, pas d'escalade — Alpha est best-effort.
+Failure or NONE confidence = NON-BLOCKING. The orchestrator continues with an explicit signal in A's brief: `"## RETRIEVED MEMORY (Alpha)\nno memory used — task in uncharted territory"`. No retry, no escalation — Alpha is best-effort.
 
-### 2.3 A — implementer (Phase 3, itérable)
+### 2.3 A — Implementer (Phase 3, iterable)
 
-![Architecture de l'agent A (implementer)](assets/agent_a.png)
+![A agent architecture (implementer)](assets/agent_a.png)
 
-| Mission | Implémenter la tâche selon le brief, en intégrant les recommandations Alpha et les contraintes anti-patterns. Produire un rapport final structuré |
+| Mission | Implement the task according to the brief, integrating Alpha recommendations and anti-pattern constraints. Produce a structured final report |
 | --- | --- |
-| Inputs | Brief A enrichi (description tâche + critères de succès + sortie Alpha verbatim + contraintes anti-patterns + docs à lire + fichiers à NE PAS toucher) |
-| Outputs | Code modifié/créé + rapport final (fichiers modifiés, tests, mesures, surprises) |
-| Fichiers touchés | Code projet (modifications libres dans le périmètre du brief). PAS de commits (l'orchestrateur s'en charge en Phase 4) |
-| Position workflow | Phase 3, relancé en Phase 7 (A2, A3...) si écart B avec it < max |
+| Inputs | Enriched A brief (task description + success criteria + Alpha output verbatim + anti-pattern constraints + docs to read + files NOT to touch) |
+| Outputs | Modified/created code + final report (modified files, tests, measurements, surprises) |
+| Files touched | Project code (free modifications within the brief's scope). NO commits (the orchestrator handles these in Phase 4) |
+| Workflow position | Phase 3, relaunched in Phase 7 (A2, A3...) if B flags a GAP with it < max |
 
-A peut effectuer des fixes proactifs en passant (régressions pré-existantes, anti-patterns détectés non bloquants) à condition de les documenter dans le rapport (cf. RETEX 7.2). A ne fait jamais de git operations (stash/clean/restore) — risque de perte de code.
+A may perform proactive fixes in passing (pre-existing regressions, detected non-blocking anti-patterns) provided they are documented in the report (cf. RETEX 7.2). A never performs git operations (stash/clean/restore) — risk of code loss.
 
-**Contraintes anti-patterns standards (template brief A)** : pas de @property d'alias / back-compat (strict rename si refactor), pas de magic number sans justification empirique, pas de mock / simulation séparée, pas de output `/tmp/` (utiliser `results/<run_name>/`), pas de Python loop évitable si vectorisable, pas de tests skip / xfail pour masquer un bug, sémantique projet préservée (tests existants doivent passer). Anti-patterns additionnels recommandés par Alpha sont ajoutés à la liste.
+**Standard anti-pattern constraints (A brief template)**: no alias @property / back-compat (strict rename if refactoring), no magic number without empirical justification, no mock / separate simulation, no `/tmp/` output (use `results/<run_name>/`), no avoidable Python loop if vectorizable, no tests skip / xfail to mask a bug, project semantics preserved (existing tests must pass). Additional anti-patterns recommended by Alpha are appended to the list.
 
-**Format rapport A** : structure attendue indiquée dans le brief (fichiers modifiés, tests qui ont tourné avec résultats chiffrés, mesures empiriques quand pertinent, surprises rencontrées). Sert d'input au commit Phase 4 et à Omega Phase 10.
+**A report format**: expected structure indicated in the brief (modified files, tests that ran with numerical results, empirical measurements when relevant, surprises encountered). Serves as input for Phase 4 commit and for Omega Phase 10.
 
-### 2.4 B — reviewer indépendant (Phase 5, itérable)
+### 2.4 B — Independent Reviewer (Phase 5, iterable)
 
-![Architecture de l'agent B (reviewer indépendant)](assets/agent_b.png)
+![B agent architecture (independent reviewer)](assets/agent_b.png)
 
-| Mission | Auditer le code produit par A contre les critères de succès, indépendamment des choix de design de A. Émettre verdict CONFORME ou ÉCART |
+| Mission | Audit the code produced by A against the success criteria, independently of A's design choices. Issue a CONFORM or GAP verdict |
 | --- | --- |
-| Inputs | Brief B (mandat strict, fichiers à reviewer = diff du commit Phase 4, critères de succès verbatim user, grille d'audit) |
-| Outputs | Verdict CONFORME (points marquants validés + recommandations non-bloquantes optionnelles) ou ÉCART (liste numérotée d'écarts avec sévérité BLOQUANT/MAJEUR/MINEUR + tests qui ont tourné) |
-| Fichiers touchés | Aucun en écriture (lecture seule). B peut LANCER des tests/benchs pour validation empirique mais ne modifie pas de code et ne fait pas de git operations |
-| Position workflow | Phase 5, spawn frais à chaque itération (preserve l'indépendance de jugement) |
+| Inputs | B brief (strict mandate, files to review = diff from Phase 4 commit, user success criteria verbatim, audit grid) |
+| Outputs | CONFORM verdict (validated key points + optional non-blocking recommendations) or GAP (numbered list of gaps with BLOCKING/MAJOR/MINOR severity + tests that ran) |
+| Files touched | None in write (read-only). B can RUN tests/benchmarks for empirical validation but does not modify code and does not perform git operations |
+| Workflow position | Phase 5, spawned fresh at each iteration (preserves judgment independence) |
 
-B ne voit pas le rapport de A — il juge sur le code livré contre les critères. Le brief B "ne révèle PAS les choix de design d'A" pour éviter le biais de confirmation.
+B does not see A's report — it judges based on the delivered code against the criteria. The B brief "does NOT reveal A's design choices" to avoid confirmation bias.
 
-**Grille d'audit B (template)** :
-- Sémantique préservée (CRITIQUE) : tests existants passent ? Lance pytest et confirme. Sémantique projet : vérifier par lecture diff + exécution.
-- Anti-patterns : @property d'alias présent ? Magic number sans justification ? Output `/tmp/` ? Python loop évitable ? Tests skip / xfail ?
-- Critères user : pour chaque critère, PASS / FAIL avec citation précise.
-- Tests empiriques : lance les commandes pertinentes (pytest, bench, smoke), reporte les résultats chiffrés.
+**B audit grid (template)**:
+- Semantics preserved (CRITICAL): do existing tests pass? Run pytest and confirm. Project semantics: verify by diff reading + execution.
+- Anti-patterns: alias @property present? Magic number without justification? `/tmp/` output? Avoidable Python loop? Tests skip / xfail?
+- User criteria: for each criterion, PASS / FAIL with precise citation.
+- Empirical tests: run the relevant commands (pytest, bench, smoke), report numerical results.
 
-**Format verdict B** : bloc structuré avec Décision (CONFORME ou ÉCART), Points marquants validés (3-5 si CONFORME), Recommandations non-bloquantes optionnelles (si CONFORME), Liste numérotée d'écarts (si ÉCART, format "[section] [fichier:ligne] [exigence] [observé] [correction]") avec sévérité BLOQUANT/MAJEUR/MINEUR, Tests qui ont tourné (commandes + résultats).
+**B verdict format**: structured block with Decision (CONFORM or GAP), Validated key points (3-5 if CONFORM), Optional non-blocking recommendations (if CONFORM), Numbered list of gaps (if GAP, format "[section] [file:line] [requirement] [observed] [correction]") with BLOCKING/MAJOR/MINOR severity, Tests that ran (commands + results).
 
-**Spawn frais à chaque itération** : si A2 produit une nouvelle livraison après itération, c'est un nouveau B2 spawn frais (pas le même B qui aurait vu A1). Préserve le jugement indépendant — évite le biais "j'ai déjà dit que c'était bien".
+**Spawned fresh at each iteration**: if A2 produces a new delivery after iteration, it is a new B2 spawned fresh (not the same B that would have seen A1). Preserves independent judgment — avoids the "I already said it was fine" bias.
 
-### 2.5 Omega — synthèse + propositions (Phase 10)
+### 2.5 Omega — Synthesis + Proposals (Phase 10)
 
-![Architecture de l'agent Omega (synthèse + propositions mémoire)](assets/agent_omega.png)
+![Omega agent architecture (synthesis + memory proposals)](assets/agent_omega.png)
 
-| Mission | (1) Écrire systématiquement l'épisode du run (traçabilité), calibrer son importance 1-5 selon la rubrique. (2) Proposer 0-N leçons candidates nouvelles. (3) Proposer 0-N updates de leçons existantes. (4) Optionnellement flagger "À RÉVISER" une leçon retrieve qui s'est révélée non applicable |
+| Mission | (1) Systematically write the run's episode (traceability), calibrate its importance 1-5 according to the rubric. (2) Propose 0-N new candidate lessons. (3) Propose 0-N updates to existing lessons. (4) Optionally flag "NEEDS REVISION" a retrieved lesson that turned out to be non-applicable |
 | --- | --- |
-| Inputs | Tâche initiale + rapport Alpha + brief A + rapports A1..An + rapports B1..Bn + verdict final + rétro orchestrateur Phase 9 + métadonnées run |
-| Outputs | Fichier `memory/episodes/YYYY-MM-DD_slug.md` créé + bloc `## OMEGA OUTPUT` avec lessons candidates, lessons updates, lessons revisions |
-| Fichiers touchés | `memory/episodes/` (écriture autorisée). PAS d'écriture dans `memory/lessons/` ni dans `memory/INDEX.md` — ces fichiers passent par la validation Phase 11 |
-| Position workflow | Phase 10. Skippable via `--skip-omega` (skip 9+10+11 ensemble) |
+| Inputs | Initial task + Alpha report + A brief + A1..An reports + B1..Bn reports + final verdict + orchestrator retro Phase 9 + run metadata |
+| Outputs | `memory/episodes/YYYY-MM-DD_slug.md` file created + `## OMEGA OUTPUT` block with candidate lessons, lesson updates, lesson revisions |
+| Files touched | `memory/episodes/` (write authorized). NO writing in `memory/lessons/` nor in `memory/INDEX.md` — these files go through Phase 11 validation |
+| Workflow position | Phase 10. Skippable via `--skip-omega` (skips 9+10+11 together) |
 
-Critère Omega pour proposer une leçon : (A) importance épisode source ≥ 3 ET généralisable hors-projet, OU (B) importance 4-5 même sur 1 seule occurrence (showstopper / critique mérite d'être capturé tout de suite). Remplace l'ancien critère "≥ 2 épisodes le montrent" qui filtrait trop strict les showstoppers rares.
+Omega criterion for proposing a lesson: (A) source episode importance ≥ 3 AND generalizable beyond the project, OR (B) importance 4-5 even on a single occurrence (showstopper / critical deserves immediate capture). Replaces the former "≥ 2 episodes show it" criterion which filtered out rare showstoppers too aggressively.
 
-L'importance d'une leçon candidate est dérivée des `source_episodes` (max ou moyenne), ajustable +/- 1 par Omega au moment de proposer (justifier l'ajustement dans la proposition).
+The importance of a candidate lesson is derived from its `source_episodes` (max or average), adjustable ±1 by Omega at proposal time (justify the adjustment in the proposal).
 
-**Format de sortie Omega** : bloc `## OMEGA OUTPUT` structuré avec :
+**Omega output format**: `## OMEGA OUTPUT` block structured with:
 - Episode written (path, status, importance + rationale)
-- Lessons candidates (à valider par Lambda AVANT write) : pour chaque proposition, slug suggéré + Rule + Why + How to apply + applies_when + do_not_apply_when + Importance + rationale + Justification "pourquoi nouvelle vs existante"
-- Lessons updates (existantes à incrémenter) : liste `[lesson_slug existant] : +1 uses, append source_episode YYYY-MM-DD_slug`
-- Lessons revisions (existantes à flagger) : liste `[lesson_slug existant] : À RÉVISER — raison concrète`
-- Section "Aucune leçon nouvelle ?" si rien de notable, avec explication
+- Candidate lessons (to be validated by Lambda BEFORE write): for each proposal, suggested slug + Rule + Why + How to apply + applies_when + do_not_apply_when + Importance + rationale + Justification "why new vs existing"
+- Lesson updates (existing ones to increment): list `[existing lesson_slug] : +1 uses, append source_episode YYYY-MM-DD_slug`
+- Lesson revisions (existing ones to flag): list `[existing lesson_slug] : NEEDS REVISION — concrete reason`
+- Section "No new lesson?" if nothing notable, with explanation
 
-Si Omega ne propose aucune leçon nouvelle, il doit le dire franchement et expliquer pourquoi (e.g. "Run trivial sans apprentissage transférable, épisode archivé pour traçabilité"). Pas de proposition forcée pour "remplir" la sortie.
+If Omega proposes no new lesson, it must state this frankly and explain why (e.g. "Trivial run with no transferable learning, episode archived for traceability"). No forced proposal to "fill" the output.
 
-### 2.6 Lambda — validation automatique du backlog (Phase 11)
+### 2.6 Lambda — Automatic Backlog Validation (Phase 11)
 
-![Architecture de l'agent Lambda (validation du backlog mémoire)](assets/agent_lambda.png)
+![Lambda agent architecture (memory backlog validation)](assets/agent_lambda.png)
 
-| Mission | Auditer chaque proposition Omega (nouvelles leçons + updates + révisions) selon 4 critères (qualité formelle, non-doublon, généralisation, calibration importance) et rendre un verdict ACCEPTÉ / REJETÉ / À RAFFINER par proposition. Reviewer indépendant des choix Omega — équivalent backlog mémoire du B reviewer pour le code |
+| Mission | Audit each Omega proposal (new lessons + updates + revisions) according to 4 criteria (formal quality, non-duplication, generalization, importance calibration) and render an ACCEPTED / REJECTED / NEEDS REFINEMENT verdict per proposal. Independent reviewer of Omega's choices — memory backlog equivalent of the B reviewer for code |
 | --- | --- |
-| Inputs | Rapport Omega complet (bloc `## OMEGA OUTPUT`) + accès lecture à `memory/` (lessons existantes, INDEX.md, épisodes récents) + rubrique d'importance (rappelée verbatim dans le brief Lambda) |
-| Outputs | Bloc `## LAMBDA OUTPUT` avec décisions par proposition (ACCEPTÉ/REJETÉ/À RAFFINER + justification 2-3 phrases) + synthèse (total, ACCEPTÉ, REJETÉ, À RAFFINER) |
-| Fichiers touchés | Aucun en écriture — Lambda est strictement en lecture seule (pas de Write, pas de Edit, pas de git). C'est l'orchestrateur qui applique les verdicts ACCEPTÉ |
-| Position workflow | Phase 11 (après Omega). Couplé à `--skip-omega` (skippé en même temps que Omega + Phase 9). Spawn frais à chaque run |
+| Inputs | Complete Omega report (`## OMEGA OUTPUT` block) + read access to `memory/` (existing lessons, INDEX.md, recent episodes) + importance rubric (recalled verbatim in the Lambda brief) |
+| Outputs | `## LAMBDA OUTPUT` block with decisions per proposal (ACCEPTED/REJECTED/NEEDS REFINEMENT + 2-3 sentence justification) + summary (total, ACCEPTED, REJECTED, NEEDS REFINEMENT) |
+| Files touched | None in write — Lambda is strictly read-only (no Write, no Edit, no git). It is the orchestrator that applies ACCEPTED verdicts |
+| Workflow position | Phase 11 (after Omega). Coupled with `--skip-omega` (skipped together with Omega + Phase 9). Spawned fresh at each run |
 
-Workflow Lambda :
-1. Lire `memory/` (INDEX.md, lessons du domaine concerné) pour vérifier non-doublon.
-2. Pour chaque NOUVELLE LEÇON proposée : vérifier qualité formelle (applies_when concret, do_not_apply_when explicite, importance + rationale, YAML valide), non-doublon (matching sémantique sur Rule + applies_when), généralisation (≥ 3 contextes hors-projet imaginables), calibration importance (défendable contre la rubrique 1-5 ; écart A/B ≤ ±1 acceptable).
-3. Pour chaque UPDATE proposé : cohérence (source_episode pas déjà présent, last_hit ≤ date du jour, uses cohérent) + justification (lesson_hit confirmé dans rapport).
-4. Pour chaque RÉVISION proposée : motif documenté concrètement (citation rapport A/B ou rétro orchestrateur).
-5. Émettre verdict par proposition + synthèse.
+Lambda workflow:
+1. Read `memory/` (INDEX.md, lessons in the relevant domain) to verify non-duplication.
+2. For each NEW LESSON proposed: verify formal quality (concrete applies_when, explicit do_not_apply_when, importance + rationale, valid YAML), non-duplication (semantic matching on Rule + applies_when), generalization (≥ 3 imaginable contexts beyond the project), importance calibration (defensible against the 1-5 rubric; A/B gap ≤ ±1 acceptable).
+3. For each proposed UPDATE: coherence (source_episode not already present, last_hit ≤ today's date, uses coherent) + justification (lesson_hit confirmed in report).
+4. For each proposed REVISION: concretely documented reason (citation from A/B report or orchestrator retro).
+5. Issue verdict per proposal + summary.
 
-**Format de sortie Lambda** : bloc `## LAMBDA OUTPUT` structuré avec :
-- `### Decisions par proposition` : pour chaque proposition (nouvelle lesson / update / révision), Décision (ACCEPTÉ | REJETÉ | À RAFFINER) + Justification (2-3 phrases). Pour À RAFFINER : champs précis à corriger.
-- `### Synthèse` : total propositions, ACCEPTÉ N, REJETÉ N (raisons synthétiques), À RAFFINER N.
+**Lambda output format**: `## LAMBDA OUTPUT` block structured with:
+- `### Decisions per proposal`: for each proposal (new lesson / update / revision), Decision (ACCEPTED | REJECTED | NEEDS REFINEMENT) + Justification (2-3 sentences). For NEEDS REFINEMENT: specific fields to correct.
+- `### Summary`: total proposals, ACCEPTED N, REJECTED N (synthetic reasons), NEEDS REFINEMENT N.
 
-Lambda N'A PAS l'autorisation d'écrire dans `memory/`. Les fichiers leçons sont écrits par l'orchestrateur APRÈS verdict ACCEPTÉ de Lambda. Les REJETÉ et À RAFFINER sont logués dans le rapport final user pour traçabilité (pas appliqués).
+Lambda does NOT have permission to write to `memory/`. Lesson files are written by the orchestrator AFTER an ACCEPTED Lambda verdict. REJECTED and NEEDS REFINEMENT are logged in the final user report for traceability (not applied).
 
-**Spawn frais à chaque run** : Lambda est spawn frais à chaque Phase 11, comme B est spawn frais à chaque itération. Préserve l'indépendance du jugement par rapport aux choix Omega du même run.
+**Spawned fresh at each run**: Lambda is spawned fresh at each Phase 11, just as B is spawned fresh at each iteration. Preserves judgment independence relative to the Omega choices of the same run.
 
 ---
 
-## 3. Workflow complet (12 phases)
+## 3. Complete Workflow (12 phases)
 
-Le pipeline complet, phase par phase. Chaque phase indique son input principal, son output, l'agent responsable, et les flags `--skip-*` applicables. La numérotation va de 0 à 11 (12 phases au total).
+The complete pipeline, phase by phase. Each phase indicates its main input, its output, the responsible agent, and the applicable `--skip-*` flags. Numbering goes from 0 to 11 (12 phases total).
 
-### 3.1 Vue d'ensemble (table)
+### 3.1 Overview (table)
 
-| Phase | Nom | Agent | Input | Output | Skippable via |
+| Phase | Name | Agent | Input | Output | Skippable via |
 |---|---|---|---|---|---|
-| 0 | Alpha retrieval | Alpha | Invocation verbatim | Rapport `## RETRIEVED MEMORY (Alpha)` | `--skip-alpha`, `--alpha-only` (run seul) |
-| 1 | Parser + compléter | Orchestrateur | Invocation user | Brief A enrichi (tâche, critères, contraintes) | — |
-| 2 | TaskCreate | Orchestrateur | Tâche parsée | Entrée TaskList in_progress | — |
-| 3 | A implementer | A | Brief A (incl. Alpha) | Code modifié + rapport A | — |
-| 4 | Commit après A | Orchestrateur | Rapport A | Commit git intermédiaire | `skip-commit-after-a` (inline) |
-| 5 | B reviewer | B | Brief B + diff commit | Verdict CONFORME ou ÉCART | — |
-| 6 | Décision verdict | Orchestrateur | Verdict B | Branche : Phase 9 (CONFORME), Phase 7 (it<max), Phase 8 (it≥max) | — |
-| 7 | Itération A | A (A2, A3...) | Brief A enrichi + écarts B verbatim | Code mis à jour + rapport A2/A3 | `no-loop` (inline) |
-| 8 | Arbitrage Claude | Orchestrateur | Écarts persistants après max_iterations | Fix résiduel ou question user | — |
-| 9 | Rétro orchestrateur | Orchestrateur | Rapports A/B + verdict | Bloc rétro 3 questions (ce qui a marché, ce qui a surpris, utilité Alpha) | `--skip-omega` (couplé 9+10+11) |
-| 10 | Omega synthèse | Omega | Tâche + Alpha + A + B + verdict + rétro | Épisode écrit + propositions leçons | `--skip-omega` |
-| 11 | Validation Lambda | Lambda + Orchestrateur | Propositions Omega | Verdicts ACCEPTÉ/REJETÉ/À RAFFINER par proposition + fichiers leçons créés/updatés (ACCEPTÉ seuls) + INDEX.md mis à jour + `lessons_validated_by_lambda` rempli | `--skip-omega` |
+| 0 | Alpha retrieval | Alpha | Invocation verbatim | `## RETRIEVED MEMORY (Alpha)` report | `--skip-alpha`, `--alpha-only` (run alone) |
+| 1 | Parse + complete | Orchestrator | User invocation | Enriched A brief (task, criteria, constraints) | — |
+| 2 | Create task tracker entry | Orchestrator | Parsed task | Task tracker entry in_progress | — |
+| 3 | A implementer | A | A brief (incl. Alpha) | Modified code + A report | — |
+| 4 | Commit after A | Orchestrator | A report | Intermediate git commit | `skip-commit-after-a` (inline) |
+| 5 | B reviewer | B | B brief + commit diff | CONFORM or GAP verdict | — |
+| 6 | Verdict decision | Orchestrator | B verdict | Branch: Phase 9 (CONFORM), Phase 7 (it<max), Phase 8 (it≥max) | — |
+| 7 | A iteration | A (A2, A3...) | Enriched A brief + B gaps verbatim | Updated code + A2/A3 report | `no-loop` (inline) |
+| 8 | Orchestrator arbitration | Orchestrator | Persistent gaps after max_iterations | Residual fix or user question | — |
+| 9 | Orchestrator retro | Orchestrator | A/B reports + verdict | Retro block 3 questions (what worked, what surprised, Alpha usefulness) | `--skip-omega` (coupled 9+10+11) |
+| 10 | Omega synthesis | Omega | Task + Alpha + A + B + verdict + retro | Episode written + lesson proposals | `--skip-omega` |
+| 11 | Lambda validation | Lambda + Orchestrator | Omega proposals | ACCEPTED/REJECTED/NEEDS REFINEMENT verdicts per proposal + lesson files created/updated (ACCEPTED only) + INDEX.md updated + `lessons_validated_by_lambda` filled | `--skip-omega` |
 
-### 3.2 Détails sur quelques phases clés
+### 3.2 Details on Key Phases
 
-**Phase 0 (Alpha retrieval)** : tourne par défaut en début de run. Brief autonome copiable verbatim depuis SKILL.md. Workflow Alpha enrichi v2.3 avec un pré-filtre attention sémantique en étape 0 :
+**Phase 0 (Alpha retrieval)**: runs by default at the start of a run. Autonomous brief copiable verbatim from SKILL.md. Alpha workflow enriched in v2.3 with a semantic attention pre-filter at step 0:
 
-0. **Pré-filtre attention (v2.3)** : Alpha lance `memory/attention/query.py "[invocation verbatim]" --top-k=10 --include-importance-floor=4` qui retourne ~10 candidats par similarité cosine + toutes les leçons `importance >= 4` (override sécurité). Le score cosine est un complément au tri qualitatif, pas un remplacement.
-1. Lire `memory/INDEX.md` pour vérifier la pertinence des candidats du pré-filtre et compléter par domaine si nécessaire.
-2. Sélectionner 3-7 candidats — priorité au top-K cosine de l'étape 0, complétés des candidats `importance >= 4` non couverts (qualité > quantité).
-3. Lire chaque candidat (frontmatter + corps).
-4. Vérifier `applies_when` et `do_not_apply_when` contre la tâche entrante.
-5. Retenir uniquement ceux qui passent le filtre sémantique.
-6. Trier par `score = importance × tag_match` décroissant.
-7. Appliquer la sécurité importance (toujours considérer si ≥ 4 même sans tag match — l'override `--include-importance-floor=4` du pré-filtre garantit déjà leur présence dans les candidats).
-8. Synthétiser au format de sortie standard (champ `cosine: 0.XX` ajouté à chaque ligne lesson, `N/A` si remontée uniquement par override).
+0. **Attention pre-filter (v2.3)**: Alpha launches `memory/attention/query.py "[verbatim invocation]" --top-k=10 --include-importance-floor=4` which returns ~10 candidates by cosine similarity + all lessons with `importance >= 4` (safety override). The cosine score is a complement to the qualitative sorting, not a replacement.
+1. Read `memory/INDEX.md` to verify the relevance of pre-filter candidates and supplement by domain if needed.
+2. Select 3-7 candidates — priority to the top-K cosine from step 0, supplemented by `importance >= 4` candidates not covered (quality > quantity).
+3. Read each candidate (frontmatter + body).
+4. Verify `applies_when` and `do_not_apply_when` against the incoming task.
+5. Retain only those that pass the semantic filter.
+6. Sort by `score = importance × tag_match` descending.
+7. Apply the importance safety rule (always consider if ≥ 4 even without tag match — the `--include-importance-floor=4` override in the pre-filter already guarantees their presence among candidates).
+8. Synthesize in the standard output format (`cosine: 0.XX` field added to each lesson line, `N/A` if surfaced only by override).
 
-Échec ou confidence AUCUNE = NON BLOQUANT. Si Alpha échoue (timeout, erreur), ou si le pré-filtre attention échoue (`query.py` indisponible, index.npz manquant), l'orchestrateur continue sans bloquer — l'absence d'attention layer fait juste retomber Alpha sur le workflow classique (étapes 1-8).
+Failure or NONE confidence = NON-BLOCKING. If Alpha fails (timeout, error), or if the attention pre-filter fails (`query.py` unavailable, index.npz missing), the orchestrator continues without blocking — the absence of the attention layer simply causes Alpha to fall back to the classic workflow (steps 1-8).
 
-**Phase 4 (commit après A)** : justifiée par incident vécu — un sous-agent B0a v3 d'module-b avait fait `git clean` qui a effacé `cuda_v3/*.py`. Le commit immédiat après A garantit que le code est sauvegardé avant que B touche au repo (B est en lecture seule par mandat, mais une bavure git involontaire peut quand même se produire). Le commit doit inclure : tâche initiale, verdict A (rapport synthétique), tests passants, itération courante (si > 1). Skip silencieux si skill user-level hors repo (cf. RETEX 7.6).
+**Phase 4 (commit after A)**: justified by a lived incident — a sub-agent B0a v3 from module-b had run `git clean` which erased `cuda_v3/*.py`. The immediate commit after A guarantees that code is saved before B touches the repo (B is read-only by mandate, but an inadvertent git mishap can still occur). The commit must include: initial task, A verdict (synthetic report), passing tests, current iteration (if > 1). Silent skip if user-level skill outside a repo (cf. RETEX 7.6).
 
-**Phase 7 (itération)** : génère un nouveau brief A (A2, A3...) avec le brief original + section additionnelle "Écarts B itération précédente à corriger" (liste numérotée verbatim de B, sévérité conservée). Spawn frais à chaque itération — pas de réutilisation de l'Agent précédent (préserve l'indépendance). Loop retour à Phase 4 (commit immédiat) → Phase 5 (nouveau B spawn frais) → Phase 6 (verdict).
+**Phase 7 (iteration)**: generates a new A brief (A2, A3...) with the original brief + an additional section "B gaps from previous iteration to fix" (numbered list verbatim from B, severity preserved). Spawned fresh at each iteration — no reuse of the previous sub-agent (preserves independence). Loop returns to Phase 4 (immediate commit) → Phase 5 (new B spawned fresh) → Phase 6 (verdict).
 
-**Phase 8 (arbitrage Claude)** : si après 3 itérations toujours ÉCART, l'orchestrateur lit les écarts persistants identifiés par B, fait une lecture ciblée du code (Read sur fichiers concernés), et décide :
-- Soit fix lui-même les écarts résiduels (si minor) puis commit
-- Soit présente à l'utilisateur : "Après 3 itérations A+B, écarts résiduels : [liste]. Recommandation : [option A / option B / abandon]."
+**Phase 8 (orchestrator arbitration)**: if after 3 iterations there are still GAPs, the orchestrator reads the persistent gaps identified by B, does a targeted code reading (Read on concerned files), and decides:
+- Either fixes the residual gaps itself (if minor) then commits
+- Or presents to the user: "After 3 A+B iterations, residual gaps: [list]. Recommendation: [option A / option B / abandon]."
 
-Mark TaskUpdate status=completed avec note "arbitrage Claude". Continue Phase 9.
+Update task tracker entry status=completed with note "orchestrator arbitration". Continue to Phase 9.
 
-**Phase 9 (rétro orchestrateur)** : capture 30 secondes de recul méta sur le run qui vient de se terminer, pour alimenter Omega avec un signal qualitatif (ressenti orchestrateur, surprises, utilité réelle d'Alpha) que les rapports A et B ne contiennent pas. Produite par l'orchestrateur lui-même par défaut (auto-réflexion en sortie). Pour runs sensibles (tâches très ambiguës, conflits A↔B persistants, user présent), peut demander confirmation/correction à l'user via AskUserQuestion (max 3 questions). Bloc rétro EXACT : 3 questions (ce qui a bien marché / ce qui m'a surpris / Alpha utile OUI/PARTIELLEMENT/NON).
+**Phase 9 (orchestrator retro)**: captures 30 seconds of meta-reflection on the run that just ended, to feed Omega with a qualitative signal (orchestrator impression, surprises, actual usefulness of Alpha) that A and B reports do not contain. Produced by the orchestrator itself by default (self-reflection on output). For sensitive runs (very ambiguous tasks, persistent A↔B conflicts, user present), may prompt the user for confirmation/correction (max 3 questions). Exact retro block: 3 questions (what worked well / what surprised me / Alpha useful YES/PARTIALLY/NO).
 
-**Phase 10 (Omega)** : tourne en background avec brief autonome (copié verbatim depuis SKILL.md). Reçoit en input : tâche initiale verbatim, rapport Alpha, brief A initial, rapports A1..An (toutes itérations), rapports B1..Bn, verdict final, rétro orchestrateur, métadonnées run (project, commit_sha, duration_minutes, n_iterations). Mission triple :
-1. Écrire l'épisode `memory/episodes/YYYY-MM-DD_slug.md` (TOUJOURS, traçabilité obligatoire) avec calibration importance + rationale.
-2. Proposer 0-N leçons candidates nouvelles (selon critère A ou B, cf. §4.4).
-3. Proposer 0-N updates de leçons existantes (`uses += 1`, `last_hit = today`, append `source_episodes`).
-4. Optionnellement flagger "À RÉVISER" si une leçon retrieve par Alpha s'est révélée non applicable.
+**Phase 10 (Omega)**: runs in background with an autonomous brief (copied verbatim from SKILL.md). Receives as input: initial task verbatim, Alpha report, initial A brief, A1..An reports (all iterations), B1..Bn reports, final verdict, orchestrator retro, run metadata (project, commit_sha, duration_minutes, n_iterations). Triple mission:
+1. Write the episode `memory/episodes/YYYY-MM-DD_slug.md` (ALWAYS, mandatory traceability) with importance calibration + rationale.
+2. Propose 0-N new candidate lessons (according to criterion A or B, cf. §4.4).
+3. Propose 0-N updates to existing lessons (`uses += 1`, `last_hit = today`, append `source_episodes`).
+4. Optionally flag "NEEDS REVISION" if a lesson retrieved by Alpha turned out to be non-applicable.
 
-Omega N'A PAS l'autorisation d'écrire dans `memory/lessons/`. Les fichiers leçons sont écrits par l'orchestrateur APRÈS verdict ACCEPTÉ de Lambda (Phase 11).
+Omega does NOT have permission to write to `memory/lessons/`. Lesson files are written by the orchestrator AFTER an ACCEPTED Lambda verdict (Phase 11).
 
-**Phase 11 (validation Lambda automatique, v2.2)** : la mémoire n'est jamais enrichie sans verdict ACCEPTÉ d'un reviewer indépendant des choix Omega. Workflow 100% automatisé :
-1. Orchestrateur lance Lambda en background (brief verbatim depuis SKILL.md, injection de la sortie Omega + accès lecture à `memory/`).
-2. Lambda audit chaque proposition selon 4 critères (qualité formelle, non-doublon, généralisation, calibration importance pour nouvelles leçons ; cohérence + lesson_hit pour updates ; motif documenté pour révisions) et retourne un verdict ACCEPTÉ / REJETÉ / À RAFFINER par proposition.
-3. Orchestrateur applique les ACCEPTÉ :
-   - Pour chaque NOUVELLE LEÇON ACCEPTÉ : crée `memory/lessons/lesson_<slug>.md` avec frontmatter YAML strict, champs initiaux `uses: 0`, `last_hit: NEVER`, `source_episodes: [épisode courant]`, `status: active`, `importance_history: []`.
-   - Pour chaque UPDATE ACCEPTÉ : met à jour le frontmatter de la leçon existante (`uses += 1`, `last_hit = today`, append épisode courant).
-   - Pour chaque RÉVISION ACCEPTÉ : change `status: active → review`, append commentaire `## Revision note` dans le corps avec justification Lambda.
-   - Met à jour `memory/INDEX.md` : ajoute nouvelles lessons dans leurs sections de domaine respectives ; reflète updates (uses, last_hit) et révisions (status).
-   - Met à jour le frontmatter de l'épisode courant : remplit `lessons_validated_by_lambda` avec la liste effective des slugs ACCEPTÉ et appliqués.
-4. Logue REJETÉ et À RAFFINER dans le rapport final user pour traçabilité (l'utilisateur peut décider de les retravailler manuellement). Pas d'écriture mémoire pour ces propositions.
+**Phase 11 (automatic Lambda validation, v2.2)**: memory is never enriched without an ACCEPTED verdict from an independent reviewer of Omega's choices. 100% automated workflow:
+1. The orchestrator launches Lambda in background (brief verbatim from SKILL.md, injection of Omega output + read access to `memory/`).
+2. Lambda audits each proposal according to 4 criteria (formal quality, non-duplication, generalization, importance calibration for new lessons; coherence + lesson_hit for updates; documented reason for revisions) and returns an ACCEPTED / REJECTED / NEEDS REFINEMENT verdict per proposal.
+3. The orchestrator applies ACCEPTED verdicts:
+   - For each NEW LESSON ACCEPTED: creates `memory/lessons/lesson_<slug>.md` with strict YAML frontmatter, initial fields `uses: 0`, `last_hit: NEVER`, `source_episodes: [current episode]`, `status: active`, `importance_history: []`.
+   - For each UPDATE ACCEPTED: updates the existing lesson's frontmatter (`uses += 1`, `last_hit = today`, append current episode).
+   - For each REVISION ACCEPTED: changes `status: active → review`, appends `## Revision note` comment in the body with Lambda justification.
+   - Updates `memory/INDEX.md`: adds new lessons in their respective domain sections; reflects updates (uses, last_hit) and revisions (status).
+   - Updates the current episode's frontmatter: fills `lessons_validated_by_lambda` with the effective list of ACCEPTED and applied slugs.
+4. Logs REJECTED and NEEDS REFINEMENT in the final user report for traceability (the user can decide to rework them manually). No memory write for these proposals.
 
-Pas de dépendance utilisateur : un agent peut exécuter `/justdoit` end-to-end sans présence humaine dans la boucle. La validation Lambda fournit le garde-fou contre la pollution par hallucination LLM (équivalent automatisé de l'ancienne validation user).
+No user dependency: an agent can execute `/commontrace` end-to-end without human presence in the loop. Lambda validation provides the safeguard against LLM hallucination pollution (automated equivalent of the former user validation).
 
-### 3.3 Paramètres optionnels inline
+### 3.3 Optional Inline Parameters
 
-L'utilisateur peut spécifier dans l'invocation :
+The user can specify in the invocation:
 
-| Flag | Effet |
+| Flag | Effect |
 |---|---|
 | `max_iterations=N` | Override default 3 |
-| `tests=path/to/tests` | Override default projet entier |
-| `skip-commit-after-a` | Skip Phase 4 (utiliser si conflit avec autres workflows) |
-| `no-loop` | 1 cycle A+B sans loop |
-| `--skip-alpha` | Skip Phase 0 retrieval mémoire |
-| `--skip-omega` | Skip Phases 9 + 10 + 11 — pas de mini-rétro, pas d'Omega, pas de write mémoire |
-| `--alpha-only` | Run Alpha seul, afficher son rapport et s'arrêter — utile pour tester le retrieval |
+| `tests=path/to/tests` | Override default full project |
+| `skip-commit-after-a` | Skip Phase 4 (use if conflicting with other workflows) |
+| `no-loop` | 1 A+B cycle without loop |
+| `--skip-alpha` | Skip Phase 0 memory retrieval |
+| `--skip-omega` | Skip Phases 9 + 10 + 11 — no mini-retro, no Omega, no memory write |
+| `--alpha-only` | Run Alpha alone, display its report and stop — useful for testing retrieval |
 
-Rétrocompatibilité : toutes les invocations historiques continuent de fonctionner. Phases Alpha/Omega sont activées par défaut mais skippables.
+Backward compatibility: all historical invocations continue to work. Alpha/Omega phases are enabled by default but skippable.
 
 ---
 
-## 4. Base mémoire structurée
+## 4. Structured Memory Base
 
-### 4.1 Arborescence
+### 4.1 File Tree
 
 ```
-~/.claude/skills/justdoit/
-├── SKILL.md                          # source canonique du workflow
-├── DOCUMENTATION.md                  # ce document
+$COMMONTRACE_ROOT/
+├── SKILL.md                          # canonical workflow source
+├── DOCUMENTATION.md                  # this document
 └── memory/
-    ├── INDEX.md                      # index hiérarchique par domaine
+    ├── INDEX.md                      # hierarchical index by domain
     ├── episodes/
     │   ├── README.md
     │   ├── episode_template.md
-    │   └── YYYY-MM-DD_<slug>.md      # un fichier par run (Omega Phase 10)
+    │   └── YYYY-MM-DD_<slug>.md      # one file per run (Omega Phase 10)
     └── lessons/
         ├── README.md
         ├── lesson_template.md
-        └── lesson_<slug>.md          # un fichier par leçon (orchestrateur Phase 11)
+        └── lesson_<slug>.md          # one file per lesson (orchestrator Phase 11)
 ```
 
-État au 2026-05-28 : **15 épisodes, 33 leçons actives**.
+State as of 2026-05-28: **15 episodes, 33 active lessons**.
 
-Épisodes par classe :
-- **Méta-skill (5)** : `2026-05-26_create-justdoit-v2.md`, `2026-05-27_extend-justdoit-importance.md`, `2026-05-27_formalize-lambda.md`, `2026-05-27_add-attention-layer.md` (v2 → v2.1 → v2.2 → v2.3), `2026-05-27_create-dreamer-skill.md` (création du skill compagnon `/dreamer` v0.1).
-- **module-a (10)** : `2026-05-27_module-a-v04-pipeline-multi-tf.md`, `2026-05-27_module-a-v04-g2-eventref-tf-qualifiable.md`, `2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md`, `2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`, `2026-05-27_module-a-p22-calibration-k-coefficients.md`, `2026-05-27_module-a-p23-context-modulators-fix-collision.md`, `2026-05-27_module-a-p24-sharpness-magnitude-discovery.md`, `2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md` — `2026-05-28_module-a-v1-m1-spec-events.md`, `2026-05-28_module-a-v1-m2-events-engine.md` — première vraie utilisation du skill hors-meta sur un projet réel (calibration empirique + refactor multi-TF DSL, puis refonte structurelle V0→V1 événementiel).
+Episodes by class:
+- **Meta-skill (5)**: `2026-05-26_create-commontrace-v2.md`, `2026-05-27_extend-commontrace-importance.md`, `2026-05-27_formalize-lambda.md`, `2026-05-27_add-attention-layer.md` (v2 → v2.1 → v2.2 → v2.3), `2026-05-27_create-dreamer-skill.md` (creation of the companion skill `/dreamer` v0.1).
+- **module-a (10)**: `2026-05-27_module-a-v04-pipeline-multi-tf.md`, `2026-05-27_module-a-v04-g2-eventref-tf-qualifiable.md`, `2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md`, `2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`, `2026-05-27_module-a-p22-calibration-k-coefficients.md`, `2026-05-27_module-a-p23-context-modulators-fix-collision.md`, `2026-05-27_module-a-p24-sharpness-magnitude-discovery.md`, `2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md` — `2026-05-28_module-a-v1-m1-spec-events.md`, `2026-05-28_module-a-v1-m2-events-engine.md` — first real use of the skill outside meta on a real project (empirical calibration + multi-TF DSL refactor, then structural V0→V1 event-driven overhaul).
 
-Leçons actives par domaine (33, hors template) : **13 subagents**, **8 refactor**, **6 testing**, **4 other**, **1 git-safety**, **1 cuda-gpu** (0 performance). Liste exhaustive par fichier avec usage/importance en §9.
+Active lessons by domain (33, excluding template): **13 subagents**, **8 refactor**, **6 testing**, **4 other**, **1 git-safety**, **1 cuda-gpu** (0 performance). Exhaustive list by file with usage/importance in §9.
 
-Top usage (`uses` réel d'après frontmatters) : `serialize_subagents_same_files` (subagents, uses=7), `semantic_check_not_just_syntactic` (refactor, uses=7), `no_tmp_results` (other, uses=5), `subagent_double_review_pattern` (subagents, uses=5), `orchestrator_fix_residual_post_b` (subagents, uses=5). Le top 5 cumule 29 hits — le retrieval Alpha reste fortement non-uniforme : quelques invariants méthodologiques transverses portent l'essentiel de la valeur.
+Top usage (`uses` actual from frontmatters): `serialize_subagents_same_files` (subagents, uses=7), `semantic_check_not_just_syntactic` (refactor, uses=7), `no_tmp_results` (other, uses=5), `subagent_double_review_pattern` (subagents, uses=5), `orchestrator_fix_residual_post_b` (subagents, uses=5). The top 5 accounts for 29 hits — Alpha retrieval remains strongly non-uniform: a few cross-cutting methodological invariants carry most of the value.
 
-### 4.2 Format épisode (frontmatter YAML)
+### 4.2 Episode Format (YAML frontmatter)
 
-Frontmatter strict, parsable par `yaml.safe_load` :
+Strict frontmatter, parsable by `yaml.safe_load`:
 
-| Champ | Type | Obligatoire | Sémantique |
+| Field | Type | Required | Semantics |
 |---|---|---|---|
-| `name` | string | oui | `YYYY-MM-DD_<slug>`, identique au nom de fichier sans `.md` |
-| `description` | string | oui | Résumé 1 ligne du run |
-| `task_invocation` | string | oui | Verbatim de l'invocation `/justdoit ...` |
-| `tags` | list[string] | oui | Tags libres pour pré-filtrage Alpha futur (e.g. `[cuda, refactor]`) |
-| `project` | string | oui | Projet détecté depuis cwd (e.g. `project-x`) — utilisé pour métrique `transfer_gap` |
-| `verdict` | enum | oui | `CONFORME` \| `ARBITRAGE` \| `ABANDON` |
-| `importance` | int | oui | Entier 1-5 selon rubrique (cf. §4.4) |
-| `importance_rationale` | string | oui | 1-phrase concrète justifiant le score |
-| `n_iterations` | int | oui | Nombre d'itérations A+B effectuées |
-| `commit_sha` | string | oui | SHA du commit final (ou `N/A` si Phase 4 inapplicable) |
-| `duration_minutes` | int | oui | Durée totale du run |
-| `lessons_retrieved_by_alpha` | list[string] | oui | Slugs des leçons formellement sélectionnées par Alpha dans son rapport (bloc "Lessons applicables"). N'inclut PAS les counter-examples mentionnés en "Rappel mandat". |
-| `lessons_hit` | list[string] | oui | Slugs des leçons effectivement utiles (selon rapports A/B + rétro orchestrateur). **N'est PAS borné par `retrieved`** : peut inclure des lessons actives en arrière-plan (counter-examples, règles méthodologiques implicites, exceptions). Le benchmark calcule deux ratios complémentaires : **strict** (hit ∩ retrieved / retrieved = précision du retrieval Alpha) et **permissive** (hit / retrieved = richesse de l'application, peut > 100%). |
-| `lessons_proposed_by_omega` | list[string] | oui | Slugs des nouvelles leçons proposées par Omega (avant validation Lambda) |
-| `lessons_validated_by_lambda` | list[string] | oui | Slugs effectivement validés par Lambda en Phase 11 et appliqués par l'orchestrateur — rempli APRÈS coup. Renommé en v2.2 depuis `lessons_validated_by_user`. |
+| `name` | string | yes | `YYYY-MM-DD_<slug>`, identical to filename without `.md` |
+| `description` | string | yes | 1-line run summary |
+| `task_invocation` | string | yes | Verbatim of the `/commontrace ...` invocation |
+| `tags` | list[string] | yes | Free tags for future Alpha pre-filtering (e.g. `[cuda, refactor]`) |
+| `project` | string | yes | Project detected from cwd (e.g. `<your-project>`) — used for `transfer_gap` metric |
+| `verdict` | enum | yes | `CONFORM` \| `ARBITRATION` \| `ABANDON` |
+| `importance` | int | yes | Integer 1-5 according to rubric (cf. §4.4) |
+| `importance_rationale` | string | yes | 1-sentence concrete justification for the score |
+| `n_iterations` | int | yes | Number of A+B iterations performed |
+| `commit_sha` | string | yes | SHA of the final commit (or `N/A` if Phase 4 inapplicable) |
+| `duration_minutes` | int | yes | Total run duration |
+| `lessons_retrieved_by_alpha` | list[string] | yes | Slugs of lessons formally selected by Alpha in its report ("Applicable lessons" block). Does NOT include counter-examples mentioned in "Mandate reminder". |
+| `lessons_hit` | list[string] | yes | Slugs of lessons that actually helped (according to A/B reports + orchestrator retro). **NOT bounded by `retrieved`**: may include background-active lessons (counter-examples, implicit methodological rules, exceptions). The benchmark calculates two complementary ratios: **strict** (hit ∩ retrieved / retrieved = Alpha retrieval precision) and **permissive** (hit / retrieved = application richness, can be > 100%). |
+| `lessons_proposed_by_omega` | list[string] | yes | Slugs of new lessons proposed by Omega (before Lambda validation) |
+| `lessons_validated_by_lambda` | list[string] | yes | Slugs effectively validated by Lambda in Phase 11 and applied by the orchestrator — filled AFTER the fact. Renamed in v2.2 from `lessons_validated_by_user`. |
 
-Sections du corps : `## What happened` (5-10 lignes factuelles), `## What surprised me` (verbatim rétro Phase 9), `## What worked well` (0-N items), `## What worked less well` (0-N items).
+Body sections: `## What happened` (5-10 factual lines), `## What surprised me` (verbatim retro Phase 9), `## What worked well` (0-N items), `## What worked less well` (0-N items).
 
-### 4.3 Format leçon (frontmatter YAML)
+### 4.3 Lesson Format (YAML frontmatter)
 
-| Champ | Type | Obligatoire | Sémantique |
+| Field | Type | Required | Semantics |
 |---|---|---|---|
-| `name` | string | oui | Slug unique (e.g. `lesson_subagent_double_review_pattern`) |
-| `description` | string | oui | Résumé 1 ligne — utilisé par Alpha pour filtrage sémantique |
-| `tags` | list[string] | oui | Tags libres pour matching avec mots-clés tâche entrante |
-| `domain` | enum | oui | `git-safety` \| `cuda-gpu` \| `refactor` \| `testing` \| `subagents` \| `performance` \| `other` |
-| `importance` | int | oui | Entier 1-5 selon rubrique (single source of truth ; INDEX.md reflète cette valeur) |
-| `importance_rationale` | string | oui | 1-phrase concrète |
-| `importance_history` | list[dict] | oui | Log des changements `[{date, old, new, reason}]` — initialisé `[]` |
-| `applies_when` | string | oui | Condition d'activation sémantique précise — Alpha l'utilise pour décider d'appliquer |
-| `do_not_apply_when` | string | oui | Contre-condition explicite — évite sur-généralisation |
-| `uses` | int | oui | Compteur d'usages (incrémenté en Phase 11) |
-| `last_hit` | string | oui | `YYYY-MM-DD` du dernier hit, ou `NEVER` |
-| `source_episodes` | list[string] | oui | Slugs des épisodes qui ont contribué à cette leçon |
-| `status` | enum | oui | `active` \| `review` (flaggée) \| `archived` (manuellement) |
+| `name` | string | yes | Unique slug (e.g. `lesson_subagent_double_review_pattern`) |
+| `description` | string | yes | 1-line summary — used by Alpha for semantic filtering |
+| `tags` | list[string] | yes | Free tags for matching with incoming task keywords |
+| `domain` | enum | yes | `git-safety` \| `cuda-gpu` \| `refactor` \| `testing` \| `subagents` \| `performance` \| `other` |
+| `importance` | int | yes | Integer 1-5 according to rubric (single source of truth; INDEX.md reflects this value) |
+| `importance_rationale` | string | yes | 1-sentence concrete justification |
+| `importance_history` | list[dict] | yes | Log of changes `[{date, old, new, reason}]` — initialized `[]` |
+| `applies_when` | string | yes | Precise semantic activation condition — Alpha uses it to decide whether to apply |
+| `do_not_apply_when` | string | yes | Explicit counter-condition — prevents over-generalization |
+| `uses` | int | yes | Usage counter (incremented in Phase 11) |
+| `last_hit` | string | yes | `YYYY-MM-DD` of last hit, or `NEVER` |
+| `source_episodes` | list[string] | yes | Slugs of episodes that contributed to this lesson |
+| `status` | enum | yes | `active` \| `review` (flagged) \| `archived` (manually) |
 
-Sections du corps : `## Rule` (1 phrase actionnable), `## Why` (observation/incident source ancré dans un projet réel), `## How to apply` (quand invoquer, comment l'utiliser dans un brief A ou B), `## Counter-examples` (cas où la règle NE s'applique PAS).
+Body sections: `## Rule` (1 actionable sentence), `## Why` (source observation/incident anchored in a real project), `## How to apply` (when to invoke, how to use in an A or B brief), `## Counter-examples` (cases where the rule does NOT apply).
 
-### 4.4 Rubrique d'importance (scalaire 1-5)
+### 4.4 Importance Rubric (scalar 1-5)
 
-Rubrique verbatim (extraite de `SKILL.md`) :
+Verbatim rubric (extracted from `SKILL.md`):
 
 ```
-Importance 5 (showstopper) : sans cette leçon, la classe de tâche entière échoue
-                              ou cause perte de données / sécurité.
-Importance 4 (critique)    : ignorer cette leçon → forte probabilité de rework
-                              majeur ou de bug subtil difficile à détecter.
-Importance 3 (utile)        : la leçon évite un anti-pattern courant ou un piège
-                              méthodologique. Économise du temps significatif.
-Importance 2 (mineur)       : leçon valable mais d'impact limité, applicable à
-                              un sous-cas spécifique.
-Importance 1 (anecdotique) : observation intéressante mais peu actionnable
-                              → préférer documenter comme note d'épisode.
+Importance 5 (showstopper) : without this lesson, the entire task class fails
+                              or causes data loss / security issue.
+Importance 4 (critical)    : ignoring this lesson → high probability of major
+                              rework or subtle hard-to-detect bug.
+Importance 3 (useful)       : the lesson avoids a common anti-pattern or
+                              methodological trap. Saves significant time.
+Importance 2 (minor)        : valid lesson but limited impact, applicable to
+                              a specific sub-case.
+Importance 1 (anecdotal)   : interesting observation but barely actionable
+                              → prefer documenting as an episode note.
 ```
 
-Le rationale 1-phrase concret est OBLIGATOIRE et doit être actionnable (pas "important parce qu'utile" mais "Sans cette règle, écrasement silencieux par sous-agents parallèles").
+The 1-sentence concrete rationale is MANDATORY and must be actionable (not "important because useful" but "Without this rule, silent overwrite by parallel sub-agents").
 
-**Comment Alpha l'utilise** :
-- Tri des leçons retenues par `score = importance × tag_match` décroissant.
-- `tag_match` = nombre de tags lesson présents dans les mots-clés de la tâche entrante (proxy simple, entier ≥ 0).
-- **Sécurité importance** : toute leçon `importance >= 4` est considérée même si `tag_match == 0`, parce qu'elle représente un risque critique/showstopper potentiellement transversal. Mention "importance haute, applicabilité à valider" dans le rapport Alpha.
+**How Alpha uses it**:
+- Sort retained lessons by `score = importance × tag_match` descending.
+- `tag_match` = number of lesson tags present in the incoming task keywords (simple proxy, integer ≥ 0).
+- **Importance safety**: any lesson with `importance >= 4` is considered even if `tag_match == 0`, because it represents a potentially cross-cutting critical/showstopper risk. Mention "high importance, applicability to be validated" in the Alpha report.
 
-**Comment Omega la calibre** :
-- Sur l'épisode : Omega cale l'importance + rationale dès l'écriture (Phase 10), selon la rubrique appliquée à ce qui s'est passé dans ce run.
-- Sur les leçons candidates : importance dérivée des `source_episodes` (max ou moyenne des importances source), ajustable +/- 1 par Omega au moment de proposer (avec justification de l'ajustement).
-- Critère pour proposer une leçon nouvelle : (A) importance épisode source ≥ 3 ET généralisable, OU (B) importance 4-5 même sur 1 seule occurrence. Remplace l'ancien critère "≥ 2 épisodes le montrent" qui filtrait trop strict les showstoppers rares.
+**How Omega calibrates it**:
+- On the episode: Omega calibrates importance + rationale at write time (Phase 10), according to the rubric applied to what happened in this run.
+- On candidate lessons: importance derived from `source_episodes` (max or average of source importances), adjustable ±1 by Omega at proposal time (with justification for the adjustment).
+- Criterion for proposing a new lesson: (A) source episode importance ≥ 3 AND generalizable, OR (B) importance 4-5 even on a single occurrence. Replaces the former "≥ 2 episodes show it" criterion which filtered out rare showstoppers too aggressively.
 
-**Justification 1-phrase obligatoire** : le rationale est ce qui rend la calibration auditable et permet de détecter une dérive de calibration entre runs ou entre agents (cf. RETEX 7.3). Sans rationale, l'importance devient un nombre arbitraire.
+**Mandatory 1-sentence justification**: the rationale is what makes the calibration auditable and allows detection of calibration drift between runs or between agents (cf. RETEX 7.3). Without a rationale, importance becomes an arbitrary number.
 
-**Inspiration** : Park et al. 2023 *Generative Agents* (arXiv:2304.03442, memory stream avec score scalaire 1-10). On choisit 1-5 pour calibration plus simple — 5 niveaux discriminés suffisent et limitent la dispersion entre agents.
+**Inspiration**: Park et al. 2023 *Generative Agents* (arXiv:2304.03442, memory stream with scalar score 1-10). We choose 1-5 for simpler calibration — 5 discriminated levels suffice and limit dispersion between agents.
 
-### 4.5 Index hiérarchique par domaine
+### 4.5 Hierarchical Index by Domain
 
-`memory/INDEX.md` est sectionné par domaine, pas flat. Sept domaines :
+`memory/INDEX.md` is sectioned by domain, not flat. Seven domains:
 
-- `git-safety` — opérations git, commit, recovery, stash/clean/reset
-- `cuda-gpu` — kernels CUDA, full-GPU, syncs host, atomics, déterminisme
-- `refactor` — refactor architectural, rename strict, copy vs reimplement
-- `testing` — tests existants, pytest, parité empirique, skip/xfail
-- `subagents` — patterns sous-agents, double-review, parallélisation, indépendance
-- `performance` — bench, mesure, sustained, isolation compute/memory
-- `other` — divers (rapports, output paths, transparence, etc.)
+- `git-safety` — git operations, commit, recovery, stash/clean/reset
+- `cuda-gpu` — CUDA kernels, full-GPU, host syncs, atomics, determinism
+- `refactor` — architectural refactor, strict rename, copy vs reimplement
+- `testing` — existing tests, pytest, empirical parity, skip/xfail
+- `subagents` — sub-agent patterns, double-review, parallelization, independence
+- `performance` — bench, measurement, sustained, compute/memory isolation
+- `other` — miscellaneous (reports, output paths, transparency, etc.)
 
-**Pourquoi hiérarchique vs flat** : facilite le pré-filtrage Alpha — au lieu de lire 7+ frontmatters pour décider lesquels approfondir, Alpha lit la section INDEX.md du domaine pertinent à la tâche puis approfondit 3-5 candidats max. Couplé en v2.3 au pré-filtre attention sémantique (cf. §4.6), l'INDEX hiérarchique reste utile pour l'audit humain et la maintenance (groupement par domaine), tandis que l'attention layer fournit la sélection top-K par similarité sémantique. Les deux mécanismes sont complémentaires : INDEX = structure, attention = sémantique.
+**Why hierarchical vs flat**: facilitates Alpha pre-filtering — instead of reading 7+ frontmatters to decide which ones to dig into, Alpha reads the INDEX.md section for the domain relevant to the task then digs into 3-5 candidates max. Coupled in v2.3 with the semantic attention pre-filter (cf. §4.6), the hierarchical INDEX remains useful for human audit and maintenance (domain grouping), while the attention layer provides the top-K selection by semantic similarity. The two mechanisms are complementary: INDEX = structure, attention = semantics.
 
-**Format ligne INDEX.md** :
+**INDEX.md line format**:
 ```
-- [slug](relative/path/to/file.md) — rule en 1 phrase | tags: [a,b,c] | importance: N | uses: N | last_hit: YYYY-MM-DD or NEVER
+- [slug](relative/path/to/file.md) — rule in 1 sentence | tags: [a,b,c] | importance: N | uses: N | last_hit: YYYY-MM-DD or NEVER
 ```
 
-Single source of truth = le fichier `lesson_<slug>.md` lui-même ; l'INDEX.md le reflète. La maintenance de la cohérence est de la responsabilité de l'orchestrateur (Phase 11) et de l'utilisateur (édition manuelle si besoin).
+Single source of truth = the `lesson_<slug>.md` file itself; INDEX.md reflects it. Maintaining coherence is the responsibility of the orchestrator (Phase 11) and the user (manual edit if needed).
 
-### 4.6 Attention sémantique (v2.3)
+### 4.6 Semantic Attention (v2.3)
 
-Ajout v2.3 : une couche d'attention sémantique basée sur embeddings locaux permet à Alpha (Phase 0) de scaler à 100+ leçons sans dégrader la qualité du retrieval ni la latence. Infrastructure pure (PAS un agent), consultée synchroniquement par Alpha via `query.py`.
+v2.3 addition: a semantic attention layer based on local embeddings allows Alpha (Phase 0) to scale to 100+ lessons without degrading retrieval quality or latency. Pure infrastructure (NOT an agent), queried synchronously by Alpha via `query.py`.
 
-![Architecture de l'attention layer — build_index.py encode les leçons → index.npz → query.py renvoie top-K + override importance≥4 → Alpha](assets/attention_layer.png)
+![Attention layer architecture — build_index.py encodes lessons → index.npz → query.py returns top-K + importance≥4 override → Alpha](assets/attention_layer.png)
 
 #### Architecture
 
 ```
 memory/attention/
-├── README.md          # documentation détaillée (rôle, hooks Dreamer, anti-patterns)
-├── build_index.py     # encode toutes les leçons actives, écrit index.npz
-├── query.py           # query top-K + override sécurité importance ≥ 4
-└── index.npz          # index numpy (généré, jamais édité manuellement)
+├── README.md          # detailed documentation (role, Dreamer hooks, anti-patterns)
+├── build_index.py     # encodes all active lessons, writes index.npz
+├── query.py           # query top-K + importance ≥ 4 safety override
+└── index.npz          # numpy index (generated, never manually edited)
 ```
 
-#### Modèle d'embeddings
+#### Embedding Model
 
-`multi-qa-mpnet-base-dot-v1` (sentence-transformers, ~420 MB, 768 dim). Choisi pour :
-- Optimisé Q&A retrieval (matching tâche entrante ↔ description de leçon)
-- Exécution **strictement locale** après téléchargement initial (cache sous `~/.cache/huggingface/`), conforme `feedback_code_strictement_prive` — pas d'appel API runtime, pas de télémétrie
-- Embeddings L2-normalisés (cosine == dot product = 1 mat-mul scalaire pour la query)
+`multi-qa-mpnet-base-dot-v1` (sentence-transformers, ~420 MB, 768 dim). Chosen for:
+- Optimized for Q&A retrieval (matching incoming task ↔ lesson description)
+- **Strictly local** execution after initial download (cache under `~/.cache/huggingface/`) — no runtime API call, no telemetry
+- L2-normalized embeddings (cosine == dot product = 1 scalar mat-mul for the query)
 
-#### Texte encodé par leçon
+#### Text Encoded per Lesson
 
-Concaténation des 6 champs avec séparateurs explicites :
+Concatenation of 6 fields with explicit separators:
 ```
 Description: ... | Domain: ... | Tags: t1, t2, t3 | Applies when: ... | Do not apply when: ... | Rule: ...
 ```
 
-Le `Rule:` est extrait du corps (section `## Rule` jusqu'au prochain `##`). Choix : on encode la condition d'activation (`applies_when`/`do_not_apply_when`) au même titre que la règle, pour aligner le matching sémantique avec ce qu'Alpha vérifie à l'étape 4 (filtre sémantique).
+The `Rule:` is extracted from the body (`## Rule` section up to the next `##`). Design choice: we encode the activation condition (`applies_when`/`do_not_apply_when`) alongside the rule, to align semantic matching with what Alpha verifies at step 4 (semantic filter).
 
-#### Format `index.npz`
+#### `index.npz` Format
 
-Contrat stable (réutilisé par hooks Dreamer v2.4 — cf. §6.4) :
+Stable contract (reused by Dreamer v2.4 hooks — cf. §6.4):
 
-| Champ           | Type              | Sémantique                                      |
+| Field           | Type              | Semantics                                       |
 |-----------------|-------------------|-------------------------------------------------|
-| `slugs`         | `np.ndarray[str]` | Identifiants leçons, ordonnés                   |
-| `embeddings`    | `np.ndarray[N,D]` | Embeddings L2-normalisés (cosine = dot)         |
+| `slugs`         | `np.ndarray[str]` | Lesson identifiers, ordered                     |
+| `embeddings`    | `np.ndarray[N,D]` | L2-normalized embeddings (cosine = dot)         |
 | `model_name`    | `str`             | `"multi-qa-mpnet-base-dot-v1"`                  |
-| `encoded_field` | `str`             | Schéma lisible des champs encodés               |
+| `encoded_field` | `str`             | Human-readable schema of encoded fields         |
 | `timestamp`     | `str`             | ISO-8601 build time                             |
-| `n_lessons`     | `int`             | Nombre de leçons actives indexées               |
+| `n_lessons`     | `int`             | Number of active lessons indexed                |
 
-#### Override sécurité importance ≥ 4
+#### Importance ≥ 4 Safety Override
 
-Décision design figée v2.3 : toute leçon active avec `importance >= 4` est **toujours présente** dans la sortie `query.py`, même si absente du top-K cosine. Garantit qu'une leçon critique / showstopper n'est jamais silencieusement écartée par une query orthogonale. Floor paramétrable via `--include-importance-floor=N`.
+Locked design decision v2.3: any active lesson with `importance >= 4` is **always present** in the `query.py` output, even if absent from the top-K cosine results. Guarantees that a critical / showstopper lesson is never silently discarded by an orthogonal query. Floor configurable via `--include-importance-floor=N`.
 
-#### Trigger rebuild
+#### Rebuild Trigger
 
-- **Automatique (Phase 11)** : l'orchestrateur lance `build_index.py` à la fin de Phase 11 si Lambda a appliqué au moins une création / update / révision. Skippé si rien n'a changé. Skippé conjointement avec `--skip-omega`.
-- **Manuel** : `python build_index.py --force` (rebuild systématique, utile après édition manuelle, archivage, fusion). Le mode `--force` ignore le check de fraîcheur (mtime).
+- **Automatic (Phase 11)**: the orchestrator launches `build_index.py` at the end of Phase 11 if Lambda has applied at least one creation / update / revision. Skipped if nothing changed. Skipped jointly with `--skip-omega`.
+- **Manual**: `python3 build_index.py --force` (systematic rebuild, useful after manual editing, archiving, merging). The `--force` mode ignores the freshness check (mtime).
 
-#### Pourquoi numpy `.npz` et pas FAISS / hnswlib / chroma
+#### Why numpy `.npz` and not FAISS / hnswlib / chroma
 
-KISS, conforme `feedback_kiss_unified_paradigm` :
-- Volume actuel : 11 leçons. Volume cible : 100-500 leçons. numpy `.npz` + mat-mul scalaire suffit jusqu'à 10k+ leçons (1 ms latency).
-- Une dépendance externe en moins à maintenir (FAISS et hnswlib ont des compilations natives complexes).
-- Format binaire portable, lisible par toute machine ayant numpy.
-- Pour Dreamer v2.4 (cf. §6.4), pairwise cosine entre leçons existantes = 1 mat-mul (`emb @ emb.T`), trivial sur 10k×10k.
+KISS principle:
+- Current volume: 11 lessons. Target volume: 100-500 lessons. numpy `.npz` + scalar mat-mul suffices up to 10k+ lessons (1 ms latency).
+- One fewer external dependency to maintain (FAISS and hnswlib have complex native compilations).
+- Portable binary format, readable by any machine with numpy.
+- For Dreamer v2.4 (cf. §6.4), pairwise cosine between existing lessons = 1 mat-mul (`emb @ emb.T`), trivial on 10k×10k.
 
-Le coût de l'attention layer est de ~1 sec par run (charge modèle + encode query + mat-mul). Acceptable vs gain de scalabilité (sinon Alpha lit potentiellement 100+ frontmatters).
+The cost of the attention layer is ~1 sec per run (load model + encode query + mat-mul). Acceptable vs scalability gain (otherwise Alpha potentially reads 100+ frontmatters).
 
 ---
 
-## 5. Cycle de vie d'une leçon
+## 5. Lifecycle of a Lesson
 
-Une leçon n'est pas un objet statique — elle naît, vit, peut être révisée, et théoriquement archivée. Voici son parcours.
+A lesson is not a static object — it is born, lives, can be revised, and theoretically archived. Here is its journey.
 
-### 5.1 Naissance
+### 5.1 Birth
 
-Omega propose une leçon candidate en Phase 10 si :
-- L'épisode source a `importance ≥ 3` ET la leçon est généralisable hors-projet, OU
-- L'épisode source a `importance 4-5` même sur 1 seule occurrence (showstopper / critique mérite capture immédiate).
+Omega proposes a candidate lesson in Phase 10 if:
+- The source episode has `importance ≥ 3` AND the lesson is generalizable beyond the project, OR
+- The source episode has `importance 4-5` even on a single occurrence (showstopper / critical deserves immediate capture).
 
-Omega ne crée pas le fichier lui-même — il PROPOSE. Le format proposition inclut : slug suggéré, Rule, Why, How to apply, applies_when, do_not_apply_when, Importance + rationale, Justification "pourquoi nouvelle vs existante".
+Omega does not create the file itself — it PROPOSES. The proposal format includes: suggested slug, Rule, Why, How to apply, applies_when, do_not_apply_when, Importance + rationale, Justification "why new vs existing".
 
 ### 5.2 Validation
 
-Lambda tranche automatiquement en Phase 11 (v2.2) via verdict par proposition :
-- **ACCEPTÉ** : orchestrateur applique (écriture leçon / update / révision)
-- **REJETÉ** : non appliqué, raison logguée dans rapport final (traçabilité)
-- **À RAFFINER** : non appliqué, champs précis à corriger logués (l'utilisateur peut retravailler manuellement)
+Lambda decides automatically in Phase 11 (v2.2) via per-proposal verdict:
+- **ACCEPTED**: orchestrator applies (lesson write / update / revision)
+- **REJECTED**: not applied, reason logged in final report (traceability)
+- **NEEDS REFINEMENT**: not applied, specific fields to correct logged (the user can rework manually)
 
-Critères Lambda (4 pour nouvelles leçons) : qualité formelle (applies_when + do_not_apply_when concrets, importance + rationale, YAML valide), non-doublon (matching sémantique dans le domaine), généralisation (≥ 3 contextes hors-projet), calibration importance (défendable contre rubrique). Cohérence pour updates, motif documenté pour révisions.
+Lambda criteria (4 for new lessons): formal quality (concrete applies_when + do_not_apply_when, importance + rationale, valid YAML), non-duplication (semantic matching in the domain), generalization (≥ 3 contexts beyond the project), importance calibration (defensible against the rubric). Coherence for updates, documented reason for revisions.
 
-Pas de dépendance utilisateur : Lambda valide automatiquement à chaque run. Le backlog non validé du v2.1 (avant Lambda) est traité directement par Lambda lors de son introduction.
+No user dependency: Lambda validates automatically at each run. The unvalidated backlog from v2.1 (before Lambda) is handled directly by Lambda upon its introduction.
 
-### 5.3 Vie
+### 5.3 Life
 
-Une fois validée :
-- Le fichier `lesson_<slug>.md` existe dans `memory/lessons/`
-- L'entrée correspondante existe dans `memory/INDEX.md` (section domaine)
-- Compteurs initiaux : `uses: 0`, `last_hit: NEVER`, `source_episodes: [épisode_créateur]`, `status: active`
+Once validated:
+- The `lesson_<slug>.md` file exists in `memory/lessons/`
+- The corresponding entry exists in `memory/INDEX.md` (domain section)
+- Initial counters: `uses: 0`, `last_hit: NEVER`, `source_episodes: [creator_episode]`, `status: active`
 
-À chaque run futur :
-- Alpha Phase 0 peut la retrouver via le score `importance × tag_match` (et toujours considérer si `importance >= 4`)
-- Si Alpha la retient, elle est injectée dans le brief A
-- Si elle aide effectivement (selon rapports A/B + rétro orchestrateur), elle apparaît dans `lessons_hit` de l'épisode courant
-- Omega Phase 10 propose alors `UPDATE LEÇON "lesson_xxx" : +1 uses`
-- Lambda Phase 11 audit (cohérence + lesson_hit confirmé) → si ACCEPTÉ, orchestrateur incrémente `uses`, met `last_hit = today`, append épisode courant à `source_episodes`
+At each future run:
+- Alpha Phase 0 can retrieve it via the `importance × tag_match` score (and always consider if `importance >= 4`)
+- If Alpha retains it, it is injected into A's brief
+- If it actually helps (according to A/B reports + orchestrator retro), it appears in `lessons_hit` of the current episode
+- Omega Phase 10 then proposes `UPDATE LESSON "lesson_xxx" : +1 uses`
+- Lambda Phase 11 audits (coherence + confirmed lesson_hit) → if ACCEPTED, orchestrator increments `uses`, sets `last_hit = today`, appends current episode to `source_episodes`
 
-### 5.4 Évolution
+### 5.4 Evolution
 
-Une leçon retrieve par Alpha qui s'est révélée non applicable peut être flaggée par Omega : `RÉVISION LEÇON "lesson_xxx" : À RÉVISER — raison`. Après audit Lambda Phase 11 (vérification que le motif est documenté concrètement), si ACCEPTÉ, l'orchestrateur change `status: active → review` et append `## Revision note` dans le corps avec la justification Lambda. L'utilisateur peut ensuite éditer manuellement les leçons en statut `review`.
+A lesson retrieved by Alpha that turned out to be non-applicable can be flagged by Omega: `REVISION LESSON "lesson_xxx" : NEEDS REVISION — reason`. After Lambda Phase 11 audit (verification that the reason is concretely documented), if ACCEPTED, the orchestrator changes `status: active → review` and appends `## Revision note` in the body with Lambda's justification. The user can then manually edit lessons in `review` status.
 
-### 5.5 Mort possible
+### 5.5 Possible Death
 
-Mécanisme non encore implémenté : leçons jamais hit après N runs → candidates archivage (`status: active → archived` manuellement). En l'état v2.2, une leçon active reste retrievable indéfiniment, même si elle n'a jamais aidé. Cf. section 8 (Limitations) sur le decay temporel.
+Mechanism not yet implemented: lessons never hit after N runs → archiving candidates (`status: active → archived` manually). In the current v2.2 state, an active lesson remains retrievable indefinitely, even if it has never helped. Cf. section 8 (Limitations) on temporal decay.
 
-### 5.6 Exemple concret : `lesson_serialize_subagents_same_files`
+### 5.6 Concrete Example: `lesson_serialize_subagents_same_files`
 
-Pour illustrer le cycle complet, voici le parcours d'une leçon seed sur les 12 premiers runs (du seed initial 2026-05-26 au quatrième hit à fin de journée 2026-05-27) :
+To illustrate the complete lifecycle, here is the journey of a seed lesson across the first 12 runs (from the initial seed 2026-05-26 to the fourth hit at end of day 2026-05-27):
 
-**Naissance (seed initial, run 1, 2026-05-26)** : leçon créée par l'orchestrateur lors de la mise en place initiale de la base mémoire, sur la base d'un incident pré-existant documenté dans `feedback_parallel_subagents_file_overlap` (MEMORY.md projet). Frontmatter initial :
-- `importance: 5` (showstopper — l'incident R1/R23 du 2026-05-20 a effectivement causé une perte de modifs)
-- `importance_rationale: "Sans cette règle, écrasement silencieux du code par le dernier sous-agent qui finit (incident R1/R23 du 2026-05-20 : modifs R23 perdues, non détectables sans validation aval) — perte de données effective."`
+**Birth (initial seed, run 1, 2026-05-26)**: lesson created by the orchestrator during the initial setup of the memory base, based on a pre-existing documented incident in `feedback_parallel_subagents_file_overlap` (project MEMORY.md). Initial frontmatter:
+- `importance: 5` (showstopper — the R1/R23 incident of 2026-05-20 actually caused a loss of modifications)
+- `importance_rationale: "Without this rule, silent overwrite of code by the last sub-agent to finish (R1/R23 incident of 2026-05-20: R23 modifications lost, undetectable without downstream validation) — effective data loss."`
 - `uses: 0`, `last_hit: NEVER`, `source_episodes: []`
 - `domain: subagents`
 
-**Vie (run 2, 2026-05-27)** : Alpha la retrouve via `tag_match` élevé (le brief mentionne "ne pas paralléliser deux sous-agents qui touchent au même SKILL.md"). Score = 5 × 3 = 15 (highest). Alpha la place en première position de sa liste applicable. Recommandation Alpha pour brief A : "Veiller à sérialiser explicitement si A2 doit modifier SKILL.md après A1 — pas de parallélisation". A respecte la recommandation (1 seul A à la fois sur SKILL.md). B note "sérialisation correctement respectée" dans son verdict CONFORME. Rétro orchestrateur Phase 9 confirme "Alpha utile : OUI — la mention sérialisation a évité un risque réel sur ce run".
+**Life (run 2, 2026-05-27)**: Alpha retrieves it via high `tag_match` (the brief mentions "do not parallelize two sub-agents that touch the same SKILL.md"). Score = 5 × 3 = 15 (highest). Alpha places it first in its applicable list. Alpha recommendation for A's brief: "Make sure to serialize explicitly if A2 must modify SKILL.md after A1 — no parallelization". A respects the recommendation (1 single A at a time on SKILL.md). B notes "serialization correctly respected" in its CONFORM verdict. Orchestrator retro Phase 9 confirms "Alpha useful: YES — the serialization mention avoided a real risk on this run".
 
-**Proposition d'update (run 2, Omega Phase 10)** : Omega propose `UPDATE LEÇON "lesson_serialize_subagents_same_files" : +1 uses (a aidé sur cet épisode), append source_episode 2026-05-27_extend-justdoit-importance`.
+**Update proposal (run 2, Omega Phase 10)**: Omega proposes `UPDATE LESSON "lesson_serialize_subagents_same_files" : +1 uses (helped on this episode), append source_episode 2026-05-27_extend-commontrace-importance`.
 
-**Audit Lambda Phase 11 (post-v2.2)** : Lambda audit l'UPDATE proposé. Critères : source_episode 2026-05-27_extend-justdoit-importance pas déjà présent (OK, source_episodes était []), last_hit 2026-05-27 ≤ today (OK), lesson_hit confirmé dans rapport (OK). Verdict ACCEPTÉ → orchestrateur applique : `uses: 0 → 1`, `last_hit: NEVER → 2026-05-27`, `source_episodes: [] → [2026-05-27_extend-justdoit-importance]`.
+**Lambda audit Phase 11 (post-v2.2)**: Lambda audits the proposed UPDATE. Criteria: source_episode 2026-05-27_extend-commontrace-importance not already present (OK, source_episodes was []), last_hit 2026-05-27 ≤ today (OK), lesson_hit confirmed in report (OK). Verdict ACCEPTED → orchestrator applies: `uses: 0 → 1`, `last_hit: NEVER → 2026-05-27`, `source_episodes: [] → [2026-05-27_extend-commontrace-importance]`.
 
-**État après Phase 11 v2.2 (premier hit)** : `uses: 1`, `last_hit: 2026-05-27`, `source_episodes: [2026-05-27_extend-justdoit-importance]`.
+**State after Phase 11 v2.2 (first hit)**: `uses: 1`, `last_hit: 2026-05-27`, `source_episodes: [2026-05-27_extend-commontrace-importance]`.
 
-**État au snapshot fin de journée 2026-05-27 (après 12 runs)** : `uses: 4`, `last_hit: 2026-05-27`, `source_episodes` enrichi des runs qui l'ont effectivement utilisée (cf. champ `lessons_hit` des épisodes méta `extend-justdoit-importance`, `formalize-lambda`, `add-attention-layer`, et runs module-a `p22`, `v04-g2`, `v04-g3`). Le mécanisme d'incrément automatique via Lambda fonctionne sans intervention humaine entre les sessions — confirmation empirique sur 3 hits supplémentaires en moins d'une journée.
+**State at end-of-day snapshot 2026-05-27 (after 12 runs)**: `uses: 4`, `last_hit: 2026-05-27`, `source_episodes` enriched with runs that actually used it (cf. `lessons_hit` field of meta episodes `extend-commontrace-importance`, `formalize-lambda`, `add-attention-layer`, and module-a runs `p22`, `v04-g2`, `v04-g3`). The automatic increment mechanism via Lambda works without human intervention between sessions — empirical confirmation over 3 additional hits in less than a day.
 
-Sur le même intervalle, autres compteurs ont également bougé (top 4 réel par `uses`) : `lesson_semantic_check_not_just_syntactic` (uses=7, ratio le plus élevé du corpus, créé en p22 et utilisé dans 7 runs successifs), `lesson_no_tmp_results` (uses=5), `lesson_subagent_double_review_pattern` (uses=4 comme `serialize_subagents_same_files`). À l'inverse, 5 leçons restent à `uses=0` malgré leur `active` status (gp_gpu_non_deterministic, e2e_test_xfail, signal_absence_confirmed, triangulate_before_architectural_report) — candidates futures pour le mécanisme decay/archivage non encore implémenté (cf. §5.5 et §8.2).
+Over the same interval, other counters also moved (actual top 4 by `uses`): `lesson_semantic_check_not_just_syntactic` (uses=7, highest ratio in the corpus, created in p22 and used in 7 successive runs), `lesson_no_tmp_results` (uses=5), `lesson_subagent_double_review_pattern` (uses=4 like `serialize_subagents_same_files`). Conversely, 5 lessons remain at `uses=0` despite their `active` status (gp_gpu_non_deterministic, e2e_test_xfail, signal_absence_confirmed, triangulate_before_architectural_report) — future candidates for the decay/archiving mechanism not yet implemented (cf. §5.5 and §8.2).
 
-Ce parcours illustre la résolution de la première faille du v2.1 par v2.2 :
-- v2.1 : le backlog non validé faisait diverger l'état perçu (uses=0) de la réalité d'usage (déjà 1 hit empirique). Résolu en v2.2 : Lambda traite automatiquement le backlog à chaque run.
-- v2.1 et v2.2 : la leçon, même très importante (5), ne montera jamais en importance automatiquement avec ses hits cumulés — la calibration reste fixée jusqu'à intervention humaine. Cf. section 8 (Bump auto uses → importance non implémenté).
+This journey illustrates the resolution of v2.1's first flaw by v2.2:
+- v2.1: the unvalidated backlog caused the perceived state (uses=0) to diverge from actual usage (already 1 empirical hit). Resolved in v2.2: Lambda automatically processes the backlog at each run.
+- v2.1 and v2.2: the lesson, even when very important (5), will never automatically increase in importance with its accumulated hits — calibration remains fixed until human intervention. Cf. section 8 (Auto bump uses → importance not implemented).
 
 ---
 
-## 6. Rétrocompatibilité et évolutions futures
+## 6. Backward Compatibility and Future Evolutions
 
-### 6.1 Rétrocompatibilité v2.1 → v2
+### 6.1 Backward Compatibility v2.1 → v2
 
-Pour les épisodes/leçons écrits avant l'ajout de l'importance v2.1 (sans champ `importance`) :
-- **Alpha** traite l'absence comme `importance = 3` par défaut (médian) et flag "à caler" dans le bloc "Lessons consultées" de son rapport.
-- **Omega** flag "importance absente — à caler" dans ses propositions d'update.
-- Aucun script existant ne casse : les champs `importance`, `importance_rationale`, `importance_history` sont additifs.
+For episodes/lessons written before the v2.1 importance addition (without `importance` field):
+- **Alpha** treats the absence as `importance = 3` by default (median) and flags "to be calibrated" in the "Lessons consulted" block of its report.
+- **Omega** flags "importance absent — to be calibrated" in its update proposals.
+- No existing script breaks: the `importance`, `importance_rationale`, `importance_history` fields are additive.
 
-À noter : à 2026-05-27, toutes les leçons seed et les 2 épisodes ont déjà été calibrés à la création — le mécanisme de fallback "à caler" est prévu pour cas futurs (édition manuelle, leçon importée depuis ailleurs).
+Note: as of 2026-05-27, all seed lessons and the 2 episodes have already been calibrated at creation — the "to be calibrated" fallback mechanism is intended for future cases (manual editing, lesson imported from elsewhere).
 
-### 6.2 Évolutions documentées non implémentées v2.1
+### 6.2 Documented Evolutions Not Implemented in v2.1
 
-Documentées dans `SKILL.md` section "Évolutions futures (non implémentées v2.1)" pour mémoire — NE PAS implémenter sans validation utilisateur explicite et sans terrain empirique.
+Documented in `SKILL.md` section "Future evolutions (not implemented v2.1)" for reference — DO NOT implement without explicit user validation and without empirical grounding.
 
-| Évolution | Description | Risque connu |
+| Evolution | Description | Known risk |
 |---|---|---|
-| Decay temporel | Pondérer `importance` par `exp(-(today - last_hit) / tau)` pour faire émerger les leçons récemment hit | Faire oublier des leçons rares mais critiques |
-| Recency séparée | Tenir un champ `recency` distinct de `importance` (Park et al. utilisent cette décomposition) | Demande données empiriques sur retrieval Alpha |
-| Bump auto uses → importance | Si une leçon dépasse N hits sur M runs, auto-incrémenter son importance | Risque de drift vers tout en importance 5 |
-| Salience composite | `salience = α·importance + β·recency + γ·log(uses+1)` (style Park et al.) | Demande tuning α/β/γ |
-| Multi-dimensionnel | Passer de scalaire à vecteur `importance = (severity, frequency, generalizability)` | Demande UI de retrieval plus sophistiqué |
+| Temporal decay | Weight `importance` by `exp(-(today - last_hit) / tau)` to surface recently-hit lessons | May cause forgetting of rare but critical lessons |
+| Separate recency | Maintain a `recency` field distinct from `importance` (Park et al. use this decomposition) | Requires empirical data on Alpha retrieval |
+| Auto bump uses → importance | If a lesson exceeds N hits over M runs, auto-increment its importance | Risk of drift toward everything at importance 5 |
+| Composite salience | `salience = α·importance + β·recency + γ·log(uses+1)` (Park et al. style) | Requires α/β/γ tuning |
+| Multi-dimensional | Move from scalar to vector `importance = (severity, frequency, generalizability)` | Requires more sophisticated retrieval UI |
 
-Ces évolutions sont des pistes pour Thomas AI (cf. `project_thomas_ai_long_term_learning.md`). En v2.3, on reste sur scalaire 1-5 + rationale, point.
+These evolutions are future avenues for the CommonTrace platform. In v2.3, we stay with scalar 1-5 + rationale, period.
 
-### 6.3 Rétrocompatibilité v2.2 → v2.3 (attention layer)
+### 6.3 Backward Compatibility v2.2 → v2.3 (attention layer)
 
-L'attention layer est **purement additive** : aucune modification des formats existants, aucun champ frontmatter modifié, aucun script existant cassé.
+The attention layer is **purely additive**: no modification of existing formats, no frontmatter field modified, no existing script broken.
 
-- **Si `memory/attention/index.npz` est absent** (cas premier déploiement, ou suppression manuelle) : Alpha retombe sur le workflow classique étapes 1-8 sans erreur — le pré-filtre étape 0 signale l'absence d'index dans le rapport mais ne bloque pas le run.
-- **Si `sentence-transformers` est indisponible** dans le venv : `query.py` échoue, Alpha continue sur le workflow classique. L'absence d'attention layer est non bloquante par design.
-- **Index obsolète** (leçon créée/modifiée hors workflow officiel) : `build_index.py` (sans `--force`) détecte la fraîcheur via mtime et rebuild automatiquement. `--force` rebuild systématique.
-- **Frontmatter inchangé** : aucun nouveau champ obligatoire dans les leçons. Le contenu encodé par `build_index.py` est dérivé des champs existants (description, domain, tags, applies_when, do_not_apply_when, rule).
-- **INDEX.md inchangé** : aucune section ni format modifié.
-- **Anciennes invocations** continuent de fonctionner à l'identique. L'attention layer est activée par défaut mais transparente — l'utilisateur ne voit qu'un score `cosine: 0.XX` additionnel dans la sortie Alpha.
+- **If `memory/attention/index.npz` is absent** (first deployment case, or manual deletion): Alpha falls back to the classic workflow steps 1-8 without error — the step 0 pre-filter signals the absence of the index in the report but does not block the run.
+- **If `sentence-transformers` is unavailable** in the venv: `query.py` fails, Alpha continues with the classic workflow. The absence of the attention layer is non-blocking by design.
+- **Stale index** (lesson created/modified outside the official workflow): `build_index.py` (without `--force`) detects freshness via mtime and rebuilds automatically. `--force` forces systematic rebuild.
+- **Frontmatter unchanged**: no new mandatory field in lessons. The content encoded by `build_index.py` is derived from existing fields (description, domain, tags, applies_when, do_not_apply_when, rule).
+- **INDEX.md unchanged**: no section or format modified.
+- **Old invocations** continue to work identically. The attention layer is enabled by default but transparent — the user only sees an additional `cosine: 0.XX` score in Alpha's output.
 
-### 6.4 Skill compagnon `/dreamer` (v0.1 — IMPLÉMENTÉ 2026-05-27)
+### 6.4 Companion Skill `/dreamer` (v0.1 — IMPLEMENTED 2026-05-27)
 
-Le format `index.npz` (cf. §4.6) a été conçu comme contrat stable réutilisable. Cette stabilité est désormais exploitée par le skill compagnon **`/dreamer` v0.1** (sous `~/.claude/skills/dreamer/`), implémenté le 2026-05-27. Dreamer ne modifie pas `/justdoit` (skill séparé) — il **consomme** la mémoire, l'attention layer et Lambda.
+The `index.npz` format (cf. §4.6) was designed as a stable reusable contract. This stability is now leveraged by the companion skill **`/dreamer` v0.1** (under `$COMMONTRACE_ROOT/../dreamer/`), implemented on 2026-05-27. Dreamer does not modify `/commontrace` (separate skill) — it **consumes** the memory, the attention layer, and Lambda.
 
-#### Trois rôles articulés
+#### Three Articulated Roles
 
-1. **Consolidation mémoire classique** (héritée Park et al. 2023, MemGPT) : archive/fuse/reformulate/recalibrate lessons. Utilise le snippet pairwise cosine ci-dessous pour détecter les candidats de fusion (similarité > 0.85). Propositions soumises à Lambda Phase 11 `/justdoit` (mécanisme existant, **pas réinventé**).
+1. **Classic memory consolidation** (inherited from Park et al. 2023, MemGPT): archive/fuse/reformulate/recalibrate lessons. Uses the pairwise cosine snippet below to detect fusion candidates (similarity > 0.85). Proposals submitted to Lambda Phase 11 `/commontrace` (existing mechanism, **not reinvented**).
 
-2. **Auteur empirique** : écrit des scripts de test ad-hoc dans `recherche/<projet>/dreamer_workspace/<YYYY-MM-DD_session_id>/experiments/`, modifie code et doc du projet — sous commits Git tracés et documentés. Prérequis durs non négociables :
-   - (a) cahier des charges présent dans `recherche/<projet>/docs/` (sans CDC → Dreamer refuse)
-   - (b) `git status --porcelain` empty avant Dreamer (refus sinon)
-   - (c) commit Dreamer propre au format `[Dreamer] <résumé>` + body documenté (modifications, raison, expériences réalisées, lien session log) + `Co-Authored-By: Dreamer Agent`
-   - Dreamer commit en local uniquement, pas de push (l'humain décide).
+2. **Empirical author**: writes ad-hoc test scripts in `recherche/<project>/dreamer_workspace/<YYYY-MM-DD_session_id>/experiments/`, modifies project code and docs — under tracked and documented Git commits. Non-negotiable hard prerequisites:
+   - (a) specifications document present in `recherche/<project>/docs/` (without specs → Dreamer refuses)
+   - (b) `git status --porcelain` empty before Dreamer (refusal otherwise)
+   - (c) clean Dreamer commit in format `[Dreamer] <summary>` + documented body (modifications, reason, experiments performed, session log link) + `Co-Authored-By: Dreamer Agent`
+   - Dreamer commits locally only, no push (the human decides).
 
-3. **Arbitre stratégique** : recadre le projet par rapport au cahier des charges d'origine. Identifie dérives (surcomplexification, trou de lapin, dérive vs CDC) et suggère des décisions à l'humain. Ton : **regard extérieur bienveillant** qui questionne et propose, n'impose pas. Pattern de formulation : "On a fait X. C'est utile pour Y du CDC. Mais ça aurait pu être obtenu via Z plus simple. Veux-tu reconsidérer ?"
+3. **Strategic arbiter**: course-corrects the project relative to the original specifications. Identifies drifts (over-complexification, rabbit hole, drift vs specs) and suggests decisions to the human. Tone: **benevolent outside perspective** that questions and proposes, does not impose. Formulation pattern: "We did X. It's useful for Y from the specs. But it could have been achieved via simpler Z. Do you want to reconsider?"
 
-#### Décisions d'architecture (figées par l'utilisateur 2026-05-27)
+#### Architecture Decisions (locked by user 2026-05-27)
 
-- **Matérialisation B** : sous-agent Dreamer dédié spawn en Phase 1 (lecture exhaustive autonome) + orchestrateur Claude qui reçoit la synthèse en Phases 2+ et dialogue avec l'utilisateur en **chat ouvert** (PAS via AskUserQuestion — discussion directe en messages, conformément à la préférence utilisateur de pouvoir éditer librement les réponses).
-- **1 Dreamer par projet** : filtre `project:` sur lessons/episodes. Sessions Dreamer module-a, Dreamer `/justdoit`, etc. sont distinctes et accumulent un historique propre.
-- **`dreamer_workspace/<session>/` commité dans le repo** (pas `.gitignore`) : historique sourcable pour futurs Dreamer (cohérent avec `lesson_document_contract_for_future_consumers`).
-- **Trigger manuel V1** : `/dreamer <projet>`. Auto sur seuil (5 runs `/justdoit` depuis dernier Dreamer) documenté comme V2 futur, pas implémenté.
-- **Pas de limite a priori sur taille commits Dreamer** : si l'utilisateur valide un refactor important après dialogue, c'est OK (revertable trivialement via `git revert` si dérive).
-- **Pas de B reviewer formel** pour les modifications code/doc Dreamer : le dialogue interactif user section par section JOUE le rôle de B reviewer (validation humaine est la review). Lambda audit les propositions mémoire (mécanisme Phase 11 existant, inchangé).
-- **Verrou exclusivité** : 1 seul Dreamer actif par projet (marker `dreamer_workspace/<session>/IN_PROGRESS`, supprimé à la fin), refus si `/justdoit` actif sur le repo (détection best-effort V1).
-- **Discipline Git du sous-agent Dreamer** (lecture seule sur git, héritée de `lesson_brief_b_strict_no_git_ops`) : INTERDIT `git stash`, `git checkout --`, `git reset --hard`, `git clean` (même pour comparer baseline). AUTORISÉ `git status`, `git log`, `git show`, `git diff` (read-only). Les `git add` + `git commit` sont faits par l'orchestrateur après validation user, jamais par le sous-agent Dreamer directement.
-- **Réutilisation infra existante** : attention layer (`memory/attention/query.py`) consommée pour pré-filtre sémantique + détection fusions ; Lambda Phase 11 `/justdoit` consommé pour audit propositions mémoire. Dreamer ne réinvente aucune de ces mécaniques.
-- **Sources de lecture Phase 1** : CDC (`recherche/<projet>/docs/`), code complet, doc projet, base mémoire `/justdoit` filtrée `project:<projet>`, mémoire utilisateur `~/.claude/projects/...`, état de l'art via WebSearch/WebFetch si pertinent, benchmark récent.
+- **Materialization B**: dedicated Dreamer sub-agent spawned in Phase 1 (exhaustive autonomous reading) + orchestrator that receives the synthesis in Phases 2+ and dialogues with the user in **open chat** (NOT via a structured prompt — direct message discussion, in accordance with the user's preference to freely edit responses).
+- **1 Dreamer per project**: filters by `project:` on lessons/episodes. Dreamer sessions for module-a, Dreamer for `/commontrace`, etc. are distinct and accumulate their own history.
+- **`dreamer_workspace/<session>/` committed in the repo** (not `.gitignore`): sourceable history for future Dreamers (consistent with `lesson_document_contract_for_future_consumers`).
+- **Manual trigger V1**: `/dreamer <project>`. Auto on threshold (5 `/commontrace` runs since last Dreamer) documented as future V2, not implemented.
+- **No a priori limit on Dreamer commit size**: if the user validates an important refactor after dialogue, it's OK (trivially revertable via `git revert` if drift).
+- **No formal B reviewer** for Dreamer code/doc modifications: the interactive section-by-section user dialogue PLAYS the role of B reviewer (human validation is the review). Lambda audits memory proposals (existing Phase 11 mechanism, unchanged).
+- **Exclusivity lock**: 1 single active Dreamer per project (marker `dreamer_workspace/<session>/IN_PROGRESS`, deleted at the end), refusal if `/commontrace` is active on the repo (best-effort detection V1).
+- **Git discipline of the Dreamer sub-agent** (read-only on git, inherited from `lesson_brief_b_strict_no_git_ops`): FORBIDDEN `git stash`, `git checkout --`, `git reset --hard`, `git clean` (even to compare baseline). ALLOWED `git status`, `git log`, `git show`, `git diff` (read-only). The `git add` + `git commit` are done by the orchestrator after user validation, never by the Dreamer sub-agent directly.
+- **Reuse of existing infra**: attention layer (`memory/attention/query.py`) consumed for semantic pre-filter + fusion detection; Lambda Phase 11 `/commontrace` consumed for memory proposal audit. Dreamer reinvents none of these mechanics.
+- **Phase 1 reading sources**: specs (`recherche/<project>/docs/`), complete code, project docs, `/commontrace` memory base filtered by `project:<project>`, user memory under the agent platform's project config, web search / web fetch capabilities if relevant, recent benchmark.
 
-#### Snippet réutilisé par Dreamer pour détection candidats fusion (rôle 1)
+#### Snippet Reused by Dreamer for Fusion Candidate Detection (role 1)
 
 ```python
 import numpy as np
-data = np.load("memory/attention/index.npz", allow_pickle=True)
-emb = data["embeddings"]                    # déjà L2-normalisés
+data = np.load("memory/attention/index.npz", allow_pickle=False)
+emb = data["embeddings"]                    # already L2-normalized
 slugs = data["slugs"]
-sim_matrix = emb @ emb.T                    # cosine pairwise (N x N), trivial sur 10k×10k
-# Candidats fusion : seuil empirique ~0.85 (à tuner sur corpus réel)
+sim_matrix = emb @ emb.T                    # pairwise cosine (N x N), trivial on 10k×10k
+# Fusion candidates: empirical threshold ~0.85 (to be tuned on real corpus)
 pairs = np.argwhere((sim_matrix > 0.85) & (sim_matrix < 1.0))
 candidates = [(slugs[i], slugs[j], float(sim_matrix[i, j])) for i, j in pairs if i < j]
-# Dreamer propose ensuite les fusions à Lambda pour validation Phase 11 /justdoit (mécanisme existant)
+# Dreamer then proposes fusions to Lambda for Phase 11 /commontrace validation (existing mechanism)
 ```
 
-#### Contrats stables garantis pour Dreamer (additions OK, suppressions KO)
+#### Stable Contracts Guaranteed for Dreamer (additions OK, removals KO)
 
-- `index.npz` reste accessible sous `memory/attention/index.npz`
-- Champs `slugs`, `embeddings`, `model_name`, `encoded_field`, `timestamp`, `n_lessons` conservés
-- `embeddings` reste L2-normalisé (cosine = dot product)
-- `build_index.py --force` reste l'invocation manuelle de rebuild
-- Lambda Phase 11 `/justdoit` reste l'unique mécanisme d'audit des modifications de la base mémoire (Dreamer ne réimplémente pas Lambda — il en consomme le verdict)
+- `index.npz` remains accessible at `memory/attention/index.npz`
+- Fields `slugs`, `embeddings`, `model_name`, `encoded_field`, `timestamp`, `n_lessons` preserved
+- `embeddings` remains L2-normalized (cosine = dot product)
+- `build_index.py --force` remains the manual rebuild invocation
+- Lambda Phase 11 `/commontrace` remains the sole mechanism for auditing memory base modifications (Dreamer does not reimplement Lambda — it consumes the verdict)
 
-#### Format `dreamer_workspace/<YYYY-MM-DD_session_id>/` (commité dans le repo projet)
+#### `dreamer_workspace/<YYYY-MM-DD_session_id>/` Format (committed in the project repo)
 
 ```
 dreamer_workspace/
 └── 2026-05-27_session_001/
-    ├── IN_PROGRESS              # marker verrou exclusivité (supprimé à la fin)
-    ├── SESSION.md               # synthèse 5 sections + métadonnées + log
-    ├── experiments/             # scripts de test ad-hoc (validés user avant exécution)
+    ├── IN_PROGRESS              # exclusivity lock marker (deleted at the end)
+    ├── SESSION.md               # 5-section synthesis + metadata + log
+    ├── experiments/             # ad-hoc test scripts (user-validated before execution)
     │   └── test_hypothesis_X.py
-    └── memory_proposals.md      # propositions soumises à Lambda + verdicts
+    └── memory_proposals.md      # proposals submitted to Lambda + verdicts
 ```
 
-#### Workflow `/dreamer <projet>` (6 phases)
+#### `/dreamer <project>` Workflow (6 phases)
 
-1. **Phase 0** : Trigger (manuel `/dreamer <projet>` V1, auto seuil V2 futur).
-2. **Phase 1** : Lecture autonome par sous-agent Dreamer (sources listées ci-dessus).
-3. **Phase 2** : Synthèse 5 sections (recadrage CDC, consolidation mémoire, hypothèses à tester, suggestions stratégiques, modifications code/doc) écrite dans `dreamer_workspace/<session>/SESSION.md`.
-4. **Phase 3** : Orchestrateur Claude reçoit la synthèse + présente à l'utilisateur en chat ouvert (PAS AskUserQuestion). Dialogue section par section.
-5. **Phase 4** : Exécution validée par section. Tests : Dreamer demande permission ("j'aimerais faire test X parce que Y, OK ?"), user OK → exécute. Modifs base mémoire : Lambda audit (Phase 11 `/justdoit`), orchestrateur applique ACCEPTÉ. Modifs code/doc : orchestrateur applique. Suggestions stratégiques : juste documentées dans SESSION.md.
-6. **Phase 5-6** : Commit Git par l'orchestrateur après dialogue terminé. Archive session (supprimer marker IN_PROGRESS, finaliser SESSION.md).
+1. **Phase 0**: Trigger (manual `/dreamer <project>` V1, auto threshold V2 future).
+2. **Phase 1**: Autonomous reading by Dreamer sub-agent (sources listed above).
+3. **Phase 2**: 5-section synthesis (specs course correction, memory consolidation, hypotheses to test, strategic suggestions, code/doc modifications) written in `dreamer_workspace/<session>/SESSION.md`.
+4. **Phase 3**: Orchestrator receives the synthesis + presents to the user in open chat (NOT via a structured prompt). Section-by-section dialogue.
+5. **Phase 4**: Validated execution by section. Tests: Dreamer asks permission ("I'd like to run test X because Y, OK?"), user OK → executes. Memory base modifications: Lambda audits (Phase 11 `/commontrace`), orchestrator applies ACCEPTED. Code/doc modifications: orchestrator applies. Strategic suggestions: just documented in SESSION.md.
+6. **Phase 5-6**: Git commit by the orchestrator after dialogue is complete. Archive session (delete IN_PROGRESS marker, finalize SESSION.md).
 
-Voir aussi `~/.claude/skills/dreamer/SKILL.md` (510 lignes, source canonique du skill avec brief sous-agent verbatim) et `memory/attention/README.md` (contrat `index.npz` côté infrastructure consommée).
+See also `$COMMONTRACE_ROOT/../dreamer/SKILL.md` (510 lines, canonical source of the skill with verbatim sub-agent brief) and `memory/attention/README.md` (`index.npz` contract on the consumed infrastructure side).
 
 ---
 
-## 7. RETEX et observations
+## 7. RETEX and Observations
 
-Cette section consigne les observations empiriques accumulées sur les 12 runs effectués au 2026-05-27 : RETEX 7.1-7.11 couvrent l'amorçage (les 2 premiers méta-runs + circularité Lambda) ; RETEX 7.12-7.18 couvrent la phase post-bootstrap (méta-run attention + 8 runs module-a = premier usage hors-meta). Format par RETEX : **Observation / Contexte / Implication**. Les chiffres de cette section reflètent le snapshot du 2026-05-27 (12 runs) ; les 3 runs suivants (`create-dreamer-skill`, `module-a-v1-m1`, `module-a-v1-m2`) ne sont pas encore retexés — mise à jour de la narration RETEX = chantier distinct.
+This section records the empirical observations accumulated over the 12 runs performed as of 2026-05-27: RETEX 7.1-7.11 cover the bootstrap phase (the first 2 meta-runs + Lambda circularity); RETEX 7.12-7.18 cover the post-bootstrap phase (attention meta-run + 8 module-a runs = first non-meta usage). Format per RETEX: **Observation / Context / Implication**. The figures in this section reflect the 2026-05-27 snapshot (12 runs); the 3 following runs (`create-dreamer-skill`, `module-a-v1-m1`, `module-a-v1-m2`) are not yet retexed — updating the RETEX narrative = separate workstream.
 
-### 7.1 Premier vrai test Alpha en production (run 2, 2026-05-27)
+### 7.1 First Real Alpha Test in Production (run 2, 2026-05-27)
 
-**Observation** : Alpha a retourné `Confidence: HAUTE` avec 4 lessons retrieve, toutes utiles dans le travail final.
+**Observation**: Alpha returned `Confidence: HIGH` with 4 retrieved lessons, all useful in the final work.
 
-**Contexte** : Run 2 (`2026-05-27_extend-justdoit-importance`), première vraie sollicitation d'Alpha dans un run /justdoit (le run 1 du 2026-05-26 avait `lessons_retrieved_by_alpha: []` car la base mémoire n'existait pas encore). Les 4 lessons retrieve :
-- `lesson_serialize_subagents_same_files` — sérialisation respectée (1 seul A à la fois sur fichiers communs)
-- `lesson_subagent_double_review_pattern` — pattern A+B appliqué
-- `lesson_show_changes_before_editing` — remontée comme **counter-example** via mode EXCEPTION (mandat /justdoit lève cette règle, A peut éditer direct sans valider à chaque step)
-- `lesson_transparency_when_deviating` — appliqué par A qui a signalé dans son rapport les calibrations d'importance faites par inférence (sans source vivante explicite)
+**Context**: Run 2 (`2026-05-27_extend-commontrace-importance`), first real solicitation of Alpha in a /commontrace run (run 1 of 2026-05-26 had `lessons_retrieved_by_alpha: []` because the memory base did not yet exist). The 4 retrieved lessons:
+- `lesson_serialize_subagents_same_files` — serialization respected (1 single A at a time on shared files)
+- `lesson_subagent_double_review_pattern` — A+B pattern applied
+- `lesson_show_changes_before_editing` — surfaced as a **counter-example** via EXCEPTION mode (/commontrace mandate lifts this rule, A can edit directly without validating at each step)
+- `lesson_transparency_when_deviating` — applied by A who reported in its report the importance calibrations done by inference (without explicit live source)
 
-**Implication** : Le retrieval contextuel "implicite" fonctionne. Alpha a remonté `lesson_show_changes_before_editing` comme counter-example sans qu'on le lui demande explicitement — c'est-à-dire qu'il a su que cette leçon était pertinente à mentionner même si l'action concrète était de l'ignorer (parce que mandat /justdoit la lève par design). C'est une première validation empirique du retrieval sémantique au-delà du simple matching tags.
+**Implication**: The "implicit" contextual retrieval works. Alpha surfaced `lesson_show_changes_before_editing` as a counter-example without being explicitly asked to — i.e., it knew this lesson was relevant to mention even though the concrete action was to ignore it (because the /commontrace mandate lifts it by design). This is a first empirical validation of semantic retrieval beyond simple tag matching.
 
-Les recommandations Alpha intégrées dans le brief A se sont reflétées concrètement dans le travail final : sérialisation respectée, fix YAML proactif effectué (cf. RETEX 7.2), transparence inférence dans le rapport. C'est la base de la `lesson_alpha_brief_quality_drives_a_quality` proposée par Omega run 2.
+Alpha recommendations integrated into A's brief were concretely reflected in the final work: serialization respected, proactive YAML fix performed (cf. RETEX 7.2), inference transparency in the report. This is the basis for the `lesson_alpha_brief_quality_drives_a_quality` proposed by Omega run 2.
 
-### 7.2 Fix bonus par A (initiative bénéfique, run 2)
+### 7.2 Bonus Fix by A (beneficial initiative, run 2)
 
-**Observation** : A a détecté et corrigé une régression YAML pré-existante (frontmatter SKILL.md description avec `:` non quotés) qui n'était pas dans le périmètre strict de la tâche.
+**Observation**: A detected and corrected a pre-existing YAML regression (SKILL.md frontmatter description with unquoted `:`) that was not in the strict scope of the task.
 
-**Contexte** : La régression avait été introduite dans le run 1 (`2026-05-26_create-justdoit-v2`) — B run 1 l'avait signalée comme "mineure non bloquante" sans correction. Run 2, A l'a fixée proactivement en passant pendant qu'il modifiait SKILL.md pour ajouter l'importance scoring. B run 2 a jugé le fix "BÉNÉFIQUE et LÉGITIME" parce qu'il servait le critère 8 (YAML strict parsable) et que le coût marginal était quasi-nul (A modifiait déjà le fichier).
+**Context**: The regression had been introduced in run 1 (`2026-05-26_create-commontrace-v2`) — B run 1 had flagged it as "minor non-blocking" without correction. Run 2, A proactively fixed it while modifying SKILL.md to add importance scoring. B run 2 judged the fix "BENEFICIAL and LEGITIMATE" because it served criterion 8 (strict parsable YAML) and the marginal cost was nearly zero (A was already modifying the file).
 
-**Implication** : Donne naissance à la proposition `lesson_fix_in_passing_when_documented_and_consistent` par Omega run 2. La règle émergente : un fix proactif hors-scope est légitime si (a) le contexte le rend cohérent avec la tâche, (b) le coût marginal est faible (A modifie déjà la zone), (c) c'est documenté dans le rapport A pour traçabilité.
+**Implication**: Gives rise to the `lesson_fix_in_passing_when_documented_and_consistent` proposal by Omega run 2. The emergent rule: a proactive out-of-scope fix is legitimate if (a) the context makes it coherent with the task, (b) the marginal cost is low (A is already modifying the area), (c) it is documented in A's report for traceability.
 
-### 7.3 Calibration importance — désaccord léger entre A et B (run 2)
+### 7.3 Importance Calibration — Slight Disagreement Between A and B (run 2)
 
-**Observation** : Premier cas de désaccord d'évaluation entre deux agents indépendants sur la calibration d'une leçon seed. `lesson_subagent_double_review_pattern` calibrée par A à `importance: 4` ("rework majeur quasi-systématique observé sans le pattern"), B aurait mis 5 ("épine dorsale du skill, showstopper de la classe entière").
+**Observation**: First case of evaluation disagreement between two independent agents on the calibration of a seed lesson. `lesson_subagent_double_review_pattern` calibrated by A at `importance: 4` ("major rework quasi-systematically observed without the pattern"), B would have put 5 ("backbone of the skill, showstopper of the entire class").
 
-**Contexte** : Run 2, A a calibré les 7 lessons seed. B a validé CONFORME au premier round avec ce désaccord noté comme non bloquant. Les deux interprétations sont défendables sous la rubrique : 4 (critique, rework majeur) et 5 (showstopper, sans cette leçon la classe entière échoue) cohabitent légitimement pour cette leçon en particulier — c'est l'épine dorsale du skill /justdoit, donc 5 est défendable ; mais d'autres skills similaires pourraient fonctionner sans ce pattern moyennant un peu plus d'effort, donc 4 reste défendable aussi.
+**Context**: Run 2, A calibrated the 7 seed lessons. B validated CONFORM on the first round with this disagreement noted as non-blocking. Both interpretations are defensible under the rubric: 4 (critical, major rework) and 5 (showstopper, without this lesson the entire class fails) legitimately coexist for this particular lesson — it is the backbone of the /commontrace skill, so 5 is defensible; but other similar skills could function without this pattern with a bit more effort, so 4 is also defensible.
 
-**Implication** : La rubrique 1-5 + justification 1-phrase obligatoire suffit à obtenir des calibrations dans une fourchette ±1 entre agents indépendants sur le même item. Pas besoin de réconciliation algorithmique en V2.1 — c'est un signal acceptable. Mais ce genre de désaccord va se reproduire et mérite d'être tracé via le champ `importance_history` pour audit ultérieur (détecter une dérive systématique de calibration entre agents ou dans le temps).
+**Implication**: The 1-5 rubric + mandatory 1-sentence justification suffices to obtain calibrations within a ±1 range between independent agents on the same item. No need for algorithmic reconciliation in V2.1 — this is an acceptable signal. But this kind of disagreement will recur and deserves to be tracked via the `importance_history` field for later audit (detecting systematic calibration drift between agents or over time).
 
-### 7.4 Pattern observé "classes de runs" auto-calibrées (run 2, par Omega)
+### 7.4 Observed Pattern: Self-calibrated "Run Classes" (run 2, by Omega)
 
-**Observation** : Les deux premiers épisodes (`2026-05-26` et `2026-05-27`) sont des méta-runs `/justdoit` (skill se modifiant lui-même), aboutis CONFORME, et tous deux s'auto-calent en `importance: 3`.
+**Observation**: The first two episodes (`2026-05-26` and `2026-05-27`) are /commontrace meta-runs (skill modifying itself), both CONFORM, and both self-calibrate at `importance: 3`.
 
-**Contexte** : Omega run 2 a calibré son propre épisode à 3 ("Second meta-run /justdoit v2 abouti CONFORME en 1 iteration : valide empiriquement Alpha en production mais pas de showstopper et propositions de design déjà figées en amont"). Omega run 1 (rétroactivement, frontmatter écrit en même temps que la création v2) a calibré son épisode à 3 ("Premier run /justdoit v2 sur lui-même : révèle scope creep utilisateur-détectable + régression YAML silencieuse + cas skill user-level hors git ; utile pour calibrer Phase 11 et Phase 4 mais pas un showstopper").
+**Context**: Omega run 2 calibrated its own episode at 3 ("Second meta-run /commontrace v2 achieving CONFORM in 1 iteration: empirically validates Alpha in production but no showstopper and design proposals already locked upstream"). Omega run 1 (retroactively, frontmatter written at the same time as v2 creation) calibrated its episode at 3 ("First /commontrace v2 run on itself: reveals user-detectable scope creep + silent YAML regression + user-level skill outside git case; useful for calibrating Phase 11 and Phase 4 but not a showstopper").
 
-**Implication** : Hypothèse — émergence de classes de runs (méta-skill, refactor, bugfix, port CUDA...) où chaque classe pourrait avoir une importance type. Donnée intéressante pour le benchmark futur (mesure de cohérence intra-classe). À surveiller sur les prochains runs : si 5 runs successifs d'une même classe se calent tous à la même importance, ça révèle soit (a) un signal stable et utile, soit (b) un biais d'ancrage à corriger.
+**Implication**: Hypothesis — emergence of run classes (meta-skill, refactor, bugfix, CUDA port...) where each class could have a typical importance. Interesting data for the future benchmark (intra-class coherence measurement). To monitor on upcoming runs: if 5 successive runs of the same class all calibrate at the same importance, it reveals either (a) a stable and useful signal, or (b) an anchoring bias to correct.
 
-### 7.5 Étalement importance biaisé vers 3-5 (run 2)
+### 7.5 Importance Distribution Biased Toward 3-5 (run 2)
 
-**Observation** : Distribution observée sur les 7 lessons seed : 1×5 / 3×4 / 3×3 / 0×2 / 0×1.
+**Observation**: Distribution observed on the 7 seed lessons: 1×5 / 3×4 / 3×3 / 0×2 / 0×1.
 
-**Contexte** : Lors de la calibration des seeds (run 2), A a annoncé "1×5 / 3×4 / 4×3" par calcul mental approximatif (cf. dernier point du worked_less_well de l'épisode 2), mais B a trouvé "1×5 / 3×4 / 3×3" en vérification — divergence mineure non bloquante mais signal de manque de rigueur sur les chiffres dans le rapport. Aucune leçon n'a été calibrée 1 ou 2.
+**Context**: During seed calibration (run 2), A announced "1×5 / 3×4 / 4×3" by approximate mental calculation (cf. last point of worked_less_well in episode 2), but B found "1×5 / 3×4 / 3×3" on verification — minor non-blocking divergence but a signal of lack of rigor on figures in the report. No lesson was calibrated 1 or 2.
 
-**Implication** : Cause assumée — les seeds ont été choisies à partir de feedback utilisateur pré-existant, donc biaisées vers utilité par construction (rien d'anecdotique n'a été seedé). Décision : pas d'invention de 1-2 artificielle pour combler — biais documenté assumé. À surveiller : si tous les futurs runs convergent vers la même distribution 3-5 sans jamais générer de 1-2, ça révèle un biais structurel à corriger dans le retrieval (toutes les leçons "se valent" en importance → l'importance n'est plus un signal discriminant).
+**Implication**: Assumed cause — seeds were chosen from pre-existing user feedback, hence biased toward utility by construction (nothing anecdotal was seeded). Decision: no artificial invention of 1-2 to fill the gap — documented bias assumed. To monitor: if all future runs converge toward the same 3-5 distribution without ever generating 1-2, it reveals a structural bias to correct in retrieval (all lessons "are equivalent" in importance → importance is no longer a discriminating signal).
 
-### 7.6 Skill user-level → Phase 4 commit skipée (cas légitime, run 1)
+### 7.6 User-level Skill → Phase 4 Commit Skipped (legitimate case, run 1)
 
-**Observation** : Phase 4 (commit immédiat après A) n'a pas eu lieu lors du run 1.
+**Observation**: Phase 4 (immediate commit after A) did not happen during run 1.
 
-**Contexte** : `~/.claude/skills/justdoit/` est sous `~/.claude/skills/` qui n'est pas un git repo. Le commit Phase 4 est techniquement inapplicable. Documenté en `commit_sha: N/A` dans l'épisode 1. Run 2 a le même cas.
+**Context**: `$COMMONTRACE_ROOT/` is under the agent platform's skills directory which is not a git repo. The Phase 4 commit is technically inapplicable. Documented as `commit_sha: N/A` in episode 1. Run 2 has the same case.
 
-**Implication** : Comportement attendu pour les skills user-level (vs project-level qui seraient dans un repo type `recherche/.claude/skills/`). À formaliser dans `SKILL.md` comme cas légitime du skip silencieux de Phase 4. Le risque de perte de code que Phase 4 protège (incident `git clean` vécu sur module-b) n'existe pas ici car B est en lecture seule et ne touche pas à `~/.claude/skills/` (pas de git op possible faute de repo).
+**Implication**: Expected behavior for user-level skills (vs project-level which would be in a project repo). To formalize in `SKILL.md` as a legitimate case for Phase 4 silent skip. The code loss risk that Phase 4 protects against (lived `git clean` incident on module-b) does not exist here because B is read-only and does not touch the skills directory (no git op possible due to lack of repo).
 
-### 7.7 Mid-flight scope correction (run 1)
+### 7.7 Mid-flight Scope Correction (run 1)
 
-**Observation** : A1 lancé avec brief incluant à tort un benchmark dans le scope. Utilisateur a détecté le scope creep ~5 min après lancement.
+**Observation**: A1 launched with a brief that incorrectly included a benchmark in scope. User detected the scope creep ~5 min after launch.
 
-**Contexte** : Run 1, brief A1 initial intégrait une Phase 12 benchmark dans le scope du skill. Utilisateur a stoppé A1 via TaskStop, l'orchestrateur a nettoyé manuellement les résidus partiels (`benchmark/` et `memory/benchmark_reports/`), puis a relancé A2 avec brief corrigé incluant des instructions négatives explicites ("AUCUNE création benchmark/", "AUCUNE Phase 12"). Les "instructions négatives explicites" se sont avérées nécessaires — un simple "scope réduit" sans interdiction explicite aurait pu laisser A2 réintroduire le benchmark par cohérence avec l'état partiel laissé par A1.
+**Context**: Run 1, initial A1 brief integrated a Phase 12 benchmark into the skill's scope. User stopped A1 via task cancellation, the orchestrator manually cleaned up partial residues (`benchmark/` and `memory/benchmark_reports/`), then relaunched A2 with a corrected brief including explicit negative instructions ("NO benchmark/ creation", "NO Phase 12"). The "explicit negative instructions" turned out to be necessary — a simple "reduced scope" without explicit prohibition could have let A2 reintroduce the benchmark for consistency with the partial state left by A1.
 
-**Implication** : Donne naissance à la proposition `lesson_mid_flight_scope_correction` par Omega run 1 (en attente validation). La session a permis de corriger sans perte majeure, mais le pattern "scope creep détecté en cours → TaskStop + nettoyage + relance avec interdiction explicite" mérite d'être capitalisé. Note : A2 a essentiellement travaillé par soustraction sur l'état avancé laissé par A1 (cf. RETEX 7.9), ce qui a accéléré mais brouillé la traçabilité "qui a fait quoi".
+**Implication**: Gives rise to the `lesson_mid_flight_scope_correction` proposal by Omega run 1 (pending validation). The session allowed correction without major loss, but the pattern "scope creep detected mid-flight → task stop + cleanup + relaunch with explicit prohibition" deserves to be capitalized. Note: A2 essentially worked by subtraction on the advanced state left by A1 (cf. RETEX 7.9), which accelerated but blurred the traceability of "who did what".
 
-### 7.8 Phase 11 systématiquement skipée → backlog mémoire qui s'accumule
+### 7.8 Phase 11 Systematically Skipped → Accumulating Memory Backlog
 
-**Observation** : Sur les 2 runs effectués, Phase 11 (validation user) a été systématiquement skipée. Conséquence : 3 nouvelles leçons proposées + 4 updates en attente, jamais validés.
+**Observation**: Over the 2 runs performed, Phase 11 (user validation) was systematically skipped. Consequence: 3 new proposed lessons + 4 pending updates, never validated.
 
-**Contexte** : L'utilisateur a explicitement demandé skip Phase 11 pour permettre l'amorçage rapide de la base mémoire (sinon chaque run consomme un round AskUserQuestion). Propositions en attente :
-- Run 1 : `lesson_mid_flight_scope_correction` (proposée, non validée)
-- Run 2 : `lesson_fix_in_passing_when_documented_and_consistent`, `lesson_alpha_brief_quality_drives_a_quality` (proposées, non validées) + 4 updates `uses += 1` sur les lessons hit (`lesson_serialize_subagents_same_files`, `lesson_subagent_double_review_pattern`, `lesson_show_changes_before_editing`, `lesson_transparency_when_deviating`)
+**Context**: The user explicitly requested skipping Phase 11 to allow rapid bootstrapping of the memory base (otherwise each run consumes a round of user prompting). Pending proposals:
+- Run 1: `lesson_mid_flight_scope_correction` (proposed, not validated)
+- Run 2: `lesson_fix_in_passing_when_documented_and_consistent`, `lesson_alpha_brief_quality_drives_a_quality` (proposed, not validated) + 4 updates `uses += 1` on hit lessons (`lesson_serialize_subagents_same_files`, `lesson_subagent_double_review_pattern`, `lesson_show_changes_before_editing`, `lesson_transparency_when_deviating`)
 
-**Implication** : Les compteurs `uses` restent à 0 et `last_hit` à `NEVER`, alors qu'en réalité 4 leçons ont déjà été retrouvées et utiles au moins 1 fois. Le mécanisme `implicit_retrieval` (mesure benchmark) ne reflète pas la réalité d'usage. Motivation pour la discussion en cours (G.) sur l'auto-validation du backlog par un agent Lambda dédié — qui parcourrait les propositions en attente, vérifierait l'absence de doublons et de contradictions avec les leçons existantes, et écrirait directement les éléments triviaux (updates `uses += 1` sont par construction non controversés). La validation user resterait obligatoire pour les nouvelles leçons, mais le backlog d'updates ne s'accumulerait plus.
+**Implication**: The `uses` counters remain at 0 and `last_hit` at `NEVER`, while in reality 4 lessons have already been retrieved and useful at least once. The `implicit_retrieval` mechanism (benchmark metric) does not reflect actual usage. Motivation for the ongoing discussion (G.) on auto-validation of the backlog by a dedicated Lambda agent — which would go through pending proposals, verify the absence of duplicates and contradictions with existing lessons, and directly write the trivial elements (updates `uses += 1` are by construction non-controversial). User validation would remain mandatory for new lessons, but the update backlog would no longer accumulate.
 
-### 7.9 A travaillant par soustraction (run 1)
+### 7.9 A Working by Subtraction (run 1)
 
-**Observation** : Après TaskStop de A1, A2 a travaillé essentiellement par soustraction/modification sur l'état partiel laissé par A1, plutôt que de repartir de zéro.
+**Observation**: After stopping A1, A2 worked essentially by subtraction/modification on the partial state left by A1, rather than starting from scratch.
 
-**Contexte** : A1 avait déjà créé une grande partie du travail avant son arrêt (SKILL.md ébauché, INDEX.md, 7 lessons seedées). A2 a écrasé/modifié ce qui existait pour le mettre en conformité avec le brief corrigé. Effet collatéral : trace "A1 a créé X, A2 a modifié vers Y" difficile à reconstituer post-mortem, parce que les fichiers finaux ont la signature mixte des deux.
+**Context**: A1 had already created a large part of the work before being stopped (SKILL.md drafted, INDEX.md, 7 seed lessons). A2 overwrote/modified what existed to bring it into conformity with the corrected brief. Side effect: trace "A1 created X, A2 modified to Y" difficult to reconstruct post-mortem, because the final files have the mixed signature of both.
 
-**Implication** : C'est un effet bord intéressant — ça a accéléré le run (A2 n'a pas dû tout refaire) mais ça brouille la traçabilité. Implicitement, ça signifie que le pattern A+B peut tolérer un état initial non-vide tant que A et B finissent par converger sur du conforme. Question ouverte pour la doctrine : faut-il forcer un reset complet (rm -rf des résidus avant relance A2) ou tolérer l'état partiel ? L'arbitrage actuel = orchestrateur nettoie manuellement les fichiers manifestement hors-scope (benchmark/), laisse en place ce qui peut servir à A2.
+**Implication**: This is an interesting edge effect — it accelerated the run (A2 didn't have to redo everything) but blurred traceability. Implicitly, it means the A+B pattern can tolerate a non-empty initial state as long as A and B eventually converge to conformance. Open question for the doctrine: should a complete reset be forced (rm -rf of residues before relaunching A2) or should the partial state be tolerated? Current arbitration = orchestrator manually cleans files manifestly out of scope (benchmark/), leaves in place what can serve A2.
 
-### 7.10 Le mécanisme se révèle empiriquement utile dès le 2e run
+### 7.10 The Mechanism Proves Empirically Useful from the 2nd Run
 
-**Observation** : Le rapport Alpha de qualité (recommandations concrètes) influence directement la qualité du travail A.
+**Observation**: A quality Alpha report (concrete recommendations) directly influences the quality of A's work.
 
-**Contexte** : Run 2, Alpha a fourni 4 lessons + 1 épisode précédent + recommandations concrètes (sérialisation à respecter, vigilance YAML basée sur la régression du run précédent, transparence inférence à signaler, mandat édition directe). A a intégré ces recommandations dans son travail (fix YAML proactif, transparence dans rapport). B a validé CONFORME au premier round.
+**Context**: Run 2, Alpha provided 4 lessons + 1 previous episode + concrete recommendations (serialization to respect, YAML vigilance based on the previous run's regression, inference transparency to report, direct editing mandate). A integrated these recommendations into its work (proactive YAML fix, transparency in report). B validated CONFORM on the first round.
 
-**Implication** : C'est la base de la `lesson_alpha_brief_quality_drives_a_quality` proposée par Omega run 2. Validation empirique de la valeur du retrieval contextuel dès le 1er test en production. Le mécanisme ne demande pas une longue période d'amorçage pour montrer sa valeur — dès qu'il y a quelques leçons calibrées et qu'un run récent fournit un épisode précédent à invoquer, Alpha apporte un signal exploitable.
+**Implication**: This is the basis for the `lesson_alpha_brief_quality_drives_a_quality` proposed by Omega run 2. Empirical validation of the value of contextual retrieval from the 1st production test. The mechanism does not require a long bootstrapping period to show its value — as soon as there are a few calibrated lessons and a recent run provides a previous episode to invoke, Alpha brings an exploitable signal.
 
-À nuancer : N=1 sur ce constat, et les 2 runs sont des méta-runs `/justdoit` (skill se modifiant lui-même), donc la calibration des seeds était déjà optimisée pour le retrieval sur cette classe précise de tâche. Sur un run de classe nouvelle (e.g. port CUDA d'un module non couvert par les seeds actuelles), Alpha pourrait retourner `Confidence: AUCUNE` — c'est le comportement attendu et non bloquant.
+To qualify: N=1 on this finding, and the 2 runs are /commontrace meta-runs (skill modifying itself), so the seed calibration was already optimized for retrieval on this precise class of task. On a new-class run (e.g. CUDA port of a module not covered by current seeds), Alpha could return `Confidence: NONE` — this is the expected and non-blocking behavior.
 
-### 7.11 Lambda formalisé v2.2 — circularité méta du run d'introduction
+### 7.11 Lambda Formalized v2.2 — Meta-circularity of the Introduction Run
 
-**Observation** : Le run qui introduit Lambda dans le skill est encore validé en mode proxy par l'orchestrateur (Lambda n'est pas en place au moment de sa propre création), pas par Lambda lui-même.
+**Observation**: The run that introduces Lambda into the skill is still validated in proxy mode by the orchestrator (Lambda is not in place at the time of its own creation), not by Lambda itself.
 
-**Contexte** : v2.2 (2026-05-27) formalise un sous-agent Lambda comme reviewer indépendant du backlog mémoire pour Phase 11, remplaçant la validation user de v2-v2.1. Le run /justdoit de formalisation (3e méta-run du skill) suit la doctrine v2.2 dans sa réécriture du SKILL.md et de la documentation, mais Phase 11 de ce run précis ne peut pas appeler Lambda car Lambda vient d'être défini dans ce même run. Validation du run = orchestrateur en mode proxy (lit propositions Omega, applique critères Lambda manuellement, applique ACCEPTÉ). Premier run avec Lambda effectivement opérationnel : run +1.
+**Context**: v2.2 (2026-05-27) formalizes a Lambda sub-agent as an independent reviewer of the memory backlog for Phase 11, replacing the user validation of v2-v2.1. The /commontrace formalization run (3rd meta-run of the skill) follows the v2.2 doctrine in its rewriting of SKILL.md and documentation, but Phase 11 of this specific run cannot call Lambda because Lambda was just defined in this same run. Run validation = orchestrator in proxy mode (reads Omega proposals, manually applies Lambda criteria, applies ACCEPTED). First run with Lambda actually operational: run +1.
 
-**Implication** : Circularité méta inhérente à tout run d'introduction de mécanisme — comparable au run 1 (2026-05-26) qui a créé Alpha sans pouvoir l'utiliser, et au run 2 (2026-05-27) qui a calibré la rubrique d'importance sur ses propres seeds. Pas un défaut, juste une caractéristique des bootstraps méta. À tracer dans l'épisode du run d'introduction pour audit : champ `lessons_validated_by_lambda` rempli par l'orchestrateur en proxy, signalé dans `worked_less_well`.
+**Implication**: Meta-circularity inherent to any mechanism-introduction run — comparable to run 1 (2026-05-26) which created Alpha without being able to use it, and to run 2 (2026-05-27) which calibrated the importance rubric on its own seeds. Not a defect, just a characteristic of meta-bootstraps. To trace in the introduction run's episode for audit: `lessons_validated_by_lambda` field filled by the orchestrator in proxy, flagged in `worked_less_well`.
 
-### 7.12 Premier hit cross-run d'une leçon fraîchement créée (module-a P2.2 → P2.3)
+### 7.12 First Cross-run Hit of a Freshly Created Lesson (module-a P2.2 → P2.3)
 
-**Observation** : Une leçon née au run N (`lesson_kwargs_namespace_collision`, créée en P2.2 ouvrant la collision `k_OB` entre pression.py et liquidite.py) a été retrieve par Alpha au run N+1 (P2.3, ~3h plus tard) et **directement appliquée** par A pour structurer le fix collision via prefix domain (`k_OB_pres` / `k_OB_liq`).
+**Observation**: A lesson born at run N (`lesson_kwargs_namespace_collision`, created in P2.2 opening the `k_OB` collision between pression.py and liquidite.py) was retrieved by Alpha at run N+1 (P2.3, ~3h later) and **directly applied** by A to structure the collision fix via domain prefix (`k_OB_pres` / `k_OB_liq`).
 
-**Contexte** : Le run P2.3 (`2026-05-27_module-a-p23-context-modulators-fix-collision.md`) est le 6e run /justdoit. Alpha lui a remonté 5 lessons applicables avec confidence HAUTE, dont **2 fraîchement créées au run P2.2** précédent : `lesson_kwargs_namespace_collision` (importance 3, créée 3h avant) et `lesson_scalar_invariant_metric_tautological` (importance 4, créée 3h avant — utilisée pour interdire AUC dans le brief de validation P2.3). Les 5/5 lessons remontées ont effectivement aidé d'après le rapport final A et la rétro orchestrateur Phase 9. C'est le premier épisode où la chaîne complète "Phase 10 Omega propose → Phase 11 Lambda valide → Phase 0 Alpha retrieve au run suivant → Phase 3 A applique" fonctionne sans intervention humaine entre les runs.
+**Context**: Run P2.3 (`2026-05-27_module-a-p23-context-modulators-fix-collision.md`) is the 6th /commontrace run. Alpha surfaced 5 applicable lessons with HIGH confidence, including **2 freshly created in the preceding P2.2 run**: `lesson_kwargs_namespace_collision` (importance 3, created 3h earlier) and `lesson_scalar_invariant_metric_tautological` (importance 4, created 3h earlier — used to prohibit AUC in the P2.3 validation brief). All 5/5 surfaced lessons actually helped according to the final A report and orchestrator retro Phase 9. This is the first episode where the complete chain "Phase 10 Omega proposes → Phase 11 Lambda validates → Phase 0 Alpha retrieves at next run → Phase 3 A applies" works without human intervention between runs.
 
-**Implication** : Validation empirique du mécanisme d'apprentissage long-terme bout-en-bout. La latence "création → première utilisation effective" est de l'ordre de quelques heures, pas de plusieurs jours. La métrique `implicit_retrieval` (lessons retrouvées qui ont effectivement aidé) atteint 100% sur ce run (5/5). N=1, donc à confirmer sur d'autres classes de runs, mais c'est la première preuve empirique non-meta que la boucle d'apprentissage produit de la valeur sur des tâches indépendantes les unes des autres. (Le run précédent avait validé le retrieval sur méta-skill `/justdoit`, donc même classe ; ici on a deux runs module-a consécutifs sur deux phases distinctes du même projet — moins isomorphes.)
+**Implication**: Empirical validation of the end-to-end long-term learning mechanism. The "creation → first effective use" latency is on the order of a few hours, not several days. The `implicit_retrieval` metric (retrieved lessons that actually helped) reaches 100% on this run (5/5). N=1, so to be confirmed on other run classes, but this is the first non-meta empirical proof that the learning loop produces value on tasks independent of each other. (The preceding run had validated retrieval on /commontrace meta-skill, hence same class; here we have two consecutive module-a runs on two distinct phases of the same project — less isomorphic.)
 
-### 7.13 Première application **préventive** d'une leçon méta (module-a G3 → Task #4)
+### 7.13 First **Preventive** Application of a Meta-lesson (module-a G3 → Task #4)
 
-**Observation** : Une leçon méta créée en run N (`lesson_amend_brief_a_when_lambda_signals_recurring_residual`, validée Lambda au G3 cycle) a été appliquée **préventivement** au run N+1 (Task #4) — c'est-à-dire que l'orchestrateur a reconduit le 7-check anti-cosmétique du brief A5 dans le brief A6 sans attendre une nouvelle occurrence du pattern fix_residual.
+**Observation**: A meta-lesson created at run N (`lesson_amend_brief_a_when_lambda_signals_recurring_residual`, validated by Lambda at the G3 cycle) was applied **preventively** at run N+1 (Task #4) — meaning the orchestrator carried over the 7-check anti-cosmetic brief from A5 into the A6 brief without waiting for a new occurrence of the fix_residual pattern.
 
-**Contexte** : G3 (`2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md`) est le premier run V0.4 sans commit cosmétique d'oubli après 2 runs précédents (pipeline-multi-tf, G2) où le pattern fix_residual_post_b s'était reproduit. Lambda du G3 cycle a signalé que le brief A5 renforcé 7-check avait cassé le pattern. Omega a proposé une leçon méta capturant la procédure d'amendement. Lambda a accepté. L'orchestrateur du run Task #4 (`2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`) a alors reconduit la même structure de brief A6 sans attendre de nouveau résidu. Résultat : 5ème run consécutif sans commit cosmétique (sauf un cas particulier "placeholder SHA" impossible à éviter par A, cf. RETEX 7.18).
+**Context**: G3 (`2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md`) is the first V0.4 run without a cosmetic commit from forgetting after 2 preceding runs (pipeline-multi-tf, G2) where the fix_residual_post_b pattern had reproduced. Lambda from the G3 cycle noted that the reinforced 7-check A5 brief had broken the pattern. Omega proposed a meta-lesson capturing the amendment procedure. Lambda accepted. The orchestrator of the Task #4 run (`2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`) then carried over the same A6 brief structure without waiting for a new residual. Result: 5th consecutive run without cosmetic commit (except one special case "placeholder SHA" impossible for A to avoid, cf. RETEX 7.18).
 
-**Implication** : Boucle de feedback long-terme fonctionnelle bout-en-bout au-delà du simple "retrieve + appliquer réactivement". L'orchestrateur peut désormais utiliser les leçons méta comme **règles procédurales préventives** — modification du comportement avant que le bug ne se reproduise. Scénario qui valide complètement la couche d'apprentissage du skill (Park et al. 2023 mémoire stream → mémoire procédurale activable). Reste à mesurer sur plus de runs si cette discipline préventive tient dans le temps ou s'érode après quelques runs sans rappel (proxy possible : nombre de runs entre 2 hits d'une même leçon méta avant qu'elle ne soit appliquée préventivement).
+**Implication**: Long-term feedback loop functional end-to-end beyond simple "retrieve + apply reactively". The orchestrator can now use meta-lessons as **preventive procedural rules** — behavior modification before the bug reproduces. Scenario that fully validates the skill's learning layer (Park et al. 2023 memory stream → activatable procedural memory). Remains to measure over more runs whether this preventive discipline holds over time or erodes after several runs without reminder (possible proxy: number of runs between 2 hits of the same meta-lesson before it is applied preventively).
 
-### 7.14 Verdict architectural REPORT par convergence multi-stratégies (module-a P2.5)
+### 7.14 Architectural Verdict REPORT by Multi-strategy Convergence (module-a P2.5)
 
-**Observation** : Une décision architecturale lourde (REPORT post-V0.6 d'un refactor magnitude continue, scope ~2-3 jours) a été tranchée empiriquement par la convergence de 3 stratégies indépendantes de régularisation vers la baseline neutre, ce qui a directement donné naissance à `lesson_signal_absence_confirmed_by_regularization_convergence`.
+**Observation**: A heavy architectural decision (REPORT post-V0.6 of a continuous magnitude refactor, scope ~2-3 days) was decided empirically by the convergence of 3 independent regularization strategies toward the neutral baseline, which directly gave rise to `lesson_signal_absence_confirmed_by_regularization_convergence`.
 
-**Contexte** : P2.5 (`2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md`) a exploré 3 stratégies de régularisation magnitude : (a) clamp [low, high], (b) shrinkage Bayesian vers 1.0, (c) smoothing epsilon. Sweep hyperparamètres sur chacune. Résultat : **aucune** ne bat baseline `m=1.0`. Plus la régularisation est forte, plus on converge MATHÉMATIQUEMENT vers `m=1.0`. Conclusion architecturale : le contexte métier 6-états n'apporte aucun signal utile sur magnitude à cette granularité — pas un problème d'extraction, c'est une absence de signal. La leçon générique extraite : "quand N≥3 stratégies de régularisation indépendantes convergent toutes vers baseline neutre, signal upstream est ABSENT → REPORT du refactor associé".
+**Context**: P2.5 (`2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md`) explored 3 magnitude regularization strategies: (a) clamp [low, high], (b) Bayesian shrinkage toward 1.0, (c) epsilon smoothing. Hyperparameter sweep on each. Result: **none** beats baseline `m=1.0`. The stronger the regularization, the more it converges MATHEMATICALLY toward `m=1.0`. Architectural conclusion: the 6-state business context provides no useful signal on magnitude at this granularity — not an extraction problem, it is a signal absence. The extracted generic lesson: "when N≥3 independent regularization strategies all converge toward neutral baseline, upstream signal is ABSENT → REPORT the associated refactor".
 
-**Implication** : Le mécanisme `/justdoit` v2.3 produit aussi des leçons **méthodologiques de décision architecturale**, pas seulement des règles techniques. C'est un type de leçon plus haut niveau, applicable à n'importe quel contexte où un signal est exploré via régularisation (calibration de coefficients, sparsification, dropout, etc.). Reste à voir si elle se transfère sur d'autres classes de problèmes (probablement oui — la convergence vers baseline est un signal mathématique générique).
+**Implication**: The `/commontrace` v2.3 mechanism also produces **methodological lessons about architectural decisions**, not just technical rules. This is a higher-level type of lesson, applicable to any context where a signal is explored via regularization (coefficient calibration, sparsification, dropout, etc.). Remains to see if it transfers to other problem classes (probably yes — convergence toward baseline is a generic mathematical signal).
 
-### 7.15 Distribution `uses` fortement non-uniforme — quelques leçons portent la valeur
+### 7.15 Strongly Non-uniform `uses` Distribution — A Few Lessons Carry the Value
 
-**Observation** : Sur 26 leçons actives et 12 runs effectués, le top 4 par `uses` cumule 20 hits (semantic_check_not_just_syntactic uses=7, no_tmp_results uses=5, serialize_subagents_same_files uses=4, subagent_double_review_pattern uses=4) ; 5 leçons sont à `uses=0` après leur création (gp_gpu_non_deterministic, e2e_test_xfail, signal_absence_confirmed, triangulate_before_architectural_report, et template).
+**Observation**: Over 26 active lessons and 12 runs performed, the top 4 by `uses` accounts for 20 hits (semantic_check_not_just_syntactic uses=7, no_tmp_results uses=5, serialize_subagents_same_files uses=4, subagent_double_review_pattern uses=4); 5 lessons are at `uses=0` after their creation (gp_gpu_non_deterministic, e2e_test_xfail, signal_absence_confirmed, triangulate_before_architectural_report, and template).
 
-**Contexte** : Données extraites du frontmatter de chaque `lesson_*.md` au 2026-05-27 18h. Les 5 leçons jamais hit sont toutes très récentes (créées dans les runs module-a P2.4+) — il est trop tôt pour conclure qu'elles n'aideront jamais. Mais la distribution montre déjà clairement que le retrieval est dominé par quelques **invariants méthodologiques transverses** (sérialisation sous-agents, output paths, métrique invariante scalaire, paraphrase sémantique au-delà du grep syntaxique) plutôt que par les leçons spécialisées par phase module-a.
+**Context**: Data extracted from each `lesson_*.md` frontmatter as of 2026-05-27 18h. The 5 never-hit lessons are all very recent (created in module-a P2.4+ runs) — it is too early to conclude they will never help. But the distribution already clearly shows that retrieval is dominated by a few **cross-cutting methodological invariants** (sub-agent serialization, output paths, scalar invariant metric, semantic paraphrase beyond syntactic grep) rather than by the phase-specific module-a lessons.
 
-**Implication** : Cohérent avec l'attente théorique d'une mémoire procédurale : quelques leçons opérationnelles fortes sont massivement réutilisées, beaucoup de leçons spécialisées restent dormantes en attente du bon contexte. Validation indirecte du mécanisme `importance × tag_match` d'Alpha — les leçons top usage ont toutes `importance ≥ 4`. Si on observait l'inverse (leçons importance 5 jamais retrieve, leçons importance 1 dominantes), il y aurait un problème de calibration. Pour Thomas AI / futur benchmark : prévoir une métrique `usage_concentration` (e.g. Gini coefficient sur les `uses`) pour mesurer si la distribution reste saine au-delà de 50+ runs.
+**Implication**: Consistent with the theoretical expectation of procedural memory: a few strong operational lessons are massively reused, many specialized lessons remain dormant awaiting the right context. Indirect validation of Alpha's `importance × tag_match` mechanism — the top-usage lessons all have `importance ≥ 4`. If the opposite were observed (importance 5 lessons never retrieved, importance 1 lessons dominant), there would be a calibration problem. For future benchmarks: plan a `usage_concentration` metric (e.g. Gini coefficient on `uses`) to measure whether the distribution remains healthy beyond 50+ runs.
 
-### 7.16 Effet nul comme découverte légitime (P2.3 + P2.5)
+### 7.16 Null Effect as a Legitimate Discovery (P2.3 + P2.5)
 
-**Observation** : Deux runs successifs (P2.3 et P2.5) ont mesuré un "effet nul" comme résultat principal de leur calibration — multiplicateurs contextuels |m_log| < 0.02 (P2.3), Sharpe delta +5.6e-5 sur la maximisation jointe Nelder-Mead (P2.5). Dans les deux cas, B a validé CONFORME car le brief A initial avait explicitement anticipé "effet nul = découverte légitime" via la clause issue de `lesson_anticipate_null_effect_in_calibration_brief`.
+**Observation**: Two successive runs (P2.3 and P2.5) measured a "null effect" as the main result of their calibration — contextual multipliers |m_log| < 0.02 (P2.3), Sharpe delta +5.6e-5 on the joint Nelder-Mead maximization (P2.5). In both cases, B validated CONFORM because the initial A brief had explicitly anticipated "null effect = legitimate discovery" via the clause from `lesson_anticipate_null_effect_in_calibration_brief`.
 
-**Contexte** : Cette leçon `anticipate_null_effect_in_calibration_brief` a été créée à P2.3 (Lambda accepté) précisément parce qu'à P2.3 le brief A initial n'avait PAS anticipé que m_factors ~ 1.0 serait un résultat légitime — A a délivré et B a interprété, mais l'orchestrateur a constaté qu'il aurait pu prévoir cette branche en amont. Validation empirique au run suivant : P2.5 a appliqué la clause préventivement (3 volets distincts, chacun avec sa clause "effet nul légitime") et a CONFORME au premier round.
+**Context**: This lesson `anticipate_null_effect_in_calibration_brief` was created at P2.3 (Lambda accepted) precisely because at P2.3 the initial A brief had NOT anticipated that m_factors ~ 1.0 would be a legitimate result — A delivered and B interpreted, but the orchestrator realized it could have foreseen this branch upstream. Empirical validation at the next run: P2.5 applied the clause preventively (3 distinct tracks, each with its "null effect legitimate" clause) and achieved CONFORM on the first round.
 
-**Implication** : Pattern identique à RETEX 7.13 (application préventive) mais sur une leçon créée 1 run plus tôt, pas 2. Confirme que la dynamique "création → application préventive immédiate au run suivant" peut s'établir très rapidement quand l'orchestrateur capture une leçon procédurale précise (le brief A doit anticiper telle branche). C'est un type de leçon particulièrement précieux car il modifie la qualité de la **proposition initiale** et pas seulement la qualité de la review.
+**Implication**: Pattern identical to RETEX 7.13 (preventive application) but on a lesson created 1 run earlier, not 2. Confirms that the "creation → immediate preventive application at next run" dynamic can be established very quickly when the orchestrator captures a precise procedural lesson (A's brief must anticipate such-and-such branch). This is a particularly valuable type of lesson because it modifies the quality of the **initial proposal** and not just the quality of the review.
 
-### 7.17 Discipline GIT STRICT effectivement respectée par B (P2.5 vs P2.4)
+### 7.17 STRICT GIT Discipline Effectively Respected by B (P2.5 vs P2.4)
 
-**Observation** : `lesson_brief_b_strict_no_git_ops` créée à P2.4 (suite à un cas où B avait failli faire un `git stash` pour comparer baseline) a été appliquée préventivement au brief B5 du run P2.5. Résultat : 1ère application réussie, B5 a strictement respecté la discipline (utilisé `git show`, `git diff`, `git log -p` en lecture seule pour comparer baseline, pas de stash/checkout/reset).
+**Observation**: `lesson_brief_b_strict_no_git_ops` created at P2.4 (following a case where B had nearly done a `git stash` to compare baseline) was applied preventively to the B5 brief of run P2.5. Result: 1st successful application, B5 strictly respected the discipline (used `git show`, `git diff`, `git log -p` read-only to compare baseline, no stash/checkout/reset).
 
-**Contexte** : À P2.4, B avait été tenté de faire `git stash` pour comparer son output vs baseline (risque réel de perte de modifs si A2 était relancé entretemps). Détecté à temps, leçon créée. P2.5 a vu le brief B explicite "INTERDIT : git stash/pop/checkout/reset/clean ; AUTORISÉ : git show/diff/log -p en lecture seule". B5 a respecté à la lettre — rapport B confirme "vérification baseline via git show 0e4baac:weights.py vs HEAD, pas de stash utilisé".
+**Context**: At P2.4, B had been tempted to do `git stash` to compare its output vs baseline (real risk of losing modifications if A2 was relaunched in the meantime). Detected in time, lesson created. P2.5 saw the explicit B brief "FORBIDDEN: git stash/pop/checkout/reset/clean; ALLOWED: git show/diff/log -p read-only". B5 respected to the letter — B report confirms "baseline verification via git show 0e4baac:weights.py vs HEAD, no stash used".
 
-**Implication** : Renforce le pattern observé en 7.13 et 7.16 — l'orchestrateur peut systématiser la prévention de la classe de bug via le brief B (pas seulement A). Le brief B devient lui-même un objet d'apprentissage. Candidat futur : capturer dans le brief Omega de chaque run une section "discipline brief B respectée OUI/PARTIELLEMENT/NON" pour mesurer cette dimension à grande échelle.
+**Implication**: Reinforces the pattern observed in 7.13 and 7.16 — the orchestrator can systematize prevention of the bug class via the B brief (not just A). The B brief itself becomes a learning object. Future candidate: capture in each run's Omega brief a section "B brief discipline respected YES/PARTIALLY/NO" to measure this dimension at scale.
 
-### 7.18 Placeholder SHA — pattern fix_residual irréductible (Task #4)
+### 7.18 Placeholder SHA — Irreducible fix_residual Pattern (Task #4)
 
-**Observation** : Malgré le break-pattern du commit cosmétique post-B (5 runs consécutifs sans, G3-Task#4 inclus), le commit cosmétique `a74c142` (placeholder SHA `<SHA Task #4>` ligne 498 ROADMAP) est resté nécessaire à Task #4 car A ne peut connaître son propre SHA pré-commit. Ce n'est PAS le pattern résiduel-évitable-par-relecture ciblé par `lesson_orchestrator_fix_residual_post_b`, c'est un sous-pattern différent et structurellement impossible à éviter dans le brief A.
+**Observation**: Despite the break-pattern of cosmetic post-B commits (5 consecutive runs without, G3-Task#4 included), the cosmetic commit `a74c142` (placeholder SHA `<SHA Task #4>` line 498 ROADMAP) remained necessary at Task #4 because A cannot know its own SHA pre-commit. This is NOT the avoidable-residual pattern targeted by `lesson_orchestrator_fix_residual_post_b`, it is a different and structurally unavoidable sub-pattern in A's brief.
 
-**Contexte** : Task #4 (`2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`) a inséré un texte de référence ROADMAP qui doit citer le SHA du commit Task #4 lui-même. A ne connaît pas son propre SHA avant que l'orchestrateur le commit en Phase 4 → placeholder `<SHA Task #4>` laissé volontairement. L'orchestrateur a dû produire un 2e commit `a74c142` pour substituer le placeholder par le vrai SHA. B a noté "pattern fix_residual STRUCTURELLEMENT cassé pour le pattern original (résidus textuels obsolètes / counts erronés) ; cas particulier placeholder SHA légitime, hors scope leçon existante".
+**Context**: Task #4 (`2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md`) inserted a ROADMAP reference text that must cite the SHA of the Task #4 commit itself. A does not know its own SHA before the orchestrator commits it in Phase 4 → placeholder `<SHA Task #4>` left deliberately. The orchestrator had to produce a 2nd commit `a74c142` to substitute the placeholder with the real SHA. B noted "fix_residual pattern STRUCTURALLY broken for the original pattern (obsolete textual residues / incorrect counts); special case placeholder SHA legitimate, out of scope of existing lesson".
 
-**Implication** : Toutes les leçons "anti-pattern" ne peuvent pas être universalisées. Certains patterns techniques sont irréductibles (un commit ne peut pas citer son propre SHA dans le diff qui le compose). À garder en tête lors de la calibration importance de toute leçon "discipline résiduel" — ne pas glisser sur le sous-pattern impossible à éviter. Candidat pour une note négative dans `do_not_apply_when` de `lesson_orchestrator_fix_residual_post_b` lors d'une future révision : "do_not_apply_when: le résidu est un placeholder dont la valeur n'est connaissable qu'après commit (ex: SHA self-reference)".
+**Implication**: Not all "anti-pattern" lessons can be universalized. Certain technical patterns are irreducible (a commit cannot cite its own SHA in the diff that composes it). To keep in mind when calibrating the importance of any "residual discipline" lesson — do not slip on the unavoidable sub-pattern. Candidate for a negative note in the `do_not_apply_when` of `lesson_orchestrator_fix_residual_post_b` at a future revision: "do_not_apply_when: the residual is a placeholder whose value is only knowable after commit (e.g. SHA self-reference)".
 
 ---
 
-## 8. Limitations et travaux futurs
+## 8. Limitations and Future Work
 
-Cette section liste les limitations connues de v2.3 et les pistes documentées de travail futur. Elle est factuelle, pas prescriptive : aucune de ces évolutions n'est à implémenter sans validation utilisateur explicite et sans terrain empirique.
+This section lists the known limitations of v2.3 and the documented avenues for future work. It is factual, not prescriptive: none of these evolutions should be implemented without explicit user validation and without empirical grounding.
 
-Note v2.3 : la scalabilité du retrieval Alpha à 100+ leçons (limite contextuelle, lecture linéaire des frontmatters, saturation à volume croissant) n'est plus une limitation depuis l'introduction de l'attention layer (cf. §4.6 et §6.3) — Alpha utilise désormais un pré-filtre sémantique cosine sur embeddings locaux qui scale jusqu'à 10k+ leçons sans dégradation de qualité ni latence.
+Note v2.3: the scalability of Alpha retrieval to 100+ lessons (contextual limit, linear frontmatter reading, saturation at growing volume) is no longer a limitation since the introduction of the attention layer (cf. §4.6 and §6.3) — Alpha now uses a cosine semantic pre-filter on local embeddings that scales to 10k+ lessons with no quality or latency degradation.
 
-Note v0.1 `/dreamer` (2026-05-27) : plusieurs limitations historiquement listées ci-dessous (consolidation périodique de la base mémoire non implémentée, audit cross-leçons absent, recadrage stratégique vs cahier des charges manquant) sont désormais **adressées par le skill compagnon `/dreamer`** (cf. §6.4) — Dreamer propose fusions/archives/reformulations de leçons à Lambda Phase 11, et soulève des questions stratégiques à l'humain. Les limites `/justdoit`-internes (decay temporel §8.2, bump auto uses→importance §8.3) restent pertinentes : Dreamer peut détecter et **proposer** ces mises à jour, mais n'implémente pas de mécanisme automatique d'évolution d'importance — il propose, Lambda audit, l'orchestrateur applique.
+Note v0.1 `/dreamer` (2026-05-27): several limitations historically listed below (periodic memory base consolidation not implemented, cross-lesson audit absent, strategic course correction vs specifications missing) are now **addressed by the companion skill `/dreamer`** (cf. §6.4) — Dreamer proposes fusions/archives/reformulations of lessons to Lambda Phase 11, and raises strategic questions to the human. The `/commontrace`-internal limitations (temporal decay §8.2, auto bump uses→importance §8.3) remain relevant: Dreamer can detect and **propose** these updates, but does not implement an automatic importance evolution mechanism — it proposes, Lambda audits, the orchestrator applies.
 
-### 8.1 Benchmark non encore implémenté
+### 8.1 Benchmark Not Yet Implemented
 
-Aucun script de benchmark ne mesure aujourd'hui les métriques cibles :
-- `lesson_quality` — % de propositions Omega marquées ACCEPTÉ par Lambda (signal de qualité de la proposition + alignement Omega/Lambda)
-- `implicit_retrieval` — % de lessons retrouvées par Alpha qui ont effectivement aidé selon `lessons_hit` (signal de précision du retrieval)
-- `transfer_gap` — % de hits cross-projet (lesson seedée sur projet X qui aide sur projet Y), mesure de la capacité de généralisation
+No benchmark script currently measures the target metrics:
+- `lesson_quality` — % of Omega proposals marked ACCEPTED by Lambda (signal of proposal quality + Omega/Lambda alignment)
+- `implicit_retrieval` — % of lessons retrieved by Alpha that actually helped according to `lessons_hit` (signal of retrieval precision)
+- `transfer_gap` — % of cross-project hits (lesson seeded on project X that helps on project Y), measure of generalization capacity
 
-Référence : `project_thomas_ai_long_term_learning.md` — recommandation issue de la recherche : construire un benchmark dédié (~50 trios situation-échec / leçon / situation-isomorphe-future) en réutilisant le format streaming Evo-Memory + taxonomie erreurs AgentErrorBench. ~3-5 jours d'annotation. À faire dans une étape séparée.
+Recommendation from the research: build a dedicated benchmark (~50 trios situation-failure / lesson / isomorphic-future-situation) reusing the Evo-Memory streaming format + AgentErrorBench error taxonomy. ~3-5 days of annotation. To do as a separate step.
 
-### 8.2 Decay temporel non implémenté
+### 8.2 Temporal Decay Not Implemented
 
-Une leçon active reste retrievable indéfiniment, même si elle n'a jamais aidé. Le mécanisme `decay = importance × exp(-(today - last_hit) / tau)` ferait émerger les leçons récemment utiles et reléguer les anciennes — mais risquerait de faire oublier des leçons rares mais critiques (importance 5 sur showstopper qui n'arrive que tous les 6 mois). Probable couplage nécessaire avec un facteur `recency` séparé. À discuter quand on aura plus de données empiriques sur le retrieval Alpha.
+An active lesson remains retrievable indefinitely, even if it has never helped. The `decay = importance × exp(-(today - last_hit) / tau)` mechanism would surface recently useful lessons and relegate old ones — but would risk forgetting rare but critical lessons (importance 5 on a showstopper that only occurs every 6 months). Likely need for coupling with a separate `recency` factor. To discuss when we have more empirical data on Alpha retrieval.
 
-### 8.3 Bump automatique uses → importance non implémenté
+### 8.3 Automatic Bump uses → importance Not Implemented
 
-Si une leçon dépasse N hits sur M runs, on pourrait auto-incrémenter son importance (signal empirique fort d'utilité). En v2.3, la preuve empirique de récurrence n'augmente pas l'importance auto — c'est calibré manuellement par Omega au moment de la création, et seul l'utilisateur peut le modifier via édition manuelle ou révision (status `review` validée par Lambda).
+If a lesson exceeds N hits over M runs, one could auto-increment its importance (strong empirical signal of utility). In v2.3, empirical proof of recurrence does not increase importance automatically — it is calibrated manually by Omega at creation time, and only the user can modify it via manual editing or revision (status `review` validated by Lambda).
 
-Risque connu : drift vers tout en importance 5 si N est mal calibré (toutes les leçons utiles finissent showstopper, l'importance perd son pouvoir discriminant).
+Known risk: drift toward everything at importance 5 if N is poorly calibrated (all useful lessons end up showstopper, importance loses its discriminating power).
 
-### 8.4 Multi-projet : transfer_gap partiellement mesurable
+### 8.4 Multi-project: transfer_gap Partially Measurable
 
-Tous les épisodes ont `project: project-x` au 2026-05-27 — pas de cross-repo encore. Donc le transfer_gap *stricto sensu* (lesson seedée projet X qui aide projet Y) n'est pas mesurable.
+All episodes have `project: <your-project>` as of 2026-05-27 — no cross-repo yet. So the transfer_gap *stricto sensu* (lesson seeded on project X that helps on project Y) is not measurable.
 
-**Proxy partiel observable** : 2 classes de runs cohabitent dans le corpus actuel — méta-skill `/justdoit` (4 runs sur le skill lui-même) et module-a (8 runs sur le DSL multi-TF et la calibration empirique du moteur événementiel). Les leçons seedées sur la classe méta-skill (e.g. `lesson_serialize_subagents_same_files`, `lesson_subagent_double_review_pattern`) ont été retrieve et utiles sur les runs module-a — preuve indirecte d'un transfert intra-projet entre classes de tâches très différentes (modifier un fichier YAML de skill ≠ calibrer 60 multiplicateurs contextuels Bayesian). Le top-4 usage (cf. §4.1 et RETEX 7.15) est dominé par des invariants méthodologiques transverses qui passent les deux classes.
+**Partially observable proxy**: 2 run classes coexist in the current corpus — /commontrace meta-skill (4 runs on the skill itself) and module-a (8 runs on the multi-TF DSL and empirical calibration of the event-driven engine). Lessons seeded on the meta-skill class (e.g. `lesson_serialize_subagents_same_files`, `lesson_subagent_double_review_pattern`) were retrieved and useful on module-a runs — indirect proof of an intra-project transfer between very different task classes (modifying a skill YAML file ≠ calibrating 60 Bayesian contextual multipliers). The top-4 usage (cf. §4.1 and RETEX 7.15) is dominated by cross-cutting methodological invariants that pass both classes.
 
-**Évolution naturelle** : utiliser `/justdoit` sur un projet vraiment différent (autre repo, autre stack — e.g. Thomas AI, ou un projet R&D différent de project-x) pour générer des épisodes avec un `project:` distinct, et mesurer alors le transfer_gap vrai. Estimation : il faut ~5-10 runs sur un 2e projet pour avoir un signal exploitable.
+**Natural evolution**: use `/commontrace` on a truly different project (different repo, different stack) to generate episodes with a distinct `project:`, and then measure the true transfer_gap. Estimate: ~5-10 runs on a 2nd project needed for an exploitable signal.
 
-### 8.5 Calibration inter-agents : pas de mécanisme de réconciliation
+### 8.5 Inter-agent Calibration: No Reconciliation Mechanism
 
-Cf. RETEX 7.3 — A et B peuvent diverger sur l'importance d'une leçon. En v2.3, Lambda peut flagger un écart ≥ 2 comme À RAFFINER (cf. critère "calibration importance" du brief Lambda), mais pas de mécanisme algorithmique de réconciliation automatique. La rubrique + rationale obligatoire suffit à contenir l'écart dans ±1 en pratique, ce qui est considéré acceptable.
+Cf. RETEX 7.3 — A and B can diverge on a lesson's importance. In v2.3, Lambda can flag a gap ≥ 2 as NEEDS REFINEMENT (cf. "importance calibration" criterion of the Lambda brief), but no algorithmic mechanism for automatic reconciliation. The rubric + mandatory rationale suffices to contain the gap within ±1 in practice, which is considered acceptable.
 
-### 8.6 Phase 4 inapplicable pour skill user-level
+### 8.6 Phase 4 Inapplicable for User-level Skill
 
-Cf. RETEX 7.6 — `~/.claude/skills/` n'est pas un repo git, Phase 4 (commit après A) est skipée silencieusement. Comportement légitime mais à formaliser dans SKILL.md comme cas attendu pour les skills user-level (vs project-level dans un repo).
+Cf. RETEX 7.6 — the skills directory is not a git repo, Phase 4 (commit after A) is silently skipped. Legitimate behavior but to formalize in SKILL.md as an expected case for user-level skills (vs project-level in a repo).
 
-### 8.7 Distribution importance biaisée vers 3-5
+### 8.7 Importance Distribution Biased Toward 3-5
 
-Cf. RETEX 7.5 — pas de cas en bas de l'échelle (1-2) dans les seeds. Si les futurs runs convergent tous vers la même distribution sans jamais générer de 1-2, ça révèle un biais structurel à corriger. Mitigation possible : forcer Omega à proposer au moins une "observation note d'épisode" en importance 1-2 par run, même si non transformable en leçon (le rationale serait alors "non actionnable mais documentable"). Pas implémenté en v2.3.
+Cf. RETEX 7.5 — no cases at the low end of the scale (1-2) in the seeds. If future runs all converge toward the same distribution without ever generating 1-2, it reveals a structural bias to correct. Possible mitigation: force Omega to propose at least one "episode observation note" at importance 1-2 per run, even if not transformable into a lesson (the rationale would then be "not actionable but documentable"). Not implemented in v2.3.
 
 ---
 
-## 9. Index des fichiers
+## 9. File Index
 
-| Chemin | Rôle |
+| Path | Role |
 |---|---|
-| `~/.claude/skills/justdoit/SKILL.md` | Source canonique du workflow (v2.3). Lue par l'orchestrateur, Alpha, Omega, Lambda ; pas modifiée pendant un run |
-| `~/.claude/skills/justdoit/DOCUMENTATION.md` | Ce document |
-| `memory/INDEX.md` | Index hiérarchique par domaine des lessons + episodes. Édité par l'orchestrateur en Phase 11 |
-| `memory/attention/README.md` | Documentation attention layer (v2.3) — rôle, format index.npz, contrat consommé par /dreamer v0.1 |
-| `~/.claude/skills/dreamer/SKILL.md` | Skill compagnon Dreamer (v0.1, 2026-05-27) — source canonique du workflow Dreamer 6 phases, brief sous-agent verbatim, format SESSION.md, discipline Git, verrou exclusivité |
-| `~/.claude/skills/dreamer/README.md` | Vue d'ensemble courte du skill /dreamer |
-| `recherche/<projet>/dreamer_workspace/<session>/` | Workspace Dreamer par session (commité dans le repo projet) — SESSION.md, experiments/, memory_proposals.md |
-| `memory/attention/build_index.py` | Encode toutes les leçons actives → `index.npz` (v2.3) |
-| `memory/attention/query.py` | Query top-K + override sécurité importance ≥ 4 (v2.3) |
-| `memory/attention/index.npz` | Index numpy embeddings (v2.3, généré, jamais édité manuellement) |
-| `memory/lessons/README.md` | Documentation format leçon + workflow d'écriture/update/révision |
-| `memory/lessons/lesson_template.md` | Template vide pour créer une nouvelle leçon |
+| `$COMMONTRACE_ROOT/SKILL.md` | Canonical workflow source (v2.3). Read by the orchestrator, Alpha, Omega, Lambda; not modified during a run |
+| `$COMMONTRACE_ROOT/DOCUMENTATION.md` | This document |
+| `memory/INDEX.md` | Hierarchical domain index of lessons + episodes. Edited by the orchestrator in Phase 11 |
+| `memory/attention/README.md` | Attention layer documentation (v2.3) — role, index.npz format, contract consumed by /dreamer v0.1 |
+| `$COMMONTRACE_ROOT/../dreamer/SKILL.md` | Companion skill Dreamer (v0.1, 2026-05-27) — canonical source of the 6-phase Dreamer workflow, verbatim sub-agent brief, SESSION.md format, Git discipline, exclusivity lock |
+| `$COMMONTRACE_ROOT/../dreamer/README.md` | Short overview of the /dreamer skill |
+| `recherche/<project>/dreamer_workspace/<session>/` | Dreamer workspace per session (committed in the project repo) — SESSION.md, experiments/, memory_proposals.md |
+| `memory/attention/build_index.py` | Encodes all active lessons → `index.npz` (v2.3) |
+| `memory/attention/query.py` | Query top-K + importance ≥ 4 safety override (v2.3) |
+| `memory/attention/index.npz` | Numpy embeddings index (v2.3, generated, never manually edited) |
+| `memory/lessons/README.md` | Lesson format documentation + write/update/revision workflow |
+| `memory/lessons/lesson_template.md` | Empty template for creating a new lesson |
 
-### Leçons actives au 2026-05-28 (33 fichiers, hors template)
+### Active Lessons as of 2026-05-28 (33 files, excluding template)
 
-Triées par usage décroissant (`uses` selon frontmatter), puis par importance. Format colonne usage = `uses=N / importance=M / domain`.
+Sorted by descending usage (`uses` according to frontmatter), then by importance. Usage column format = `uses=N / importance=M / domain`.
 
-| Fichier | Rule synthétique | usage / importance / domain |
+| File | Synthetic rule | usage / importance / domain |
 |---|---|---|
-| `lesson_serialize_subagents_same_files.md` | Ne JAMAIS paralléliser 2 sous-agents qui éditent les mêmes fichiers (écrasement silencieux) | 7 / 5 / subagents |
-| `lesson_semantic_check_not_just_syntactic.md` | Pour refactor de renommage / dépréciation transverse, vérifier sémantique (paraphrases, synonymes) en plus du grep syntaxique | 7 / 4 / refactor |
-| `lesson_no_tmp_results.md` | Ne jamais écrire artefacts dans `/tmp`, utiliser `{module}/results/{run_name}/` | 5 / 4 / other |
-| `lesson_subagent_double_review_pattern.md` | Pour code architectural via sous-agents, A implementer + B reviewer indépendant + boucle max 3 itérations | 5 / 4 / subagents |
-| `lesson_orchestrator_fix_residual_post_b.md` | Quand B rend CONFORME mais signale 1-3 résidus textuels mineurs, l'orchestrateur fix en arbitrage Phase 8-équivalent | 5 / 2 / subagents |
-| `lesson_alpha_brief_quality_drives_a_quality.md` | Brief Alpha doit produire des recommandations CONCRÈTES et ACTIONNABLES spécifiques à la tâche | 4 / 3 / subagents |
-| `lesson_audit_cascade_may_reveal_noop_scope.md` | Avant refactor "ajouter dimension X au pipeline", Étape 0 audit cascade sur infra existante — peut révéler cas no-op | 3 / 4 / refactor |
-| `lesson_no_subagents_for_archi_code_except_double_review.md` | Code architectural en session principale par défaut ; sous-agents OK si double-review activé | 3 / 4 / subagents |
-| `lesson_scalar_invariant_metric_tautological.md` | Pour valider un coefficient/scaling calibré, ne PAS utiliser une métrique invariante par scalaire positif (AUC, Spearman) | 3 / 4 / testing |
-| `lesson_anticipate_null_effect_in_calibration_brief.md` | Avant brief calibration modulateur conditionnel, inscrire clauses "effet nul = découverte légitime" + "vérifier stratification" | 3 / 3 / subagents |
-| `lesson_brief_b_strict_no_git_ops.md` | Brief B reviewer doit interdire explicitement git stash/pop/checkout/reset/clean ; lecture seule uniquement | 3 / 3 / subagents |
-| `lesson_explicit_self_audit_when_criteria_count_high.md` | Quand un brief A contient ≥ 10 critères mesurables, exiger une auto-évaluation EXPLICITE item-par-item dans le rapport A | 3 / 3 / subagents |
-| `lesson_fix_in_passing_when_documented_and_consistent.md` | Quand A détecte un défaut documenté antérieur ET coût marginal/critère explicite, fix en passant + trace dans rapport | 3 / 3 / other |
-| `lesson_signal_mirror_contract_in_brief.md` | Si 2 modules ont un mirror strict via commentaire et l'un est dans exclusions brief A, lever explicitement l'exception | 3 / 3 / subagents |
-| `lesson_prefer_scalar_over_binary.md` | Préférer systématiquement les grandeurs scalaires aux binaires (signe, seuils) — porte plus d'information | 2 / 4 / testing |
-| `lesson_document_contract_for_future_consumers.md` | Quand infra réutilisable livrée sans consommateur final, documenter contrat (format, signature) avec exemple verbatim | 2 / 3 / other |
-| `lesson_locate_dichotomy_at_emission_not_scorer.md` | Avant refactor "préserver magnitude end-to-end", auditer cascade depuis la sortie pour trouver la PREMIÈRE dichotomie | 2 / 3 / refactor |
-| `lesson_show_changes_before_editing.md` | Avant Edit/Write sur code existant, décrire le changement et attendre validation (sauf nouveaux fichiers / mandat /justdoit) | 2 / 3 / refactor |
-| `lesson_transparency_when_deviating.md` | Quand on dévie d'une procédure annoncée, l'admettre post-action et offrir opportunité de revue | 2 / 3 / other |
-| `lesson_amend_brief_a_when_lambda_signals_recurring_residual.md` | Lambda signale anti-pattern récurrent > 3 fois → orchestrateur amende brief A du run suivant (préventif) | 1 / 4 / subagents |
-| `lesson_regularize_ratio_calibration_near_zero.md` | Calibration via ratio de moyennes empiriques → prévoir régularisation (clamp/shrinkage/smoothing) | 1 / 4 / testing |
-| `lesson_companion_skill_consumes_dont_extend.md` | Comportement nouveau (scope/triggers distincts) réutilisant l'infra d'un skill existant → créer un skill compagnon, pas étendre | 1 / 3 / subagents |
-| `lesson_filesystem_ground_truth_before_referential_table.md` | Toute table référentielle doc→chemins/code doit être vérifiée contre le filesystem réel (ls/grep) avant d'être écrite | 1 / 3 / refactor |
-| `lesson_kwargs_namespace_collision.md` | Éviter même nom de kwarg dans 2 modules sémantiquement distincts (prefix ou sub-namespace) | 1 / 3 / refactor |
-| `lesson_mid_flight_scope_correction.md` | Si scope creep détecté pendant qu'A tourne, stopper TaskStop + nettoyer résidus + relancer A2 avec brief corrigé | 1 / 3 / subagents |
-| `lesson_mtime_not_semantic_in_scope_criteria.md` | Critères de hors-scope basés sur mtime/état filesystem = faux positifs ; utiliser un critère sémantique | 1 / 3 / testing |
-| `lesson_verify_secondary_facts_before_brief_injection.md` | L'orchestrateur doit vérifier empiriquement (pytest/ls/git show/grep) tout fait secondaire injecté dans un brief sous-agent | 1 / 3 / subagents |
-| `lesson_e2e_test_xfail_when_dependency_bugs_identified.md` | Test E2E révèle que cible ne se produit pas + audit identifie bugs latents hors scope → `pytest.mark.xfail(strict=False, reason=...)` | 0 / 3 / testing |
-| `lesson_explicit_file_granularity_in_git_add_to_prevent_session_leak.md` | `git add <dossier>` peut leaker des fichiers non-trackés d'autres sessions ; préférer la granularité fichier explicite | 0 / 3 / git-safety |
-| `lesson_gp_gpu_non_deterministic.md` | GP-GPU module-c v2/module-b pas run-à-run bit-exact même seed fixé (atomics) ; comparer métriques agrégées + same-set | 0 / 3 / cuda-gpu |
-| `lesson_perf_critical_cli_flag_default_on.md` | Tout flag CLI dont l'OFF est notablement plus lent (--gpu, --parallel, --cache) doit être activé par défaut | 0 / 3 / refactor |
-| `lesson_signal_absence_confirmed_by_regularization_convergence.md` | Quand N≥3 stratégies de régularisation distinctes convergent toutes vers baseline neutre, signal upstream est ABSENT → REPORT | 0 / 3 / testing |
-| `lesson_triangulate_before_architectural_report.md` | Avant décision REPORT vs PROCEED sur refactor ≥ 1j scope, exiger ≥ 3 expériences indépendantes empiriques convergentes | 0 / 3 / refactor |
+| `lesson_serialize_subagents_same_files.md` | NEVER parallelize 2 sub-agents that edit the same files (silent overwrite) | 7 / 5 / subagents |
+| `lesson_semantic_check_not_just_syntactic.md` | For renaming / cross-cutting deprecation refactor, verify semantics (paraphrases, synonyms) in addition to syntactic grep | 7 / 4 / refactor |
+| `lesson_no_tmp_results.md` | Never write artifacts in `/tmp`, use `{module}/results/{run_name}/` | 5 / 4 / other |
+| `lesson_subagent_double_review_pattern.md` | For architectural code via sub-agents, A implementer + independent B reviewer + max 3 iteration loop | 5 / 4 / subagents |
+| `lesson_orchestrator_fix_residual_post_b.md` | When B returns CONFORM but flags 1-3 minor textual residuals, the orchestrator fixes in Phase 8-equivalent arbitration | 5 / 2 / subagents |
+| `lesson_alpha_brief_quality_drives_a_quality.md` | Alpha brief must produce CONCRETE and ACTIONABLE recommendations specific to the task | 4 / 3 / subagents |
+| `lesson_audit_cascade_may_reveal_noop_scope.md` | Before refactor "add dimension X to pipeline", Step 0 cascade audit on existing infra — may reveal no-op case | 3 / 4 / refactor |
+| `lesson_no_subagents_for_archi_code_except_double_review.md` | Architectural code in main session by default; sub-agents OK if double-review enabled | 3 / 4 / subagents |
+| `lesson_scalar_invariant_metric_tautological.md` | To validate a calibrated coefficient/scaling, do NOT use a metric invariant to positive scalar (AUC, Spearman) | 3 / 4 / testing |
+| `lesson_anticipate_null_effect_in_calibration_brief.md` | Before brief for conditional modulator calibration, include clauses "null effect = legitimate discovery" + "verify stratification" | 3 / 3 / subagents |
+| `lesson_brief_b_strict_no_git_ops.md` | B reviewer brief must explicitly forbid git stash/pop/checkout/reset/clean; read-only only | 3 / 3 / subagents |
+| `lesson_explicit_self_audit_when_criteria_count_high.md` | When an A brief contains ≥ 10 measurable criteria, require an EXPLICIT item-by-item self-evaluation in A's report | 3 / 3 / subagents |
+| `lesson_fix_in_passing_when_documented_and_consistent.md` | When A detects a previously documented defect AND marginal cost/explicit criterion, fix in passing + trace in report | 3 / 3 / other |
+| `lesson_signal_mirror_contract_in_brief.md` | If 2 modules have a strict mirror via comment and one is in A brief exclusions, explicitly lift the exception | 3 / 3 / subagents |
+| `lesson_prefer_scalar_over_binary.md` | Systematically prefer scalar quantities over binary ones (sign, thresholds) — carries more information | 2 / 4 / testing |
+| `lesson_document_contract_for_future_consumers.md` | When reusable infra delivered without final consumer, document contract (format, signature) with verbatim example | 2 / 3 / other |
+| `lesson_locate_dichotomy_at_emission_not_scorer.md` | Before refactor "preserve magnitude end-to-end", audit cascade from the output to find the FIRST dichotomy | 2 / 3 / refactor |
+| `lesson_show_changes_before_editing.md` | Before Edit/Write on existing code, describe the change and wait for validation (except new files / /commontrace mandate) | 2 / 3 / refactor |
+| `lesson_transparency_when_deviating.md` | When deviating from an announced procedure, admit it post-action and offer review opportunity | 2 / 3 / other |
+| `lesson_amend_brief_a_when_lambda_signals_recurring_residual.md` | Lambda flags recurring anti-pattern > 3 times → orchestrator amends next run's A brief (preventive) | 1 / 4 / subagents |
+| `lesson_regularize_ratio_calibration_near_zero.md` | Calibration via ratio of empirical means → plan regularization (clamp/shrinkage/smoothing) | 1 / 4 / testing |
+| `lesson_companion_skill_consumes_dont_extend.md` | New behavior (distinct scope/triggers) reusing existing skill infra → create a companion skill, not extend | 1 / 3 / subagents |
+| `lesson_filesystem_ground_truth_before_referential_table.md` | Any referential doc→paths/code table must be verified against the real filesystem (ls/grep) before being written | 1 / 3 / refactor |
+| `lesson_kwargs_namespace_collision.md` | Avoid same kwarg name in 2 semantically distinct modules (prefix or sub-namespace) | 1 / 3 / refactor |
+| `lesson_mid_flight_scope_correction.md` | If scope creep detected while A is running, stop task + clean residues + relaunch A2 with corrected brief | 1 / 3 / subagents |
+| `lesson_mtime_not_semantic_in_scope_criteria.md` | Out-of-scope criteria based on mtime/filesystem state = false positives; use a semantic criterion | 1 / 3 / testing |
+| `lesson_verify_secondary_facts_before_brief_injection.md` | The orchestrator must empirically verify (pytest/ls/git show/grep) any secondary fact injected into a sub-agent brief | 1 / 3 / subagents |
+| `lesson_e2e_test_xfail_when_dependency_bugs_identified.md` | E2E test reveals target does not occur + audit identifies latent out-of-scope bugs → `pytest.mark.xfail(strict=False, reason=...)` | 0 / 3 / testing |
+| `lesson_explicit_file_granularity_in_git_add_to_prevent_session_leak.md` | `git add <directory>` can leak untracked files from other sessions; prefer explicit file granularity | 0 / 3 / git-safety |
+| `lesson_gp_gpu_non_deterministic.md` | GP-GPU module-c v2/module-b not run-to-run bit-exact even with fixed seed (atomics); compare aggregated metrics + same-set | 0 / 3 / cuda-gpu |
+| `lesson_perf_critical_cli_flag_default_on.md` | Any CLI flag whose OFF is noticeably slower (--gpu, --parallel, --cache) must be enabled by default | 0 / 3 / refactor |
+| `lesson_signal_absence_confirmed_by_regularization_convergence.md` | When N≥3 distinct regularization strategies all converge toward neutral baseline, upstream signal is ABSENT → REPORT | 0 / 3 / testing |
+| `lesson_triangulate_before_architectural_report.md` | Before REPORT vs PROCEED decision on refactor ≥ 1d scope, require ≥ 3 convergent independent empirical experiments | 0 / 3 / refactor |
 
-| `memory/episodes/README.md` | Documentation format épisode + workflow d'écriture |
-| `memory/episodes/episode_template.md` | Template vide pour créer un nouvel épisode |
+| `memory/episodes/README.md` | Episode format documentation + write workflow |
+| `memory/episodes/episode_template.md` | Empty template for creating a new episode |
 
-### Épisodes au 2026-05-28 (15 fichiers)
+### Episodes as of 2026-05-28 (15 files)
 
-Méta-skill (5) — chaque run modifie le skill `/justdoit` ou `/dreamer` lui-même :
+Meta-skill (5) — each run modifies the `/commontrace` or `/dreamer` skill itself:
 
-| Fichier | Description / version | verdict / importance |
+| File | Description / version | verdict / importance |
 |---|---|---|
-| `2026-05-26_create-justdoit-v2.md` | Création v2 (Alpha + Omega + base mémoire) | CONFORME / 3 |
-| `2026-05-27_extend-justdoit-importance.md` | Ajout importance scalaire 1-5 (v2.1) | CONFORME / 3 |
-| `2026-05-27_formalize-lambda.md` | Formalisation Lambda Phase 11 100% auto (v2.2) | CONFORME / 4 |
-| `2026-05-27_add-attention-layer.md` | Couche attention sémantique multi-qa-mpnet (v2.3) | CONFORME / 4 |
-| `2026-05-27_create-dreamer-skill.md` | Création du skill compagnon `/dreamer` v0.1 (3 rôles : consolidation + auteur empirique + arbitre) | CONFORME / 4 |
+| `2026-05-26_create-commontrace-v2.md` | Creation v2 (Alpha + Omega + memory base) | CONFORM / 3 |
+| `2026-05-27_extend-commontrace-importance.md` | Addition of scalar importance 1-5 (v2.1) | CONFORM / 3 |
+| `2026-05-27_formalize-lambda.md` | Lambda Phase 11 formalization, 100% auto (v2.2) | CONFORM / 4 |
+| `2026-05-27_add-attention-layer.md` | Semantic attention layer multi-qa-mpnet (v2.3) | CONFORM / 4 |
+| `2026-05-27_create-dreamer-skill.md` | Creation of the companion skill `/dreamer` v0.1 (3 roles: consolidation + empirical author + arbiter) | CONFORM / 4 |
 
-module-a (10) — première vraie utilisation du skill hors-meta sur projet réel :
+module-a (10) — first real use of the skill outside meta on a real project:
 
-| Fichier | Description | verdict / importance |
+| File | Description | verdict / importance |
 |---|---|---|
-| `2026-05-27_module-a-v04-pipeline-multi-tf.md` | Pipeline multi-TF V0.4 — audit cascade Étape 0 révèle scope no-op | CONFORME / 3 |
-| `2026-05-27_module-a-v04-g2-eventref-tf-qualifiable.md` | EventRef.tf qualifiable, audit cascade PLEIN BORNÉ, multi-TF résolu au niveau feuille | CONFORME / 3 |
-| `2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md` | NESTED.outer accepte niveau persistant — 1er run V0.4 SANS commit cosmétique (brief A renforcé 7-check) | CONFORME / 4 |
-| `2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md` | Setup 12 métier runnable + E2E acceptation V0.4 — 1ère application **préventive** de leçon méta | CONFORME / 4 |
-| `2026-05-27_module-a-p22-calibration-k-coefficients.md` | Calibration empirique ~50 coefficients K_* via likelihood ratios stratifiés | CONFORME / 3 |
-| `2026-05-27_module-a-p23-context-modulators-fix-collision.md` | Calibration 60 multiplicateurs contextuels + fix kwargs collision — 1er hit cross-run mémoire fraîche | CONFORME / 3 |
-| `2026-05-27_module-a-p24-sharpness-magnitude-discovery.md` | Découverte magnitude vs binaire ~242× plus fort mais ratio OOS explose sans régularisation | CONFORME / 4 |
-| `2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md` | 3 volets calibration — verdict architectural P2.5bis REPORT par convergence multi-stratégies | CONFORME / 4 |
-| `2026-05-28_module-a-v1-m1-spec-events.md` | M1 module-a V1 — spécification de la refonte L3-L4 vers le moteur événementiel | CONFORME / 4 |
-| `2026-05-28_module-a-v1-m2-events-engine.md` | M2 module-a V1 — EventEngine V1 (squelette + to_event_format effectif) + 33 git mv V0→v0_legacy | CONFORME / 4 |
+| `2026-05-27_module-a-v04-pipeline-multi-tf.md` | Multi-TF pipeline V0.4 — Step 0 cascade audit reveals no-op scope | CONFORM / 3 |
+| `2026-05-27_module-a-v04-g2-eventref-tf-qualifiable.md` | EventRef.tf qualifiable, FULL BOUNDED cascade audit, multi-TF resolved at leaf level | CONFORM / 3 |
+| `2026-05-27_module-a-v04-g3-nested-outer-level-persistent.md` | NESTED.outer accepts persistent level — 1st V0.4 run WITHOUT cosmetic commit (reinforced 7-check A brief) | CONFORM / 4 |
+| `2026-05-27_module-a-task4-setup-12-runnable-g4-candidate.md` | Setup 12 business runnable + E2E acceptance V0.4 — 1st **preventive** application of meta-lesson | CONFORM / 4 |
+| `2026-05-27_module-a-p22-calibration-k-coefficients.md` | Empirical calibration of ~50 K_* coefficients via stratified likelihood ratios | CONFORM / 3 |
+| `2026-05-27_module-a-p23-context-modulators-fix-collision.md` | Calibration of 60 contextual multipliers + kwargs collision fix — 1st cross-run hit of fresh memory | CONFORM / 3 |
+| `2026-05-27_module-a-p24-sharpness-magnitude-discovery.md` | Discovery magnitude vs binary ~242× stronger but OOS ratio explodes without regularization | CONFORM / 4 |
+| `2026-05-27_module-a-p25-dimensionless-weights-magnitude-regularization.md` | 3-track calibration — architectural verdict P2.5bis REPORT by multi-strategy convergence | CONFORM / 4 |
+| `2026-05-28_module-a-v1-m1-spec-events.md` | M1 module-a V1 — specification of the L3-L4 overhaul toward the event-driven engine | CONFORM / 4 |
+| `2026-05-28_module-a-v1-m2-events-engine.md` | M2 module-a V1 — EventEngine V1 (skeleton + effective to_event_format) + 33 git mv V0→v0_legacy | CONFORM / 4 |
 
-### Liens externes
+### External Links
 
-| Chemin | Rôle |
+| Path | Role |
 |---|---|
-| `~/.claude/projects/project-x-recherche/memory/project_thomas_ai_long_term_learning.md` | Projet lié — Thomas AI, /justdoit v2 est son terrain d'expérimentation |
+| `https://github.com/denemlabs/commontrace-v2` | CommonTrace repository — /commontrace v2 is the protocol's reference implementation |

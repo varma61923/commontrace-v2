@@ -1,67 +1,67 @@
-# `memory/episodes/` — Trace de chaque run `/justdoit`
+# `memory/episodes/` — Trace of each /commontrace run
 
-## Rôle
+## Role
 
-Un fichier épisode `YYYY-MM-DD_<slug>.md` est écrit par le sous-agent **Omega** à la **Phase 10** de chaque run `/justdoit` (sauf si `--skip-omega`). L'écriture est **systématique** (traçabilité), indépendamment du verdict final ou de la création éventuelle de nouvelles leçons.
+An episode file `YYYY-MM-DD_<slug>.md` is written by the sub-agent **Omega** at **Phase 10** of each /commontrace run (unless `--skip-omega`). Writing is **systematic** (traceability), regardless of the final verdict or whether new lessons are created.
 
 ## Workflow (v2.2)
 
-1. Run `/justdoit` se déroule (Phases 0-8).
-2. Phase 9 : orchestrateur produit la mini-rétro.
-3. Phase 10 : Omega reçoit tout (tâche, Alpha, A, B, verdict, rétro) et écrit l'épisode ICI.
-4. Phase 11 : Lambda audit les propositions Omega (ACCEPTÉ | REJETÉ | À RAFFINER). L'orchestrateur applique les ACCEPTÉ et met à jour le champ `lessons_validated_by_lambda` du frontmatter de cet épisode avec les slugs effectivement validés.
+1. /commontrace run proceeds (Phases 0-8).
+2. Phase 9: orchestrator produces the mini-retro.
+3. Phase 10: Omega receives everything (task, Alpha, A, B, verdict, retro) and writes the episode HERE.
+4. Phase 11: Lambda audits Omega proposals (ACCEPTED | REJECTED | NEEDS REFINEMENT). The orchestrator applies the ACCEPTED ones and updates the `lessons_validated_by_lambda` field in this episode's frontmatter with the effectively validated slugs.
 
-Note v2.2 : le champ frontmatter `lessons_validated_by_user` a été renommé en `lessons_validated_by_lambda` pour refléter le passage à la validation Lambda automatique (workflow 100% automatisé, plus de dépendance utilisateur).
+Note v2.2: the frontmatter field `lessons_validated_by_user` has been renamed to `lessons_validated_by_lambda` to reflect the switch to automatic Lambda validation (100% automated workflow, no longer user-dependent).
 
 ## Format
 
-Frontmatter YAML strict (parsable par `yaml.safe_load`), suivi d'un corps markdown avec sections fixes.
+Strict YAML frontmatter (parsable by `yaml.safe_load`), followed by a markdown body with fixed sections.
 
-Voir `episode_template.md` pour un squelette vide. Champs obligatoires :
+See `episode_template.md` for an empty skeleton. Required fields:
 
-| Champ | Type | Description |
+| Field | Type | Description |
 |---|---|---|
-| `name` | string | `YYYY-MM-DD_<slug>`, identique au nom de fichier (sans .md) |
-| `description` | string | Résumé 1 ligne du run |
-| `task_invocation` | string | Verbatim de l'invocation `/justdoit ...` |
-| `tags` | list[string] | Tags libres pour pré-filtrage Alpha (e.g. `[cuda, refactor]`) |
-| `project` | string | Projet détecté depuis le cwd (e.g. `<votre_projet>`) — utilisé pour métrique `transfer_gap` |
-| `verdict` | enum | `CONFORME` \| `ARBITRAGE` \| `ABANDON` |
-| `importance` | int | Entier 1-5 OBLIGATOIRE — voir rubrique complète dans `SKILL.md` section "Rubrique d'importance" (5=showstopper, 4=critique, 3=utile, 2=mineur, 1=anecdotique). Calé par Omega lors de l'écriture de l'épisode. |
-| `importance_rationale` | string | 1-phrase concrète OBLIGATOIRE justifiant le score (pas générique). |
-| `n_iterations` | int | Nombre d'itérations A+B effectuées |
-| `commit_sha` | string | SHA du commit final |
-| `duration_minutes` | int | Durée totale du run |
-| `lessons_retrieved_by_alpha` | list[string] | Slugs des leçons formellement sélectionnées par Alpha dans son bloc "Lessons applicables". N'inclut PAS les counter-examples mentionnés en "Rappel mandat" — pour cela voir bloc "Lessons consultées" du rapport Alpha. |
-| `lessons_hit` | list[string] | Slugs des leçons effectivement utiles (selon rapports A/B + rétro orchestrateur). **Non borné par `retrieved`** : peut inclure des lessons actives en arrière-plan (counter-examples, règles implicites). Benchmark calcule strict (hit ∩ retrieved / retrieved) et permissive (hit / retrieved). |
-| `lessons_proposed_by_omega` | list[string] | Slugs des nouvelles leçons proposées par Omega (avant validation Lambda) |
-| `lessons_validated_by_lambda` | list[string] | Slugs effectivement validés par Lambda en Phase 11 et appliqués par l'orchestrateur — rempli APRÈS coup. Renommé en v2.2 depuis `lessons_validated_by_user` (passage à la validation automatique). |
+| `name` | string | `YYYY-MM-DD_<slug>`, identical to the file name (without .md) |
+| `description` | string | 1-line summary of the run |
+| `task_invocation` | string | Verbatim of the `/commontrace ...` invocation |
+| `tags` | list[string] | Free tags for Alpha pre-filtering (e.g. `[cuda, refactor]`) |
+| `project` | string | Project detected from the cwd (e.g. `<your_project>`) — used for the `transfer_gap` metric |
+| `verdict` | enum | `CONFORM` \| `ARBITRATION` \| `ABANDON` |
+| `importance` | int | Integer 1-5 REQUIRED — see full rubric in `SKILL.md` section "Importance rubric" (5=showstopper, 4=critical, 3=useful, 2=minor, 1=anecdotal). Set by Omega when writing the episode. |
+| `importance_rationale` | string | 1-sentence concrete REQUIRED justification for the score (not generic). |
+| `n_iterations` | int | Number of A+B iterations performed |
+| `commit_sha` | string | SHA of the final commit |
+| `duration_minutes` | int | Total duration of the run |
+| `lessons_retrieved_by_alpha` | list[string] | Slugs of lessons formally selected by Alpha in its "Applicable lessons" block. Does NOT include counter-examples mentioned in "Mandate reminder" — for those see the "Lessons consulted" block in the Alpha report. |
+| `lessons_hit` | list[string] | Slugs of lessons actually useful (according to A/B reports + orchestrator retro). **Not bounded by `retrieved`**: can include background-active lessons (counter-examples, implicit rules). Benchmark computes strict (hit ∩ retrieved / retrieved) and permissive (hit / retrieved). |
+| `lessons_proposed_by_omega` | list[string] | Slugs of new lessons proposed by Omega (before Lambda validation) |
+| `lessons_validated_by_lambda` | list[string] | Slugs effectively validated by Lambda in Phase 11 and applied by the orchestrator — filled AFTER the fact. Renamed in v2.2 from `lessons_validated_by_user` (switch to automatic validation). |
 
-### Critère Omega pour proposer une nouvelle leçon depuis un épisode (v2.1)
+### Omega Criteria for Proposing a New Lesson from an Episode (v2.1)
 
-Omega propose une leçon candidate si au moins UN des deux critères suivants est vrai (en plus de "non couvert par leçon existante" ET "généralisable hors-projet") :
+Omega proposes a candidate lesson if at least ONE of the following two criteria is true (in addition to "not covered by an existing lesson" AND "generalizable cross-project"):
 
-- **(A)** Importance épisode source ≥ 3 ET généralisable hors-projet.
-- **(B)** Importance 4-5 même sur 1 seule occurrence — un showstopper / critique mérite d'être capturé tout de suite, sans attendre une seconde occurrence.
+- **(A)** Source episode importance >= 3 AND generalizable cross-project.
+- **(B)** Importance 4-5 even on a single occurrence — a showstopper / critical issue deserves to be captured immediately, without waiting for a second occurrence.
 
-Remplace l'ancien critère "≥ 2 épisodes le montrent" (trop strict pour les showstoppers rares mais critiques).
+Replaces the old criterion ">= 2 episodes showing it" (too strict for rare but critical showstoppers).
 
-## Pourquoi ces champs
+## Why These Fields
 
-Les champs `lessons_*` servent à :
-- Tracer ce qui a été retrouvé par Alpha et ce qui a réellement aidé (audit `lessons_retrieved_by_alpha` vs `lessons_hit`).
-- Tracer la chaîne proposition Omega → validation Lambda (`lessons_proposed_by_omega` vs `lessons_validated_by_lambda`).
-- Permettre des analyses cross-project ultérieures via le champ `project`.
+The `lessons_*` fields serve to:
+- Trace what Alpha retrieved and what actually helped (audit `lessons_retrieved_by_alpha` vs `lessons_hit`).
+- Trace the Omega proposal -> Lambda validation chain (`lessons_proposed_by_omega` vs `lessons_validated_by_lambda`).
+- Enable future cross-project analyses via the `project` field.
 
-Un script de benchmark mesurant `lesson_quality` / `implicit_retrieval` / `transfer_gap` sera ajouté dans une étape séparée et s'appuiera sur ces champs.
+A benchmark script measuring `lesson_quality` / `implicit_retrieval` / `transfer_gap` will be added in a separate step and will rely on these fields.
 
-## Sections du corps
+## Body Sections
 
-- **What happened** : 5-10 lignes factuelles (ce qu'on a fait, comment, résultat).
-- **What surprised me** : extrait verbatim de la rétro orchestrateur (Phase 9).
-- **What worked well** : 0-N items.
-- **What worked less well** : 0-N items.
+- **What happened**: 5-10 factual lines (what was done, how, result).
+- **What surprised me**: verbatim extract from the orchestrator retro (Phase 9).
+- **What worked well**: 0-N items.
+- **What worked less well**: 0-N items.
 
-## Édition manuelle
+## Manual Editing
 
-Sauf cas exceptionnel (correction de champ erroné, ajout post-mortem), **ne pas éditer** un épisode après sa création. C'est une **archive**, pas un document vivant. Les corrections doivent passer par un nouvel épisode ou un commit dédié documenté.
+Except in exceptional cases (correcting an erroneous field, adding a post-mortem), **do not edit** an episode after its creation. It is an **archive**, not a living document. Corrections should go through a new episode or a dedicated documented commit.

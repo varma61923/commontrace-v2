@@ -1,0 +1,54 @@
+digraph agent_orchestrator {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="DejaVu Sans";
+  labelloc="t";
+  fontsize=14;
+  label=<<b>Orchestrator (main agent)</b>  ·  present across all phases (0 → 11)<br/><font point-size="10">Coordinates the pipeline, spawns 5 sub-agents (async), decides verdicts, writes validated memory</font>>;
+  nodesep=0.32;
+  ranksep=0.65;
+
+  node [fontname="DejaVu Sans", fontsize=10, shape=box, style="rounded,filled", penwidth=1.2, margin="0.12,0.07"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#64748b", penwidth=1.1];
+
+  // input
+  user [label="User\n/commontrace <task>", shape=oval, fillcolor="#0f172a", fontcolor="white"];
+
+  // hub
+  orch [label=<<b>ORCHESTRATOR</b><br/><font point-size="9">P1 parse + brief A · P2 create task entry<br/>P4 commit after A · P6 verdict decision<br/>P7 iteration · P8 arbitration (iter≥max)<br/>P9 retro · P11 apply ACCEPTED</font>>,
+        fillcolor="#475569", fontcolor="white", penwidth=1.7];
+
+  // spawned sub-agents (color = agent)
+  subgraph cluster_spawn {
+    label=<<b>Fresh sub-agents (spawned async)</b>>; fontsize=10; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    sa_alpha  [label="Alpha · P0", fillcolor="#2563eb", fontcolor="white"];
+    sa_a      [label="A · P3/P7", fillcolor="#16a34a", fontcolor="white"];
+    sa_b      [label="B · P5", fillcolor="#ea580c", fontcolor="white"];
+    sa_omega  [label="Omega · P10", fillcolor="#7c3aed", fontcolor="white"];
+    sa_lambda [label="Lambda · P11", fillcolor="#dc2626", fontcolor="white"];
+  }
+
+  // outputs
+  subgraph cluster_out {
+    label=<<b>Outputs</b>>; fontsize=11; style="rounded"; color="#cbd5e1"; bgcolor="#f8fafc"; margin=10;
+    node [fillcolor="#f1f5f9", color="#94a3b8", fontcolor="#1e293b"];
+    o_commit [label="Git commits\n(P4, per iteration)"];
+    o_mem    [label="memory/ : lessons/ + INDEX.md\n(P11, ACCEPTED only)\n+ rebuild attention", shape=cylinder, fillcolor="#fde68a", color="#b45309", fontcolor="#78350f"];
+    o_rep    [label="Final report to user\n(ACCEPTED/REJECTED traceability)"];
+  }
+
+  note [label="Briefs copied VERBATIM from SKILL.md\n(not rephrased — preserves design fidelity)\nNever reads memory during the run\n(Alpha upstream, Lambda downstream)",
+        shape=note, fillcolor="#fef9c3", color="#ca8a04", fontcolor="#713f12", fontsize=9];
+
+  user -> orch;
+  orch -> sa_alpha  [label=" brief", style=dashed];
+  orch -> sa_a      [style=dashed];
+  orch -> sa_b      [style=dashed];
+  orch -> sa_omega  [style=dashed];
+  orch -> sa_lambda [style=dashed];
+  orch -> o_commit;
+  orch -> o_mem [label=" writes", color="#b45309", fontcolor="#92400e"];
+  orch -> o_rep;
+  orch -> note [style=invis];
+  { rank=same; orch; note; }
+}
