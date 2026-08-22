@@ -4,8 +4,10 @@ import argparse
 import datetime
 import glob
 import os
+import sys
 
 from commontrace import distill, frontmatter, paths, templates, trace_io
+from commontrace.frontmatter import FrontmatterError
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -40,7 +42,19 @@ def _iter_lesson_paths(root: str):
 def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandidate]:
     out = []
     for path in _iter_trace_paths(root):
-        instance, _ = trace_io.read(path)
+        try:
+            instance, _ = trace_io.read(path)
+        except FrontmatterError as exc:
+            # A single hand-edited trace with corrupt YAML must not take
+            # down `distill` for the whole store -- distill exists to
+            # report on a corpus that includes messy files, the same
+            # reasoning already applied to measure_performance's episode/
+            # lesson loading (commontrace/reference/measure_performance.py).
+            # Skipped and warned, not silently dropped, so the operator
+            # knows a trace was excluded rather than assuming it was
+            # considered and found irrelevant.
+            print(f"[commontrace] warning: skipping unreadable trace {path}: {exc}", file=sys.stderr)
+            continue
         if agent_type and instance.get("agent_type") != agent_type:
             continue
         if not instance.get("id"):
@@ -62,7 +76,16 @@ def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandida
 def _existing_source_traces(root: str) -> list[list[str]]:
     out = []
     for path in _iter_lesson_paths(root):
-        fm, _ = frontmatter.read(path)
+        try:
+            fm, _ = frontmatter.read(path)
+        except FrontmatterError as exc:
+            # Same reasoning as _load_traces: a lesson with corrupt
+            # hand-edited YAML must not crash `distill` for the whole
+            # store. This only feeds the "already covered by an existing
+            # lesson" de-dup check, so skipping it costs nothing beyond a
+            # possible near-duplicate proposal an operator can reject.
+            print(f"[commontrace] warning: skipping unreadable lesson {path}: {exc}", file=sys.stderr)
+            continue
         out.append(list(fm.get("source_traces") or []) + list(fm.get("source_episodes") or []))
     return out
 

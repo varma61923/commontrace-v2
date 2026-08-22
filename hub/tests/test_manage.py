@@ -243,3 +243,24 @@ async def test_argument_count_validation():
 async def test_auth_import_is_used():
     # sanity: hub/manage.py's existing key-issuance commands are untouched
     assert auth.generate_raw_key().startswith("ct_live_")
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+def test_malformed_uuid_reports_a_clean_error_not_a_traceback(config, _schema, monkeypatch, capsys):
+    """Regression test for a real bug: `main()` only caught (ValueError,
+    LookupError), but a malformed id (`revoke-key not-a-uuid`) is rejected
+    by the UUID column type itself -- asyncpg raises that as a driver-level
+    error (sqlalchemy.exc.DBAPIError, a SQLAlchemyError, not a ValueError or
+    LookupError) that fell through uncaught and dumped a raw traceback for
+    the same kind of operator typo the branch above was meant to handle
+    cleanly. `main()` builds its own session_factory from HUB_DATABASE_URL
+    (not the session_factory fixture) and drives it with asyncio.run(), so
+    this has to be a plain sync test -- calling main() from inside a
+    already-running async test's event loop would itself raise.
+    """
+    monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+    exit_code = manage.main(["revoke-key", "not-a-uuid"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "Traceback" not in err

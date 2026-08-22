@@ -1015,6 +1015,10 @@ class TestImportStreamsRatherThanBuffering:
         assert len(imported) == 1 and len(skipped) == 0
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX permission bits (os.chmod/os.stat st_mode) don't carry the same meaning on Windows",
+)
 class TestFrontmatterWritePreservesPermissions:
     """SEC-09: NamedTemporaryFile creates its file at 0600 on POSIX
     regardless of the process umask, and os.replace carries that mode

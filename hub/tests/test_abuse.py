@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from hub import abuse
 from hub.abuse import RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import HubConfig
 
@@ -81,3 +82,38 @@ def test_rate_limiter_is_per_key():
     assert limiter.allow("org-a") is True
     assert limiter.allow("org-b") is True  # independent bucket, not shared with org-a
     assert limiter.allow("org-a") is False
+
+
+def test_rate_limiter_evicts_idle_buckets(monkeypatch):
+    """Regression test for a real bug: `_buckets` never evicted an entry,
+    so a long-running Hub accumulated one bucket per org that EVER called
+    contribute_trace, without bound -- an org that called once and never
+    came back kept its bucket forever. A bucket idle past the TTL should be
+    swept, and a fresh call for that key afterward should behave exactly
+    as if the org were new (full burst available), not as if some state
+    survived."""
+    clock = [1000.0]
+    monkeypatch.setattr(abuse.time, "monotonic", lambda: clock[0])
+
+    limiter = RateLimiter(per_minute=60, burst=2)
+    limiter._IDLE_TTL_SECONDS = 100.0
+    limiter._SWEEP_INTERVAL_SECONDS = 10.0
+
+    assert limiter.allow("idle-org") is True
+    assert "idle-org" in limiter._buckets
+    assert limiter.allow("busy-org") is True  # keeps this bucket touched throughout
+
+    # Advance past the idle TTL for idle-org, but keep busy-org fresh so the
+    # sweep has something to distinguish "idle" from "just created".
+    for _ in range(12):
+        clock[0] += 10.0
+        limiter.allow("busy-org")
+
+    assert "idle-org" not in limiter._buckets, "idle bucket was never swept"
+    assert "busy-org" in limiter._buckets, "an actively-used bucket must not be evicted"
+
+    # A fresh call for the swept key behaves like a brand-new key -- full
+    # burst capacity, not a resumed or half-empty bucket.
+    assert limiter.allow("idle-org") is True
+    assert limiter.allow("idle-org") is True
+    assert limiter.allow("idle-org") is False

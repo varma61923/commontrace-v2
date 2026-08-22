@@ -28,9 +28,9 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from hub import crud
+from hub import crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import Organization, Trace, Vote
@@ -332,3 +332,57 @@ class TestRetrievalsCounter:
 
         print(f"[retrievals via search] {n} concurrent search_traces calls -> retrievals={t.retrievals}")
         assert t.retrievals == n, f"expected {n} retrievals (atomic UPDATE), got {t.retrievals}"
+
+
+# --- 5. contribute_trace storage quota: count-then-insert race -----------
+
+
+class TestContributeTraceStorageQuotaRace:
+    """Regression test for a real bug: the max_traces check was a plain
+    COUNT(*) followed later by an INSERT, with nothing serializing the two
+    across concurrent callers. N coroutines racing when the org is one
+    trace away from its cap could each COUNT before any of the others'
+    INSERT was visible, so all N could pass a check only one of them
+    should have -- stored trace count ends up above max_traces with no
+    error ever raised. Fixed with `SELECT ... FOR UPDATE` on the org's own
+    row before the count, serializing this org's concurrent writes without
+    touching any other org's throughput (hub/crud.py:contribute_trace).
+    """
+
+    async def test_concurrent_writes_never_exceed_the_cap(self, session_factory, config, org, monkeypatch):
+        cap = 5
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=cap, commons_queries_per_month=20,
+                       commons_access=True, summary="test"),
+        )
+        n = 20
+
+        results = await asyncio.gather(
+            *[_contribute(session_factory, config, org, f"race {i}", "c", "s") for i in range(n)],
+            return_exceptions=True,
+        )
+
+        succeeded = [r for r in results if not isinstance(r, BaseException)]
+        exceeded = [r for r in results if isinstance(r, plans.EntitlementExceeded)]
+        other_exceptions = [
+            r for r in results if isinstance(r, BaseException) and not isinstance(r, plans.EntitlementExceeded)
+        ]
+
+        async with session_scope(session_factory) as session:
+            stored = int(await session.scalar(
+                select(func.count()).select_from(Trace).where(Trace.org_id == org)
+            ) or 0)
+
+        print(
+            f"[storage quota race] cap={cap} n_attempted={n} n_succeeded={len(succeeded)} "
+            f"n_entitlement_exceeded={len(exceeded)} n_other_exceptions={len(other_exceptions)} "
+            f"stored={stored}"
+        )
+
+        assert not other_exceptions, f"unexpected non-quota exceptions: {other_exceptions}"
+        # The invariant the row lock exists to guarantee: stored count can
+        # never exceed the cap, no matter how many callers raced for it.
+        assert stored <= cap, f"stored {stored} traces exceeds cap {cap} -- quota race not closed"
+        assert len(succeeded) == stored
+        assert len(succeeded) + len(exceeded) == n

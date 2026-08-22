@@ -67,7 +67,14 @@ _MERSENNE_61 = (1 << 61) - 1
 # attacker who already has a candidate list. Anyone claiming stronger needs
 # a keyed HMAC with a per-fleet secret, which then has to be managed.
 _LABEL_SALT = b"commontrace-overlap-label-v1"
-_WORD_RE = re.compile(r"[a-z0-9]+")
+# \w with re.UNICODE, not [a-z0-9]: the ASCII-only class silently strips any
+# non-Latin token before it ever reaches MinHash, so two fleets whose
+# recurring failures are written in Japanese/Chinese/Cyrillic/Arabic (or any
+# accented Latin text -- "connexion" survives, "connexión" does not) tokenize
+# to an empty or near-empty signature and compare as ~0.0 Jaccard similarity
+# to everything, including near-duplicates of themselves. Same fix already
+# applied in commontrace/retrieval.py for the same reason.
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 # Shared with commontrace/retrieval.py's ranker in spirit: words that carry
 # no discriminating signal would otherwise inflate every pairwise overlap

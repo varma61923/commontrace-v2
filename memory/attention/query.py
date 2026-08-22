@@ -145,11 +145,20 @@ def main() -> int:
         return 1
 
     try:
-        data = np.load(INDEX_PATH, allow_pickle=False)
-        model_name = str(data["model_name"])
-        embeddings = data["embeddings"]  # already L2-normalized
-        slugs = data["slugs"]
-        n_lessons = int(data["n_lessons"])
+        # `with`, not a bare np.load(): NpzFile keeps the underlying zip
+        # file open until closed, and array access below (data[...])
+        # decompresses each array into its own independent ndarray in
+        # memory -- so extracting them here and closing on exit from the
+        # `with` loses nothing, while a bare np.load() leaked the file
+        # handle for the rest of the process's lifetime, which on Windows
+        # blocks a subsequent `build_index.py --force` from replacing this
+        # same file (already fixed the same way in build_index.py's own
+        # np.load call; this brings query.py in line with it).
+        with np.load(INDEX_PATH, allow_pickle=False) as data:
+            model_name = str(data["model_name"])
+            embeddings = data["embeddings"]  # already L2-normalized
+            slugs = data["slugs"]
+            n_lessons = int(data["n_lessons"])
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
         print(
             f"[ERR] Index file at {INDEX_PATH} is corrupted ({exc}). "

@@ -73,3 +73,39 @@ def test_stopwords_do_not_drive_matches():
     lessons = [_lesson("lesson_a", description="the of and to")]
     # A query of pure stopwords should tokenize to nothing and match nothing.
     assert retrieval.rank_lessons("the of and", lessons) == []
+
+
+def test_hand_edited_non_integer_importance_does_not_crash_ranking():
+    """Regression test for a real bug: lesson files are explicitly meant
+    to be hand-edited and are not schema-validated before reaching
+    rank_lessons, so `importance` -- schema-typed as a 1-5 integer -- can
+    arrive as a string. The sort key used to compare `importance` values
+    directly across lessons tied on score, and Python raises TypeError
+    comparing str and int in the same tuple position: a single malformed
+    lesson used to crash `commontrace query` for every lesson, not just
+    itself."""
+    lessons = [
+        _lesson("lesson_a", description="refund policy", importance="high"),
+        _lesson("lesson_b", description="refund policy", importance=2),
+    ]
+    ranked = retrieval.rank_lessons("refund policy", lessons)
+    assert {r.slug for r in ranked} == {"lesson_a", "lesson_b"}
+
+
+def test_lessons_with_duplicate_names_get_their_own_tie_break_fields():
+    """Regression test for a real bug: the tie-break used to look up
+    importance/uses in a dict keyed on `name`, so two lessons sharing a
+    name (most realistically both missing `name` entirely) collided --
+    one of them silently sorted using the OTHER lesson's importance/uses
+    instead of its own."""
+    lessons = [
+        _lesson("", description="refund policy", importance=1, uses=0),
+        _lesson("", description="refund policy", importance=5, uses=99),
+    ]
+    ranked = retrieval.rank_lessons("refund policy", lessons)
+    assert len(ranked) == 2
+    # The higher-importance/higher-uses one (second in `lessons`) must win
+    # the tie, not whichever happened to be inserted last into a
+    # name-keyed dict.
+    assert ranked[0].path == lessons[1][0]
+    assert ranked[1].path == lessons[0][0]

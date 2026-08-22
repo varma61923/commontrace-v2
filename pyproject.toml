@@ -42,6 +42,13 @@ hub-sync = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.4,<1.0",
+    # hub/tests/ uses @pytest_asyncio.fixture / async def test_* throughout
+    # (hub/tests/conftest.py). CI's hub-tests job already installs this
+    # directly (.github/workflows/ci.yml), but a contributor who runs
+    # `pip install -e ".[dev]"` and then `pytest hub/tests/` -- the natural
+    # thing to try -- got an immediate collection failure with nothing in
+    # this extra explaining why.
+    "pytest-asyncio>=0.23",
 ]
 
 [project.urls]

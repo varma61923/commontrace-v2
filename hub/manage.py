@@ -60,6 +60,7 @@ import sys
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hub import audit, auth, commons, crud, plans
@@ -756,6 +757,17 @@ def main(argv: list[str] | None = None) -> int:
         # Operator mistakes -- a bad day count, an org id that doesn't exist.
         # A traceback here reads as "the tool is broken" rather than "you typed
         # something wrong", and this CLI is what an operator runs in production.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except SQLAlchemyError as exc:
+        # Same operator-mistake category, one layer down: a malformed id
+        # (`revoke-key not-a-uuid`) is rejected by the UUID column type
+        # itself rather than by `session.get` returning None, and asyncpg
+        # raises that as a driver-level error (typically
+        # sqlalchemy.exc.DBAPIError wrapping an asyncpg DataError, not a
+        # plain ValueError/LookupError) -- so it fell through the catch
+        # above and dumped a raw traceback for the same kind of typo the
+        # branch above already handles cleanly.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0

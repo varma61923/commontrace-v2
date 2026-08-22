@@ -387,6 +387,20 @@ async def contribute_trace(
     # a safe retry into a failure exactly when the org is at its cap.
     plan = await _plan_for(session, org_id)
     if plan.max_traces != plans.UNLIMITED:
+        # SELECT ... FOR UPDATE on the org's own row: count-then-insert is
+        # otherwise a classic TOCTOU race -- two concurrent contribute_trace
+        # calls for the SAME org can each COUNT before either's INSERT is
+        # visible to the other, so both pass a check that only one of them
+        # should have. The row lock serializes exactly the callers that
+        # matter (this org's own concurrent writes) and blocks no one
+        # else's traffic -- a different org's contribute_trace locks a
+        # different row and proceeds untouched. Held until this
+        # transaction commits or rolls back (hub/db.py:session_scope), so a
+        # second call for the same org blocks here until the first's
+        # insert (or its rollback) is already decided.
+        await session.execute(
+            select(Organization.id).where(Organization.id == org_id).with_for_update()
+        )
         stored = int(await session.scalar(
             select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
         ) or 0)

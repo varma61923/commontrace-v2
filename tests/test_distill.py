@@ -171,6 +171,53 @@ class TestDistillCommand:
         assert main(["distill", "--dest", str(store)]) == 0
         assert "no repeated pattern found" in capsys.readouterr().out
 
+    def test_a_corrupt_trace_file_is_skipped_with_a_warning_not_a_crash(self, store, capsys):
+        """Regression test for a real bug: trace files are explicitly meant
+        to be readable/hand-editable, but _load_traces called
+        trace_io.read() with nothing catching the FrontmatterError it can
+        raise on malformed YAML -- one bad file crashed `distill` for the
+        whole store instead of being skipped like measure_performance
+        already does for the same kind of malformed input."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        for i in range(3):
+            _capture(
+                store,
+                f"Refund confusion {i}",
+                "customer confused about refund timeline contradictory docs escalated",
+                "point to canonical refund policy page",
+            )
+        traces_dir = store / "memory" / "traces"
+        (traces_dir / "zzz_corrupt.md").write_text(
+            "---\nid: [unclosed\n---\n\n## Context\nc\n\n## Solution\ns\n", encoding="utf-8"
+        )
+        capsys.readouterr()
+        assert main(["distill", "--dest", str(store)]) == 0
+        err = capsys.readouterr().err
+        assert "skipping unreadable trace" in err
+        assert "zzz_corrupt.md" in err
+
+    def test_a_corrupt_lesson_file_is_skipped_with_a_warning_not_a_crash(self, store, capsys):
+        """Same bug, other call site: _existing_source_traces read every
+        existing lesson's frontmatter unguarded too."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        for i in range(3):
+            _capture(
+                store,
+                f"Refund confusion {i}",
+                "customer confused about refund timeline contradictory docs escalated",
+                "point to canonical refund policy page",
+            )
+        lessons_dir = store / "memory" / "lessons"
+        os.makedirs(lessons_dir, exist_ok=True)
+        (lessons_dir / "lesson_corrupt.md").write_text(
+            "---\nname: [unclosed\n---\n\nbody\n", encoding="utf-8"
+        )
+        capsys.readouterr()
+        assert main(["distill", "--dest", str(store)]) == 0
+        err = capsys.readouterr().err
+        assert "skipping unreadable lesson" in err
+        assert "lesson_corrupt.md" in err
+
 
 class TestLessonApproveReject:
     def _make_review_lesson(self, store):
