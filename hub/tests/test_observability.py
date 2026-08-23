@@ -181,8 +181,13 @@ class TestHealthAndReadiness:
             client: _FakeClient
 
         app = Starlette()
+        # per_minute=60, not 0: a burst-of-1 bucket refilling at 1/sec still
+        # lets exactly one request through immediately, without leaning on
+        # per_minute=0's own "always deny from the first call" floor (see
+        # hub/tests/test_abuse.py's test_zero_per_minute_denies_every_key_
+        # from_the_first_call for that behavior specifically).
         observability.add_health_routes(
-            app, session_factory, readyz_rate_limiter=RateLimiter(per_minute=0, burst=1)
+            app, session_factory, readyz_rate_limiter=RateLimiter(per_minute=60, burst=1)
         )
         readyz = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/readyz")
 
@@ -190,7 +195,7 @@ class TestHealthAndReadiness:
         first = await readyz(request)
         second = await readyz(request)
         assert first.status_code == 200  # burst of 1 lets the first through
-        assert second.status_code == 429  # no refill: the limiter itself now rejects
+        assert second.status_code == 429  # bucket drained, negligible refill within the test: rejected
 
 
 @pytest.mark.asyncio

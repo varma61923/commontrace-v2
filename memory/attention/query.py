@@ -103,8 +103,17 @@ def load_importances() -> "tuple[dict[str, int], int]":
     for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            content = fh.read()
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                content = fh.read()
+        except OSError as exc:
+            # A file glob matched but the file itself is unreadable by the
+            # time we get to it (permissions, deleted between glob() and
+            # open() by a concurrent capture/lesson command, a broken
+            # symlink) -- one such lesson must not abort retrieval for
+            # every other lesson in the store.
+            print(f"[WARN] skipping unreadable lesson {path}: {exc}", file=sys.stderr)
+            continue
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
             continue

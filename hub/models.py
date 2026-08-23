@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Computed,
@@ -138,8 +139,17 @@ class Trace(Base):
 
     # Hub-computed / read-only fields ------------------------------------
     trust: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
-    retrievals: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # BigInteger, not Integer: these are unbounded monotonic counters --
+    # never decremented, never reset -- incremented on every matching
+    # search_traces/get_trace/amend_trace call over the life of a
+    # long-lived, frequently-retrieved trace. A plain 32-bit Integer caps
+    # out at ~2.1 billion; Postgres raises "integer out of range" on the
+    # UPDATE ... SET x = x + 1 the moment a counter would cross that
+    # ceiling, turning an otherwise-ordinary read into an unhandled 500 for
+    # every future call touching that row. BigInteger costs nothing extra
+    # in practice for a counter column.
+    retrievals: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    depth: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # Idempotency for contribute_trace: an MCP client that times out waiting
     # for a response has no way to tell "the write never happened" from
@@ -204,8 +214,9 @@ class Trace(Base):
     # the aggregate is what pricing and incentives need, while a per-match
     # log of "org X's failure resembled org Y's trace" is a far more
     # sensitive artifact for a marginal gain. Incremented with the same
-    # atomic in-database UPDATE the retrievals counter uses.
-    commons_hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # atomic in-database UPDATE the retrievals counter uses. BigInteger for
+    # the same overflow reason as retrievals/depth above.
+    commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # Where this commons entry came from. A commons with no contributors
     # returns 0% coverage for everyone, which is a cold start, not a

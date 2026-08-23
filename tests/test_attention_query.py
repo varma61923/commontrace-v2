@@ -185,6 +185,41 @@ class TestLoadImportancesParsedCount:
         assert importances == {"lesson_a": 3}  # only the active one is retrieval-eligible
 
 
+class TestLoadImportancesSurvivesUnreadableFile:
+    def test_an_unreadable_lesson_is_skipped_not_a_crash(self, tmp_path, monkeypatch):
+        """A file matched by glob() can still fail to open() -- permissions,
+        deleted out from under us by a concurrent command, a broken symlink.
+        Mocked here (rather than chmod 0o000) so the test is deterministic
+        regardless of the user running it -- root bypasses permission bits
+        entirely, which would make a chmod-based test silently pass for the
+        wrong reason."""
+        (tmp_path / "lesson_a.md").write_text(
+            "---\nname: lesson_a\nimportance: 4\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        broken_path = str(tmp_path / "lesson_locked.md")
+        (tmp_path / "lesson_locked.md").write_text(
+            "---\nname: lesson_locked\nimportance: 5\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+
+        real_open = open
+
+        def _flaky_open(path, *a, **k):
+            if str(path) == broken_path:
+                raise OSError("permission denied (simulated)")
+            return real_open(path, *a, **k)
+
+        monkeypatch.setattr("builtins.open", _flaky_open)
+
+        old_dir = attn_query.LESSONS_DIR
+        attn_query.LESSONS_DIR = str(tmp_path)
+        try:
+            importances, n_parsed = attn_query.load_importances()
+        finally:
+            attn_query.LESSONS_DIR = old_dir
+        assert importances == {"lesson_a": 4}
+        assert n_parsed == 1
+
+
 class TestStrictBoolLoaderParity:
     """query.py used plain yaml.safe_load while build_index.py used
     commontrace.frontmatter._StrictBoolLoader -- YAML 1.1's implicit bool

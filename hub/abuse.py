@@ -112,7 +112,16 @@ class RateLimiter:
 
     def __init__(self, per_minute: int, burst: int):
         self._rate_per_sec = per_minute / 60.0
-        self._capacity = max(burst, 1)
+        # `_capacity` floors at 1 (below) so a configured burst of 0 doesn't
+        # deadlock every caller permanently -- but a fresh bucket always
+        # starts full (tokens=capacity), so per_minute<=0 with that same
+        # floor let every NEW key through its first `capacity` calls before
+        # ever refilling: "0 requests per minute" silently meant "up to
+        # `burst` free requests per distinct key, forever" instead of what
+        # an operator configuring it obviously means -- deny everything.
+        # per_minute<=0 is treated as an explicit "always deny" limiter
+        # instead, independent of whatever burst was also configured.
+        self._capacity = 0 if per_minute <= 0 else max(burst, 1)
         self._buckets: dict[str, _Bucket] = {}
         self._lock = threading.Lock()
         self._last_sweep = time.monotonic()

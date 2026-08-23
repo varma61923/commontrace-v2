@@ -61,6 +61,48 @@ def test_iter_active_lesson_paths_skips_template_and_non_active(store):
     assert "lesson_b.md" in basenames
 
 
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class _FakeHTTPStatusError(Exception):
+    """Shaped like httpx.HTTPStatusError (an `exc.response.status_code`
+    attribute) without requiring httpx to be installed to run this test."""
+
+    def __init__(self, status_code):
+        super().__init__(f"HTTP error {status_code}")
+        self.response = _FakeResponse(status_code)
+
+
+class TestIsRetryable:
+    """_is_retryable used to classify every exception purely by matching
+    substrings in str(exc) -- fragile in both directions: a genuinely
+    transient error whose message happens to contain "invalid" or "403"
+    (a URL, a nested upstream error, ...) is misclassified as permanent,
+    and a permanent error whose message doesn't happen to contain any
+    listed marker falls through to the retryable-substring check. A real
+    HTTP status code, when the exception carries one, is authoritative and
+    checked first."""
+
+    def test_a_structured_401_is_not_retried_even_with_a_confusing_message(self):
+        exc = _FakeHTTPStatusError(401)
+        exc.args = ("this response is definitely not invalid, all good",)
+        assert hub_client._is_retryable(exc) is False
+
+    def test_a_structured_403_is_not_retried(self):
+        assert hub_client._is_retryable(_FakeHTTPStatusError(403)) is False
+
+    def test_a_structured_503_is_retried_even_without_a_recognized_word(self):
+        exc = _FakeHTTPStatusError(503)
+        exc.args = ("the server said no",)
+        assert hub_client._is_retryable(exc) is True
+
+    def test_falls_back_to_substring_matching_when_no_status_code_present(self):
+        assert hub_client._is_retryable(Exception("connection refused")) is True
+        assert hub_client._is_retryable(Exception("401 unauthorized")) is False
+
+
 class TestHubUrlSchemeGuard:
     """The commit that added path-traversal sanitization to this module
     also claimed to 'enforce http/https-only URLs', but no such check

@@ -29,7 +29,15 @@ attention = [
     # comment), so exploitability here was already low, but pinning to a
     # resolvable, patched range costs nothing.
     "sentence-transformers>=6.0,<7.0",
-    "transformers>=5.5.0",
+    # Every other pin in this list carries an upper bound (numpy<3.0,
+    # sentence-transformers<7.0 above); this one didn't, so a future
+    # transformers major release could resolve here unpinned and break the
+    # attention extra's install with no warning. Capped at the same <7.0
+    # ceiling as sentence-transformers itself, which this package is always
+    # installed alongside -- the two tend to release compatible majors in
+    # lockstep, so this is the range sentence-transformers>=6.0,<7.0 is
+    # already implicitly tested against upstream.
+    "transformers>=5.5.0,<7.0",
 ]
 # `commontrace sync` talking to a CommonTrace Hub (commontrace/hub_client.py).
 # Optional for the same reason `attention` is: most users never need it.

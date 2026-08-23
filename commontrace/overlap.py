@@ -76,9 +76,19 @@ _LABEL_SALT = b"commontrace-overlap-label-v1"
 # applied in commontrace/retrieval.py for the same reason.
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
-# Shared with commontrace/retrieval.py's ranker in spirit: words that carry
-# no discriminating signal would otherwise inflate every pairwise overlap
-# and make unrelated fleets look similar.
+# Shared with commontrace/retrieval.py's ranker in spirit -- words that
+# carry no discriminating signal would otherwise inflate every pairwise
+# overlap and make unrelated fleets look similar -- but deliberately NOT the
+# same literal list, and NOT imported from commontrace/_lexical.py the way
+# retrieval.py/distill.py now share one copy between themselves. This exact
+# word list feeds the MinHash signature this module computes, and that
+# signature is what gets persisted (Trace.commons_signature, hub/crud.py)
+# and compared against every future query. Changing so much as one word
+# here silently reduces every already-stored signature's match quality
+# against freshly-computed ones from that point on, with no error and no
+# migration path -- so unlike the local, always-recomputed-on-the-fly
+# copies in retrieval.py/distill.py, this one must not be casually "kept in
+# sync" with them.
 _STOPWORDS = frozenset(
     """
     a an the of to in on for with and or but is are was were be been being

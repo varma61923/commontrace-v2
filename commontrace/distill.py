@@ -18,25 +18,17 @@ commontrace/commands/lesson_cmd.py's run_approve/run_reject).
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
+from commontrace._lexical import STOPWORDS as _STOPWORDS
+from commontrace._lexical import WORD_RE as _WORD_RE
 from commontrace.paths import STARTER_DOMAINS
 
-# Unicode-aware -- see commontrace/retrieval.py for why the ASCII-only
-# class was wrong. Clustering non-English traces produced 0.0 Jaccard for
-# every pair, so `distill` reported "no repeated patterns" on a corpus full
-# of them.
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
-_STOPWORDS = frozenset(
-    """
-    a an the of to in on for with and or but is are was were be been being
-    this that these those it its as at by from into over under again
-    further then once here there when where why how all any both each
-    few more most other some such no nor not only own same so than too
-    very can will just don should now i you he she we they them his her
-    """.split()
-)
+# Unicode-aware -- see commontrace/retrieval.py for why the ASCII-only class
+# was wrong. Clustering non-English traces produced 0.0 Jaccard for every
+# pair, so `distill` reported "no repeated patterns" on a corpus full of
+# them. Shared with retrieval.py via commontrace/_lexical.py rather than a
+# second local copy -- these two had already drifted from each other once.
 
 
 def _tokenize(text: str) -> set[str]:

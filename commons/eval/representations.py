@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -191,10 +192,13 @@ def score(tokenize, probes: list[dict], corpus: list[dict], threshold: float = T
             if matched:
                 false_pos += 1
 
-    sims_of_truth.sort()
     return {
         "rank1": rank1 / n_pos if n_pos else 0.0,
-        "median_true_sim": sims_of_truth[len(sims_of_truth) // 2] if sims_of_truth else 0.0,
+        # statistics.median averages the two middle values on an even-length
+        # list; sims_of_truth[len // 2] instead always picked the
+        # upper-middle element outright, silently skewing the reported
+        # median toward higher similarities whenever the probe count was even.
+        "median_true_sim": statistics.median(sims_of_truth) if sims_of_truth else 0.0,
         "recall": hits / n_pos if n_pos else 0.0,
         "right_of_hits": right / hits if hits else 0.0,
         "false_positive": false_pos / n_neg if n_neg else 0.0,

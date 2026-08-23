@@ -151,7 +151,26 @@ def _is_retryable(exc: Exception) -> bool:
     attempt, so retrying it just multiplies the delay before the user sees
     the real error -- and retrying a rejected credential against a server
     that may be rate-limiting auth failures actively makes things worse.
+
+    An actual tool-level rejection from the Hub (an MCP `result.is_error`
+    response, e.g. "rejected the API key") never reaches this function at
+    all -- _call_tool raises that as HubConnectionError and re-raises it
+    immediately, bypassing retry entirely. This function only judges
+    transport-layer exceptions that got here some other way, so it checks
+    for a real HTTP status code first (httpx.HTTPStatusError carries one on
+    `exc.response.status_code`) and only falls back to matching substrings
+    in the exception's string form when no structured status is available --
+    a legitimate transient error whose message happens to contain "invalid"
+    or "403" (in a URL, a nested error, ...) would otherwise be
+    misclassified as non-retryable by the substring check alone.
     """
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in (401, 403):
+            return False
+        if status_code >= 500:
+            return True
+
     text = f"{type(exc).__name__}: {exc}".lower()
     if any(marker in text for marker in ("401", "unauthorized", "invalid", "revoked", "expired", "403")):
         return False

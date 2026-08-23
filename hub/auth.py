@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -159,6 +159,19 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             # single call, not just at key-issuance time.
             await asyncio.to_thread(_hasher.verify, candidate.key_hash, raw_key)
         except VerifyMismatchError:
+            continue
+        except InvalidHashError:
+            # candidate.key_hash isn't a well-formed argon2 hash string --
+            # DB corruption, a hand-edited row, or a hash written by a
+            # different scheme entirely. InvalidHashError is a ValueError
+            # subclass, not VerificationError, so it was previously
+            # unhandled here: it escaped verify_api_key, through the auth
+            # middleware, as an unhandled exception -- turning "this one
+            # row is corrupt" into an HTTP 500 for every request presenting
+            # a key sharing that row's prefix, other valid candidates
+            # included. Treated the same as a mismatch: this row can never
+            # authenticate, so move on to the next candidate rather than
+            # failing the whole lookup.
             continue
         # Re-read revocation state fresh rather than trusting `candidate`
         # (loaded by the `revoked_at IS NULL` SELECT above, before the

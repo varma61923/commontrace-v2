@@ -80,12 +80,17 @@ class TestProtectedPathMatching:
 
 
 def _build_app_with_tight_auth_limiter():
+    # per_minute=60/burst=1, not per_minute=0: a burst-of-1 bucket refilling
+    # at 1/sec still lets exactly one request through immediately (proving
+    # the limiter, not per_minute=0's own "always deny" floor -- see
+    # TestZeroPerMinuteAlwaysDenies below -- is what let the first request
+    # reach the header check).
     app = Starlette(routes=[Route(p, _ok) for p in ("/mcp",)])
     app.add_middleware(
         ApiKeyAuthMiddleware,
         session_factory=_explode,
         protected_path="/mcp",
-        auth_rate_limiter=RateLimiter(per_minute=0, burst=1),
+        auth_rate_limiter=RateLimiter(per_minute=60, burst=1),
         read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
     )
     return app
@@ -112,4 +117,28 @@ class TestAuthAttemptRateLimiting:
             first = await c.get("/mcp")
             second = await c.get("/mcp")
         assert first.status_code == 401  # burst of 1: allowed through to the header check, which fails
-        assert second.status_code == 429  # no refill (per_minute=0): the limiter itself now rejects
+        assert second.status_code == 429  # bucket drained, negligible refill within the test: rejected
+
+
+class TestZeroPerMinuteAlwaysDenies:
+    """per_minute<=0 must mean "deny every request", not "allow an initial
+    burst of `burst` free requests per distinct key forever" -- a token
+    bucket's capacity floor (so a configured burst of 0 doesn't deadlock
+    every caller) previously applied even when the configured rate was 0,
+    so a bucket for any NEW key started pre-filled with `burst` tokens and
+    let that many calls through before ever hitting the "no refill" wall an
+    operator setting per_minute=0 obviously intends."""
+
+    async def test_the_very_first_request_is_rejected_not_just_the_second(self):
+        app = Starlette(routes=[Route(p, _ok) for p in ("/mcp",)])
+        app.add_middleware(
+            ApiKeyAuthMiddleware,
+            session_factory=_explode,
+            protected_path="/mcp",
+            auth_rate_limiter=RateLimiter(per_minute=0, burst=5),
+            read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            first = await c.get("/mcp")
+        assert first.status_code == 429
