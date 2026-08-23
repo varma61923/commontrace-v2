@@ -68,6 +68,31 @@ LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
 TELEMETRY_PATH = os.path.join(_ROOT, "memory", "alpha_telemetry.jsonl")
 
 
+def _load_frontmatter(fm_text: str):
+    """Parse with commontrace's strict loader when it is importable.
+
+    Identical to build_index.py's helper of the same name, and deliberately
+    kept in sync with it rather than shared via import: plain
+    yaml.safe_load applies YAML 1.1 rules, so a lesson `name: on` parses
+    here as the boolean True while build_index.py's index (built with
+    _StrictBoolLoader) keys the same lesson under the string "on" -- an
+    importance>=floor safety-override lookup in this module for that lesson
+    then misses under `importances[slug]` even though the lesson genuinely
+    has a high importance, because the two loaders disagree on what `slug`
+    even is. Falls back to safe_load so this script still runs standalone
+    from a checkout without the package installed, same as build_index.py.
+    """
+    try:
+        from commontrace.frontmatter import _StrictBoolLoader
+    except Exception:  # noqa: BLE001 - standalone use, any import problem
+        return yaml.safe_load(fm_text)
+    # See build_index.py's identical comment: _StrictBoolLoader IS a
+    # yaml.SafeLoader subclass that only narrows two implicit-conversion
+    # rules, so this carries none of the arbitrary-object-instantiation
+    # risk bandit's B506 exists to catch.
+    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+
+
 def load_importances() -> "tuple[dict[str, int], int]":
     """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
     n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
@@ -84,7 +109,7 @@ def load_importances() -> "tuple[dict[str, int], int]":
         if len(delims) < 2:
             continue
         try:
-            frontmatter = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
+            frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
         # Same guard as build_index.py: a scalar frontmatter block parses to

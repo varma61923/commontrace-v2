@@ -158,3 +158,31 @@ class TestLoadImportancesParsedCount:
             attn_query.LESSONS_DIR = old_dir
         assert n_parsed == 2  # template excluded, active + archived both counted as "parsed"
         assert importances == {"lesson_a": 3}  # only the active one is retrieval-eligible
+
+
+class TestStrictBoolLoaderParity:
+    """query.py used plain yaml.safe_load while build_index.py used
+    commontrace.frontmatter._StrictBoolLoader -- YAML 1.1's implicit bool
+    conversion means a lesson `name: on` (unquoted, exactly what a
+    hand-edited lesson file looks like) parses to the string "on" under the
+    strict loader but the boolean True under plain safe_load. build_index.py
+    keys its index under the strict-loader slug ("on"); this module's
+    importance-floor safety override then looked the lesson up under
+    `importances[True]` -- a key that can never match the string keys the
+    rest of the retrieval pipeline uses -- and silently lost the override
+    for exactly the lessons whose names look like a YAML 1.1 bool token."""
+
+    def test_a_yaml_1_1_bool_like_lesson_name_stays_a_string(self, tmp_path):
+        (tmp_path / "lesson_on.md").write_text(
+            "---\nname: on\nimportance: 5\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        old_dir = attn_query.LESSONS_DIR
+        attn_query.LESSONS_DIR = str(tmp_path)
+        try:
+            importances, _n_parsed = attn_query.load_importances()
+        finally:
+            attn_query.LESSONS_DIR = old_dir
+        assert importances == {"on": 5}, (
+            f"expected the string key 'on', got {importances!r} -- "
+            "a plain yaml.safe_load would coerce the name to the bool True instead"
+        )
