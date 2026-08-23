@@ -32,7 +32,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from hub import audit, commons, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
-from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
+from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
 from hub.models import (
     MAX_FEEDBACK_TEXT_CHARS,
     TEXT_SEARCH_CONFIG,
@@ -378,7 +378,7 @@ async def search_traces(
        by recency as before.
     """
     limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
-    offset = max(0, int(offset))
+    offset = max(0, min(int(offset), MAX_SEARCH_OFFSET))
 
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
     if query:
@@ -864,12 +864,20 @@ async def amend_trace(
 
 
 async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
-    stmt = select(Trace.tags).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
-    rows = (await session.execute(stmt)).scalars().all()
-    tag_set: set[str] = set()
-    for tags in rows:
-        tag_set.update(tags or [])
-    return sorted(tag_set)
+    """Every distinct tag used across this org's non-quarantined traces,
+    computed in the database (SELECT DISTINCT unnest(tags)) rather than by
+    pulling every trace's full tags array into Python and deduplicating
+    there -- an org with a large trace store previously materialized its
+    entire tags column into memory (and paid the network transfer for
+    every duplicate) just to answer "what are the distinct tags", every
+    single call."""
+    stmt = (
+        select(func.unnest(Trace.tags))
+        .distinct()
+        .where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    )
+    tags = (await session.execute(stmt)).scalars().all()
+    return sorted(tags)
 
 
 # --- The cross-org commons (opt-in) ------------------------------------

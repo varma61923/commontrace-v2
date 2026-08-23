@@ -137,6 +137,31 @@ class TestAlphaTelemetry:
         assert attn_query.main() == 0
         assert (nested / "alpha_telemetry.jsonl").exists()
 
+    def test_telemetry_rotates_once_it_crosses_the_size_threshold(self, tmp_path, monkeypatch):
+        """One record gets appended per query invocation with no retention
+        limit, so a long-lived store's telemetry file grew without bound.
+        Rotated to a single .1 backup once it crosses the size threshold
+        instead."""
+        path = tmp_path / "alpha_telemetry.jsonl"
+        monkeypatch.setattr(attn_query, "_TELEMETRY_MAX_BYTES", 100)
+        path.write_text("x" * 200, encoding="utf-8")
+
+        attn_query._append_telemetry({"a": 1}, path=str(path))
+
+        assert (tmp_path / "alpha_telemetry.jsonl.1").read_text(encoding="utf-8") == "x" * 200
+        assert json.loads(path.read_text(encoding="utf-8").strip()) == {"a": 1}
+
+    def test_telemetry_does_not_rotate_below_the_threshold(self, tmp_path, monkeypatch):
+        path = tmp_path / "alpha_telemetry.jsonl"
+        monkeypatch.setattr(attn_query, "_TELEMETRY_MAX_BYTES", 100_000)
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+
+        attn_query._append_telemetry({"b": 2}, path=str(path))
+
+        assert not (tmp_path / "alpha_telemetry.jsonl.1").exists()
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+
 
 class TestLoadImportancesParsedCount:
     def test_counts_all_parsed_frontmatters_including_inactive(self, tmp_path):

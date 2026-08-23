@@ -81,6 +81,17 @@ class TestPagination:
         assert page["limit"] == 1
         assert page["offset"] == 0
 
+    async def test_offset_is_capped_not_left_unbounded(self, session_factory, config, org):
+        """OFFSET pagination costs Postgres work proportional to the offset
+        itself -- it still has to walk and discard every skipped row. An
+        unbounded caller-supplied offset turned one request into a scan of
+        the org's entire trace table just to throw the results away."""
+        from hub.config import MAX_SEARCH_OFFSET
+
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, offset=MAX_SEARCH_OFFSET + 50_000)
+        assert page["offset"] == MAX_SEARCH_OFFSET
+
 
 class TestFullTextSearch:
     async def test_matches_on_word(self, session_factory, config, org):

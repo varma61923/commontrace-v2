@@ -17,6 +17,16 @@ from dataclasses import dataclass, field
 # blast-radius concern.
 DEFAULT_SEARCH_LIMIT = 50  # matches the previous hard-coded cap
 MAX_SEARCH_LIMIT = 200
+# OFFSET/LIMIT pagination costs Postgres work proportional to `offset`
+# itself (it still has to walk and discard every skipped row), unlike
+# `limit` which is already bounded above. A caller-supplied offset was
+# otherwise unbounded, so a very large one turns one request into a scan
+# of an org's entire trace table just to throw away the results. This is
+# a blunt cap, not the real fix (keyset/cursor pagination, tracked as
+# follow-up work) -- but it bounds the damage a single request can do in
+# the meantime without changing the offset/limit/has_more response shape
+# every existing caller (including commontrace/hub_client.py) depends on.
+MAX_SEARCH_OFFSET = 100_000
 
 
 def _env_int(name: str, default: int) -> int:

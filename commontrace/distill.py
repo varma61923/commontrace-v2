@@ -85,6 +85,7 @@ def find_clusters(
     patterns a human already curated)."""
     curated_ids = _already_curated_ids(existing_lessons_source_traces)
     candidates = [t for t in traces if t.id not in curated_ids]
+    by_id = {t.id: t for t in candidates}
 
     token_sets = {t.id: _tokenize(f"{t.title} {t.context_text}") for t in candidates}
 
@@ -101,14 +102,42 @@ def find_clusters(
         if rx != ry:
             parent[rx] = ry
 
-    n = len(candidates)
-    for i in range(n):
-        for j in range(i + 1, n):
-            a, b = candidates[i], candidates[j]
-            sim = _jaccard(token_sets[a.id], token_sets[b.id])
-            tag_overlap = bool(set(a.tags) & set(b.tags))
-            if sim >= similarity_threshold or (tag_overlap and sim >= similarity_threshold * 0.6):
-                union(a.id, b.id)
+    # A full pairwise scan is O(n^2) Jaccard computations, which made
+    # `distill` unusable on trace stores of any real size. Every union
+    # condition below requires sim > 0 -- the tag-overlap relaxation still
+    # gates on `sim >= similarity_threshold * 0.6`, and _jaccard returns 0.0
+    # whenever the two token sets don't intersect -- so a pair sharing no
+    # token can never trigger a union for any threshold > 0. That makes an
+    # inverted token->trace-id index a behavior-preserving pre-filter: only
+    # pairs sharing at least one token are ever compared. (threshold <= 0 is
+    # the degenerate "cluster everything" case, where every pair trivially
+    # qualifies regardless of token overlap, so it's handled separately
+    # rather than pretending the index still applies.)
+    if similarity_threshold <= 0:
+        for i in range(len(candidates) - 1):
+            union(candidates[i].id, candidates[i + 1].id)
+    else:
+        token_index: dict[str, list[str]] = {}
+        for t in candidates:
+            for tok in token_sets[t.id]:
+                token_index.setdefault(tok, []).append(t.id)
+
+        compared: set[frozenset[str]] = set()
+        for t in candidates:
+            neighbor_ids: set[str] = set()
+            for tok in token_sets[t.id]:
+                neighbor_ids.update(token_index[tok])
+            neighbor_ids.discard(t.id)
+            for other_id in neighbor_ids:
+                pair = frozenset((t.id, other_id))
+                if pair in compared:
+                    continue
+                compared.add(pair)
+                other = by_id[other_id]
+                sim = _jaccard(token_sets[t.id], token_sets[other_id])
+                tag_overlap = bool(set(t.tags) & set(other.tags))
+                if sim >= similarity_threshold or (tag_overlap and sim >= similarity_threshold * 0.6):
+                    union(t.id, other_id)
 
     groups: dict[str, list[TraceCandidate]] = {}
     for t in candidates:

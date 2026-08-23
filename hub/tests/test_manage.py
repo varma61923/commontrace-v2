@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from hub import auth, manage
+from hub import auth, crud, manage
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
@@ -32,6 +32,34 @@ async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
     out = capsys.readouterr().out
     assert "organizations:      0" in out
     assert "mean trust:          n/a" in out
+
+
+async def test_stats_computes_real_counts_and_mean_trust(session_factory, config, two_orgs, capsys):
+    """Regression test for switching from Python len()/fmean() over fully
+    loaded ORM objects to SQL-side COUNT()/AVG() -- pins that the actual
+    numbers still come out right, not just that the query doesn't crash."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        t1 = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="t1", context_text="c", solution_text="s", tags=[], agent_type="code", actor="test",
+        )
+        t2 = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="t2", context_text="c", solution_text="s", tags=[], agent_type="code", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        await crud.vote_trace(session, two_orgs["org_a"], t1["id"], "up", actor="test")
+        await crud.vote_trace(session, two_orgs["org_a"], t2["id"], "down", actor="test")
+
+    capsys.readouterr()
+    await manage.stats(session_factory=session_factory)
+    out = capsys.readouterr().out
+    assert "organizations:      2" in out
+    assert "traces (total):     2" in out
+    assert "votes:               2" in out
+    # trust=1.0 and trust=0.0 -> mean 0.5
+    assert "mean trust:          0.500" in out
 
 
 async def test_list_quarantined_reports_none_cleanly(session_factory, capsys, two_orgs):

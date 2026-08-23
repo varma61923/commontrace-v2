@@ -55,7 +55,6 @@ session_factory instead of monkeypatching module globals.
 from __future__ import annotations
 
 import asyncio
-import statistics
 import sys
 from datetime import datetime, timezone
 
@@ -155,20 +154,28 @@ async def list_orgs(session_factory=None) -> None:
 
 
 async def stats(session_factory=None) -> None:
+    """Aggregate counts, computed in the database rather than by loading
+    every organization/api_key/trace/vote row as a full ORM object into
+    Python just to len() or fmean() them -- a deployment with any real
+    volume of traces previously materialized its ENTIRE traces table in
+    memory (and paid the network transfer for all of it) every time an
+    operator ran this."""
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        n_orgs = len((await session.execute(select(Organization))).scalars().all())
-        n_active_keys = len(
-            (await session.execute(select(ApiKey).where(ApiKey.revoked_at.is_(None)))).scalars().all()
-        )
-        traces = (await session.execute(select(Trace))).scalars().all()
-        n_quarantined = sum(1 for t in traces if t.quarantined)
-        n_votes = len((await session.execute(select(Vote))).scalars().all())
-        mean_trust = statistics.fmean(t.trust for t in traces) if traces else None
+        n_orgs = await session.scalar(select(func.count()).select_from(Organization)) or 0
+        n_active_keys = await session.scalar(
+            select(func.count()).select_from(ApiKey).where(ApiKey.revoked_at.is_(None))
+        ) or 0
+        n_traces = await session.scalar(select(func.count()).select_from(Trace)) or 0
+        n_quarantined = await session.scalar(
+            select(func.count()).select_from(Trace).where(Trace.quarantined.is_(True))
+        ) or 0
+        n_votes = await session.scalar(select(func.count()).select_from(Vote)) or 0
+        mean_trust = await session.scalar(select(func.avg(Trace.trust))) if n_traces else None
 
     print(f"organizations:      {n_orgs}")
     print(f"active api keys:    {n_active_keys}")
-    print(f"traces (total):     {len(traces)}")
+    print(f"traces (total):     {n_traces}")
     print(f"traces (quarantined): {n_quarantined}")
     print(f"votes:               {n_votes}")
     print(f"mean trust:          {mean_trust:.3f}" if mean_trust is not None else "mean trust:          n/a")

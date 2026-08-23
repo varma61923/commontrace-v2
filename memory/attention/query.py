@@ -130,6 +130,15 @@ def load_importances() -> "tuple[dict[str, int], int]":
     return out, n_parsed
 
 
+# Each record here is small, fixed-shape operational-cost metadata (see the
+# call site: latency, counts, a token-count estimate, query LENGTH -- never
+# the query text itself), but one gets appended per invocation with no
+# retention limit, so a long-lived store's telemetry file grows without
+# bound. Rotated once it crosses this size rather than left to grow
+# forever.
+_TELEMETRY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
 def _append_telemetry(record, path=None):
     """Append one JSON line to memory/alpha_telemetry.jsonl -- create the file if absent,
     always append, never truncate existing history. A telemetry write failure (e.g.
@@ -139,6 +148,15 @@ def _append_telemetry(record, path=None):
     path = path or TELEMETRY_PATH
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
+            # Keep exactly one prior generation, the simplest form of
+            # logrotate's own default behavior -- overwrites any previous
+            # .1 rather than accumulating .1, .2, .3, ... forever, which
+            # would just move the unbounded-growth problem sideways.
+            try:
+                os.replace(path, path + ".1")
+            except OSError:
+                pass
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError as exc:
