@@ -204,8 +204,21 @@ jobs:
           # No database configured on purpose: liveness must come up without
           # one (see hub/DEPLOYMENT.md §4). A HUB_DATABASE_URL is still
           # required for the process to boot at all.
+          #
+          # HUB_ALLOW_INSECURE_HTTP=true: `-p 8420:8420` publishes the
+          # container's port via Docker's NAT, which only forwards traffic
+          # to a socket the container binds on 0.0.0.0 -- a bind to
+          # 127.0.0.1 *inside* the container is unreachable through that
+          # mapping at all. HubConfig.validate_transport_safety()
+          # (hub/config.py) correctly refuses to start on a non-loopback
+          # HUB_HOST serving plain HTTP unless this is set, exactly as it
+          # should for a real deployment; here it's the same acknowledgment
+          # docker-compose.yml already makes for the same Docker-NAT
+          # reason, on an isolated CI runner with nothing but this curl
+          # loop able to reach the published port at all.
           docker run -d --name hub-ci -p 8420:8420 \
             -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
+            -e HUB_ALLOW_INSECURE_HTTP=true \
             commontrace-hub:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
