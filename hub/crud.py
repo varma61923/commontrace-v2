@@ -33,7 +33,17 @@ from sqlalchemy.orm.attributes import set_committed_value
 from hub import audit, commons, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
-from hub.models import TEXT_SEARCH_CONFIG, Organization, Trace, TraceRelation, UsageCounter, Vote
+from hub.models import (
+    MAX_FEEDBACK_TEXT_CHARS,
+    TEXT_SEARCH_CONFIG,
+    VALID_FEEDBACK_TAGS,
+    VALID_VOTE_TYPES,
+    Organization,
+    Trace,
+    TraceRelation,
+    UsageCounter,
+    Vote,
+)
 from hub.schema_validation import validate_trace
 
 # Fallback `actor` for a call site that didn't supply one. Recorded
@@ -129,6 +139,20 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         # round trip. Not a disclosure: on a commons result this is true by
         # definition, and on your own traces it is your own decision.
         "shared_with_commons": trace.shared_with_commons,
+        # Whether this trace is quarantined, and why. Surfaced (unlike the
+        # models.py column comment's original framing of these as
+        # "governance fields, not part of the wire object") because a caller
+        # that reaches a quarantined trace of its OWN -- via get_trace/
+        # vote_trace by id, which do not filter quarantine the way
+        # search_traces/list_tags do -- otherwise gets the full body back
+        # with no indication it is excluded from search and pending review.
+        # Safe to expose on every call site: get_trace/vote_trace are
+        # org-scoped to the trace's owner, and the one cross-org call site
+        # (commons_overlap's `_to_wire(hit, ...)`) only ever reaches rows
+        # already filtered to `quarantined.is_(False)`, so this is always
+        # False there.
+        "quarantined": trace.quarantined,
+        "quarantine_reason": trace.quarantine_reason,
     }
 
 
@@ -528,8 +552,22 @@ async def vote_trace(
     feedback_text: str = "",
     actor: str = AUDIT_ACTOR_UNKNOWN,
 ) -> dict | None:
-    if vote_type not in ("up", "down"):
+    if vote_type not in VALID_VOTE_TYPES:
         raise ValueError(f"vote_type must be 'up' or 'down', got {vote_type!r}")
+    # Validated here, at the application layer, rather than left to the DB's
+    # own CHECK constraints (hub/models.py:Vote.__table_args__): a
+    # constraint violation surfaces as an uncaught IntegrityError, which
+    # falls through to _error_response's generic 500 rather than the clean
+    # 400 a malformed request should get. feedback_text has no DB-level cap
+    # at all otherwise -- unbounded Text, and every vote writes an
+    # AuditLogEntry, so an unbounded field is a cheap storage/audit-log
+    # flooding vector.
+    if feedback_tag not in VALID_FEEDBACK_TAGS:
+        raise ValueError(f"feedback_tag must be one of {VALID_FEEDBACK_TAGS!r}, got {feedback_tag!r}")
+    if len(feedback_text) > MAX_FEEDBACK_TEXT_CHARS:
+        raise ValueError(
+            f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
+        )
 
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
@@ -666,6 +704,19 @@ async def amend_trace(
     validate_trace(wire)
     validate_size(wire, config)
     reason = suspicion_reason(wire, config)
+    # Quarantine is inherited, never re-decided from scratch by the
+    # heuristic alone: without this, a quarantined trace stays quarantined
+    # only until whoever quarantined it (spammer or not) makes a small edit
+    # that happens not to trip suspicion_reason on the new text -- amending
+    # would otherwise be an unsupervised way around a state that is supposed
+    # to require an operator's release_quarantine (hub/manage.py) to lift.
+    # A trace that was NOT quarantined can still become quarantined by this
+    # amendment's own content, same as contribute_trace.
+    quarantined = original.quarantined or reason is not None
+    quarantine_reason = (
+        original.quarantine_reason if original.quarantined and original.quarantine_reason
+        else (reason or "")
+    )
 
     amended = Trace(
         id=amended_id,
@@ -691,8 +742,8 @@ async def amend_trace(
         outcome=dict(original.outcome or {}),
         supersedes_trace_id=original.id,
         depth=original.depth + 1,
-        quarantined=reason is not None,
-        quarantine_reason=reason or "",
+        quarantined=quarantined,
+        quarantine_reason=quarantine_reason,
     )
     session.add(amended)
     await session.flush()
@@ -718,7 +769,7 @@ async def amend_trace(
         target_type="trace",
         target_id=amended.id,
         summary=(f"supersedes={original.id} depth={amended.depth} "
-                 f"changed={','.join(changed) or 'nothing'} quarantined={reason is not None}"),
+                 f"changed={','.join(changed) or 'nothing'} quarantined={quarantined}"),
     )
     return await _hydrate_one(session, amended)
 
@@ -868,6 +919,19 @@ async def commons_overlap(
             )
         allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
         if allowance != plans.UNLIMITED:
+            # SELECT ... FOR UPDATE on the org's own row, same pattern as
+            # _reserve_trace_slot: read-check-then-increment across two
+            # separate statements (the read here, _meter's own atomic
+            # increment below) is a TOCTOU race under concurrent calls from
+            # the SAME org -- two requests can each read `used = allowance -
+            # 1`, both pass the check, and both then increment, letting the
+            # org exceed its allowance by however many requests raced. The
+            # row lock serializes exactly this org's own concurrent calls
+            # around the check; a different org's commons_overlap locks a
+            # different row and is unaffected.
+            await session.execute(
+                select(Organization.id).where(Organization.id == org_id).with_for_update()
+            )
             used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
             if not plans.within(allowance, used):
                 raise plans.EntitlementExceeded(

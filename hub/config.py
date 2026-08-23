@@ -64,9 +64,32 @@ class HubConfig:
     max_tags: int = 20
     max_tag_chars: int = 64
     max_trace_bytes: int = 65_536  # serialized JSON size ceiling for one trace
-    rate_limit_per_minute: int = 20  # contribute_trace calls, per org
+    rate_limit_per_minute: int = 20  # contribute_trace/amend_trace calls, per org
     rate_limit_burst: int = 5
     suspect_url_threshold: int = 5  # >N URLs in one submission -> quarantine
+
+    # --- Rate limiting: every authenticated request, and auth itself ---
+    #
+    # rate_limit_per_minute above only ever gated the two write tools
+    # (contribute_trace/amend_trace). search_traces, get_trace, vote_trace,
+    # list_tags, and commons_overlap had no limit at all: a single valid API
+    # key could drive unmetered full-text search, ranking computation, and
+    # MinHash corpus scans. This is a second, more generous ceiling applied
+    # to EVERY authenticated request in ApiKeyAuthMiddleware, on top of (not
+    # instead of) the tighter per-write-op limiter.
+    read_rate_limit_per_minute: int = 300  # all authenticated requests, per org
+    read_rate_limit_burst: int = 60
+
+    # Argon2id verification is deliberately expensive CPU work
+    # (hub/auth.py), run per candidate key sharing a presented key's prefix,
+    # on every request carrying an Authorization header -- valid or not.
+    # Without a limit, a remote attacker can flood the endpoint with
+    # credentials sharing a known/guessed prefix to exhaust the process's
+    # to_thread worker pool. Checked BEFORE verify_api_key runs, keyed by
+    # the request's client address, so it bounds the CPU cost per source
+    # rather than only counting failures after paying for them.
+    auth_attempts_per_minute: int = 60
+    auth_attempts_burst: int = 20
 
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
@@ -125,6 +148,10 @@ class HubConfig:
             rate_limit_per_minute=_env_int("HUB_RATE_LIMIT_PER_MINUTE", 20),
             rate_limit_burst=_env_int("HUB_RATE_LIMIT_BURST", 5),
             suspect_url_threshold=_env_int("HUB_SUSPECT_URL_THRESHOLD", 5),
+            read_rate_limit_per_minute=_env_int("HUB_READ_RATE_LIMIT_PER_MINUTE", 300),
+            read_rate_limit_burst=_env_int("HUB_READ_RATE_LIMIT_BURST", 60),
+            auth_attempts_per_minute=_env_int("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60),
+            auth_attempts_burst=_env_int("HUB_AUTH_ATTEMPTS_BURST", 20),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),
             db_max_overflow=_env_int("HUB_DB_MAX_OVERFLOW", 5),

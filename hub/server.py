@@ -26,7 +26,14 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from hub import auth, commons, crud, plans
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter
+from hub.abuse import (
+    RateLimited,
+    RateLimiter,
+    TraceRejected,
+    make_auth_rate_limiter,
+    make_rate_limiter,
+    make_read_rate_limiter,
+)
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
@@ -45,12 +52,42 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
     A dedicated, unauthenticated `/healthz` path is exempt (for load
     balancer / orchestrator liveness checks, which by design carry no
-    tenant credentials)."""
+    tenant credentials).
 
-    def __init__(self, app: ASGIApp, session_factory: async_sessionmaker, protected_path: str):
+    Two rate limiters gate every request through here, on top of whatever
+    hub/crud.py's own per-write-op limiter does further in:
+
+      - `auth_rate_limiter`, keyed by client address, checked BEFORE
+        Argon2 verification runs. Verification is deliberately expensive
+        CPU work (hub/auth.py), performed for every candidate key sharing a
+        presented key's prefix, on every request carrying an Authorization
+        header regardless of whether it turns out valid -- without this, a
+        remote attacker can flood the endpoint with credentials sharing a
+        known/guessed prefix to exhaust the process's to_thread worker
+        pool. This bounds CPU spent per source rather than only reacting
+        after paying for it.
+      - `read_rate_limiter`, keyed by org_id, checked once a request is
+        authenticated. hub/crud.py's rate_limiter only ever gated
+        contribute_trace/amend_trace; search_traces, get_trace, vote_trace,
+        list_tags, and commons_overlap had no limit at all. This is a more
+        generous ceiling covering every tool call, so a single valid key
+        cannot drive unmetered full-text search, ranking computation, or
+        MinHash corpus scans.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        session_factory: async_sessionmaker,
+        protected_path: str,
+        auth_rate_limiter: RateLimiter,
+        read_rate_limiter: RateLimiter,
+    ):
         super().__init__(app)
         self._session_factory = session_factory
         self._protected_path = protected_path
+        self._auth_rate_limiter = auth_rate_limiter
+        self._read_rate_limiter = read_rate_limiter
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -62,6 +99,10 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # coincidence, so it stays true if a route is ever added later.
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
+
+        client_key = request.client.host if request.client else "unknown"
+        if not self._auth_rate_limiter.allow(client_key):
+            return JSONResponse({"error": "rate_limited", "detail": "too many auth attempts"}, status_code=429)
 
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
@@ -78,6 +119,9 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             # One message for invalid / revoked / expired alike -- see
             # hub/auth.py:verify_api_key for why they must be indistinguishable.
             return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
+
+        if not self._read_rate_limiter.allow(authenticated.org_id):
+            return JSONResponse({"error": "rate_limited", "detail": "too many requests"}, status_code=429)
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
@@ -383,7 +427,11 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
 
     add_health_routes(inner_app, session_factory)
     inner_app.add_middleware(
-        ApiKeyAuthMiddleware, session_factory=session_factory, protected_path=config.streamable_http_path
+        ApiKeyAuthMiddleware,
+        session_factory=session_factory,
+        protected_path=config.streamable_http_path,
+        auth_rate_limiter=make_auth_rate_limiter(config),
+        read_rate_limiter=make_read_rate_limiter(config),
     )
     # Added last => outermost: a request id exists (and the request gets
     # logged) even for calls the auth middleware rejects with a 401.

@@ -16,6 +16,7 @@ from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
+from hub.abuse import RateLimiter
 from hub.server import ApiKeyAuthMiddleware
 
 pytestmark = pytest.mark.asyncio
@@ -31,7 +32,16 @@ async def _ok(request):
 
 def _build_app():
     app = Starlette(routes=[Route(p, _ok) for p in ("/mcp", "/mcp/foo", "/healthz", "/mcpadmin", "/mcpx")])
-    app.add_middleware(ApiKeyAuthMiddleware, session_factory=_explode, protected_path="/mcp")
+    # High limits: these tests assert path-matching behavior, not rate
+    # limiting -- a tight bucket would make them flaky depending on how many
+    # requests a given test fires.
+    app.add_middleware(
+        ApiKeyAuthMiddleware,
+        session_factory=_explode,
+        protected_path="/mcp",
+        auth_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+        read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+    )
     return app
 
 
@@ -67,3 +77,39 @@ class TestProtectedPathMatching:
             x = await c.get("/mcpx")
         assert admin.status_code == 200
         assert x.status_code == 200
+
+
+def _build_app_with_tight_auth_limiter():
+    app = Starlette(routes=[Route(p, _ok) for p in ("/mcp",)])
+    app.add_middleware(
+        ApiKeyAuthMiddleware,
+        session_factory=_explode,
+        protected_path="/mcp",
+        auth_rate_limiter=RateLimiter(per_minute=0, burst=1),
+        read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+    )
+    return app
+
+
+class TestAuthAttemptRateLimiting:
+    """search_traces/get_trace/vote_trace/list_tags/commons_overlap had no
+    rate limiting at all, and Argon2id verification (hub/auth.py) is
+    deliberately expensive CPU work performed on every request carrying an
+    Authorization header, valid or not -- so both a read-endpoint DoS and a
+    CPU-amplification DoS were reachable with a single API key or even none
+    at all. auth_rate_limiter gates requests before verify_api_key ever
+    runs, so it must reject purely on request volume, with no session
+    factory access (i.e. no DB lookup) needed to do it."""
+
+    async def test_auth_attempt_limiter_rejects_before_touching_the_session_factory(self):
+        transport = httpx.ASGITransport(app=_build_app_with_tight_auth_limiter())
+        # No Authorization header on either request: session_factory
+        # (`_explode`, which raises if actually called) is only ever
+        # reached AFTER the header check, so a request that never gets that
+        # far proves the auth_rate_limiter -- not a header/DB failure --
+        # produced whichever response it got.
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            first = await c.get("/mcp")
+            second = await c.get("/mcp")
+        assert first.status_code == 401  # burst of 1: allowed through to the header check, which fails
+        assert second.status_code == 429  # no refill (per_minute=0): the limiter itself now rejects

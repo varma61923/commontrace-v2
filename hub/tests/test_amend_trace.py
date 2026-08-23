@@ -99,3 +99,78 @@ class TestAmendTraceFieldCarryForward:
         assert row.title == "original title"
         assert row.outcome == {"resolved": True, "notes": "worked"}
         assert row.contributor == "alice@example.com"
+
+
+class TestAmendTraceQuarantineInheritance:
+    """amend_trace used to run only its own heuristic on the amended
+    content, ignoring whether the trace it supersedes was already
+    quarantined. That is an unsupervised way around a state that is
+    supposed to require an operator's release_quarantine to lift: quarantine
+    a trace, amend it with a small edit that happens not to trip
+    suspicion_reason on the new text, and the successor comes back clean."""
+
+    async def test_amending_a_quarantined_trace_stays_quarantined(self, session_factory, config, org):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, org, config, rate_limiter,
+                title="original", context_text="c", solution_text="s",
+                tags=[], agent_type="code", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, result["id"])
+            trace.quarantined = True
+            trace.quarantine_reason = "manually flagged for review"
+
+        async with session_scope(session_factory) as session:
+            amended = await crud.amend_trace(
+                session, org, result["id"], config, rate_limiter,
+                title="an innocuous-looking edit", actor="test",
+            )
+
+        assert amended["quarantined"] is True
+        assert amended["quarantine_reason"] == "manually flagged for review"
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, amended["id"])
+        assert row.quarantined is True
+
+    async def test_amending_a_clean_trace_can_still_trip_quarantine(self, session_factory, config, org):
+        """The inheritance fix must not stop amend_trace's own heuristic
+        from still catching newly-suspicious content on a previously clean
+        trace."""
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, org, config, rate_limiter,
+                title="original", context_text="c", solution_text="s",
+                tags=[], agent_type="code", actor="test",
+            )
+        spam = " ".join(f"http://spam{i}.example.com" for i in range(20))
+        async with session_scope(session_factory) as session:
+            amended = await crud.amend_trace(
+                session, org, result["id"], config, rate_limiter,
+                context_text=spam, actor="test",
+            )
+        assert amended["quarantined"] is True
+
+    async def test_wire_shape_surfaces_quarantine_status(self, session_factory, config, org):
+        """get_trace/vote_trace do not filter quarantine the way
+        search_traces/list_tags do, so a caller reaching its own quarantined
+        trace by id needs some visible signal that it is quarantined rather
+        than getting the full body back looking like any other trace."""
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, org, config, rate_limiter,
+                title="t", context_text="c", solution_text="s",
+                tags=[], agent_type="code", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, result["id"])
+            trace.quarantined = True
+            trace.quarantine_reason = "why"
+
+        async with session_scope(session_factory) as session:
+            fetched = await crud.get_trace(session, org, result["id"])
+        assert fetched["quarantined"] is True
+        assert fetched["quarantine_reason"] == "why"

@@ -257,6 +257,19 @@ class Trace(Base):
     )
 
 
+# Allowed feedback_tag values, as both the source of truth for the DB CHECK
+# constraint below AND for hub/crud.py's application-level validation
+# (VALID_VOTE_TYPES likewise for vote_type). Single source of truth so the
+# two cannot drift the way hub/tests/test_commons.py's client/server
+# signature identity check exists to prevent elsewhere in this codebase --
+# without app-level validation matching this exactly, a caller sending a
+# tag outside the enum reaches the CHECK constraint only, which fails as an
+# uncaught IntegrityError (an opaque HTTP 500) rather than a clean 400.
+VALID_VOTE_TYPES = ("up", "down")
+VALID_FEEDBACK_TAGS = ("", "outdated", "wrong", "security_concern", "spam")
+MAX_FEEDBACK_TEXT_CHARS = 2000
+
+
 class Vote(Base):
     __tablename__ = "votes"
 
@@ -269,6 +282,10 @@ class Vote(Base):
     )
     vote_type: Mapped[str] = mapped_column(String(8), nullable=False)
     feedback_tag: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    # Text, not unbounded in practice: hub/crud.py:vote_trace enforces
+    # MAX_FEEDBACK_TEXT_CHARS before this ever reaches the database. The
+    # column itself stays Text rather than String(N) so a lowered
+    # application-level cap in the future does not require a migration.
     feedback_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 

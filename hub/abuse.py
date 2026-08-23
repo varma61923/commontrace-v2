@@ -148,3 +148,17 @@ class RateLimiter:
 
 def make_rate_limiter(config: HubConfig) -> RateLimiter:
     return RateLimiter(per_minute=config.rate_limit_per_minute, burst=config.rate_limit_burst)
+
+
+def make_read_rate_limiter(config: HubConfig) -> RateLimiter:
+    """Keyed by org_id, applied to EVERY authenticated request in
+    ApiKeyAuthMiddleware -- unlike `make_rate_limiter`'s bucket, which only
+    ever gates the two write tools."""
+    return RateLimiter(per_minute=config.read_rate_limit_per_minute, burst=config.read_rate_limit_burst)
+
+
+def make_auth_rate_limiter(config: HubConfig) -> RateLimiter:
+    """Keyed by client address, checked before Argon2 verification even
+    runs -- bounds CPU spent verifying credentials from one source rather
+    than only counting failures after paying for them."""
+    return RateLimiter(per_minute=config.auth_attempts_per_minute, burst=config.auth_attempts_burst)

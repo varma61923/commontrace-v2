@@ -134,6 +134,23 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             await asyncio.to_thread(_hasher.verify, candidate.key_hash, raw_key)
         except VerifyMismatchError:
             continue
+        # Re-read revocation state fresh rather than trusting `candidate`
+        # (loaded by the `revoked_at IS NULL` SELECT above, before the
+        # possibly-slow verify() this loop just spent its time in). An
+        # operator's revoke_api_key landing in that window would otherwise
+        # still authenticate this request: the initial SELECT already
+        # passed, and `candidate` in memory has no way to see a commit that
+        # happened after it was loaded. A plain column SELECT (not
+        # session.get, which would just return the same identity-mapped
+        # object already held in memory) forces an actual round trip, which
+        # shrinks the race window down to the time between this read and
+        # the caller using its result, instead of the full duration of
+        # verify(). Still not a hard guarantee under extreme scheduling, but
+        # closing a multi-millisecond window to a near-zero one is the
+        # practical fix short of locking the key row for every read.
+        revoked_at = await session.scalar(select(ApiKey.revoked_at).where(ApiKey.id == candidate.id))
+        if revoked_at is not None:
+            return None
         if candidate.expires_at is not None and candidate.expires_at <= now:
             # Expired reads exactly like invalid: an expired key must not be
             # distinguishable from a wrong one at the transport layer.

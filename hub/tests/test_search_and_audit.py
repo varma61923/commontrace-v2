@@ -227,6 +227,42 @@ class TestApiKeyExpiry:
             with pytest.raises(ValueError):
                 await auth.issue_api_key(session, org, expires_days=0)
 
+    async def test_revocation_during_verification_is_honored_not_missed(
+        self, session_factory, org, monkeypatch
+    ):
+        """verify_api_key's initial SELECT filters on `revoked_at IS NULL`,
+        then spends most of its time in Argon2 verification (offloaded to a
+        worker thread -- deliberately expensive CPU work). An operator's
+        revoke_api_key landing in that window used to still authenticate the
+        request, because the in-memory candidate loaded before the revoke
+        has no way to see a commit that happened after it was loaded. The
+        fix re-reads revocation state fresh immediately after verify()
+        returns; this simulates a revoke landing exactly inside that
+        window by hooking the asyncio.to_thread call verify() is offloaded
+        through."""
+        import asyncio as asyncio_module
+
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+
+        real_to_thread = asyncio_module.to_thread
+        revoked_once = False
+
+        async def revoke_during_verify(func, *args, **kwargs):
+            nonlocal revoked_once
+            result = await real_to_thread(func, *args, **kwargs)
+            if not revoked_once:
+                revoked_once = True
+                async with session_scope(session_factory) as revoke_session:
+                    await auth.revoke_api_key(revoke_session, issued.key_id)
+            return result
+
+        monkeypatch.setattr(asyncio_module, "to_thread", revoke_during_verify)
+
+        async with session_scope(session_factory) as session:
+            result = await auth.verify_api_key(session, issued.raw_key)
+        assert result is None, "a key revoked mid-verification must not authenticate"
+
 
 class TestVoteTrustAggregate:
     """`vote_trace` recomputes trust from a COUNT/GROUP BY aggregate rather
@@ -257,3 +293,37 @@ class TestVoteTrustAggregate:
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, org, trace["id"], "down")
         assert result["trust"] == pytest.approx(0.0)
+
+
+class TestVoteInputValidation:
+    """feedback_tag is constrained to a small enum, and feedback_text has no
+    length cap, at the DATABASE layer only (hub/models.py's CheckConstraint /
+    unbounded Text). Without matching application-level validation, a bad
+    tag reaches the DB's CHECK constraint as an uncaught IntegrityError --
+    an opaque HTTP 500 instead of a clean 400 -- and an oversized
+    feedback_text is a free storage/audit-log flooding vector (every vote
+    writes an AuditLogEntry)."""
+
+    async def test_invalid_feedback_tag_is_a_clean_value_error_not_a_db_crash(
+        self, session_factory, config, org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(session, org, trace["id"], "up", feedback_tag="not-a-real-tag")
+
+    async def test_oversized_feedback_text_is_rejected(self, session_factory, config, org):
+        from hub.models import MAX_FEEDBACK_TEXT_CHARS
+
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(
+                    session, org, trace["id"], "up", feedback_text="x" * (MAX_FEEDBACK_TEXT_CHARS + 1)
+                )
+
+    async def test_valid_feedback_tag_still_works(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "down", feedback_tag="outdated")
+        assert result["votes"][0]["feedback_tag"] == "outdated"
