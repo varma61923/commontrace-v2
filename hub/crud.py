@@ -451,6 +451,15 @@ async def contribute_trace(
     """
     tags = tags or []
 
+    # Trace.idempotency_key is String(128) -- checked here rather than left
+    # to the INSERT below to enforce it: a too-long value raised
+    # asyncpg.StringDataRightTruncation (a DataError), which is not an
+    # IntegrityError and isn't caught by the IntegrityError handler further
+    # down, so it reached the caller as an opaque HTTP 500 instead of a
+    # clean rejection of a malformed request.
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
+
     if idempotency_key is not None:
         existing = (
             await session.execute(
@@ -559,7 +568,32 @@ def _idempotent_replay_or_conflict(
     }
 
 
+def _is_uuid(value: str) -> bool:
+    """Whether `value` is acceptable to bind against a UUID column.
+
+    Every function below takes a caller-supplied trace_id and compares it
+    directly against `Trace.id` (a UUID column) in a WHERE clause. asyncpg
+    validates the bind parameter against the column's real type -- a
+    non-UUID string raises asyncpg.DataError, which SQLAlchemy wraps as
+    DBAPIError, neither of which is an IntegrityError or any of the other
+    exception types hub/server.py's _error_response maps to a clean 4xx.
+    Unhandled, that reached callers as an opaque HTTP 500 instead of the
+    same "not found" a well-formed-but-nonexistent id already produces.
+    Checking here lets a malformed id take the identical not-found path
+    (see get_trace's own docstring on why 404, never 403, for a foreign
+    org's id -- the same "reveal nothing extra" reasoning applies to a
+    malformed id revealing nothing about whether IT exists either).
+    """
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict | None:
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -597,6 +631,8 @@ async def vote_trace(
         raise ValueError(
             f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
         )
+    if not _is_uuid(trace_id):
+        return None
 
     # An org may vote on its own trace, or on any OTHER org's trace that is
     # currently in the commons -- previously this was scoped to
@@ -718,6 +754,8 @@ async def amend_trace(
     """Creates a new Trace that supersedes `trace_id`, rather than mutating
     history in place -- consistent with Trace.supersedes_trace_id /
     Trace.depth being an amendment *chain*, not an overwrite."""
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     original = (await session.execute(stmt)).scalar_one_or_none()
     if original is None:
@@ -857,6 +895,8 @@ async def share_trace(
     Returns None (not a permission error) for a trace that isn't yours, so
     this cannot be used as an existence oracle for another org's ids.
     """
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -899,6 +939,8 @@ async def unshare_trace(
 ) -> dict | None:
     """Withdraw a trace from the commons. Clears the signature too, so it
     stops matching immediately rather than lingering in results."""
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:

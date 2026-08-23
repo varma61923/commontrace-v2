@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from hub import audit, auth, crud
-from hub.abuse import make_rate_limiter
+from hub.abuse import TraceRejected, make_rate_limiter
 from hub.config import MAX_SEARCH_LIMIT
 from hub.db import session_scope
 from hub.models import ApiKey, AuditLogEntry, Organization, Trace
@@ -413,3 +413,73 @@ class TestCrossOrgVoting:
         # across two distinct orgs' votes -- previously unreachable, since
         # only the owner could ever cast one.
         assert result["trust"] == pytest.approx(0.5)
+
+
+class TestMalformedIdsAreCleanNotFoundNot500s:
+    """get_trace/vote_trace/amend_trace/share_trace/unshare_trace all
+    compare a caller-supplied trace_id directly against Trace.id, a UUID
+    column. asyncpg validates the bind parameter against the column's real
+    type -- a non-UUID string raised asyncpg.DataError (wrapped as
+    DBAPIError by SQLAlchemy), which is not an IntegrityError and isn't
+    caught by any handler in hub/server.py's _error_response, reaching the
+    caller as an opaque HTTP 500 instead of the same clean "not found" a
+    well-formed-but-nonexistent id already produces."""
+
+    async def test_get_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.get_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+    async def test_vote_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, "not-a-uuid-at-all", "up")
+        assert result is None
+
+    async def test_amend_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.amend_trace(
+                session, org, "not-a-uuid-at-all", config, rate_limiter, title="x", actor="test",
+            )
+        assert result is None
+
+    async def test_share_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.share_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+    async def test_unshare_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.unshare_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+
+class TestOversizedIdempotencyKeyIsRejectedCleanly:
+    """Trace.idempotency_key is String(128) at the DB layer; a too-long
+    value raised asyncpg.StringDataRightTruncation on INSERT -- not an
+    IntegrityError, so not caught by contribute_trace's own IntegrityError
+    handler, reaching the caller as an HTTP 500 instead of a clean
+    rejection of a malformed request."""
+
+    async def test_an_oversized_idempotency_key_is_rejected_before_it_reaches_the_db(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.contribute_trace(
+                    session, org, config, rate_limiter,
+                    title="t", context_text="c", solution_text="s",
+                    tags=[], agent_type="code", actor="test",
+                    idempotency_key="x" * 129,
+                )
