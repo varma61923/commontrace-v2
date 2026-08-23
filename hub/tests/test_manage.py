@@ -79,8 +79,13 @@ async def test_list_quarantined_shows_pending_review(session_factory, config, tw
 
 
 async def test_release_quarantine_unknown_id_reports_error(session_factory, capsys):
-    await manage.release_quarantine("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.release_quarantine(
+        "00000000-0000-0000-0000-000000000000", session_factory=session_factory
+    )
     assert "no such trace" in capsys.readouterr().err
+    # False (not just the stderr message) is what makes `main()` exit
+    # non-zero for a failed destructive op -- see test_main_command_exit_codes.
+    assert result is False
 
 
 async def test_purge_trace_deletes_it_permanently(session_factory, config, two_orgs):
@@ -206,8 +211,9 @@ async def test_purge_trace_unrelated_traces_survive(session_factory, config, two
 
 
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):
-    await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such trace" in capsys.readouterr().err
+    assert result is False
 
 
 async def test_purge_org_cascades_to_its_traces(session_factory, config, two_orgs):
@@ -230,8 +236,9 @@ async def test_purge_org_cascades_to_its_traces(session_factory, config, two_org
 
 
 async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
-    await manage.purge_org("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.purge_org("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such organization" in capsys.readouterr().err
+    assert result is False
 
 
 async def test_argument_count_validation():
@@ -264,3 +271,60 @@ def test_malformed_uuid_reports_a_clean_error_not_a_traceback(config, _schema, m
     err = capsys.readouterr().err
     assert err.startswith("error:")
     assert "Traceback" not in err
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+def test_main_exits_nonzero_when_a_destructive_op_fails(config, monkeypatch, capsys):
+    """The actual bug this fixes: revoke-key/release-quarantine/purge-trace/
+    purge-org/commons-seed/set-plan/usage all print "error: ..." to stderr
+    and return False on a failed lookup, but nothing about that is a raised
+    exception -- there is nothing wrong with the CLI, the id just didn't
+    resolve. Before main() checked the command's return value, every one of
+    these failures still exited 0, so an automated incident script checking
+    $? after e.g. `purge-org <id>` (to confirm a GDPR deletion actually
+    happened) would see success on a no-op."""
+    monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+    for command, unknown_id in (
+        ("revoke-key", "00000000-0000-0000-0000-000000000000"),
+        ("release-quarantine", "00000000-0000-0000-0000-000000000000"),
+        ("purge-trace", "00000000-0000-0000-0000-000000000000"),
+        ("purge-org", "00000000-0000-0000-0000-000000000000"),
+    ):
+        exit_code = manage.main([command, unknown_id])
+        assert exit_code == 2, f"{command} on an unknown id must exit non-zero, got {exit_code}"
+        assert capsys.readouterr().err.startswith("error:")
+
+    exit_code = manage.main(["set-plan", "00000000-0000-0000-0000-000000000000", "free"])
+    assert exit_code == 2
+    capsys.readouterr()
+
+    exit_code = manage.main(["set-plan", "00000000-0000-0000-0000-000000000000", "not-a-real-plan"])
+    assert exit_code == 2
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+def test_main_dispatch_treats_only_false_as_failure():
+    """Isolates main()'s own dispatch logic (no DB needed): a command
+    returning False fails the CLI, True or None (every command with no
+    failure path) succeeds."""
+
+    async def _fake_fail(*args):
+        return False
+
+    async def _fake_ok(*args):
+        return True
+
+    async def _fake_none(*args):
+        return None
+
+    original = dict(manage._COMMANDS)
+    try:
+        manage._COMMANDS["__test_fail__"] = (_fake_fail, 0, 0)
+        manage._COMMANDS["__test_ok__"] = (_fake_ok, 0, 0)
+        manage._COMMANDS["__test_none__"] = (_fake_none, 0, 0)
+        assert manage.main(["__test_fail__"]) == 2
+        assert manage.main(["__test_ok__"]) == 0
+        assert manage.main(["__test_none__"]) == 0
+    finally:
+        manage._COMMANDS.clear()
+        manage._COMMANDS.update(original)

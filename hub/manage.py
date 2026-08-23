@@ -118,7 +118,7 @@ async def rotate_key(key_id: str, session_factory=None) -> None:
     print(f"new api_key (shown once, store it now): {issued.raw_key}")
 
 
-async def revoke_key(key_id: str, session_factory=None) -> None:
+async def revoke_key(key_id: str, session_factory=None) -> bool:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         key = await session.get(ApiKey, key_id)
@@ -129,14 +129,18 @@ async def revoke_key(key_id: str, session_factory=None) -> None:
             # audit row with org_id=None for a key that was never resolved,
             # unlike every other operator command (release_quarantine,
             # purge_trace, purge_org) which all refuse on a missing row.
+            # Returning False (not just printing to stderr) is what makes
+            # `main()` exit non-zero for this -- an operator/incident script
+            # checking $? for a failed revoke must not see a false "0 = ok".
             print(f"error: no such API key: {key_id}", file=sys.stderr)
-            return
+            return False
         await auth.revoke_api_key(session, key_id)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="revoke_key",
             org_id=key.org_id, target_type="api_key", target_id=key_id,
         )
     print(f"revoked: {key_id}")
+    return True
 
 
 async def list_orgs(session_factory=None) -> None:
@@ -170,7 +174,7 @@ async def stats(session_factory=None) -> None:
     print(f"mean trust:          {mean_trust:.3f}" if mean_trust is not None else "mean trust:          n/a")
 
 
-async def commons_seed(path: str, org_id: str, session_factory=None) -> None:
+async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     """Seed the commons from a JSONL file of public substrate knowledge.
 
     THE COLD START, AND WHY THIS IS NOT CHEATING. An empty commons returns
@@ -204,7 +208,7 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> None:
             raw_lines = [ln for ln in (line.strip() for line in fh) if ln]
     except OSError as exc:
         print(f"error: cannot read {path}: {exc}", file=sys.stderr)
-        return
+        return False
 
     records, bad = [], 0
     for i, line in enumerate(raw_lines, 1):
@@ -222,13 +226,13 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> None:
 
     if not records:
         print(f"error: no usable records in {path}", file=sys.stderr)
-        return
+        return False
 
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
         if org is None:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
-            return
+            return False
 
         added = 0
         for rec in records:
@@ -264,6 +268,7 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> None:
     print("  These are reported separately from org contributions by "
           "`commons-stats` and `commons-value`, so the network-effect")
     print("  metric is not inflated by operator seeding.")
+    return True
 
 
 async def commons_value(session_factory=None) -> None:
@@ -456,13 +461,13 @@ async def list_quarantined(org_id: str | None = None, session_factory=None) -> N
         print(f"    reason: {t.quarantine_reason}")
 
 
-async def release_quarantine(trace_id: str, session_factory=None) -> None:
+async def release_quarantine(trace_id: str, session_factory=None) -> bool:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         trace = await session.get(Trace, trace_id)
         if trace is None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
-            return
+            return False
         # Read the reason BEFORE the UPDATE. SQLAlchemy synchronizes the
         # in-session object with the values it just wrote, so reading
         # trace.quarantine_reason afterwards yields the new "" -- every audit
@@ -479,6 +484,7 @@ async def release_quarantine(trace_id: str, session_factory=None) -> None:
             summary=f"was={previous_reason[:100]}",
         )
     print(f"released from quarantine: {trace_id}")
+    return True
 
 
 async def _amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
@@ -513,7 +519,7 @@ async def _amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
     return seen
 
 
-async def purge_trace(trace_id: str, session_factory=None) -> None:
+async def purge_trace(trace_id: str, session_factory=None) -> bool:
     """Permanently deletes one trace AND every trace in its amendment chain
     (see _amendment_chain). Votes and trace_relations rows keyed by
     trace_id cascade automatically (FK ondelete=CASCADE, hub/models.py); a
@@ -527,7 +533,7 @@ async def purge_trace(trace_id: str, session_factory=None) -> None:
         trace = await session.get(Trace, trace_id)
         if trace is None:
             print(f"error: no such trace: {trace_id}", file=sys.stderr)
-            return
+            return False
         chain_ids = await _amendment_chain(session, trace_id)
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(chain_ids)))
         org_id = trace.org_id
@@ -540,9 +546,10 @@ async def purge_trace(trace_id: str, session_factory=None) -> None:
     extra = len(chain_ids) - 1
     suffix = f" (+{extra} amendment-chain trace{'s' if extra != 1 else ''})" if extra else ""
     print(f"permanently deleted trace: {trace_id}{suffix}")
+    return True
 
 
-async def purge_org(org_id: str, session_factory=None) -> None:
+async def purge_org(org_id: str, session_factory=None) -> bool:
     """Permanently deletes an org and everything scoped to it (api_keys,
     traces, and traces' votes/trace_relations all cascade via FK
     ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3."""
@@ -551,7 +558,7 @@ async def purge_org(org_id: str, session_factory=None) -> None:
         org = await session.get(Organization, org_id)
         if org is None:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
-            return
+            return False
         trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
         if trace_ids:
             # Same dangling-reference cleanup as purge_trace, batched for every
@@ -568,6 +575,7 @@ async def purge_org(org_id: str, session_factory=None) -> None:
             summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
         )
     print(f"permanently deleted organization {org_id} and all its api_keys/traces/votes.")
+    return True
 
 
 async def audit_log(org_id: str | None = None, session_factory=None) -> None:
@@ -591,7 +599,7 @@ async def audit_log(org_id: str | None = None, session_factory=None) -> None:
             print(f"    {r.summary}")
 
 
-async def set_plan(org_id: str, plan_name: str, session_factory=None) -> None:
+async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
     """Move an org between plans (hub/plans.py).
 
     Refuses an unknown name rather than falling back to the default. The
@@ -605,13 +613,13 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> None:
     if key not in plans.PLANS:
         print(f"error: unknown plan {plan_name!r}. Known: {', '.join(sorted(plans.PLANS))}",
               file=sys.stderr)
-        return
+        return False
 
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
         if org is None:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
-            return
+            return False
         was, org.plan = org.plan, key
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="set_plan",
@@ -624,9 +632,10 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> None:
     print(f"  commons/month:  {plans.describe(plan.commons_queries_per_month)} "
           f"(+{plans.QUERY_CREDIT_PER_HIT} per delivered hit)")
     print(f"  {plan.summary}")
+    return True
 
 
-async def usage(org_id: str | None = None, session_factory=None) -> None:
+async def usage(org_id: str | None = None, session_factory=None) -> bool:
     """Entitlements and consumption for the current period.
 
     Shows granted and EARNED allowance separately, because the difference
@@ -641,9 +650,12 @@ async def usage(org_id: str | None = None, session_factory=None) -> None:
             q = q.where(Organization.id == org_id)
         orgs = (await session.execute(q)).scalars().all()
         if not orgs:
+            # An empty fleet-wide listing is not an error (there is simply
+            # nothing to show yet); a specific org_id that doesn't resolve
+            # is -- that's the only branch that should fail the command.
             print("no organizations." if not org_id else f"error: no such organization: {org_id}",
                   file=sys.stderr if org_id else sys.stdout)
-            return
+            return not org_id
 
         rows = [await crud.entitlements(session, o.id) for o in orgs]
 
@@ -663,6 +675,7 @@ async def usage(org_id: str | None = None, session_factory=None) -> None:
     print(f"'earned' is allowance nobody paid for: {plans.QUERY_CREDIT_PER_HIT} commons queries "
           "per time this org's")
     print("shared knowledge covered another fleet's failure. Seeded rows are excluded.")
+    return True
 
 
 async def revenue(session_factory=None) -> None:
@@ -752,7 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        asyncio.run(fn(*args))
+        result = asyncio.run(fn(*args))
     except (ValueError, LookupError) as exc:
         # Operator mistakes -- a bad day count, an org id that doesn't exist.
         # A traceback here reads as "the tool is broken" rather than "you typed
@@ -769,6 +782,18 @@ def main(argv: list[str] | None = None) -> int:
         # above and dumped a raw traceback for the same kind of typo the
         # branch above already handles cleanly.
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    # Several commands (revoke-key, release-quarantine, purge-trace,
+    # purge-org, commons-seed, set-plan, usage) print "error: ..." to
+    # stderr on a failed lookup and return False instead of raising --
+    # there is nothing exceptional about "that id doesn't exist", so it
+    # isn't one of the exception branches above. Without checking the
+    # return value here, every one of those failures still exited 0: an
+    # automated incident script checking $? after `purge-org` (say, to
+    # confirm a GDPR deletion actually happened) would see success on a
+    # no-op. Commands with no failure path return None, which is not
+    # `False`, so they are unaffected.
+    if result is False:
         return 2
     return 0
 

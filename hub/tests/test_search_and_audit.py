@@ -10,7 +10,7 @@ from hub import audit, auth, crud
 from hub.abuse import make_rate_limiter
 from hub.config import MAX_SEARCH_LIMIT
 from hub.db import session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization
+from hub.models import ApiKey, AuditLogEntry, Organization, Trace
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,6 +19,15 @@ pytestmark = pytest.mark.asyncio
 async def org(session_factory):
     async with session_scope(session_factory) as session:
         o = Organization(name="search-org")
+        session.add(o)
+        await session.flush()
+        return o.id
+
+
+@pytest_asyncio.fixture
+async def other_org(session_factory):
+    async with session_scope(session_factory) as session:
+        o = Organization(name="other-search-org")
         session.add(o)
         await session.flush()
         return o.id
@@ -270,14 +279,13 @@ class TestVoteTrustAggregate:
     fraction, not just that the call doesn't crash, since the query shape
     changed.
 
-    `vote_trace` scopes its trace lookup to `Trace.org_id == org_id` (same
-    tenant-isolation rule as `get_trace`, see hub/crud.py:257-265), so only
-    the trace's own owning org can ever vote on it. Combined with the
-    `uq_votes_trace_org` unique constraint, that means a given trace can
-    have at most one Vote row in practice, ever -- there is no reachable
-    multi-org scenario to aggregate across. The only real aggregate
-    behavior to pin is a single org's vote being *replaced*, not
-    accumulated, on revote.
+    `vote_trace`'s trace lookup allows an org to vote on its own trace OR
+    any other org's trace currently shared to the commons (hub/crud.py --
+    see TestCrossOrgVoting below for the multi-org case this unlocks). A
+    given (trace, org) pair still has at most one Vote row, per
+    `uq_votes_trace_org`; revoting replaces it rather than accumulating a
+    second row. The single-org tests here pin that replace-not-accumulate
+    behavior.
     """
 
     async def test_changing_a_vote_recomputes_trust_not_double_counts_it(
@@ -327,3 +335,81 @@ class TestVoteInputValidation:
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, org, trace["id"], "down", feedback_tag="outdated")
         assert result["votes"][0]["feedback_tag"] == "outdated"
+
+
+class TestCrossOrgVoting:
+    """vote_trace used to scope its trace lookup to `Trace.org_id ==
+    org_id` only, which made trust a self-rating: an org's own vote on its
+    own trace, never a community signal, even though `trust` is surfaced to
+    every other org a shared trace matches for (commons_overlap). An org
+    may now also vote on any OTHER org's trace, but only once it is in the
+    commons -- a private trace stays exactly as invisible to other orgs as
+    every other read path makes it."""
+
+    async def test_another_org_can_vote_on_a_shared_trace(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, org, trace["id"])
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "up")
+        assert result is not None
+        assert result["trust"] == pytest.approx(1.0)
+
+    async def test_another_org_cannot_vote_on_a_private_trace(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        # Never shared -- must be exactly as unreachable to other_org as
+        # get_trace/search_traces already make it.
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "up")
+        assert result is None
+
+    async def test_cross_org_vote_response_excludes_private_fields(
+        self, session_factory, config, org, other_org
+    ):
+        """The vote succeeded and the response reflects it (id, trust), but
+        a cross-org voter gets the same narrow projection commons_overlap
+        returns (H-08) -- voting on someone else's trace is not an
+        invitation to see its contributor/extensions/outcome/etc."""
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace["id"])
+            row.contributor = "alice@example.com"
+            await crud.share_trace(session, org, trace["id"])
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "down", feedback_tag="outdated")
+
+        assert result["id"] == trace["id"]
+        assert result["trust"] == pytest.approx(0.0)
+        for private_field in ("contributor", "extensions", "outcome", "votes", "related"):
+            assert private_field not in result
+
+    async def test_owner_voting_on_its_own_trace_still_gets_the_full_view(
+        self, session_factory, config, org
+    ):
+        """Unchanged behavior for the owner: full wire shape, including its
+        own votes list, same as before this fix."""
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "up")
+        assert "votes" in result
+        assert result["votes"][0]["vote_type"] == "up"
+
+    async def test_owner_and_another_org_votes_both_count_toward_trust(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, org, trace["id"])
+            await crud.vote_trace(session, org, trace["id"], "up")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "down")
+        # 1 up (owner) + 1 down (other_org) = 0.5, an actual aggregate
+        # across two distinct orgs' votes -- previously unreachable, since
+        # only the owner could ever cast one.
+        assert result["trust"] == pytest.approx(0.5)

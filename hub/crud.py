@@ -24,7 +24,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -598,10 +598,25 @@ async def vote_trace(
             f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
         )
 
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    # An org may vote on its own trace, or on any OTHER org's trace that is
+    # currently in the commons -- previously this was scoped to
+    # `Trace.org_id == org_id` only, which made "vote" mean "the owner
+    # rates its own submission": trust could only ever be 0.0/0.5/1.0 from
+    # a single self-interested party, never a community signal, even though
+    # a shared trace's `trust` is now surfaced to every org it matches for
+    # (commons_overlap's projection, hub/crud.py:_to_commons_wire). Gated on
+    # `shared_with_commons` (not merely "any trace, any org" -- that would
+    # let an org vote on private traces it has no business seeing at all)
+    # and `not quarantined`, the same boundary every other cross-org read
+    # already enforces.
+    stmt = select(Trace).where(
+        Trace.id == trace_id,
+        or_(Trace.org_id == org_id, and_(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))),
+    )
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
         return None
+    is_owner = trace.org_id == org_id
 
     # A separate SELECT-existing-vote then INSERT-or-UPDATE is not atomic:
     # two concurrent first-time votes on the same trace can both see no
@@ -677,7 +692,14 @@ async def vote_trace(
         target_id=trace_id,
         summary=f"vote={vote_type} feedback_tag={feedback_tag or '-'} new_trust={trace.trust:.3f}",
     )
-    return await _hydrate_one(session, trace)
+    if is_owner:
+        return await _hydrate_one(session, trace)
+    # A cross-org vote on someone else's shared trace gets the same narrow
+    # projection commons_overlap returns (H-08/_to_commons_wire) -- voting
+    # on a trace is not an invitation to see its owner's internal metadata
+    # (contributor, extensions, outcome, ...), only to confirm the vote
+    # registered and see the trace's current community trust score.
+    return _to_commons_wire(trace)
 
 
 async def amend_trace(
