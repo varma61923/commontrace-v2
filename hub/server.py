@@ -425,7 +425,13 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         max_request_body_size=config.max_request_body_bytes,
     )
 
-    add_health_routes(inner_app, session_factory)
+    add_health_routes(
+        inner_app,
+        session_factory,
+        readyz_rate_limiter=RateLimiter(
+            per_minute=config.readyz_rate_limit_per_minute, burst=config.readyz_rate_limit_burst
+        ),
+    )
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
         session_factory=session_factory,

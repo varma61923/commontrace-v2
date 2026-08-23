@@ -42,6 +42,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from hub.abuse import RateLimiter
+
 REQUEST_ID_HEADER = "X-Request-ID"
 
 current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -130,6 +132,23 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status = response.status_code
             response.headers[REQUEST_ID_HEADER] = request_id
+            # Cheap, always-safe defense-in-depth headers on every response.
+            # This is a JSON API with no browser-rendered surface, so a full
+            # Content-Security-Policy has nothing to scope (no inline
+            # scripts/styles of its own to allow), but these cost nothing and
+            # remove a browser's default assumptions that don't hold for a
+            # JSON API: don't guess the content type from the body
+            # (nosniff), never render a response in a frame, don't leak the
+            # request URL to a Referer header on outbound links from any
+            # tool that happens to render this JSON. HSTS is a no-op unless
+            # the response is actually delivered over TLS (browsers ignore
+            # it on plain HTTP per spec), so it is harmless to set
+            # unconditionally rather than trying to detect the upstream
+            # proxy's scheme from a spoofable X-Forwarded-Proto header.
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("X-Frame-Options", "DENY")
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
+            response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
             return response
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -147,14 +166,32 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             current_request_id.reset(token)
 
 
-def add_health_routes(app, session_factory: async_sessionmaker) -> None:
+def add_health_routes(
+    app,
+    session_factory: async_sessionmaker,
+    readyz_rate_limiter: RateLimiter | None = None,
+) -> None:
     """Wire /healthz (liveness) and /readyz (readiness). See module docstring
-    for why these must answer different questions."""
+    for why these must answer different questions.
+
+    Both are unauthenticated by design -- an orchestrator's liveness/
+    readiness prober does not carry a tenant API key -- which is exactly
+    what makes /readyz a DoS lever ApiKeyAuthMiddleware's own rate limiters
+    never see: it executes a real `SELECT 1` against the database pool on
+    every call, so flooding it (unlike /healthz, which touches nothing)
+    can exhaust connections the same way any other unbounded query would.
+    `readyz_rate_limiter` is keyed by client address and defaults to a
+    generous bucket that a real orchestrator's poll interval (typically
+    every few seconds) never comes close to."""
+    readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
+        client_key = request.client.host if request is not None and request.client else "unknown"
+        if not readyz_rate_limiter.allow(client_key):
+            return JSONResponse({"status": "rate_limited"}, status_code=429)
         try:
             async with session_factory() as session:
                 await session.execute(text("SELECT 1"))

@@ -27,6 +27,7 @@ def build_server_app():
     instances.
     """
     config = HubConfig.from_env()
+    config.validate_transport_safety()
     configure_logging(config.log_level)
 
     engine = make_engine(config)

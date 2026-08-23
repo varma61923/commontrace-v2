@@ -275,8 +275,10 @@ class TestCoverageNumber:
     async def test_matching_failure_is_covered_and_returns_the_solution(
         self, session_factory, config, orgs
     ):
-        """The payoff: a match hands back the shared trace in full, because
-        its owner explicitly put it in the commons."""
+        """The payoff: a match hands back the shared trace's substrate
+        content -- title/context/solution/tags/agent_type/trust, the safe
+        cross-org projection (see TestCommonsCrossOrgProjection below) --
+        because its owner explicitly put that content in the commons."""
         trace = await _contribute(
             session_factory, config, orgs["contributor-a"],
             "Stripe webhook retries", "duplicate delivery on 500 response",
@@ -395,6 +397,57 @@ class TestCoverageNumber:
             )
         assert report["n_covered"] == 0
         assert "no other org has contributed" in report["note"].lower()
+
+
+class TestCommonsCrossOrgProjection:
+    """share_trace opts a trace's title/context/solution/tags into the
+    commons -- that is not the same as opting in every column on the row.
+    commons_overlap's matches used to hand back crud._to_wire(hit, [], [])
+    in full, which included `contributor` (routinely an email/name),
+    `extensions`/`outcome` (freeform JSON that can carry internal project
+    ids or cost data), `watch_condition`, and `review_after` -- none of it
+    reviewed by the sharing org for cross-org disclosure. The projection
+    must carry the substrate content a requester actually needs and nothing
+    else."""
+
+    async def test_private_fields_are_excluded_from_a_commons_match(
+        self, session_factory, config, orgs
+    ):
+        trace = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+            "Use an idempotency key", tags=["stripe"],
+        )
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace["id"])
+            row.contributor = "alice@example.com"
+            row.extensions = {"internal_project_id": "proj-42", "cost_usd": 1337}
+            row.outcome = {"resolved": True, "notes": "internal escalation notes"}
+            row.watch_condition = "if error_rate > 5%"
+            row.review_after = "2027-01-01"
+            await crud.share_trace(session, orgs["contributor-a"], trace["id"])
+
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f1", "Stripe webhook retries", "duplicate delivery on 500", ["stripe"])],
+            )
+
+        assert report["n_covered"] == 1
+        match_trace = report["matches"][0]["trace"]
+        for private_field in (
+            "contributor", "extensions", "outcome", "watch_condition",
+            "review_after", "retrievals", "depth", "supersedes_trace_id",
+            "votes", "related", "quarantined", "quarantine_reason",
+            "shared_with_commons",
+        ):
+            assert private_field not in match_trace, f"{private_field!r} leaked to a cross-org caller"
+        # What a requester actually needs to judge and use the match:
+        assert match_trace["title"] == "Stripe webhook retries"
+        assert match_trace["solution_text"] == "Use an idempotency key"
+        assert match_trace["tags"] == ["stripe"]
+        assert "trust" in match_trace
+        assert "created_at" in match_trace
 
 
 # --- 5. Scaling: the fast path must not diverge from the reference ------

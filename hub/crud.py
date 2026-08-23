@@ -156,6 +156,35 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
     }
 
 
+def _to_commons_wire(trace: Trace) -> dict:
+    """Cross-org projection for a commons_overlap match -- deliberately
+    narrower than _to_wire, which is used everywhere a caller is looking at
+    its OWN trace.
+
+    share_trace opts a trace's title/context/solution text and tags into
+    the commons; that is not the same as opting in every other column on
+    the row. `contributor` in particular is free text that routinely holds
+    an email address or name (see e.g. templates.trace_frontmatter),
+    `extensions`/`outcome` are freeform JSON the owning org may have used
+    for internal project ids, cost data, or other operational metadata, and
+    `watch_condition`/`review_after`/`retrievals`/`depth`/
+    `supersedes_trace_id` are internal bookkeeping never reviewed for
+    cross-org disclosure. None of it is what another fleet needs to answer
+    "does this solve my failure" -- that is title/context/solution/tags/
+    agent_type, plus `trust` so the requester can judge how reliable the
+    match is."""
+    return {
+        "id": trace.id,
+        "title": trace.title,
+        "context_text": trace.context_text,
+        "solution_text": trace.solution_text,
+        "tags": list(trace.tags or []),
+        "agent_type": trace.agent_type,
+        "trust": trace.trust,
+        "created_at": _iso(trace.created_at),
+    }
+
+
 async def _hydrate(session: AsyncSession, traces: list[Trace]) -> list[dict]:
     """Wire-shape a list of already-org-scoped traces, batch-loading their
     votes and relations (2 queries total, regardless of list length)."""
@@ -1003,7 +1032,7 @@ async def commons_overlap(
                     "tags": list(hit.tags or []),
                     # The payoff. Safe to return in full: `hit` is only in
                     # the corpus because its owning org explicitly shared it.
-                    "trace": _to_wire(hit, [], []),
+                    "trace": _to_commons_wire(hit),
                 }
             )
 

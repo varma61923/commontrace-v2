@@ -35,6 +35,7 @@ local-checkout instructions in [`hub/README.md`](README.md).
 | A container runtime **or** Python 3.10+ | The image is optional; `pip install -r hub/requirements.txt` + `python -m hub.main` works too. |
 | A secret store | For `HUB_DATABASE_URL` and issued API keys. Not a `.env` file in your repo. |
 | TLS termination | The Hub speaks plain HTTP. Put it behind your load balancer / ingress — API keys travel in an `Authorization` header and must not cross the network in cleartext. |
+| `HUB_ALLOW_INSECURE_HTTP=true` if `HUB_HOST` isn't loopback | The Hub refuses to start bound to a non-loopback interface (e.g. `0.0.0.0`, needed for container/pod networking) unless this is set — a deliberate acknowledgment that a proxy in front is terminating TLS, not a guess the Hub makes about your network. Never set it because the Hub itself is meant to be reached directly without a proxy. |
 
 No Redis, no message broker, no object storage. State lives entirely in
 Postgres.
