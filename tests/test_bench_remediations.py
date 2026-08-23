@@ -188,6 +188,23 @@ class TestBenchCliArgumentForwarding:
             assert "--html" in extra_arg
             assert "--json" in extra_arg
 
+    def test_bench_pilot_strict_is_refused_not_silently_dropped(self, tmp_path):
+        """pilot_metrics.py has no --strict flag and implements no
+        threshold-based pass/fail logic -- `bench --pilot --strict` used to
+        silently drop --strict (never forward it) and always exit 0
+        regardless of what the pilot metrics showed, so a CI regression
+        gate built on this looked wired up while enforcing nothing."""
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="cmd")
+        bench_cmd.add_parser(subparsers)
+
+        args = parser.parse_args(["bench", "--pilot", "--strict", "--dest", str(tmp_path)])
+
+        with patch("commontrace.commands.bench_cmd.run_script", return_value=0) as mock_run:
+            rc = bench_cmd.run(args)
+            assert rc != 0
+            assert not mock_run.called, "must refuse before ever invoking pilot_metrics.py"
+
 
 # ==============================================================================
 # BOM Decoding in Benchmark & Pilot Data Loaders
@@ -223,11 +240,12 @@ class TestBenchBomHandling:
         ep_file.write_text(content, encoding="utf-8-sig")
 
         monkeypatch.setattr(mp, "BASE_DIR", str(tmp_path / "memory"))
-        episodes = mp.load_episodes()
+        episodes, skipped = mp.load_episodes()
 
         assert len(episodes) == 1
         assert episodes[0]["name"] == "test_ep"
         assert episodes[0]["verdict"] == "CONFORM"
+        assert skipped == []
 
     def test_load_lessons_handles_bom_files(self, tmp_path, monkeypatch):
         l_dir = tmp_path / "memory" / "lessons"
@@ -249,11 +267,12 @@ class TestBenchBomHandling:
         l_file.write_text(content, encoding="utf-8-sig")
 
         monkeypatch.setattr(mp, "BASE_DIR", str(tmp_path / "memory"))
-        lessons = mp.load_lessons()
+        lessons, skipped = mp.load_lessons()
 
         assert "lesson_bom_test" in lessons
         assert lessons["lesson_bom_test"]["importance"] == 4
         assert lessons["lesson_bom_test"]["uses"] == 2
+        assert skipped == []
 
     def test_load_traces_handles_bom_files(self, tmp_path):
         t_dir = tmp_path / "memory" / "traces"

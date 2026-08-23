@@ -391,7 +391,7 @@ class TestIntegrationExamples:
         bm.BASE_DIR = self._old_base
 
     def test_example_episode_loads(self):
-        episodes = bm.load_episodes()
+        episodes, _skipped = bm.load_episodes()
         assert len(episodes) >= 1
         ep = episodes[0]
         assert "name" in ep
@@ -399,7 +399,7 @@ class TestIntegrationExamples:
 
     def test_example_episode_verdict_conform(self):
         """Example episode should have CONFORM verdict (not French CONFORME)."""
-        episodes = bm.load_episodes()
+        episodes, _skipped = bm.load_episodes()
         for ep in episodes:
             assert ep.get("verdict") in ("CONFORM", "ARBITRATION", "ABANDON", None), (
                 f"Unexpected verdict '{ep.get('verdict')}' in episode '{ep.get('name')}'. "
@@ -407,21 +407,37 @@ class TestIntegrationExamples:
             )
 
     def test_example_lessons_load(self):
-        lessons = bm.load_lessons()
+        lessons, _skipped = bm.load_lessons()
         assert len(lessons) >= 1
 
     def test_example_lesson_importance_valid(self):
-        lessons = bm.load_lessons()
+        lessons, _skipped = bm.load_lessons()
         for slug, lesson in lessons.items():
             if "importance" in lesson:
                 assert isinstance(lesson["importance"], int), f"{slug}: importance must be int"
                 assert 1 <= lesson["importance"] <= 5, f"{slug}: importance must be 1-5"
 
     def test_benchmark_runs_without_error(self):
-        episodes = bm.load_episodes()
-        lessons = bm.load_lessons()
+        episodes, _skipped = bm.load_episodes()
+        lessons, _skipped = bm.load_lessons()
         lq, lq_n = bm.compute_lesson_quality(episodes)
         ir_s, ir_p, ir_n = bm.compute_implicit_retrieval(episodes)
         tg, tg_n, tg_u = bm.compute_transfer_gap(episodes, lessons)
         bm.compute_extras(episodes, lessons)  # just verify it doesn't raise
         assert lq is None or (0.0 <= lq)  # lesson_quality can exceed 1.0 (retro-validation)
+
+
+class TestComputeExtrasNeverHitHandlesNullUses:
+    """`lessons.get("uses", 0) == 0` only applies the default when the KEY
+    is absent -- a hand-edited `uses: null` (key present, value None) made
+    `.get` return None, and `None == 0` is False, so that lesson silently
+    vanished from the never-hit report instead of correctly appearing in it."""
+
+    def test_a_lesson_with_uses_null_appears_in_never_hit(self):
+        lessons = {
+            "lesson_a": {"uses": None},
+            "lesson_b": {"uses": 3},
+            "lesson_c": {},  # key absent entirely -- must also count as 0
+        }
+        extras = bm.compute_extras([], lessons)
+        assert extras["never_hit"] == ["lesson_a", "lesson_c"]

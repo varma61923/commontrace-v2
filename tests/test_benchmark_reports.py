@@ -117,11 +117,33 @@ class TestPersistReport:
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
         try:
-            ts = datetime.datetime(2026, 5, 27, 17, 57, 46)
+            ts = datetime.datetime(2026, 5, 27, 17, 57, 46, 123456)
             path = bm.persist_report({"x": 1}, ts=ts)
         finally:
             bm.BASE_DIR = old_base
-        assert os.path.basename(path) == "2026-05-27_175746.json"
+        # Microseconds included (L-36): two runs within the same second
+        # previously collided on an identical filename and the second
+        # silently overwrote the first's report.
+        assert os.path.basename(path) == "2026-05-27_175746_123456.json"
+
+    def test_persist_report_does_not_collide_within_the_same_second(self, tmp_memory):
+        """Even same microsecond -- pinned explicitly, since two runs
+        computed a report fast enough to share one wall-clock tick used to
+        silently overwrite each other with no warning at all."""
+        import datetime
+        old_base = bm.BASE_DIR
+        bm.BASE_DIR = str(tmp_memory)
+        try:
+            ts = datetime.datetime(2026, 5, 27, 17, 57, 46, 123456)
+            first = bm.persist_report({"run": 1}, ts=ts)
+            second = bm.persist_report({"run": 2}, ts=ts)
+        finally:
+            bm.BASE_DIR = old_base
+        assert first != second
+        with open(first) as fh:
+            assert json.load(fh)["run"] == 1
+        with open(second) as fh:
+            assert json.load(fh)["run"] == 2
 
 
 class TestLoadStoredReports:
