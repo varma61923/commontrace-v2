@@ -701,6 +701,40 @@ class TestValueLedger:
             "two failures covered in one call must count as two hits, not one"
         )
 
+    async def test_duplicate_signature_farming_is_capped_per_query(
+        self, session_factory, config, orgs
+    ):
+        """Nothing on the wire stops a caller from submitting the identical
+        signature many times in one request (up to
+        commons.MAX_SUBMITTED_FAILURES). Without a cap, the "N submitted
+        failures matching the same trace = N hits" rule the batch test above
+        depends on turns one repeated signature into hundreds of
+        query-credit hits for whichever trace it matches -- a colluding
+        querying org could mint effectively unlimited query allowance for a
+        sharing org just by repeating one signature. commons.
+        MAX_HITS_PER_TRACE_PER_QUERY bounds how much a single call can credit
+        one trace, while leaving small genuine multi-task batches (like the
+        2-failure case above) fully credited."""
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        probe = [
+            _failure(f"occurrence-{i}", "Stripe webhook retries", "duplicate delivery on 500")
+            for i in range(commons.MAX_HITS_PER_TRACE_PER_QUERY + 30)
+        ]
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(session, orgs["consumer"], probe)
+        # The caller's own coverage report is unaffected by the cap -- every
+        # submitted failure it asked about really was covered.
+        assert report["n_covered"] == len(probe)
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == commons.MAX_HITS_PER_TRACE_PER_QUERY, (
+            "one query repeating one signature must not credit a trace past the per-query cap"
+        )
+
     async def test_counting_survives_concurrent_queries(self, session_factory, config, orgs):
         """The increment is an atomic in-database UPDATE, not a
         read-modify-write: contributor standing is the basis for pricing,
@@ -859,6 +893,36 @@ class TestSubmittedInputIsValidated:
             report = await crud.commons_overlap(session, orgs["consumer"], [])
         assert report["n_failures"] == 0
         assert report["covered_fraction"] == 0.0
+
+    async def test_rejects_negative_signature_values(self, session_factory, config, orgs):
+        """A negative value passes isinstance(v, int) but is outside the
+        uint64 domain MinHash signatures live in -- on numpy hosts,
+        converting it (`np.array(..., dtype=uint64)`) raises OverflowError,
+        surfacing as an unhandled 500 instead of a clean 400."""
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(
+                    session, orgs["consumer"],
+                    [{"label": "f", "signature": [-1] * commons.COMMONS_NUM_PERM}],
+                )
+
+    async def test_rejects_signature_values_above_uint64_max(self, session_factory, config, orgs):
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(
+                    session, orgs["consumer"],
+                    [{"label": "f", "signature": [2**64] * commons.COMMONS_NUM_PERM}],
+                )
+
+    async def test_rejects_non_finite_threshold(self, session_factory, config, orgs):
+        """max(0.0, min(nan, 1.0)) silently clamps NaN to 0.0 rather than
+        rejecting it -- permissive, not a crash, but a threshold of 0.0
+        matches everything, which is not what a caller who passed NaN
+        intended."""
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(session, orgs["consumer"], probe, threshold=float("nan"))
 
 
 # --- 9. The shipped seed corpus -----------------------------------------

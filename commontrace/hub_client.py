@@ -118,7 +118,7 @@ def _validate_hub_url(hub_url: str) -> None:
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     _validate_hub_url(hub_url)
     try:
-        import httpx2
+        import httpx
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
     except ImportError as exc:
@@ -131,11 +131,15 @@ async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     # so a Hub that accepts the connection and then stalls hangs
     # `commontrace sync` forever with no output -- the worst failure mode for
     # a CLI someone may have put in a cron job.
-    http_client = httpx2.AsyncClient(
+    http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=timeout_seconds,
     )
-    return streamable_http_client(hub_url, http_client=http_client), ClientSession
+    # Returned alongside the transport/session so the caller can close it
+    # explicitly (httpx.AsyncClient owns a connection pool / open sockets
+    # that are never released otherwise -- streamable_http_client wraps it
+    # but does not take ownership of its lifecycle).
+    return streamable_http_client(hub_url, http_client=http_client), ClientSession, http_client
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -166,7 +170,7 @@ async def _call_tool(
 ) -> dict:
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
-        transport_ctx, ClientSession = await _open_session(hub_url, api_key, timeout_seconds)
+        transport_ctx, ClientSession, http_client = await _open_session(hub_url, api_key, timeout_seconds)
         try:
             async with transport_ctx as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
@@ -189,6 +193,13 @@ async def _call_tool(
                 break
             # Exponential backoff: 0.5s, 1s, 2s, ...
             await asyncio.sleep(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+        finally:
+            # Every attempt opens a fresh AsyncClient (a fresh connection
+            # pool / socket); without this it is never released, and a
+            # long-running loop or repeated `commontrace sync` invocations
+            # leak file descriptors until the process hits "Too many open
+            # files".
+            await http_client.aclose()
 
     raise HubConnectionError(
         f"could not reach the Hub at {hub_url} after {max_attempts} attempt(s): {last_exc}"

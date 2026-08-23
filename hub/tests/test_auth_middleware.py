@@ -1,6 +1,6 @@
 """Regression tests for ApiKeyAuthMiddleware's path matching.
 
-Uses httpx2's ASGI transport driven from within the test's own running event
+Uses httpx's ASGI transport driven from within the test's own running event
 loop (not Starlette's synchronous TestClient, which spins up its own loop --
 see hub/tests/test_observability.py's docstring for why that matters when a
 fixture's DB pool is bound to a specific loop). None of these tests touch a
@@ -10,7 +10,7 @@ any lookup happens.
 """
 from __future__ import annotations
 
-import httpx2 as httpx
+import httpx
 import pytest
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse

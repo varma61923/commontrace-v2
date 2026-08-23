@@ -37,7 +37,7 @@ attention = [
 # pyproject at all -- see hub/README.md + hub/requirements.txt to run one.
 hub-sync = [
     "mcp>=1.2",
-    "httpx2",
+    "httpx>=0.27.0",
 ]
 dev = [
     "pytest>=7.0",

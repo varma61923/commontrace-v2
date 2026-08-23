@@ -160,7 +160,7 @@ jobs:
           sentence-transformers>=6.0,<7.0
           transformers>=5.5.0
           mcp>=1.2
-          httpx2
+          httpx
           REQS
           pip-audit -r /tmp/commontrace-audit-requirements.txt
 

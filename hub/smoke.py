@@ -75,10 +75,7 @@ class Reporter:
 
 def _session(url: str, api_key: str):
     """An MCP client session against the live server, carrying the API key."""
-    try:
-        import httpx
-    except ImportError:  # the SDK vendors its own httpx under a different name
-        import httpx2 as httpx
+    import httpx
     from mcp.client.streamable_http import streamable_http_client
 
     return streamable_http_client(
@@ -98,10 +95,7 @@ def _preflight(url: str, api_key: str) -> str | None:
     Returns a message describing the problem, or None if the endpoint is
     reachable and the key is accepted.
     """
-    try:
-        import httpx
-    except ImportError:
-        import httpx2 as httpx
+    import httpx
 
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",

@@ -19,6 +19,7 @@ property testable without spinning up a live MCP transport for every case.
 from __future__ import annotations
 
 import hashlib
+import math
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -222,6 +223,35 @@ async def _meter(session: AsyncSession, org_id: str, metric: str) -> int:
     return int((await session.execute(stmt)).scalar_one())
 
 
+async def _reserve_trace_slot(session: AsyncSession, org_id: str, plan: plans.Plan) -> None:
+    """Enforce plan.max_traces for a caller about to insert a new Trace row.
+
+    Shared by contribute_trace and amend_trace: amend_trace does not mutate
+    the original row, it INSERTs a new one into the supersession chain (see
+    its docstring), so it consumes a storage slot exactly like
+    contribute_trace does and must be checked the same way -- otherwise an
+    org already at its cap could grow storage without bound simply by
+    amending instead of contributing.
+
+    SELECT ... FOR UPDATE on the org's own row, same as before: count-then-
+    insert is a TOCTOU race under concurrent callers for the SAME org
+    without it, and a different org's row lock never blocks this one.
+    """
+    if plan.max_traces == plans.UNLIMITED:
+        return
+    await session.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+    stored = int(await session.scalar(
+        select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+    ) or 0)
+    if not plans.within(plan.max_traces, stored):
+        raise plans.EntitlementExceeded(
+            metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
+            remedy="Purge traces you no longer need, or move to a plan with more storage.",
+        )
+
+
 async def entitlements(session: AsyncSession, org_id: str) -> dict:
     """Everything an org is entitled to and has used this period.
 
@@ -386,29 +416,7 @@ async def contribute_trace(
     # replay stores nothing, so refusing it at the storage limit would turn
     # a safe retry into a failure exactly when the org is at its cap.
     plan = await _plan_for(session, org_id)
-    if plan.max_traces != plans.UNLIMITED:
-        # SELECT ... FOR UPDATE on the org's own row: count-then-insert is
-        # otherwise a classic TOCTOU race -- two concurrent contribute_trace
-        # calls for the SAME org can each COUNT before either's INSERT is
-        # visible to the other, so both pass a check that only one of them
-        # should have. The row lock serializes exactly the callers that
-        # matter (this org's own concurrent writes) and blocks no one
-        # else's traffic -- a different org's contribute_trace locks a
-        # different row and proceeds untouched. Held until this
-        # transaction commits or rolls back (hub/db.py:session_scope), so a
-        # second call for the same org blocks here until the first's
-        # insert (or its rollback) is already decided.
-        await session.execute(
-            select(Organization.id).where(Organization.id == org_id).with_for_update()
-        )
-        stored = int(await session.scalar(
-            select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
-        ) or 0)
-        if not plans.within(plan.max_traces, stored):
-            raise plans.EntitlementExceeded(
-                metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
-                remedy="Purge traces you no longer need, or move to a plan with more storage.",
-            )
+    await _reserve_trace_slot(session, org_id, plan)
 
     candidate_id = str(uuid.uuid4())
     wire = {
@@ -627,12 +635,19 @@ async def amend_trace(
         return None
 
     # amend_trace is a WRITE path and carries caller-supplied content, so it
-    # gets the same three guards contribute_trace does. Without them it was
-    # the way around all of them: unlimited writes, unvalidated payloads
-    # (a title past the column width became a hard 500 rather than a clean
-    # rejection), and spam that quarantine would have caught on the way in.
+    # gets the same four guards contribute_trace does. Without them it was
+    # the way around all of them: unlimited writes, unbounded storage growth
+    # past plan.max_traces (amend_trace INSERTs a new row -- see this
+    # function's docstring -- so it consumes a storage slot exactly like
+    # contribute_trace and must be capped the same way), unvalidated
+    # payloads (a title past the column width became a hard 500 rather than
+    # a clean rejection), and spam that quarantine would have caught on the
+    # way in.
     if not rate_limiter.allow(org_id):
         raise RateLimited(f"org {org_id} exceeded write rate limit")
+
+    plan = await _plan_for(session, org_id)
+    await _reserve_trace_slot(session, org_id, plan)
 
     resolved_title = title if title is not None else original.title
     resolved_context = context_text if context_text is not None else original.context_text
@@ -830,7 +845,11 @@ async def commons_overlap(
     2. **Quarantined traces are excluded**, same as every other read path.
     """
     submitted = commons.validate_submitted_failures(failures)
-    threshold = max(0.0, min(float(threshold), 1.0))
+
+    threshold = float(threshold)
+    if not math.isfinite(threshold):
+        raise commons.CommonsInputError("threshold must be a finite number")
+    threshold = max(0.0, min(threshold, 1.0))
 
     # Metered here, and only here: this is the one call whose value comes
     # from other orgs' contributions rather than the caller's own data.
@@ -945,6 +964,23 @@ async def commons_overlap(
         # read-modify-write) while crediting each trace by how many
         # distinct failures in THIS call it covered.
         hit_counts = Counter(hit_ids)
+        # Capped per trace, per call: nothing on the wire stops a caller
+        # from submitting the SAME signature hundreds of times in one
+        # request (MAX_SUBMITTED_FAILURES allows up to 500), and without a
+        # cap that credits whichever trace it best-matches once per
+        # repetition -- turning one submitted failure, repeated, into
+        # hundreds of query-credit hits for its owner. A small multiplicity
+        # from one call is the legitimate case (a fleet hitting one
+        # substrate failure across a handful of distinct tasks, submitted
+        # together -- see hub/tests/test_commons.py
+        # test_two_failures_in_one_query_hitting_the_same_trace_both_count);
+        # hundreds of repeats of the identical signature is not that, it is
+        # the same submission counted as if it were hundreds of them. Two
+        # colluding orgs could otherwise mint unbounded query allowance for
+        # one of them just by repeating one signature in a single request.
+        hit_counts = {
+            tid: min(cnt, commons.MAX_HITS_PER_TRACE_PER_QUERY) for tid, cnt in hit_counts.items()
+        }
         # WHEN clauses as (Trace.id == tid, count) tuples, not a
         # {tid: count} dict matched against value=Trace.id: the dict form
         # binds each key as a bare literal with no column to infer its type

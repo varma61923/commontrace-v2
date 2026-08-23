@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
@@ -156,6 +156,51 @@ class TestStorageEntitlement:
         await _contribute(session_factory, config, orgs["payer"], "mine")
         # Not raising is the assertion.
         await _contribute(session_factory, config, orgs["freeloader"], "theirs")
+
+    async def test_amend_trace_is_refused_past_the_trace_limit(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        """amend_trace INSERTs a new Trace row into the supersession chain
+        (hub/crud.py:amend_trace's docstring) -- it consumes a storage slot
+        exactly like contribute_trace, and an org already at its cap must
+        not be able to keep growing storage by amending instead of
+        contributing."""
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=1, commons_queries_per_month=20,
+                       commons_access=True, summary="test"),
+        )
+        original = await _contribute(session_factory, config, orgs["payer"], "only one")
+        rate_limiter = make_rate_limiter(config)
+        with pytest.raises(plans.EntitlementExceeded) as exc:
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, orgs["payer"], original["id"], config, rate_limiter,
+                    title="amended", actor="test",
+                )
+        assert exc.value.metric == "traces"
+
+    async def test_amend_trace_refusal_stores_nothing(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=1, commons_queries_per_month=20,
+                       commons_access=True, summary="test"),
+        )
+        original = await _contribute(session_factory, config, orgs["payer"], "only one")
+        rate_limiter = make_rate_limiter(config)
+        with pytest.raises(plans.EntitlementExceeded):
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, orgs["payer"], original["id"], config, rate_limiter,
+                    title="amended", actor="test",
+                )
+        async with session_scope(session_factory) as session:
+            count = await session.scalar(
+                select(func.count()).select_from(Trace).where(Trace.org_id == orgs["payer"])
+            )
+        assert count == 1
 
 
 # --- 3. The metered unit -------------------------------------------------
