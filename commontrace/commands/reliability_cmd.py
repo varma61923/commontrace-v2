@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import frontmatter, paths, reliability, trace_io
+from commontrace.commands._format import read_or_warn
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -36,7 +37,10 @@ def _active_lessons(root: str) -> list[dict]:
     for path in sorted(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         out.append(fm)
     return out
 
@@ -57,7 +61,10 @@ def _evidence(root: str) -> list[reliability.Evidence]:
     for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
         if os.path.basename(path).startswith("_") or "template" in os.path.basename(path):
             continue
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         retrieved = list(fm.get("lessons_retrieved_by_alpha") or [])
         if not retrieved:
             continue
@@ -83,7 +90,10 @@ def _evidence(root: str) -> list[reliability.Evidence]:
     for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
         if os.path.basename(path) == "README.md":
             continue
-        inst, _ = trace_io.read(path)
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        inst, _ = result
         ext = inst.get("extensions") or {}
         retrieved = list(ext.get("lessons_retrieved") or [])
         if not retrieved:

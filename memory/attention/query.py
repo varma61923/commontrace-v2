@@ -145,10 +145,23 @@ def _append_telemetry(record, path=None):
         print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
 
 
+def _positive_int(raw: str) -> int:
+    """argparse type= for --top-k. `order[:top_k]` below is a Python slice,
+    not a bounds check: `order[:-1]` means "all but the last", not
+    "nothing", so a negative --top-k silently returned nearly the entire
+    index instead of failing -- the opposite of "a small number of
+    results". Rejected at parse time rather than clamped silently, since a
+    negative top-k is a caller bug worth surfacing."""
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"--top-k must be >= 1, got {value}")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("query", help="Incoming task / query string (verbatim)")
-    parser.add_argument("--top-k", type=int, default=10, help="Top-K cosine hits (default 10)")
+    parser.add_argument("--top-k", type=_positive_int, default=10, help="Top-K cosine hits (default 10)")
     parser.add_argument(
         "--include-importance-floor",
         type=int,

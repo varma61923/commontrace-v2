@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import frontmatter, overlap, paths, trace_io
+from commontrace.commands._format import read_or_warn
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -71,7 +72,10 @@ def _iter_lessons(root: str):
     for path in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         if fm.get("status") != "active":
             continue
         yield fm
@@ -86,7 +90,10 @@ def _iter_recurring_failures(root: str):
     for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(path) == "README.md":
             continue
-        instance, _ = trace_io.read(path)
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        instance, _ = result
         if (instance.get("outcome") or {}).get("repeated_error") is True:
             yield instance
 

@@ -507,6 +507,67 @@ class TestExperimentLoopCloses:
         assert inst["id"] == "../../etc/pwned", "the id itself must not be rewritten"
 
 
+class TestCaptureOccasionIdMergesRatherThanOverwrites:
+    """Re-capturing an existing occasion used to replace title/context/
+    solution wholesale with whatever was passed on the second call --
+    --title/--context/--solution are still required on every `capture`
+    invocation, so a second call meant to attach an outcome (--resolved,
+    hours after the task actually ran) silently discarded the original
+    narrative the moment its text differed even slightly from the first
+    call's."""
+
+    def _run(self, *args, dest):
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", *args, "--dest", str(dest)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def test_recapture_preserves_original_context_and_solution_by_default(self, tmp_path):
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "original title", "--context", "original context",
+            "--solution", "original solution", "--agent-type", "code",
+            "--occasion-id", "task-1", dest=tmp_path,
+        )
+        assert first.returncode == 0, first.stderr
+        out_path = first.stdout.strip()
+
+        second = self._run(
+            "capture", "--title", "placeholder", "--context", "placeholder",
+            "--solution", "placeholder", "--agent-type", "code", "--resolved",
+            "--occasion-id", "task-1", dest=tmp_path,
+        )
+        assert second.returncode == 0, second.stderr
+        assert second.stdout.strip() == out_path, "must update the SAME file, not write a second one"
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["title"] == "original title"
+        assert inst["context_text"] == "original context"
+        assert inst["solution_text"] == "original solution"
+        assert inst["outcome"]["resolved"] is True, "the outcome must still merge in"
+
+    def test_overwrite_flag_replaces_the_narrative(self, tmp_path):
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "original title", "--context", "original context",
+            "--solution", "original solution", "--agent-type", "code",
+            "--occasion-id", "task-2", dest=tmp_path,
+        )
+        out_path = first.stdout.strip()
+
+        self._run(
+            "capture", "--title", "corrected title", "--context", "corrected context",
+            "--solution", "corrected solution", "--agent-type", "code", "--resolved",
+            "--occasion-id", "task-2", "--overwrite", dest=tmp_path,
+        )
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["title"] == "corrected title"
+        assert inst["context_text"] == "corrected context"
+        assert inst["solution_text"] == "corrected solution"
+        assert inst["outcome"]["resolved"] is True
+
+
 def trace_io_read(path):
     from commontrace import trace_io
 

@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import experiment, frontmatter, paths, trace_io
+from commontrace.commands._format import read_or_warn
 
 
 def holdout_log_path(root: str) -> str:
@@ -46,7 +47,10 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
         if "template" in os.path.basename(path):
             continue
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         verdict = str(fm.get("verdict", "")).upper()
         if verdict == "CONFORM":
             out[str(fm.get("name", ""))] = True
@@ -56,7 +60,10 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
         if os.path.basename(path) == "README.md":
             continue
-        inst, _ = trace_io.read(path)
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        inst, _ = result
         outcome = inst.get("outcome") or {}
         resolved = outcome.get("resolved")
         if outcome.get("repeated_error") is True:

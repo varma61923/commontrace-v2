@@ -128,4 +128,10 @@ def rank_lessons(
             ))
 
     scored.sort(key=lambda item: (item[0].score, item[1], item[2]), reverse=True)
-    return [lesson for lesson, _, _ in scored[:top_k]]
+    # max(0, ...): a plain `scored[:top_k]` on a negative top_k is a Python
+    # slice, not a bounds check -- `scored[:-1]` means "all but the last
+    # item", not "nothing", so a negative top_k silently returned nearly
+    # the whole ranked list instead of failing. query_cmd.py's CLI already
+    # rejects a negative --top-k before it reaches here; this clamp is the
+    # same guarantee for any other caller of this function directly.
+    return [lesson for lesson, _, _ in scored[: max(0, top_k)]]

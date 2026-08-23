@@ -5,7 +5,7 @@ import glob
 import os
 
 from commontrace import frontmatter, paths, trace_io, validate
-from commontrace.commands._format import cell
+from commontrace.commands._format import cell, read_or_warn
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -62,7 +62,10 @@ def run_validate(args: argparse.Namespace) -> int:
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     for path in _iter_trace_paths(root, None):
-        instance, _ = trace_io.read(path)
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        instance, _ = result
         if args.agent_type and instance.get("agent_type") != args.agent_type:
             continue
         # See lesson_cmd._cell: a present-but-empty YAML key parses to None,

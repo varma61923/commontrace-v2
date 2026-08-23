@@ -24,6 +24,7 @@ import os
 import sys
 
 from commontrace import failure_import, hub_client, overlap, paths, trace_io
+from commontrace.commands._format import read_or_warn
 
 # Kept in step with hub/commons.py's signing. Both sides sign a trace on
 # title + context + tags -- the *situation*, not the fix -- so the
@@ -51,6 +52,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "or one failure per line. Use this to get a coverage number without "
         "adopting CommonTrace first.",
     )
+    sign.add_argument(
+        "--format", dest="from_format", choices=["jsonl", "json", "csv", "lines"], default=None,
+        help="Force how --from is parsed instead of guessing from its extension/content. "
+        "Use this if a file is misdetected (e.g. a .txt log whose lines start with '[').",
+    )
     sign.add_argument("--dest", default=None)
     sign.set_defaults(func=run_sign)
 
@@ -66,6 +72,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--from", dest="from_file", default=None, metavar="FILE",
         help="Failures you already have, in any of the formats `commons sign --from` "
         "accepts. Signed locally; no failure text is sent.",
+    )
+    rep.add_argument(
+        "--format", dest="from_format", choices=["jsonl", "json", "csv", "lines"], default=None,
+        help="Force how --from is parsed instead of guessing from its extension/content.",
     )
     rep.add_argument("--threshold", type=float, default=None)
     rep.add_argument(
@@ -145,7 +155,10 @@ def _recurring_failures(root: str) -> list[dict]:
     for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(path) == "README.md":
             continue
-        instance, _ = trace_io.read(path)
+        result = read_or_warn(trace_io.read, path)
+        if result is None:
+            continue
+        instance, _ = result
         outcome = instance.get("outcome")
         if isinstance(outcome, dict) and outcome.get("repeated_error") is True:
             out.append(instance)
@@ -173,7 +186,7 @@ def build_signatures(root: str) -> list[dict]:
     return failures
 
 
-def signatures_from_file(path: str) -> tuple[list[dict], dict]:
+def signatures_from_file(path: str, fmt_override: str | None = None) -> tuple[list[dict], dict]:
     """Sign failures a fleet already has, identically to build_signatures().
 
     Same `overlap.minhash` over the same title+text+tags concatenation, so a
@@ -182,7 +195,7 @@ def signatures_from_file(path: str) -> tuple[list[dict], dict]:
     the numbers stay plausible and become meaningless, which is the worst
     failure mode available here -- hence one shared code path for the text.
     """
-    failures, stats = failure_import.read_failures(path)
+    failures, stats = failure_import.read_failures(path, fmt_override=fmt_override)
     signed = []
     for f in failures:
         text = " ".join([f["label"], f["text"], " ".join(f["tags"])])
@@ -225,7 +238,7 @@ def run_sign(args: argparse.Namespace) -> int:
     stats = None
     if getattr(args, "from_file", None):
         try:
-            failures, stats = signatures_from_file(args.from_file)
+            failures, stats = signatures_from_file(args.from_file, fmt_override=getattr(args, "from_format", None))
         except failure_import.FailureImportError as exc:
             print(f"[commontrace] {exc}", file=sys.stderr)
             return 1
@@ -314,7 +327,7 @@ def run_report(args: argparse.Namespace) -> int:
 
     if getattr(args, "from_file", None):
         try:
-            failures, stats = signatures_from_file(args.from_file)
+            failures, stats = signatures_from_file(args.from_file, fmt_override=getattr(args, "from_format", None))
         except failure_import.FailureImportError as exc:
             print(f"[commontrace] {exc}", file=sys.stderr)
             return 1

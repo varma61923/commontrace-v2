@@ -407,6 +407,19 @@ def test_query_lexical_reports_no_matches_cleanly(store, capsys):
     assert "no lexical matches" in out
 
 
+def test_query_rejects_a_negative_top_k(store, capsys):
+    """`order[:top_k]` is a Python slice, not a bounds check --
+    `order[:-1]` means "all but the last", not "nothing" -- so
+    `--top-k -1` used to silently return nearly the whole ranked list
+    instead of failing. argparse now rejects it at parse time."""
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        main(["query", "anything", "--lexical", "--top-k", "-1", "--dest", str(store)])
+    assert exc.value.code != 0
+    assert "--top-k must be >= 1" in capsys.readouterr().err
+
+
 def test_query_lexical_excludes_review_status_lessons(store, capsys):
     main(["init", "--agent-type", "code", "--dest", str(store)])
     main(
