@@ -49,6 +49,33 @@ async def test_malformed_key_does_not_verify(session_factory, config):
     assert resolved is None
 
 
+async def test_unknown_prefix_still_pays_the_argon2_cost(session_factory, config, monkeypatch):
+    """A presented key whose prefix matches no row in the database used to
+    return None immediately -- no argon2id verify() call at all -- while a
+    key whose prefix DOES match a row (but the rest is wrong) always paid
+    for a full verify(). That's a timing oracle: a remote attacker times
+    responses to learn which key_prefix values exist without ever guessing
+    a real key. verify_api_key must now burn the same verify() cost (against
+    _DUMMY_HASH) on the no-candidate path too, so the two cases are not
+    distinguishable by whether a hash was computed at all."""
+    from argon2 import PasswordHasher
+
+    calls = []
+    real_verify = PasswordHasher.verify
+
+    def _tracking_verify(self, hash_, key):
+        calls.append(hash_)
+        return real_verify(self, hash_, key)
+
+    monkeypatch.setattr(PasswordHasher, "verify", _tracking_verify)
+
+    async with session_scope(session_factory) as session:
+        # well-formed prefix, but no ApiKey row has it at all
+        resolved = await auth.verify_api_key(session, "ct_live_" + "z" * 40)
+    assert resolved is None
+    assert calls == [auth._DUMMY_HASH]
+
+
 async def test_revoked_key_no_longer_verifies(session_factory, config):
     org_id = await _make_org(session_factory)
     async with session_scope(session_factory) as session:

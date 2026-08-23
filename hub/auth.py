@@ -34,6 +34,18 @@ _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking
 
 _hasher = PasswordHasher()
 
+# A valid argon2id hash of a value that is never a real key. verify_api_key
+# runs this through the same verify() call a real candidate would get
+# whenever no key_prefix matches the presented key at all -- without it,
+# "no such prefix" returns instantly while "prefix exists but the rest of
+# the key is wrong" pays for a full argon2id computation (tens of
+# milliseconds). That timing gap lets a remote attacker distinguish the two
+# cases without ever guessing a real key: enough responses timed against
+# enough presented prefixes reveals which key_prefix values exist in the
+# database at all, i.e. which orgs/keys exist, before any brute-forcing of
+# the actual secret begins.
+_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(32))
+
 # How stale last_used_at may be before verify_api_key bothers to refresh it.
 # See the write site below for why this exists: idle-key auditing needs
 # roughly-current information, not per-request precision.
@@ -129,6 +141,15 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             select(ApiKey).where(ApiKey.key_prefix == prefix, ApiKey.revoked_at.is_(None))
         )
     ).scalars().all()
+    if not candidates:
+        # Burn the same argon2id cost a real verification attempt would pay,
+        # so "no matching prefix" is not distinguishable by response timing
+        # from "prefix matched, full key didn't" -- see _DUMMY_HASH above.
+        try:
+            await asyncio.to_thread(_hasher.verify, _DUMMY_HASH, raw_key)
+        except VerifyMismatchError:
+            pass
+        return None
     for candidate in candidates:
         try:
             # Same reasoning as issue_api_key's to_thread: verify() is the

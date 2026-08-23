@@ -18,6 +18,7 @@ property testable without spinning up a live MCP transport for every case.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import uuid
@@ -1080,7 +1081,18 @@ async def commons_overlap(
     ).scalars().all()
     corpus_truncated = total_corpus > len(rows)
 
-    best = commons.best_matches(submitted, [r.commons_signature or [] for r in rows])
+    # Up to MAX_SUBMITTED_FAILURES (500) signatures against up to
+    # max_corpus_scan() (20,000, or 2,000 without numpy) corpus rows is a
+    # CPU-bound comparison loop that can run long enough to stall the
+    # single-threaded asyncio event loop -- starving every other request
+    # this process is serving, not just this one. Offloaded to a worker
+    # thread so the loop stays free to schedule other coroutines while it
+    # runs; the GIL still serializes the actual comparisons, but that's a
+    # throughput cost to this one call, not an availability cost to
+    # everyone else's requests.
+    best = await asyncio.to_thread(
+        commons.best_matches, submitted, [r.commons_signature or [] for r in rows]
+    )
 
     matches: list[dict] = []
     by_domain: dict[str, int] = {}

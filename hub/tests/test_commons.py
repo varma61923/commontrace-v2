@@ -399,6 +399,47 @@ class TestCoverageNumber:
         assert "no other org has contributed" in report["note"].lower()
 
 
+class TestScanDoesNotBlockTheEventLoop:
+    """commons.best_matches is a CPU-bound MinHash comparison loop -- up to
+    MAX_SUBMITTED_FAILURES (500) signatures against up to max_corpus_scan()
+    (20,000) corpus rows. Run inline on the request coroutine, that stalls
+    the single-threaded asyncio event loop for its full duration, starving
+    every other request the process is concurrently serving. crud.commons_overlap
+    must run it via asyncio.to_thread instead of calling it directly."""
+
+    async def test_best_matches_runs_off_the_event_loop_thread(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        trace = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500 response",
+            "Use an idempotency key on the handler",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], trace["id"])
+
+        import threading
+
+        main_thread = threading.current_thread()
+        seen_threads = []
+        real_best_matches = commons.best_matches
+
+        def _tracking_best_matches(*args, **kwargs):
+            seen_threads.append(threading.current_thread())
+            return real_best_matches(*args, **kwargs)
+
+        monkeypatch.setattr(crud.commons, "best_matches", _tracking_best_matches)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f1", "Stripe webhook retries", "duplicate delivery on 500 response")],
+            )
+        assert report["n_covered"] == 1
+        assert len(seen_threads) == 1
+        assert seen_threads[0] is not main_thread
+
+
 class TestCommonsCrossOrgProjection:
     """share_trace opts a trace's title/context/solution/tags into the
     commons -- that is not the same as opting in every column on the row.
