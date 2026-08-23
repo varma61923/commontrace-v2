@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,23 @@ _KEY_PREFIX = "ct_live_"
 _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking useful entropy
 
 _hasher = PasswordHasher()
+
+# A valid argon2id hash of a value that is never a real key. verify_api_key
+# runs this through the same verify() call a real candidate would get
+# whenever no key_prefix matches the presented key at all -- without it,
+# "no such prefix" returns instantly while "prefix exists but the rest of
+# the key is wrong" pays for a full argon2id computation (tens of
+# milliseconds). That timing gap lets a remote attacker distinguish the two
+# cases without ever guessing a real key: enough responses timed against
+# enough presented prefixes reveals which key_prefix values exist in the
+# database at all, i.e. which orgs/keys exist, before any brute-forcing of
+# the actual secret begins.
+_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(32))
+
+# How stale last_used_at may be before verify_api_key bothers to refresh it.
+# See the write site below for why this exists: idle-key auditing needs
+# roughly-current information, not per-request precision.
+_LAST_USED_AT_UPDATE_INTERVAL = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -124,6 +141,15 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             select(ApiKey).where(ApiKey.key_prefix == prefix, ApiKey.revoked_at.is_(None))
         )
     ).scalars().all()
+    if not candidates:
+        # Burn the same argon2id cost a real verification attempt would pay,
+        # so "no matching prefix" is not distinguishable by response timing
+        # from "prefix matched, full key didn't" -- see _DUMMY_HASH above.
+        try:
+            await asyncio.to_thread(_hasher.verify, _DUMMY_HASH, raw_key)
+        except VerifyMismatchError:
+            pass
+        return None
     for candidate in candidates:
         try:
             # Same reasoning as issue_api_key's to_thread: verify() is the
@@ -134,11 +160,53 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             await asyncio.to_thread(_hasher.verify, candidate.key_hash, raw_key)
         except VerifyMismatchError:
             continue
+        except InvalidHashError:
+            # candidate.key_hash isn't a well-formed argon2 hash string --
+            # DB corruption, a hand-edited row, or a hash written by a
+            # different scheme entirely. InvalidHashError is a ValueError
+            # subclass, not VerificationError, so it was previously
+            # unhandled here: it escaped verify_api_key, through the auth
+            # middleware, as an unhandled exception -- turning "this one
+            # row is corrupt" into an HTTP 500 for every request presenting
+            # a key sharing that row's prefix, other valid candidates
+            # included. Treated the same as a mismatch: this row can never
+            # authenticate, so move on to the next candidate rather than
+            # failing the whole lookup.
+            continue
+        # Re-read revocation state fresh rather than trusting `candidate`
+        # (loaded by the `revoked_at IS NULL` SELECT above, before the
+        # possibly-slow verify() this loop just spent its time in). An
+        # operator's revoke_api_key landing in that window would otherwise
+        # still authenticate this request: the initial SELECT already
+        # passed, and `candidate` in memory has no way to see a commit that
+        # happened after it was loaded. A plain column SELECT (not
+        # session.get, which would just return the same identity-mapped
+        # object already held in memory) forces an actual round trip, which
+        # shrinks the race window down to the time between this read and
+        # the caller using its result, instead of the full duration of
+        # verify(). Still not a hard guarantee under extreme scheduling, but
+        # closing a multi-millisecond window to a near-zero one is the
+        # practical fix short of locking the key row for every read.
+        revoked_at = await session.scalar(select(ApiKey.revoked_at).where(ApiKey.id == candidate.id))
+        if revoked_at is not None:
+            return None
         if candidate.expires_at is not None and candidate.expires_at <= now:
             # Expired reads exactly like invalid: an expired key must not be
             # distinguishable from a wrong one at the transport layer.
             return None
-        candidate.last_used_at = now
+        # Throttled, not written on every call: last_used_at exists for
+        # idle-key auditing (hub/manage.py's key listing), which needs
+        # roughly-current information, not per-request precision. Writing
+        # it unconditionally means a hot key under real production QPS
+        # issues an UPDATE against its own single row on every single
+        # authenticated request -- every one of those write transactions
+        # briefly locks the same row, so a busy key serializes concurrent
+        # requests against each other for no operational benefit. Skipping
+        # the write when the existing value is already within the
+        # interval keeps the column meaningfully fresh while cutting write
+        # volume by roughly the same factor as the interval.
+        if candidate.last_used_at is None or (now - candidate.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
+            candidate.last_used_at = now
         return AuthenticatedKey(org_id=candidate.org_id, key_prefix=candidate.key_prefix)
     return None
 

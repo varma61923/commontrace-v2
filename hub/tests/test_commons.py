@@ -275,8 +275,10 @@ class TestCoverageNumber:
     async def test_matching_failure_is_covered_and_returns_the_solution(
         self, session_factory, config, orgs
     ):
-        """The payoff: a match hands back the shared trace in full, because
-        its owner explicitly put it in the commons."""
+        """The payoff: a match hands back the shared trace's substrate
+        content -- title/context/solution/tags/agent_type/trust, the safe
+        cross-org projection (see TestCommonsCrossOrgProjection below) --
+        because its owner explicitly put that content in the commons."""
         trace = await _contribute(
             session_factory, config, orgs["contributor-a"],
             "Stripe webhook retries", "duplicate delivery on 500 response",
@@ -395,6 +397,98 @@ class TestCoverageNumber:
             )
         assert report["n_covered"] == 0
         assert "no other org has contributed" in report["note"].lower()
+
+
+class TestScanDoesNotBlockTheEventLoop:
+    """commons.best_matches is a CPU-bound MinHash comparison loop -- up to
+    MAX_SUBMITTED_FAILURES (500) signatures against up to max_corpus_scan()
+    (20,000) corpus rows. Run inline on the request coroutine, that stalls
+    the single-threaded asyncio event loop for its full duration, starving
+    every other request the process is concurrently serving. crud.commons_overlap
+    must run it via asyncio.to_thread instead of calling it directly."""
+
+    async def test_best_matches_runs_off_the_event_loop_thread(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        trace = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500 response",
+            "Use an idempotency key on the handler",
+        )
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor-a"], trace["id"])
+
+        import threading
+
+        main_thread = threading.current_thread()
+        seen_threads = []
+        real_best_matches = commons.best_matches
+
+        def _tracking_best_matches(*args, **kwargs):
+            seen_threads.append(threading.current_thread())
+            return real_best_matches(*args, **kwargs)
+
+        monkeypatch.setattr(crud.commons, "best_matches", _tracking_best_matches)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f1", "Stripe webhook retries", "duplicate delivery on 500 response")],
+            )
+        assert report["n_covered"] == 1
+        assert len(seen_threads) == 1
+        assert seen_threads[0] is not main_thread
+
+
+class TestCommonsCrossOrgProjection:
+    """share_trace opts a trace's title/context/solution/tags into the
+    commons -- that is not the same as opting in every column on the row.
+    commons_overlap's matches used to hand back crud._to_wire(hit, [], [])
+    in full, which included `contributor` (routinely an email/name),
+    `extensions`/`outcome` (freeform JSON that can carry internal project
+    ids or cost data), `watch_condition`, and `review_after` -- none of it
+    reviewed by the sharing org for cross-org disclosure. The projection
+    must carry the substrate content a requester actually needs and nothing
+    else."""
+
+    async def test_private_fields_are_excluded_from_a_commons_match(
+        self, session_factory, config, orgs
+    ):
+        trace = await _contribute(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+            "Use an idempotency key", tags=["stripe"],
+        )
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace["id"])
+            row.contributor = "alice@example.com"
+            row.extensions = {"internal_project_id": "proj-42", "cost_usd": 1337}
+            row.outcome = {"resolved": True, "notes": "internal escalation notes"}
+            row.watch_condition = "if error_rate > 5%"
+            row.review_after = "2027-01-01"
+            await crud.share_trace(session, orgs["contributor-a"], trace["id"])
+
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(
+                session, orgs["consumer"],
+                [_failure("f1", "Stripe webhook retries", "duplicate delivery on 500", ["stripe"])],
+            )
+
+        assert report["n_covered"] == 1
+        match_trace = report["matches"][0]["trace"]
+        for private_field in (
+            "contributor", "extensions", "outcome", "watch_condition",
+            "review_after", "retrievals", "depth", "supersedes_trace_id",
+            "votes", "related", "quarantined", "quarantine_reason",
+            "shared_with_commons",
+        ):
+            assert private_field not in match_trace, f"{private_field!r} leaked to a cross-org caller"
+        # What a requester actually needs to judge and use the match:
+        assert match_trace["title"] == "Stripe webhook retries"
+        assert match_trace["solution_text"] == "Use an idempotency key"
+        assert match_trace["tags"] == ["stripe"]
+        assert "trust" in match_trace
+        assert "created_at" in match_trace
 
 
 # --- 5. Scaling: the fast path must not diverge from the reference ------
@@ -701,6 +795,40 @@ class TestValueLedger:
             "two failures covered in one call must count as two hits, not one"
         )
 
+    async def test_duplicate_signature_farming_is_capped_per_query(
+        self, session_factory, config, orgs
+    ):
+        """Nothing on the wire stops a caller from submitting the identical
+        signature many times in one request (up to
+        commons.MAX_SUBMITTED_FAILURES). Without a cap, the "N submitted
+        failures matching the same trace = N hits" rule the batch test above
+        depends on turns one repeated signature into hundreds of
+        query-credit hits for whichever trace it matches -- a colluding
+        querying org could mint effectively unlimited query allowance for a
+        sharing org just by repeating one signature. commons.
+        MAX_HITS_PER_TRACE_PER_QUERY bounds how much a single call can credit
+        one trace, while leaving small genuine multi-task batches (like the
+        2-failure case above) fully credited."""
+        tid = await self._share_one(
+            session_factory, config, orgs["contributor-a"],
+            "Stripe webhook retries", "duplicate delivery on 500",
+        )
+        probe = [
+            _failure(f"occurrence-{i}", "Stripe webhook retries", "duplicate delivery on 500")
+            for i in range(commons.MAX_HITS_PER_TRACE_PER_QUERY + 30)
+        ]
+        async with session_scope(session_factory) as session:
+            report = await crud.commons_overlap(session, orgs["consumer"], probe)
+        # The caller's own coverage report is unaffected by the cap -- every
+        # submitted failure it asked about really was covered.
+        assert report["n_covered"] == len(probe)
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, tid)
+        assert row.commons_hits == commons.MAX_HITS_PER_TRACE_PER_QUERY, (
+            "one query repeating one signature must not credit a trace past the per-query cap"
+        )
+
     async def test_counting_survives_concurrent_queries(self, session_factory, config, orgs):
         """The increment is an atomic in-database UPDATE, not a
         read-modify-write: contributor standing is the basis for pricing,
@@ -859,6 +987,36 @@ class TestSubmittedInputIsValidated:
             report = await crud.commons_overlap(session, orgs["consumer"], [])
         assert report["n_failures"] == 0
         assert report["covered_fraction"] == 0.0
+
+    async def test_rejects_negative_signature_values(self, session_factory, config, orgs):
+        """A negative value passes isinstance(v, int) but is outside the
+        uint64 domain MinHash signatures live in -- on numpy hosts,
+        converting it (`np.array(..., dtype=uint64)`) raises OverflowError,
+        surfacing as an unhandled 500 instead of a clean 400."""
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(
+                    session, orgs["consumer"],
+                    [{"label": "f", "signature": [-1] * commons.COMMONS_NUM_PERM}],
+                )
+
+    async def test_rejects_signature_values_above_uint64_max(self, session_factory, config, orgs):
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(
+                    session, orgs["consumer"],
+                    [{"label": "f", "signature": [2**64] * commons.COMMONS_NUM_PERM}],
+                )
+
+    async def test_rejects_non_finite_threshold(self, session_factory, config, orgs):
+        """max(0.0, min(nan, 1.0)) silently clamps NaN to 0.0 rather than
+        rejecting it -- permissive, not a crash, but a threshold of 0.0
+        matches everything, which is not what a caller who passed NaN
+        intended."""
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(session, orgs["consumer"], probe, threshold=float("nan"))
 
 
 # --- 9. The shipped seed corpus -----------------------------------------

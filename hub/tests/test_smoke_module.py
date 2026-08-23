@@ -80,6 +80,69 @@ class TestPreflightDiagnosis:
         assert smoke._preflight("http://up.example/mcp", "ct_live_x") is None
 
 
+class TestRejectsBadCredentials:
+    """`_rejects_bad_credentials` used to open an MCP session with a bogus
+    key and treat ANY exception -- a TLS failure, a timeout, a proxy reset,
+    or a genuine 401/403 -- as proof the server rejects bad credentials.
+    All of those raise identically from inside an MCP session, so a smoke
+    run against an unreachable/misconfigured Hub reported [PASS] "an
+    invalid API key is refused" without the server having rejected
+    anything, or even having been reached at all."""
+
+    pytestmark = pytest.mark.asyncio
+
+    @pytest.fixture
+    def fake_post(self, monkeypatch):
+        def install(status_code=None, raises=None):
+            class _Response:
+                def __init__(self, code):
+                    self.status_code = code
+
+            def _post(url, **kwargs):
+                if raises is not None:
+                    raise raises
+                return _Response(status_code)
+
+            import sys
+            import types
+            stub = types.ModuleType("httpx")
+            stub.post = _post
+            monkeypatch.setitem(sys.modules, "httpx", stub)
+        return install
+
+    async def test_a_genuine_401_is_a_pass(self, fake_post):
+        fake_post(status_code=401)
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://up.example/mcp", report)
+        assert report.failures == []
+
+    async def test_a_genuine_403_is_a_pass(self, fake_post):
+        fake_post(status_code=403)
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://up.example/mcp", report)
+        assert report.failures == []
+
+    async def test_the_server_accepting_the_bogus_key_is_a_fail(self, fake_post):
+        fake_post(status_code=200)
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://up.example/mcp", report)
+        assert report.failures != []
+
+    async def test_a_connection_error_is_a_fail_not_a_silent_pass(self, fake_post):
+        """The actual regression: previously this exact case (server
+        unreachable, key never actually evaluated) reported [PASS]."""
+        fake_post(raises=OSError("connection refused"))
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://down.example/mcp", report)
+        assert report.failures != []
+
+    async def test_an_unrelated_5xx_is_a_fail_not_a_silent_pass(self, fake_post):
+        fake_post(status_code=503)
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://up.example/mcp", report)
+        assert report.failures != []
+
+
 class TestArgumentHandling:
     def test_url_and_key_are_required(self):
         with pytest.raises(SystemExit):

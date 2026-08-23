@@ -50,8 +50,22 @@ services:
       HUB_HOST: 0.0.0.0
       HUB_PORT: 8420
       HUB_LOG_LEVEL: INFO
+      # HUB_HOST=0.0.0.0 above is required for Docker's bridge networking
+      # (a loopback-only bind inside the container is unreachable through
+      # `docker run -p`/compose port publishing at all) -- it is not the
+      # same decision as exposing the Hub to the public internet. The `ports:`
+      # mapping below is what actually controls host-level reachability, and
+      # it publishes to 127.0.0.1 only. This flag is the explicit
+      # acknowledgment hub/config.py's startup check requires before serving
+      # plaintext HTTP (the API key travels as a Bearer token) on a
+      # non-loopback bind; put a TLS-terminating reverse proxy in front for
+      # anything beyond local evaluation, per hub/DEPLOYMENT.md.
+      HUB_ALLOW_INSECURE_HTTP: "true"
     ports:
-      - "8420:8420"
+      # Loopback-only: nothing outside this host can reach the Hub directly.
+      # A reverse proxy on the same host (or same private network) is the
+      # supported way to expose it further -- see hub/DEPLOYMENT.md.
+      - "127.0.0.1:8420:8420"
     depends_on:
       db:
         condition: service_healthy

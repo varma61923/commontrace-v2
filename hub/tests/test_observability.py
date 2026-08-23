@@ -158,3 +158,100 @@ class TestHealthAndReadiness:
         observability.add_health_routes(app, session_factory)
         paths = {getattr(r, "path", None) for r in app.routes}
         assert {"/healthz", "/readyz"} <= paths
+
+    async def test_readyz_is_rate_limited_per_client(self, session_factory):
+        """/readyz is necessarily unauthenticated (an orchestrator's prober
+        carries no API key) and executes a real SELECT 1 against the
+        database pool on every call -- unlike /healthz, which touches
+        nothing. Without its own limiter, flooding it is a lever to exhaust
+        connections that ApiKeyAuthMiddleware's rate limiters never see,
+        since they only ever run on the authenticated /mcp path."""
+        from dataclasses import dataclass
+
+        from starlette.applications import Starlette
+
+        from hub.abuse import RateLimiter
+
+        @dataclass
+        class _FakeClient:
+            host: str
+
+        @dataclass
+        class _FakeRequest:
+            client: _FakeClient
+
+        app = Starlette()
+        # per_minute=60, not 0: a burst-of-1 bucket refilling at 1/sec still
+        # lets exactly one request through immediately, without leaning on
+        # per_minute=0's own "always deny from the first call" floor (see
+        # hub/tests/test_abuse.py's test_zero_per_minute_denies_every_key_
+        # from_the_first_call for that behavior specifically).
+        observability.add_health_routes(
+            app, session_factory, readyz_rate_limiter=RateLimiter(per_minute=60, burst=1)
+        )
+        readyz = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/readyz")
+
+        request = _FakeRequest(client=_FakeClient(host="1.2.3.4"))
+        first = await readyz(request)
+        second = await readyz(request)
+        assert first.status_code == 200  # burst of 1 lets the first through
+        assert second.status_code == 429  # bucket drained, negligible refill within the test: rejected
+
+
+@pytest.mark.asyncio
+class TestSecurityResponseHeaders:
+    """This is a JSON API with no browser-rendered surface, but the
+    defense-in-depth headers still cost nothing: don't let a browser guess
+    the content type from the body, never render a response in a frame,
+    don't leak the request URL via Referer, and set HSTS (a no-op unless
+    the response is actually delivered over TLS, so harmless to always
+    set)."""
+
+    async def test_every_response_carries_the_baseline_headers(self):
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        async def _ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/x", _ok)])
+        app.add_middleware(observability.RequestContextMiddleware)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/x")
+
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["X-Frame-Options"] == "DENY"
+        assert r.headers["Referrer-Policy"] == "no-referrer"
+        assert "max-age" in r.headers["Strict-Transport-Security"]
+
+
+class TestTransportSafety:
+    """The Hub speaks plain HTTP; API keys travel as a Bearer token on
+    every call. Binding a non-loopback interface without an explicit
+    acknowledgment is exactly the "forgot a reverse proxy" misconfiguration
+    that ships credentials in cleartext to whoever can reach the port."""
+
+    def test_refuses_non_loopback_host_by_default(self):
+        from hub.config import HubConfig
+
+        config = HubConfig(database_url="postgresql+asyncpg://x/y", host="0.0.0.0")
+        with pytest.raises(RuntimeError):
+            config.validate_transport_safety()
+
+    def test_loopback_host_is_always_fine(self):
+        from hub.config import HubConfig
+
+        for host in ("127.0.0.1", "localhost", "::1"):
+            HubConfig(database_url="postgresql+asyncpg://x/y", host=host).validate_transport_safety()
+
+    def test_explicit_opt_in_allows_non_loopback_host(self):
+        from hub.config import HubConfig
+
+        config = HubConfig(
+            database_url="postgresql+asyncpg://x/y", host="0.0.0.0", allow_insecure_http=True,
+        )
+        config.validate_transport_safety()  # must not raise

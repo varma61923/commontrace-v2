@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
 
+# No job below needs to write anything back to the repo, open PRs, or touch
+# packages/deployments -- read-only is the least the default GITHUB_TOKEN can
+# be scoped to, rather than inheriting whatever broad default the
+# organization/repo settings happen to grant. A job that genuinely needs
+# more (e.g. to comment on a PR) should declare that narrower permission on
+# itself, not rely on this file falling back to "everything".
+permissions:
+  contents: read
+
 jobs:
   test-core:
     # Validates the package as an external user would actually get it: `pip install -e .`
@@ -15,10 +24,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -40,10 +49,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -84,13 +93,13 @@ jobs:
     env:
       HUB_TEST_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_hub_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install postgres client (for createdb)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -122,10 +131,10 @@ jobs:
     name: security scan (bandit, pip-audit, mypy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -159,8 +168,8 @@ jobs:
           numpy>=1.24,<3.0
           sentence-transformers>=6.0,<7.0
           transformers>=5.5.0
-          mcp>=1.2
-          httpx2
+          mcp>=2.0,<3.0
+          httpx
           REQS
           pip-audit -r /tmp/commontrace-audit-requirements.txt
 
@@ -185,7 +194,7 @@ jobs:
     name: docker image builds and starts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build the Hub image
         run: docker build -t commontrace-hub:ci .
@@ -195,8 +204,21 @@ jobs:
           # No database configured on purpose: liveness must come up without
           # one (see hub/DEPLOYMENT.md §4). A HUB_DATABASE_URL is still
           # required for the process to boot at all.
+          #
+          # HUB_ALLOW_INSECURE_HTTP=true: `-p 8420:8420` publishes the
+          # container's port via Docker's NAT, which only forwards traffic
+          # to a socket the container binds on 0.0.0.0 -- a bind to
+          # 127.0.0.1 *inside* the container is unreachable through that
+          # mapping at all. HubConfig.validate_transport_safety()
+          # (hub/config.py) correctly refuses to start on a non-loopback
+          # HUB_HOST serving plain HTTP unless this is set, exactly as it
+          # should for a real deployment; here it's the same acknowledgment
+          # docker-compose.yml already makes for the same Docker-NAT
+          # reason, on an isolated CI runner with nothing but this curl
+          # loop able to reach the published port at all.
           docker run -d --name hub-ci -p 8420:8420 \
             -e HUB_DATABASE_URL=postgresql+asyncpg://nobody:nobody@127.0.0.1:5432/nodb \
+            -e HUB_ALLOW_INSECURE_HTTP=true \
             commontrace-hub:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8420/healthz; then echo "healthz OK"; exit 0; fi
@@ -224,7 +246,7 @@ jobs:
     name: docker compose stack serves real MCP traffic
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Bring up the documented stack
         run: |

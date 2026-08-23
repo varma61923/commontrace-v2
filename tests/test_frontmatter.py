@@ -280,6 +280,68 @@ class TestFrontmatterMalformedInput:
         assert body.strip() == "body"
 
 
+class TestFrontmatterRejectsYamlAnchorsAndAliases:
+    """SafeLoader ("safe" = no arbitrary Python object construction) still
+    resolves YAML anchors/aliases, which is a different hazard entirely: a
+    handful of nested anchors referencing each other expands exponentially
+    at parse time (the classic "billion laughs" pattern) -- a payload well
+    under 1KB inflates to gigabytes in memory and multi-second CPU time.
+    A trace/lesson file is exactly the kind of untrusted input this project
+    already threat-models for a different file (index.npz's model_name,
+    memory/attention/query.py) -- one could equally arrive via a cloned or
+    forked repo. No frontmatter field has any legitimate use for either
+    construct, so both are rejected outright."""
+
+    def test_an_alias_reference_is_rejected(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "alias.md"
+        path.write_text(
+            "---\na: &a [1, 2, 3]\nb: *a\n---\nbody\n", encoding="utf-8"
+        )
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_a_bare_anchor_definition_with_no_alias_is_also_rejected(self, tmp_path):
+        """The anchor declaration itself is refused, not just its use --
+        matters because the expansion in a real payload happens across many
+        small documents/fields, and catching only *alias would still let an
+        attacker define (harmless on its own, but suspicious) anchors."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "anchor_only.md"
+        path.write_text("---\na: &a value\n---\nbody\n", encoding="utf-8")
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_a_billion_laughs_style_payload_is_rejected_not_expanded(self, tmp_path):
+        path = tmp_path / "bomb.md"
+        path.write_text(
+            "---\n"
+            'a: &a ["x","x","x","x","x","x","x","x","x"]\n'
+            "b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n"
+            "c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"
+            "d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\n"
+            "---\nbody\n",
+            encoding="utf-8",
+        )
+        from commontrace import frontmatter
+
+        with pytest.raises(frontmatter.FrontmatterError):
+            frontmatter.read(str(path))
+
+    def test_ordinary_frontmatter_with_no_anchors_is_unaffected(self, tmp_path):
+        from commontrace import frontmatter
+
+        path = tmp_path / "ok.md"
+        path.write_text(
+            "---\ntitle: Something\ntags: [a, b, c]\nstatus: active\n---\nbody\n",
+            encoding="utf-8",
+        )
+        fm, body = frontmatter.read(str(path))
+        assert fm == {"title": "Something", "tags": ["a", "b", "c"], "status": "active"}
+
+
 class TestFrontmatterYaml11BoolCoercion:
     """PyYAML's default (YAML 1.1) resolver silently coerces a bare
     yes/no/on/off (any case) to a Python bool. Every protocol field that

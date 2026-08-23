@@ -68,6 +68,31 @@ LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
 TELEMETRY_PATH = os.path.join(_ROOT, "memory", "alpha_telemetry.jsonl")
 
 
+def _load_frontmatter(fm_text: str):
+    """Parse with commontrace's strict loader when it is importable.
+
+    Identical to build_index.py's helper of the same name, and deliberately
+    kept in sync with it rather than shared via import: plain
+    yaml.safe_load applies YAML 1.1 rules, so a lesson `name: on` parses
+    here as the boolean True while build_index.py's index (built with
+    _StrictBoolLoader) keys the same lesson under the string "on" -- an
+    importance>=floor safety-override lookup in this module for that lesson
+    then misses under `importances[slug]` even though the lesson genuinely
+    has a high importance, because the two loaders disagree on what `slug`
+    even is. Falls back to safe_load so this script still runs standalone
+    from a checkout without the package installed, same as build_index.py.
+    """
+    try:
+        from commontrace.frontmatter import _StrictBoolLoader
+    except Exception:  # noqa: BLE001 - standalone use, any import problem
+        return yaml.safe_load(fm_text)
+    # See build_index.py's identical comment: _StrictBoolLoader IS a
+    # yaml.SafeLoader subclass that only narrows two implicit-conversion
+    # rules, so this carries none of the arbitrary-object-instantiation
+    # risk bandit's B506 exists to catch.
+    return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
+
+
 def load_importances() -> "tuple[dict[str, int], int]":
     """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
     n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
@@ -78,13 +103,22 @@ def load_importances() -> "tuple[dict[str, int], int]":
     for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            content = fh.read()
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                content = fh.read()
+        except OSError as exc:
+            # A file glob matched but the file itself is unreadable by the
+            # time we get to it (permissions, deleted between glob() and
+            # open() by a concurrent capture/lesson command, a broken
+            # symlink) -- one such lesson must not abort retrieval for
+            # every other lesson in the store.
+            print(f"[WARN] skipping unreadable lesson {path}: {exc}", file=sys.stderr)
+            continue
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
             continue
         try:
-            frontmatter = yaml.safe_load(content[delims[0].end():delims[1].start()]) or {}
+            frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
         except yaml.YAMLError:
             continue
         # Same guard as build_index.py: a scalar frontmatter block parses to
@@ -105,6 +139,15 @@ def load_importances() -> "tuple[dict[str, int], int]":
     return out, n_parsed
 
 
+# Each record here is small, fixed-shape operational-cost metadata (see the
+# call site: latency, counts, a token-count estimate, query LENGTH -- never
+# the query text itself), but one gets appended per invocation with no
+# retention limit, so a long-lived store's telemetry file grows without
+# bound. Rotated once it crosses this size rather than left to grow
+# forever.
+_TELEMETRY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
 def _append_telemetry(record, path=None):
     """Append one JSON line to memory/alpha_telemetry.jsonl -- create the file if absent,
     always append, never truncate existing history. A telemetry write failure (e.g.
@@ -114,16 +157,38 @@ def _append_telemetry(record, path=None):
     path = path or TELEMETRY_PATH
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
+            # Keep exactly one prior generation, the simplest form of
+            # logrotate's own default behavior -- overwrites any previous
+            # .1 rather than accumulating .1, .2, .3, ... forever, which
+            # would just move the unbounded-growth problem sideways.
+            try:
+                os.replace(path, path + ".1")
+            except OSError:
+                pass
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError as exc:
         print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
 
 
+def _positive_int(raw: str) -> int:
+    """argparse type= for --top-k. `order[:top_k]` below is a Python slice,
+    not a bounds check: `order[:-1]` means "all but the last", not
+    "nothing", so a negative --top-k silently returned nearly the entire
+    index instead of failing -- the opposite of "a small number of
+    results". Rejected at parse time rather than clamped silently, since a
+    negative top-k is a caller bug worth surfacing."""
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"--top-k must be >= 1, got {value}")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("query", help="Incoming task / query string (verbatim)")
-    parser.add_argument("--top-k", type=int, default=10, help="Top-K cosine hits (default 10)")
+    parser.add_argument("--top-k", type=_positive_int, default=10, help="Top-K cosine hits (default 10)")
     parser.add_argument(
         "--include-importance-floor",
         type=int,
@@ -176,7 +241,25 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    model = SentenceTransformer(_TRUSTED_MODEL_NAME)
+    try:
+        # SentenceTransformer downloads the model from Hugging Face Hub on
+        # first use if it isn't already in the local cache
+        # (~/.cache/huggingface/), which needs internet access this
+        # process may not have -- an air-gapped deployment, or a
+        # cache the operator didn't realize was never populated. Left
+        # uncaught this raised a raw OSError/traceback from deep inside
+        # huggingface_hub instead of the clean, actionable error every
+        # other failure path in this function already gives.
+        model = SentenceTransformer(_TRUSTED_MODEL_NAME)
+    except OSError as exc:
+        print(
+            f"[ERR] Could not load model {_TRUSTED_MODEL_NAME!r}: {exc}\n"
+            "If this host has no internet access, pre-download the model on a "
+            "connected machine and copy ~/.cache/huggingface/ over, or set "
+            "HF_HUB_OFFLINE=1 once it's cached locally.",
+            file=sys.stderr,
+        )
+        return 1
     q_emb = model.encode(args.query, normalize_embeddings=True, convert_to_numpy=True)
 
     # An index built by a different (or later, wider) embedding model has a

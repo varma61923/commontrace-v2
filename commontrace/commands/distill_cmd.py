@@ -23,6 +23,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
+def _safe_tags(raw: object) -> list[str]:
+    """Coerce a frontmatter `tags` value to a list of strings.
+
+    A hand-edited trace file can have `tags` as a bare scalar
+    (`tags: auth,billing` without list brackets parses as the plain string
+    "auth,billing", not a list) instead of a proper YAML list. The previous
+    `list(instance.get("tags") or [])` iterated that string character by
+    character, feeding distill.TraceCandidate.tags -- and therefore the
+    tag-overlap clustering signal and propose_tags/propose_domain -- garbage
+    single-character "tags". Same guard as overlap_cmd.py's _safe_tags for
+    the identical class of malformed input.
+    """
+    return [str(t) for t in raw if t is not None] if isinstance(raw, (list, tuple)) else []
+
+
 def _iter_trace_paths(root: str):
     tdir = paths.traces_dir(root)
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
@@ -66,7 +81,7 @@ def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandida
                 title=instance.get("title", ""),
                 context_text=instance.get("context_text", ""),
                 solution_text=instance.get("solution_text", ""),
-                tags=list(instance.get("tags") or []),
+                tags=_safe_tags(instance.get("tags")),
                 agent_type=instance.get("agent_type", ""),
             )
         )

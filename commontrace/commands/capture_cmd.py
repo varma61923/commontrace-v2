@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import os
 import re
 import sys
 import uuid
 
-from commontrace import frontmatter, paths, templates, validate
+from commontrace import frontmatter, paths, templates, trace_io, validate
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -71,6 +72,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "pipeline cannot attribute outcomes and reports every assignment "
              "as skipped.",
     )
+    p.add_argument(
+        "--overwrite", action="store_true", default=False,
+        help="When --occasion-id matches an existing trace, replace its title/context/"
+             "solution with the values given on THIS call. Without this flag, re-capturing "
+             "an existing occasion preserves the original narrative and only merges in "
+             "outcome fields (--resolved, --escalated, etc.) -- the common case, since "
+             "re-capturing under the same occasion-id exists to attach an outcome once a "
+             "task concludes, not to edit history.",
+    )
     p.set_defaults(func=run)
 
 
@@ -102,6 +112,22 @@ def _id_suffix(trace_id: str) -> str:
 def _slugify(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug[:60] or "trace"
+
+
+def _find_trace_by_occasion(tdir: str, occasion_id: str) -> str | None:
+    """Locate an existing trace file whose `id` is `occasion_id`, regardless
+    of its current filename. A filename is `<date>_<title-slug>_<id-suffix>.md`
+    -- both the date and the slug can differ between two captures under the
+    SAME occasion id (a later day, a refined title), so matching on the
+    computed path alone misses a file that is very much already there."""
+    for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
+        try:
+            fm, _ = frontmatter.read(path)
+        except Exception:  # noqa: BLE001 - an unrelated malformed file must not abort the scan
+            continue
+        if str(fm.get("id", "")) == occasion_id:
+            return path
+    return None
 
 
 def run(args: argparse.Namespace) -> int:
@@ -136,17 +162,41 @@ def run(args: argparse.Namespace) -> int:
     out_path = os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md")
 
     # One occasion is one task, so re-capturing it updates that task's
-    # outcome rather than adding a second. Warned rather than silently
-    # overwritten: _outcomes_by_occasion is a dict keyed on id, so a second
-    # trace with the same id would shadow the first with no indication.
-    if occasion_id and os.path.exists(out_path):
-        print(f"[commontrace] note: updating the existing trace for occasion "
-              f"{occasion_id!r}.", file=sys.stderr)
+    # outcome rather than adding a second. Located by scanning for the
+    # occasion id INSIDE existing trace files, not by checking whether
+    # `out_path` already exists: `out_path` is derived from today's date
+    # and the CURRENT call's title, so a re-capture on a later day, or
+    # with a refined title, would compute a different path and never find
+    # the original -- silently creating a duplicate trace under the same
+    # occasion id instead of updating it, exactly the failure
+    # _outcomes_by_occasion's dict-keyed-on-id lookup depends on not
+    # happening.
+    title, context, solution = args.title, args.context, args.solution
+    if occasion_id:
+        existing_path = _find_trace_by_occasion(tdir, occasion_id)
+        if existing_path is not None:
+            out_path = existing_path
+            print(f"[commontrace] note: updating the existing trace for occasion "
+                  f"{occasion_id!r}.", file=sys.stderr)
+            if not args.overwrite:
+                # Preserve the historical narrative by default: re-capturing
+                # under the same occasion-id exists to attach an outcome once
+                # a task concludes (--resolved/--escalated/etc, possibly
+                # minutes or hours after the occasion was first logged), not
+                # to edit history. --title/--context/--solution are still
+                # required on every call, so without this the second call's
+                # placeholder or abbreviated text silently replaced the
+                # original trace body wholesale -- the only record of what
+                # the task actually was.
+                existing_instance, _existing_body = trace_io.read(existing_path)
+                title = existing_instance.get("title") or title
+                context = existing_instance.get("context_text") or context
+                solution = existing_instance.get("solution_text") or solution
 
     outcome = _outcome_from_args(args)
     agent_type = args.agent_type or paths.store_agent_type(root)
-    fm = templates.trace_frontmatter(trace_id, args.title, agent_type, tags, args.profile, outcome)
-    body = templates.trace_body(args.context, args.solution)
+    fm = templates.trace_frontmatter(trace_id, title, agent_type, tags, args.profile, outcome)
+    body = templates.trace_body(context, solution)
 
     # Validate BEFORE writing, so the store is invalid-by-construction
     # impossible rather than invalid-until-someone-audits-it. Without this,
@@ -154,8 +204,8 @@ def run(args: argparse.Namespace) -> int:
     # later separate run, and pilot_metrics averages the negative number in
     # the meantime -- a wrong cost figure in a customer-facing report.
     instance = dict(fm)
-    instance["context_text"] = args.context
-    instance["solution_text"] = args.solution
+    instance["context_text"] = context
+    instance["solution_text"] = solution
     errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
     if errors:
         print(

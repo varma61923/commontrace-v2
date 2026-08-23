@@ -29,9 +29,9 @@ this repository (AGENTS.md, SKILL.md, `commontrace install`'s generated
 files) reproduces these seven stage names verbatim and in this order.
 
 ```
-Capture → Structure → Extract → Validate → Store → Inject
-                         ↑                            |
-                         └────────── Measure ←────────┘
+Capture → Structure → Extract → Validate → Store → Inject → Measure
+                         ↑                                     |
+                         └─────────────────────────────────────┘
 ```
 
 `Validate` is a stage, not a formality: it is the human gate where a

@@ -68,6 +68,20 @@ DEFAULT_COMMONS_THRESHOLD = overlap.DEFAULT_MATCH_THRESHOLD
 MAX_SUBMITTED_FAILURES = 500
 MAX_LABEL_CHARS = 200
 
+# Hard ceiling on how many query-credit hits ONE shared trace can earn from
+# ONE commons_overlap call. commons_hits (and the query allowance it earns
+# via QUERY_CREDIT_PER_HIT, see hub/plans.py) is credited once per submitted
+# failure that best-matches a trace -- deliberately, so a fleet that
+# genuinely hits the same substrate failure across several distinct tasks in
+# one batch gets full credit for each. But nothing about the wire format
+# stops a caller from submitting the identical signature MAX_SUBMITTED_
+# FAILURES times in a single request, and without this cap that would credit
+# whichever trace it matches once per repetition -- one submission, counted
+# as if it were hundreds. This bound is set well above any plausible
+# legitimate multi-task batch (hub/tests/test_commons.py's own such test
+# uses 2) while keeping the credit a single call can farm for a trace small.
+MAX_HITS_PER_TRACE_PER_QUERY = 20
+
 # Hard ceiling on how many commons traces one query will compare against.
 #
 # This is not a guess. Measured on this codebase: the comparison is
@@ -167,8 +181,18 @@ def validate_submitted_failures(failures: object) -> list[tuple[str, list[int]]]
         sig: list[int] = []
         for v in raw_sig:
             # bool is an int subclass; a signature of booleans is a client bug.
-            if not isinstance(v, int) or isinstance(v, bool):
-                raise CommonsInputError(f"failures[{i}].signature must contain only integers")
+            # Range-checked to the uint64 domain MinHash signatures actually
+            # live in, not just type-checked: a value outside it still
+            # "is an int" but breaks the numpy path (`_np.array(..., dtype=
+            # uint64)` raises OverflowError on a negative or >2**64-1 value,
+            # surfacing as an unhandled 500) and silently wraps on the
+            # pure-Python path instead, so the two implementations would
+            # disagree on the exact same input depending on which one this
+            # host happens to run.
+            if not isinstance(v, int) or isinstance(v, bool) or not (0 <= v <= 2**64 - 1):
+                raise CommonsInputError(
+                    f"failures[{i}].signature must contain only integers in [0, 2**64 - 1]"
+                )
             sig.append(v)
         label = str(item.get("label") or f"failure-{i}")[:MAX_LABEL_CHARS]
         out.append((label, sig))

@@ -116,4 +116,23 @@ def test_rate_limiter_evicts_idle_buckets(monkeypatch):
     # burst capacity, not a resumed or half-empty bucket.
     assert limiter.allow("idle-org") is True
     assert limiter.allow("idle-org") is True
+
+
+def test_zero_per_minute_denies_every_key_from_the_first_call():
+    """A bucket for any never-seen key started pre-filled to `burst`
+    tokens regardless of the configured rate, so per_minute=0 (an operator
+    explicitly asking for zero throughput) previously still let each new
+    key through its first `burst` calls before the "never refills" part
+    kicked in. per_minute<=0 must deny unconditionally, independent of
+    whatever burst is also configured, and for every key -- not just
+    whichever key happened to exhaust its initial allowance first."""
+    limiter = RateLimiter(per_minute=0, burst=5)
+    for _ in range(5):
+        assert limiter.allow("org-x") is False
+    assert limiter.allow("org-brand-new") is False
+
+
+def test_negative_per_minute_also_denies_every_key():
+    limiter = RateLimiter(per_minute=-1, burst=5)
+    assert limiter.allow("org-x") is False
     assert limiter.allow("idle-org") is False

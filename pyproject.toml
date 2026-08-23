@@ -29,15 +29,33 @@ attention = [
     # comment), so exploitability here was already low, but pinning to a
     # resolvable, patched range costs nothing.
     "sentence-transformers>=6.0,<7.0",
-    "transformers>=5.5.0",
+    # Every other pin in this list carries an upper bound (numpy<3.0,
+    # sentence-transformers<7.0 above); this one didn't, so a future
+    # transformers major release could resolve here unpinned and break the
+    # attention extra's install with no warning. Capped at the same <7.0
+    # ceiling as sentence-transformers itself, which this package is always
+    # installed alongside -- the two tend to release compatible majors in
+    # lockstep, so this is the range sentence-transformers>=6.0,<7.0 is
+    # already implicitly tested against upstream.
+    "transformers>=5.5.0,<7.0",
 ]
 # `commontrace sync` talking to a CommonTrace Hub (commontrace/hub_client.py).
 # Optional for the same reason `attention` is: most users never need it.
 # The Hub *server* itself (hub/) is not packaged/distributed by this
 # pyproject at all -- see hub/README.md + hub/requirements.txt to run one.
+#
+# mcp>=2.0,<3.0, not the wider >=1.2 this used to declare: hub_client.py
+# imports mcp.ClientSession and mcp.client.streamable_http.
+# streamable_http_client, both 2.x-era streamable-HTTP transport APIs the
+# Hub server itself is pinned to exactly (mcp==2.0.0, hub/requirements.txt)
+# -- an install that resolved a 1.x mcp under the old floor would fail on
+# import with a confusing ImportError rather than a clear version
+# constraint. Upper-bounded rather than left open-ended for the same
+# "don't silently float onto an untested major version" reasoning
+# hub/requirements.txt's own header explains.
 hub-sync = [
-    "mcp>=1.2",
-    "httpx2",
+    "mcp>=2.0,<3.0",
+    "httpx>=0.27.0",
 ]
 dev = [
     "pytest>=7.0",

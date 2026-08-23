@@ -8,7 +8,7 @@ import re
 import sys
 
 from commontrace import frontmatter, paths, templates, validate
-from commontrace.commands._format import cell
+from commontrace.commands._format import cell, read_or_warn
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -211,7 +211,10 @@ def run_reject(args: argparse.Namespace) -> int:
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     for path in _iter_lesson_paths(root, None):
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         if args.agent_type and fm.get("agent_type") != args.agent_type:
             continue
         if args.status and fm.get("status") != args.status:

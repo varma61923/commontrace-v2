@@ -36,6 +36,22 @@ class TestHoldoutAssignment:
     def test_negative_rate_is_treated_as_off_not_as_an_error(self):
         assert not ex.is_held_out("l", "o", rate=-0.5)
 
+    def test_nan_rate_is_rejected_not_silently_always_false(self):
+        """NaN compares False against everything -- `nan <= 0`, `nan >= 1`,
+        and `x < nan` are all False -- so an unvalidated NaN rate fell
+        through every branch to `_uniform_from(...) < rate` (itself always
+        False) and this function silently returned False for EVERY call,
+        forever. That is a silent, undetectable measurement failure: the
+        holdout experiment believes it configured whatever --holdout-rate
+        was passed while actually withholding 0% of assignments."""
+        with pytest.raises(ValueError):
+            ex.is_held_out("l", "o", rate=float("nan"))
+
+    @pytest.mark.parametrize("rate", [float("inf"), float("-inf")])
+    def test_infinite_rate_is_rejected(self, rate):
+        with pytest.raises(ValueError):
+            ex.is_held_out("l", "o", rate=rate)
+
     @pytest.mark.parametrize("rate", [0.10, 0.25, 0.50])
     def test_observed_rate_matches_the_requested_rate(self, rate):
         n = 20_000

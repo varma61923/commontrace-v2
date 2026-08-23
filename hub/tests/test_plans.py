@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
@@ -157,6 +157,51 @@ class TestStorageEntitlement:
         # Not raising is the assertion.
         await _contribute(session_factory, config, orgs["freeloader"], "theirs")
 
+    async def test_amend_trace_is_refused_past_the_trace_limit(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        """amend_trace INSERTs a new Trace row into the supersession chain
+        (hub/crud.py:amend_trace's docstring) -- it consumes a storage slot
+        exactly like contribute_trace, and an org already at its cap must
+        not be able to keep growing storage by amending instead of
+        contributing."""
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=1, commons_queries_per_month=20,
+                       commons_access=True, summary="test"),
+        )
+        original = await _contribute(session_factory, config, orgs["payer"], "only one")
+        rate_limiter = make_rate_limiter(config)
+        with pytest.raises(plans.EntitlementExceeded) as exc:
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, orgs["payer"], original["id"], config, rate_limiter,
+                    title="amended", actor="test",
+                )
+        assert exc.value.metric == "traces"
+
+    async def test_amend_trace_refusal_stores_nothing(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=1, commons_queries_per_month=20,
+                       commons_access=True, summary="test"),
+        )
+        original = await _contribute(session_factory, config, orgs["payer"], "only one")
+        rate_limiter = make_rate_limiter(config)
+        with pytest.raises(plans.EntitlementExceeded):
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, orgs["payer"], original["id"], config, rate_limiter,
+                    title="amended", actor="test",
+                )
+        async with session_scope(session_factory) as session:
+            count = await session.scalar(
+                select(func.count()).select_from(Trace).where(Trace.org_id == orgs["payer"])
+            )
+        assert count == 1
+
 
 # --- 3. The metered unit -------------------------------------------------
 
@@ -260,6 +305,50 @@ class TestMeteringIsAtomic:
 
         async with session_scope(session_factory) as session:
             assert await crud._usage(session, orgs["payer"], crud.METRIC_COMMONS_QUERIES) == 20
+
+    async def test_the_entitlement_check_itself_is_serialized_at_the_boundary(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        """The meter increment (_meter) was already proven atomic above, but
+        the CHECK that gates it -- read `used`, compare to `allowance` -- was
+        a separate statement from that increment. Two concurrent calls one
+        query short of the limit could both read the same `used`, both pass
+        the check, and both then increment, letting the org exceed its
+        allowance by however many requests raced in that window. With only
+        one query of allowance left, firing many concurrent requests must
+        let through AT MOST one -- the FOR UPDATE lock around the check
+        makes every other concurrent caller for this org wait until the
+        first has committed its own increment and is visible to the next
+        read."""
+        monkeypatch.setitem(
+            plans.PLANS, "free",
+            plans.Plan("free", max_traces=1_000, commons_queries_per_month=3,
+                       commons_access=True, summary="test"),
+        )
+        t = await _contribute(session_factory, config, orgs["contributor"], "shared thing")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, orgs["contributor"], t["id"])
+        # Pre-consume 2 of the 3 allowed queries, leaving exactly one slot.
+        async with session_scope(session_factory) as session:
+            await crud._meter(session, orgs["payer"], crud.METRIC_COMMONS_QUERIES)
+            await crud._meter(session, orgs["payer"], crud.METRIC_COMMONS_QUERIES)
+
+        results = []
+
+        async def one():
+            try:
+                async with session_scope(session_factory) as session:
+                    await crud.commons_overlap(session, orgs["payer"], [_failure("f", "shared thing")])
+                results.append("ok")
+            except plans.EntitlementExceeded:
+                results.append("refused")
+
+        await asyncio.gather(*(one() for _ in range(10)))
+
+        assert results.count("ok") == 1, f"expected exactly 1 success, got {results}"
+        async with session_scope(session_factory) as session:
+            final_used = await crud._usage(session, orgs["payer"], crud.METRIC_COMMONS_QUERIES)
+        assert final_used == 3, "usage must never exceed the allowance even under a concurrent race"
 
     async def test_the_meter_is_keyed_per_period_and_metric(self, session_factory, orgs):
         async with session_scope(session_factory) as session:

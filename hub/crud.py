@@ -18,12 +18,14 @@ property testable without spinning up a live MCP transport for every case.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import math
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +33,18 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from hub import audit, commons, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
-from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, HubConfig
-from hub.models import TEXT_SEARCH_CONFIG, Organization, Trace, TraceRelation, UsageCounter, Vote
+from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
+from hub.models import (
+    MAX_FEEDBACK_TEXT_CHARS,
+    TEXT_SEARCH_CONFIG,
+    VALID_FEEDBACK_TAGS,
+    VALID_VOTE_TYPES,
+    Organization,
+    Trace,
+    TraceRelation,
+    UsageCounter,
+    Vote,
+)
 from hub.schema_validation import validate_trace
 
 # Fallback `actor` for a call site that didn't supply one. Recorded
@@ -128,6 +140,49 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         # round trip. Not a disclosure: on a commons result this is true by
         # definition, and on your own traces it is your own decision.
         "shared_with_commons": trace.shared_with_commons,
+        # Whether this trace is quarantined, and why. Surfaced (unlike the
+        # models.py column comment's original framing of these as
+        # "governance fields, not part of the wire object") because a caller
+        # that reaches a quarantined trace of its OWN -- via get_trace/
+        # vote_trace by id, which do not filter quarantine the way
+        # search_traces/list_tags do -- otherwise gets the full body back
+        # with no indication it is excluded from search and pending review.
+        # Safe to expose on every call site: get_trace/vote_trace are
+        # org-scoped to the trace's owner, and the one cross-org call site
+        # (commons_overlap's `_to_wire(hit, ...)`) only ever reaches rows
+        # already filtered to `quarantined.is_(False)`, so this is always
+        # False there.
+        "quarantined": trace.quarantined,
+        "quarantine_reason": trace.quarantine_reason,
+    }
+
+
+def _to_commons_wire(trace: Trace) -> dict:
+    """Cross-org projection for a commons_overlap match -- deliberately
+    narrower than _to_wire, which is used everywhere a caller is looking at
+    its OWN trace.
+
+    share_trace opts a trace's title/context/solution text and tags into
+    the commons; that is not the same as opting in every other column on
+    the row. `contributor` in particular is free text that routinely holds
+    an email address or name (see e.g. templates.trace_frontmatter),
+    `extensions`/`outcome` are freeform JSON the owning org may have used
+    for internal project ids, cost data, or other operational metadata, and
+    `watch_condition`/`review_after`/`retrievals`/`depth`/
+    `supersedes_trace_id` are internal bookkeeping never reviewed for
+    cross-org disclosure. None of it is what another fleet needs to answer
+    "does this solve my failure" -- that is title/context/solution/tags/
+    agent_type, plus `trust` so the requester can judge how reliable the
+    match is."""
+    return {
+        "id": trace.id,
+        "title": trace.title,
+        "context_text": trace.context_text,
+        "solution_text": trace.solution_text,
+        "tags": list(trace.tags or []),
+        "agent_type": trace.agent_type,
+        "trust": trace.trust,
+        "created_at": _iso(trace.created_at),
     }
 
 
@@ -222,6 +277,35 @@ async def _meter(session: AsyncSession, org_id: str, metric: str) -> int:
     return int((await session.execute(stmt)).scalar_one())
 
 
+async def _reserve_trace_slot(session: AsyncSession, org_id: str, plan: plans.Plan) -> None:
+    """Enforce plan.max_traces for a caller about to insert a new Trace row.
+
+    Shared by contribute_trace and amend_trace: amend_trace does not mutate
+    the original row, it INSERTs a new one into the supersession chain (see
+    its docstring), so it consumes a storage slot exactly like
+    contribute_trace does and must be checked the same way -- otherwise an
+    org already at its cap could grow storage without bound simply by
+    amending instead of contributing.
+
+    SELECT ... FOR UPDATE on the org's own row, same as before: count-then-
+    insert is a TOCTOU race under concurrent callers for the SAME org
+    without it, and a different org's row lock never blocks this one.
+    """
+    if plan.max_traces == plans.UNLIMITED:
+        return
+    await session.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+    stored = int(await session.scalar(
+        select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+    ) or 0)
+    if not plans.within(plan.max_traces, stored):
+        raise plans.EntitlementExceeded(
+            metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
+            remedy="Purge traces you no longer need, or move to a plan with more storage.",
+        )
+
+
 async def entitlements(session: AsyncSession, org_id: str) -> dict:
     """Everything an org is entitled to and has used this period.
 
@@ -295,7 +379,7 @@ async def search_traces(
        by recency as before.
     """
     limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
-    offset = max(0, int(offset))
+    offset = max(0, min(int(offset), MAX_SEARCH_OFFSET))
 
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
     if query:
@@ -368,6 +452,15 @@ async def contribute_trace(
     """
     tags = tags or []
 
+    # Trace.idempotency_key is String(128) -- checked here rather than left
+    # to the INSERT below to enforce it: a too-long value raised
+    # asyncpg.StringDataRightTruncation (a DataError), which is not an
+    # IntegrityError and isn't caught by the IntegrityError handler further
+    # down, so it reached the caller as an opaque HTTP 500 instead of a
+    # clean rejection of a malformed request.
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
+
     if idempotency_key is not None:
         existing = (
             await session.execute(
@@ -386,29 +479,7 @@ async def contribute_trace(
     # replay stores nothing, so refusing it at the storage limit would turn
     # a safe retry into a failure exactly when the org is at its cap.
     plan = await _plan_for(session, org_id)
-    if plan.max_traces != plans.UNLIMITED:
-        # SELECT ... FOR UPDATE on the org's own row: count-then-insert is
-        # otherwise a classic TOCTOU race -- two concurrent contribute_trace
-        # calls for the SAME org can each COUNT before either's INSERT is
-        # visible to the other, so both pass a check that only one of them
-        # should have. The row lock serializes exactly the callers that
-        # matter (this org's own concurrent writes) and blocks no one
-        # else's traffic -- a different org's contribute_trace locks a
-        # different row and proceeds untouched. Held until this
-        # transaction commits or rolls back (hub/db.py:session_scope), so a
-        # second call for the same org blocks here until the first's
-        # insert (or its rollback) is already decided.
-        await session.execute(
-            select(Organization.id).where(Organization.id == org_id).with_for_update()
-        )
-        stored = int(await session.scalar(
-            select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
-        ) or 0)
-        if not plans.within(plan.max_traces, stored):
-            raise plans.EntitlementExceeded(
-                metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
-                remedy="Purge traces you no longer need, or move to a plan with more storage.",
-            )
+    await _reserve_trace_slot(session, org_id, plan)
 
     candidate_id = str(uuid.uuid4())
     wire = {
@@ -498,7 +569,32 @@ def _idempotent_replay_or_conflict(
     }
 
 
+def _is_uuid(value: str) -> bool:
+    """Whether `value` is acceptable to bind against a UUID column.
+
+    Every function below takes a caller-supplied trace_id and compares it
+    directly against `Trace.id` (a UUID column) in a WHERE clause. asyncpg
+    validates the bind parameter against the column's real type -- a
+    non-UUID string raises asyncpg.DataError, which SQLAlchemy wraps as
+    DBAPIError, neither of which is an IntegrityError or any of the other
+    exception types hub/server.py's _error_response maps to a clean 4xx.
+    Unhandled, that reached callers as an opaque HTTP 500 instead of the
+    same "not found" a well-formed-but-nonexistent id already produces.
+    Checking here lets a malformed id take the identical not-found path
+    (see get_trace's own docstring on why 404, never 403, for a foreign
+    org's id -- the same "reveal nothing extra" reasoning applies to a
+    malformed id revealing nothing about whether IT exists either).
+    """
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict | None:
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -520,13 +616,44 @@ async def vote_trace(
     feedback_text: str = "",
     actor: str = AUDIT_ACTOR_UNKNOWN,
 ) -> dict | None:
-    if vote_type not in ("up", "down"):
+    if vote_type not in VALID_VOTE_TYPES:
         raise ValueError(f"vote_type must be 'up' or 'down', got {vote_type!r}")
+    # Validated here, at the application layer, rather than left to the DB's
+    # own CHECK constraints (hub/models.py:Vote.__table_args__): a
+    # constraint violation surfaces as an uncaught IntegrityError, which
+    # falls through to _error_response's generic 500 rather than the clean
+    # 400 a malformed request should get. feedback_text has no DB-level cap
+    # at all otherwise -- unbounded Text, and every vote writes an
+    # AuditLogEntry, so an unbounded field is a cheap storage/audit-log
+    # flooding vector.
+    if feedback_tag not in VALID_FEEDBACK_TAGS:
+        raise ValueError(f"feedback_tag must be one of {VALID_FEEDBACK_TAGS!r}, got {feedback_tag!r}")
+    if len(feedback_text) > MAX_FEEDBACK_TEXT_CHARS:
+        raise ValueError(
+            f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
+        )
+    if not _is_uuid(trace_id):
+        return None
 
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
+    # An org may vote on its own trace, or on any OTHER org's trace that is
+    # currently in the commons -- previously this was scoped to
+    # `Trace.org_id == org_id` only, which made "vote" mean "the owner
+    # rates its own submission": trust could only ever be 0.0/0.5/1.0 from
+    # a single self-interested party, never a community signal, even though
+    # a shared trace's `trust` is now surfaced to every org it matches for
+    # (commons_overlap's projection, hub/crud.py:_to_commons_wire). Gated on
+    # `shared_with_commons` (not merely "any trace, any org" -- that would
+    # let an org vote on private traces it has no business seeing at all)
+    # and `not quarantined`, the same boundary every other cross-org read
+    # already enforces.
+    stmt = select(Trace).where(
+        Trace.id == trace_id,
+        or_(Trace.org_id == org_id, and_(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))),
+    )
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
         return None
+    is_owner = trace.org_id == org_id
 
     # A separate SELECT-existing-vote then INSERT-or-UPDATE is not atomic:
     # two concurrent first-time votes on the same trace can both see no
@@ -602,7 +729,14 @@ async def vote_trace(
         target_id=trace_id,
         summary=f"vote={vote_type} feedback_tag={feedback_tag or '-'} new_trust={trace.trust:.3f}",
     )
-    return await _hydrate_one(session, trace)
+    if is_owner:
+        return await _hydrate_one(session, trace)
+    # A cross-org vote on someone else's shared trace gets the same narrow
+    # projection commons_overlap returns (H-08/_to_commons_wire) -- voting
+    # on a trace is not an invitation to see its owner's internal metadata
+    # (contributor, extensions, outcome, ...), only to confirm the vote
+    # registered and see the trace's current community trust score.
+    return _to_commons_wire(trace)
 
 
 async def amend_trace(
@@ -621,18 +755,27 @@ async def amend_trace(
     """Creates a new Trace that supersedes `trace_id`, rather than mutating
     history in place -- consistent with Trace.supersedes_trace_id /
     Trace.depth being an amendment *chain*, not an overwrite."""
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     original = (await session.execute(stmt)).scalar_one_or_none()
     if original is None:
         return None
 
     # amend_trace is a WRITE path and carries caller-supplied content, so it
-    # gets the same three guards contribute_trace does. Without them it was
-    # the way around all of them: unlimited writes, unvalidated payloads
-    # (a title past the column width became a hard 500 rather than a clean
-    # rejection), and spam that quarantine would have caught on the way in.
+    # gets the same four guards contribute_trace does. Without them it was
+    # the way around all of them: unlimited writes, unbounded storage growth
+    # past plan.max_traces (amend_trace INSERTs a new row -- see this
+    # function's docstring -- so it consumes a storage slot exactly like
+    # contribute_trace and must be capped the same way), unvalidated
+    # payloads (a title past the column width became a hard 500 rather than
+    # a clean rejection), and spam that quarantine would have caught on the
+    # way in.
     if not rate_limiter.allow(org_id):
         raise RateLimited(f"org {org_id} exceeded write rate limit")
+
+    plan = await _plan_for(session, org_id)
+    await _reserve_trace_slot(session, org_id, plan)
 
     resolved_title = title if title is not None else original.title
     resolved_context = context_text if context_text is not None else original.context_text
@@ -651,6 +794,19 @@ async def amend_trace(
     validate_trace(wire)
     validate_size(wire, config)
     reason = suspicion_reason(wire, config)
+    # Quarantine is inherited, never re-decided from scratch by the
+    # heuristic alone: without this, a quarantined trace stays quarantined
+    # only until whoever quarantined it (spammer or not) makes a small edit
+    # that happens not to trip suspicion_reason on the new text -- amending
+    # would otherwise be an unsupervised way around a state that is supposed
+    # to require an operator's release_quarantine (hub/manage.py) to lift.
+    # A trace that was NOT quarantined can still become quarantined by this
+    # amendment's own content, same as contribute_trace.
+    quarantined = original.quarantined or reason is not None
+    quarantine_reason = (
+        original.quarantine_reason if original.quarantined and original.quarantine_reason
+        else (reason or "")
+    )
 
     amended = Trace(
         id=amended_id,
@@ -676,8 +832,8 @@ async def amend_trace(
         outcome=dict(original.outcome or {}),
         supersedes_trace_id=original.id,
         depth=original.depth + 1,
-        quarantined=reason is not None,
-        quarantine_reason=reason or "",
+        quarantined=quarantined,
+        quarantine_reason=quarantine_reason,
     )
     session.add(amended)
     await session.flush()
@@ -703,18 +859,26 @@ async def amend_trace(
         target_type="trace",
         target_id=amended.id,
         summary=(f"supersedes={original.id} depth={amended.depth} "
-                 f"changed={','.join(changed) or 'nothing'} quarantined={reason is not None}"),
+                 f"changed={','.join(changed) or 'nothing'} quarantined={quarantined}"),
     )
     return await _hydrate_one(session, amended)
 
 
 async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
-    stmt = select(Trace.tags).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
-    rows = (await session.execute(stmt)).scalars().all()
-    tag_set: set[str] = set()
-    for tags in rows:
-        tag_set.update(tags or [])
-    return sorted(tag_set)
+    """Every distinct tag used across this org's non-quarantined traces,
+    computed in the database (SELECT DISTINCT unnest(tags)) rather than by
+    pulling every trace's full tags array into Python and deduplicating
+    there -- an org with a large trace store previously materialized its
+    entire tags column into memory (and paid the network transfer for
+    every duplicate) just to answer "what are the distinct tags", every
+    single call."""
+    stmt = (
+        select(func.unnest(Trace.tags))
+        .distinct()
+        .where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    )
+    tags = (await session.execute(stmt)).scalars().all()
+    return sorted(tags)
 
 
 # --- The cross-org commons (opt-in) ------------------------------------
@@ -740,6 +904,8 @@ async def share_trace(
     Returns None (not a permission error) for a trace that isn't yours, so
     this cannot be used as an existence oracle for another org's ids.
     """
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -782,6 +948,8 @@ async def unshare_trace(
 ) -> dict | None:
     """Withdraw a trace from the commons. Clears the signature too, so it
     stops matching immediately rather than lingering in results."""
+    if not _is_uuid(trace_id):
+        return None
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -830,7 +998,11 @@ async def commons_overlap(
     2. **Quarantined traces are excluded**, same as every other read path.
     """
     submitted = commons.validate_submitted_failures(failures)
-    threshold = max(0.0, min(float(threshold), 1.0))
+
+    threshold = float(threshold)
+    if not math.isfinite(threshold):
+        raise commons.CommonsInputError("threshold must be a finite number")
+    threshold = max(0.0, min(threshold, 1.0))
 
     # Metered here, and only here: this is the one call whose value comes
     # from other orgs' contributions rather than the caller's own data.
@@ -849,6 +1021,19 @@ async def commons_overlap(
             )
         allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
         if allowance != plans.UNLIMITED:
+            # SELECT ... FOR UPDATE on the org's own row, same pattern as
+            # _reserve_trace_slot: read-check-then-increment across two
+            # separate statements (the read here, _meter's own atomic
+            # increment below) is a TOCTOU race under concurrent calls from
+            # the SAME org -- two requests can each read `used = allowance -
+            # 1`, both pass the check, and both then increment, letting the
+            # org exceed its allowance by however many requests raced. The
+            # row lock serializes exactly this org's own concurrent calls
+            # around the check; a different org's commons_overlap locks a
+            # different row and is unaffected.
+            await session.execute(
+                select(Organization.id).where(Organization.id == org_id).with_for_update()
+            )
             used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
             if not plans.within(allowance, used):
                 raise plans.EntitlementExceeded(
@@ -896,7 +1081,18 @@ async def commons_overlap(
     ).scalars().all()
     corpus_truncated = total_corpus > len(rows)
 
-    best = commons.best_matches(submitted, [r.commons_signature or [] for r in rows])
+    # Up to MAX_SUBMITTED_FAILURES (500) signatures against up to
+    # max_corpus_scan() (20,000, or 2,000 without numpy) corpus rows is a
+    # CPU-bound comparison loop that can run long enough to stall the
+    # single-threaded asyncio event loop -- starving every other request
+    # this process is serving, not just this one. Offloaded to a worker
+    # thread so the loop stays free to schedule other coroutines while it
+    # runs; the GIL still serializes the actual comparisons, but that's a
+    # throughput cost to this one call, not an availability cost to
+    # everyone else's requests.
+    best = await asyncio.to_thread(
+        commons.best_matches, submitted, [r.commons_signature or [] for r in rows]
+    )
 
     matches: list[dict] = []
     by_domain: dict[str, int] = {}
@@ -920,7 +1116,7 @@ async def commons_overlap(
                     "tags": list(hit.tags or []),
                     # The payoff. Safe to return in full: `hit` is only in
                     # the corpus because its owning org explicitly shared it.
-                    "trace": _to_wire(hit, [], []),
+                    "trace": _to_commons_wire(hit),
                 }
             )
 
@@ -945,6 +1141,23 @@ async def commons_overlap(
         # read-modify-write) while crediting each trace by how many
         # distinct failures in THIS call it covered.
         hit_counts = Counter(hit_ids)
+        # Capped per trace, per call: nothing on the wire stops a caller
+        # from submitting the SAME signature hundreds of times in one
+        # request (MAX_SUBMITTED_FAILURES allows up to 500), and without a
+        # cap that credits whichever trace it best-matches once per
+        # repetition -- turning one submitted failure, repeated, into
+        # hundreds of query-credit hits for its owner. A small multiplicity
+        # from one call is the legitimate case (a fleet hitting one
+        # substrate failure across a handful of distinct tasks, submitted
+        # together -- see hub/tests/test_commons.py
+        # test_two_failures_in_one_query_hitting_the_same_trace_both_count);
+        # hundreds of repeats of the identical signature is not that, it is
+        # the same submission counted as if it were hundreds of them. Two
+        # colluding orgs could otherwise mint unbounded query allowance for
+        # one of them just by repeating one signature in a single request.
+        hit_counts = {
+            tid: min(cnt, commons.MAX_HITS_PER_TRACE_PER_QUERY) for tid, cnt in hit_counts.items()
+        }
         # WHEN clauses as (Trace.id == tid, count) tuples, not a
         # {tid: count} dict matched against value=Trace.id: the dict form
         # binds each key as a bare literal with no column to infer its type

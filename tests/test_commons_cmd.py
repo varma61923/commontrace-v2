@@ -92,6 +92,30 @@ class TestBuildSignatures:
         assert len(sigs) == 1
 
 
+class TestResolveHubWarnsOnCliApiKey:
+    """A CLI argument is readable by any local user (`ps`, /proc/<pid>/
+    cmdline) and can land in shell history / auditd's process-exec logs --
+    none of which apply to COMMONTRACE_HUB_API_KEY. _resolve_hub warns when
+    the key came from the command line, not the environment."""
+
+    def _args(self, **over):
+        base = dict(hub_url="http://hub.invalid/mcp", hub_api_key=None)
+        base.update(over)
+        return type("A", (), base)()
+
+    def test_warns_when_key_passed_as_a_cli_flag(self, capsys):
+        commons_cmd._resolve_hub(self._args(hub_api_key="ct_live_test"))
+        err = capsys.readouterr().err
+        assert "WARN" in err
+        assert "--hub-api-key" in err
+
+    def test_no_warning_when_key_comes_from_the_environment(self, capsys, monkeypatch):
+        monkeypatch.setenv("COMMONTRACE_HUB_API_KEY", "ct_live_from_env")
+        commons_cmd._resolve_hub(self._args(hub_api_key=None))
+        err = capsys.readouterr().err
+        assert "WARN" not in err
+
+
 class TestSignCommandWritesSignaturesOnly:
     def test_written_file_contains_no_failure_text(self, tmp_path, capsys):
         """The privacy claim the whole self-serve flow rests on."""

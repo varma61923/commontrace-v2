@@ -8,6 +8,7 @@ import pytest
 
 from commontrace import distill, frontmatter
 from commontrace.cli import main
+from commontrace.commands import distill_cmd
 
 
 def _trace(id, title, context_text, tags=None, agent_type="support"):
@@ -79,6 +80,28 @@ class TestFindClusters:
         assert len(clusters) == 2
         assert len(clusters[0].traces) == 3
         assert len(clusters[1].traces) == 2
+
+
+    def test_disjoint_vocabulary_traces_never_cluster(self):
+        # Exercises the inverted-index pre-filter path directly: traces
+        # that share zero tokens must still correctly not cluster.
+        traces = [
+            _trace("t1", "alpha", "alpha beta gamma delta"),
+            _trace("t2", "epsilon", "epsilon zeta eta theta"),
+        ]
+        clusters = distill.find_clusters(traces, existing_lessons_source_traces=[])
+        assert clusters == []
+
+    def test_zero_threshold_clusters_everything_regardless_of_overlap(self):
+        traces = [
+            _trace("t1", "alpha", "alpha beta gamma delta"),
+            _trace("t2", "epsilon", "epsilon zeta eta theta"),
+        ]
+        clusters = distill.find_clusters(
+            traces, existing_lessons_source_traces=[], similarity_threshold=0
+        )
+        assert len(clusters) == 1
+        assert {t.id for t in clusters[0].traces} == {"t1", "t2"}
 
 
 class TestProposalHelpers:
@@ -195,6 +218,31 @@ class TestDistillCommand:
         err = capsys.readouterr().err
         assert "skipping unreadable trace" in err
         assert "zzz_corrupt.md" in err
+
+    def test_a_hand_edited_scalar_tags_field_does_not_split_into_characters(self, store, capsys):
+        """Regression test: `_load_traces` used
+        `tags=list(instance.get("tags") or [])`. A hand-edited trace with
+        `tags: auth,billing` (no YAML list brackets) parses as the plain
+        string "auth,billing", and `list("auth,billing")` iterates it
+        character by character -- ['a', 'u', 't', 'h', ',', ...] -- instead
+        of raising or producing the two intended tags. Same malformed-input
+        class overlap_cmd.py's _safe_tags already guards against."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        _capture(
+            store, "Refund confusion 0",
+            "customer confused about refund timeline contradictory docs escalated",
+            "point to canonical refund policy page",
+        )
+        traces_dir = store / "memory" / "traces"
+        trace_path = next(p for p in traces_dir.glob("*.md") if p.name != "README.md")
+        fm, body = frontmatter.read(str(trace_path))
+        fm["tags"] = "auth,billing"  # scalar, not a YAML list -- the malformed shape
+        frontmatter.write(str(trace_path), fm, body)
+
+        traces = distill_cmd._load_traces(str(store), None)
+        assert len(traces) == 1
+        assert traces[0].tags == []  # coerced to empty, not split into single characters
+        assert "a" not in traces[0].tags
 
     def test_a_corrupt_lesson_file_is_skipped_with_a_warning_not_a_crash(self, store, capsys):
         """Same bug, other call site: _existing_source_traces read every

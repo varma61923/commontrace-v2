@@ -19,7 +19,7 @@ Usage:
     python measure_performance.py --strict         # non-zero exit if any alert fires
 
 Every invocation (other than --diff/--history, which only read existing history) persists
-its JSON report to memory/benchmark_reports/YYYY-MM-DD_HHMMSS.json by default -- pass
+its JSON report to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json by default -- pass
 --no-save to skip this (e.g. for a scratch/read-only invocation).
 
 Alert thresholds (warn when metrics breach; see STATUS.md §5 P4):
@@ -425,22 +425,33 @@ def parse_yaml_minimal(text):
 
 
 def load_episodes(n=None):
+    """Returns (episodes, skipped_paths). `skipped_paths` is every episode
+    file that failed to parse (non-dict frontmatter, or empty) -- previously
+    dropped by a bare `if fm:` with no warning and no count anywhere, so a
+    quality-gated CI run (`bench --strict`) silently shrank its metric
+    denominators without anyone seeing the report change shape."""
     paths = sorted(glob.glob(os.path.join(BASE_DIR, "episodes", "2*.md")))
     if n is not None and n > 0:
         paths = paths[-n:]
     episodes = []
+    skipped = []
     for p in paths:
         with open(p, encoding="utf-8-sig") as fh:
             fm = parse_frontmatter(fh.read())
         if fm:
             fm["_path"] = p
             episodes.append(fm)
-    return episodes
+        else:
+            print(f"[WARN] skipping unreadable episode file: {p}", file=sys.stderr)
+            skipped.append(p)
+    return episodes, skipped
 
 
 def load_lessons():
+    """Returns (lessons, skipped_paths). See load_episodes's docstring."""
     paths = sorted(glob.glob(os.path.join(BASE_DIR, "lessons", "lesson_*.md")))
     lessons = {}
+    skipped = []
     for p in paths:
         name = os.path.basename(p).replace(".md", "")
         if name.endswith("_template"):
@@ -450,7 +461,10 @@ def load_lessons():
         if fm:
             fm["_path"] = p
             lessons[name] = fm
-    return lessons
+        else:
+            print(f"[WARN] skipping unreadable lesson file: {p}", file=sys.stderr)
+            skipped.append(p)
+    return lessons, skipped
 
 
 def get_validated(ep):
@@ -575,7 +589,12 @@ def compute_extras(episodes, lessons):
     by_uses = sorted(lessons.items(), key=lambda kv: _safe_int(kv[1].get("uses")), reverse=True)
     top5 = [(n, _safe_int(lesson.get("uses"))) for n, lesson in by_uses[:5]
             if _safe_int(lesson.get("uses")) > 0]
-    never_hit = sorted(n for n, lesson in lessons.items() if lesson.get("uses", 0) == 0)
+    # _safe_int, not a plain `.get("uses", 0) == 0`: .get's default only
+    # applies when the KEY is absent, so a hand-edited `uses: null` (key
+    # present, value None) made `lesson.get("uses", 0)` return None, and
+    # `None == 0` is False -- that lesson silently vanished from the
+    # never-hit report instead of correctly appearing in it.
+    never_hit = sorted(n for n, lesson in lessons.items() if _safe_int(lesson.get("uses")) == 0)
 
     all_proposed = set()
     all_validated = set()
@@ -798,14 +817,31 @@ def _extract_metric(report, path):
 
 
 def persist_report(clean_report, ts=None):
-    """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS.json.
+    """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json.
     Returns the path written. `ts` (a datetime) lets callers reuse the same instant used
     to build the report's own `timestamp` field, so filenames and content agree.
     """
     ts = ts or datetime.datetime.now()
     out_dir = _reports_dir()
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"{ts.strftime('%Y-%m-%d_%H%M%S')}.json")
+    # Microseconds, not just seconds: two `bench` runs within the same
+    # second (a scripted loop, two CI jobs landing close together) produced
+    # the identical filename at second resolution, and the second run's
+    # `open(path, "w")` silently overwrote the first's report with no
+    # warning -- an entire benchmark run's history lost, and load_stored_reports'
+    # diff/history trend silently missing an entry it never knew existed.
+    # Microseconds sort in the same chronological order this format already
+    # relies on (a fixed-width, zero-padded numeric suffix), so this changes
+    # nothing about how load_stored_reports orders reports.
+    base = ts.strftime("%Y-%m-%d_%H%M%S_%f")
+    path = os.path.join(out_dir, f"{base}.json")
+    # Belt and braces: even microsecond resolution is not a hard guarantee
+    # on every platform/clock. Fall back to a numeric suffix rather than
+    # ever silently overwriting an existing report.
+    suffix = 1
+    while os.path.exists(path):
+        path = os.path.join(out_dir, f"{base}-{suffix}.json")
+        suffix += 1
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(clean_report, fh, indent=2, default=str)
     return path
@@ -1383,8 +1419,8 @@ def main():
     if args.history:
         sys.exit(run_history())
 
-    episodes = load_episodes(args.n if args.n > 0 else None)
-    lessons = load_lessons()
+    episodes, skipped_episodes = load_episodes(args.n if args.n > 0 else None)
+    lessons, skipped_lessons = load_lessons()
 
     if not episodes:
         print("Not enough episodes to compute. Run /commontrace a few times first.")
@@ -1415,6 +1451,14 @@ def main():
         "extras": extras,
         "operational_cost": operational_cost,
         "semantic_duplicates": semantic_duplicates,
+        # Surfaced rather than silently dropped: a quality-gated CI run
+        # must be able to tell "no episodes matched" from "some episodes
+        # existed but failed to parse and were excluded from every metric
+        # denominator above" -- those are very different findings.
+        "skipped_unreadable_files": {
+            "episodes": skipped_episodes,
+            "lessons": skipped_lessons,
+        },
     }
 
     thresholds = {

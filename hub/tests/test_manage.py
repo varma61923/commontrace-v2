@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from hub import auth, manage
+from hub import auth, crud, manage
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
@@ -27,11 +27,70 @@ async def two_orgs(session_factory):
         return {"org_a": org_a.id, "org_b": org_b.id}
 
 
+class TestCreateOrgWarnsOnDuplicateName:
+    """Organization.name carries no DB uniqueness constraint, and every
+    hub/manage.py operation resolves an org by org_id, never by name -- so
+    a duplicate name cannot make an operation resolve the wrong org
+    programmatically. The real risk is an operator scanning a listing by
+    eye and picking the wrong row when two orgs share a display name.
+    create_org warns (not blocks) when that happens."""
+
+    async def test_first_org_with_a_name_is_silent(self, session_factory, capsys):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "WARN" not in err
+
+    async def test_a_second_org_with_the_same_name_warns(self, session_factory, capsys):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "WARN" in err
+        assert "Acme Corp" in err
+
+    async def test_creation_still_succeeds_despite_the_warning(self, session_factory):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            count = await session.scalar(
+                select(func.count()).select_from(Organization).where(Organization.name == "Acme Corp")
+            )
+        assert count == 2
+
+
 async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
     await manage.stats(session_factory=session_factory)
     out = capsys.readouterr().out
     assert "organizations:      0" in out
     assert "mean trust:          n/a" in out
+
+
+async def test_stats_computes_real_counts_and_mean_trust(session_factory, config, two_orgs, capsys):
+    """Regression test for switching from Python len()/fmean() over fully
+    loaded ORM objects to SQL-side COUNT()/AVG() -- pins that the actual
+    numbers still come out right, not just that the query doesn't crash."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        t1 = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="t1", context_text="c", solution_text="s", tags=[], agent_type="code", actor="test",
+        )
+        t2 = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="t2", context_text="c", solution_text="s", tags=[], agent_type="code", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        await crud.vote_trace(session, two_orgs["org_a"], t1["id"], "up", actor="test")
+        await crud.vote_trace(session, two_orgs["org_a"], t2["id"], "down", actor="test")
+
+    capsys.readouterr()
+    await manage.stats(session_factory=session_factory)
+    out = capsys.readouterr().out
+    assert "organizations:      2" in out
+    assert "traces (total):     2" in out
+    assert "votes:               2" in out
+    # trust=1.0 and trust=0.0 -> mean 0.5
+    assert "mean trust:          0.500" in out
 
 
 async def test_list_quarantined_reports_none_cleanly(session_factory, capsys, two_orgs):
@@ -79,8 +138,13 @@ async def test_list_quarantined_shows_pending_review(session_factory, config, tw
 
 
 async def test_release_quarantine_unknown_id_reports_error(session_factory, capsys):
-    await manage.release_quarantine("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.release_quarantine(
+        "00000000-0000-0000-0000-000000000000", session_factory=session_factory
+    )
     assert "no such trace" in capsys.readouterr().err
+    # False (not just the stderr message) is what makes `main()` exit
+    # non-zero for a failed destructive op -- see test_main_command_exit_codes.
+    assert result is False
 
 
 async def test_purge_trace_deletes_it_permanently(session_factory, config, two_orgs):
@@ -206,8 +270,9 @@ async def test_purge_trace_unrelated_traces_survive(session_factory, config, two
 
 
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):
-    await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such trace" in capsys.readouterr().err
+    assert result is False
 
 
 async def test_purge_org_cascades_to_its_traces(session_factory, config, two_orgs):
@@ -230,8 +295,84 @@ async def test_purge_org_cascades_to_its_traces(session_factory, config, two_org
 
 
 async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
-    await manage.purge_org("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+    result = await manage.purge_org("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such organization" in capsys.readouterr().err
+    assert result is False
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+class TestPurgeRequiresConfirmation:
+    """purge-trace/purge-org are irreversible (no soft-delete, no undo).
+    Without a confirmation gate, a mistyped id or an extra stray Enter in a
+    terminal session silently deletes a customer's data with no chance to
+    reconsider. `main()` now requires either --yes or an interactive 'yes'
+    response before calling through to purge_trace/purge_org; direct
+    Python calls to those functions (every other test in this file) are
+    unaffected -- the gate lives in the CLI dispatch layer, not the
+    function itself."""
+
+    def test_refuses_without_yes_when_stdin_is_not_a_tty(self, config, monkeypatch, capsys):
+        """pytest's captured stdin is never a tty, so this exercises the
+        same non-interactive path a cron job or CI script would hit."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert err.startswith("error: refusing")
+        assert "--yes" in err
+
+    def test_nothing_is_deleted_when_confirmation_is_refused(self, config, monkeypatch, capsys):
+        # Every step goes through manage.main(), which builds and tears
+        # down its own fresh engine/event loop per call (asyncio.run()
+        # inside main()) -- mixing that with the pytest-asyncio
+        # session_factory fixture's own loop caused asyncpg connections
+        # bound to one loop to be used from another ("Task ... attached to
+        # a different loop"). Chaining plain main() calls, the same
+        # pattern test_malformed_uuid_reports_a_clean_error_not_a_traceback
+        # already relies on, avoids that entirely.
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+
+        assert manage.main(["create-org", "confirm-gate-org"]) == 0
+        org_id = capsys.readouterr().out.strip().removeprefix("org_id:").strip()
+
+        exit_code = manage.main(["purge-org", org_id])
+        assert exit_code == 2
+        capsys.readouterr()
+
+        # Org must still be listable -- purge_org never ran.
+        assert manage.main(["usage", org_id]) == 0
+        out = capsys.readouterr().out
+        assert "error" not in out.lower()
+
+    def test_yes_flag_bypasses_the_prompt(self, config, monkeypatch, capsys):
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000", "--yes"])
+        # Reaches the real function (proven by the *lookup* error, not the
+        # confirmation-refused error) -- no prompt, no tty needed.
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "no such organization" in err
+        assert "refusing" not in err
+
+    def test_typing_yes_at_the_prompt_proceeds(self, config, monkeypatch, capsys):
+        """Simulates a real interactive session: stdin.isatty() reports
+        True and input() returns the operator's typed response."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2  # unknown id -- reached the real lookup, not refused
+        err = capsys.readouterr().err
+        assert "no such organization" in err
+
+    def test_typing_anything_else_at_the_prompt_refuses(self, config, monkeypatch, capsys):
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")  # not the exact word "yes"
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "aborted" in err
 
 
 async def test_argument_count_validation():
@@ -264,3 +405,66 @@ def test_malformed_uuid_reports_a_clean_error_not_a_traceback(config, _schema, m
     err = capsys.readouterr().err
     assert err.startswith("error:")
     assert "Traceback" not in err
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+def test_main_exits_nonzero_when_a_destructive_op_fails(config, monkeypatch, capsys):
+    """The actual bug this fixes: revoke-key/release-quarantine/purge-trace/
+    purge-org/commons-seed/set-plan/usage all print "error: ..." to stderr
+    and return False on a failed lookup, but nothing about that is a raised
+    exception -- there is nothing wrong with the CLI, the id just didn't
+    resolve. Before main() checked the command's return value, every one of
+    these failures still exited 0, so an automated incident script checking
+    $? after e.g. `purge-org <id>` (to confirm a GDPR deletion actually
+    happened) would see success on a no-op."""
+    monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+    for command, unknown_id, extra_args in (
+        ("revoke-key", "00000000-0000-0000-0000-000000000000", []),
+        ("release-quarantine", "00000000-0000-0000-0000-000000000000", []),
+        # --yes: this test is pinning the *lookup failure* path (an unknown
+        # id must still exit non-zero), not the separate --yes confirmation
+        # gate covered by TestPurgeRequiresConfirmation below. Without it,
+        # a non-interactive test run (stdin is not a tty) would refuse on
+        # the confirmation prompt before ever reaching purge_trace/
+        # purge_org, and this test would stop testing what it says it does.
+        ("purge-trace", "00000000-0000-0000-0000-000000000000", ["--yes"]),
+        ("purge-org", "00000000-0000-0000-0000-000000000000", ["--yes"]),
+    ):
+        exit_code = manage.main([command, unknown_id, *extra_args])
+        assert exit_code == 2, f"{command} on an unknown id must exit non-zero, got {exit_code}"
+        assert capsys.readouterr().err.startswith("error:")
+
+    exit_code = manage.main(["set-plan", "00000000-0000-0000-0000-000000000000", "free"])
+    assert exit_code == 2
+    capsys.readouterr()
+
+    exit_code = manage.main(["set-plan", "00000000-0000-0000-0000-000000000000", "not-a-real-plan"])
+    assert exit_code == 2
+
+
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+def test_main_dispatch_treats_only_false_as_failure():
+    """Isolates main()'s own dispatch logic (no DB needed): a command
+    returning False fails the CLI, True or None (every command with no
+    failure path) succeeds."""
+
+    async def _fake_fail(*args):
+        return False
+
+    async def _fake_ok(*args):
+        return True
+
+    async def _fake_none(*args):
+        return None
+
+    original = dict(manage._COMMANDS)
+    try:
+        manage._COMMANDS["__test_fail__"] = (_fake_fail, 0, 0)
+        manage._COMMANDS["__test_ok__"] = (_fake_ok, 0, 0)
+        manage._COMMANDS["__test_none__"] = (_fake_none, 0, 0)
+        assert manage.main(["__test_fail__"]) == 2
+        assert manage.main(["__test_ok__"]) == 0
+        assert manage.main(["__test_none__"]) == 0
+    finally:
+        manage._COMMANDS.clear()
+        manage._COMMANDS.update(original)

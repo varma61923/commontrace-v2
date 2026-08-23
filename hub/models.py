@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Computed,
@@ -138,8 +139,17 @@ class Trace(Base):
 
     # Hub-computed / read-only fields ------------------------------------
     trust: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
-    retrievals: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # BigInteger, not Integer: these are unbounded monotonic counters --
+    # never decremented, never reset -- incremented on every matching
+    # search_traces/get_trace/amend_trace call over the life of a
+    # long-lived, frequently-retrieved trace. A plain 32-bit Integer caps
+    # out at ~2.1 billion; Postgres raises "integer out of range" on the
+    # UPDATE ... SET x = x + 1 the moment a counter would cross that
+    # ceiling, turning an otherwise-ordinary read into an unhandled 500 for
+    # every future call touching that row. BigInteger costs nothing extra
+    # in practice for a counter column.
+    retrievals: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    depth: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # Idempotency for contribute_trace: an MCP client that times out waiting
     # for a response has no way to tell "the write never happened" from
@@ -204,8 +214,9 @@ class Trace(Base):
     # the aggregate is what pricing and incentives need, while a per-match
     # log of "org X's failure resembled org Y's trace" is a far more
     # sensitive artifact for a marginal gain. Incremented with the same
-    # atomic in-database UPDATE the retrievals counter uses.
-    commons_hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # atomic in-database UPDATE the retrievals counter uses. BigInteger for
+    # the same overflow reason as retrievals/depth above.
+    commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # Where this commons entry came from. A commons with no contributors
     # returns 0% coverage for everyone, which is a cold start, not a
@@ -257,6 +268,19 @@ class Trace(Base):
     )
 
 
+# Allowed feedback_tag values, as both the source of truth for the DB CHECK
+# constraint below AND for hub/crud.py's application-level validation
+# (VALID_VOTE_TYPES likewise for vote_type). Single source of truth so the
+# two cannot drift the way hub/tests/test_commons.py's client/server
+# signature identity check exists to prevent elsewhere in this codebase --
+# without app-level validation matching this exactly, a caller sending a
+# tag outside the enum reaches the CHECK constraint only, which fails as an
+# uncaught IntegrityError (an opaque HTTP 500) rather than a clean 400.
+VALID_VOTE_TYPES = ("up", "down")
+VALID_FEEDBACK_TAGS = ("", "outdated", "wrong", "security_concern", "spam")
+MAX_FEEDBACK_TEXT_CHARS = 2000
+
+
 class Vote(Base):
     __tablename__ = "votes"
 
@@ -269,6 +293,10 @@ class Vote(Base):
     )
     vote_type: Mapped[str] = mapped_column(String(8), nullable=False)
     feedback_tag: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    # Text, not unbounded in practice: hub/crud.py:vote_trace enforces
+    # MAX_FEEDBACK_TEXT_CHARS before this ever reaches the database. The
+    # column itself stays Text rather than String(N) so a lowered
+    # application-level cap in the future does not require a migration.
     feedback_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 

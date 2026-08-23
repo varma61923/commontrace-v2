@@ -61,6 +61,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     if args.pilot:
+        if args.strict:
+            # pilot_metrics.py has no --strict flag and implements no
+            # threshold-based pass/fail logic at all -- it only reports
+            # baseline-vs-current numbers. Silently dropping --strict here
+            # (never forwarding it) meant `bench --pilot --strict` in a CI
+            # regression gate ALWAYS exited 0, regardless of what the pilot
+            # metrics actually showed: the gate looked wired up and enforced
+            # nothing. Refusing outright is safer than accepting a flag this
+            # mode cannot honor.
+            print(
+                "[commontrace] --strict is not supported with --pilot: pilot_metrics.py "
+                "reports baseline-vs-current numbers but implements no threshold-based "
+                "pass/fail logic to enforce. Drop --strict, or use `bench` (without "
+                "--pilot) for a --strict-gated CI run.",
+                file=sys.stderr,
+            )
+            return 2
         extra = []
         if args.html:
             extra.append("--html")

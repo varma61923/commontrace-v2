@@ -49,6 +49,18 @@ def test_respects_top_k():
     assert len(ranked) == 2
 
 
+def test_negative_top_k_returns_nothing_not_a_python_slice_artifact():
+    """`scored[:top_k]` on a negative top_k is a Python slice ("all but the
+    last N"), not a bounds check -- top_k=-1 used to return 4 of 5 lessons
+    instead of 0, the opposite of what a negative count should mean."""
+    lessons = [
+        _lesson(f"lesson_{i}", description="git safety force push branch", tags=["git-safety"])
+        for i in range(5)
+    ]
+    ranked = retrieval.rank_lessons("git safety force push branch", lessons, top_k=-1)
+    assert ranked == []
+
+
 def test_tag_match_outweighs_description_only_match():
     # tags carry weight 2.0, description carries weight 1.0 (see _lesson_text_weighted) --
     # a lesson whose *tag* matches the query should outrank one that only matches in prose.

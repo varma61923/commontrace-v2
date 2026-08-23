@@ -91,7 +91,11 @@ def run(args: argparse.Namespace) -> int:
     n_rejected = 0
     reject_samples: list[str] = []
 
-    with open(args.file, "r", encoding="utf-8", newline="" if fmt == "csv" else None) as fh:
+    # utf-8-sig, not plain utf-8: see commontrace/failure_import.py's
+    # read_failures for why -- a BOM-prefixed CSV/JSONL export (Excel,
+    # Windows tools) otherwise lands a literal U+FEFF in the first header
+    # cell or JSON key. Identical to utf-8 for files without a BOM.
+    with open(args.file, "r", encoding="utf-8-sig", newline="" if fmt == "csv" else None) as fh:
         rows = import_data.iter_csv(fh, mapping) if fmt == "csv" else import_data.iter_jsonl(fh, mapping)
         for result in rows:
             if isinstance(result, import_data.SkippedRow):
@@ -137,7 +141,20 @@ def run(args: argparse.Namespace) -> int:
 
             body = templates.trace_body(row.context_text, row.solution_text)
             if row.source_id:
-                body = f"<!-- imported from source id: {row.source_id} -->\n" + body
+                # Collapse ALL whitespace (including embedded newlines) to
+                # single spaces before embedding: trace_io._first_wins finds
+                # "## Context"/"## Solution" by matching `^##...` at the
+                # START OF A LINE (re.MULTILINE), and this HTML comment is
+                # plain text to that regex, not a real comment boundary. An
+                # unsanitized source_id containing "...\n## Context\nfake\n"
+                # would inject a same-named section BEFORE the real one, and
+                # "first occurrence wins" means the fake one -- not this
+                # row's actual imported content -- is what every downstream
+                # reader (bench, query, lesson promotion) sees. A source_id
+                # can never legitimately need an embedded newline; the
+                # source system's id is a single token or short string.
+                safe_source_id = " ".join(str(row.source_id).split())
+                body = f"<!-- imported from source id: {safe_source_id} -->\n" + body
             # Atomic (NamedTemporaryFile + os.replace), same reasoning as
             # capture_cmd.py -- an import writes many files in a loop, so the
             # window in which a concurrent reader can see a torn file is not

@@ -365,6 +365,34 @@ def test_subprocess_handoff_passes_the_resolved_root_not_the_inherited_env(tmp_p
     assert captured["root"] != "/some/other/store"
 
 
+def test_captured_subprocess_output_is_pinned_to_utf8(tmp_path, monkeypatch):
+    """text=True alone decodes the pipe using the host locale
+    (locale.getpreferredencoding(False)), which on Windows is commonly a
+    legacy codepage rather than UTF-8 -- and the child's own stdout
+    defaults to that same locale-dependent encoding when redirected to a
+    pipe. Every reference script here writes UTF-8 in practice (lesson/
+    trace content routinely contains non-ASCII text), so both ends of the
+    pipe must be pinned to UTF-8 explicitly rather than left to whatever
+    the host locale happens to be."""
+    captured = {}
+
+    def fake_run(cmd, env=None, stdout=None, text=None, encoding=None, errors=None):
+        captured.update(env=env, stdout=stdout, text=text, encoding=encoding, errors=errors)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok")
+
+    script = tmp_path / "script.py"
+    script.write_text("", encoding="utf-8")
+    monkeypatch.setattr(_shellout.subprocess, "run", fake_run)
+    monkeypatch.setattr(_shellout, "find_reference_script", lambda root, rel: str(script))
+
+    rc, out = _shellout.run_script(str(tmp_path), "whatever.py", [], "hint", capture=True)
+    assert rc == 0
+    assert out == "ok"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+    assert captured["env"]["PYTHONUTF8"] == "1"
+
+
 def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, monkeypatch):
     monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
     monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
@@ -372,6 +400,20 @@ def test_sync_without_hub_configured_prints_setup_instructions(store, capsys, mo
     out = capsys.readouterr().out
     assert "No Hub is configured" in out
     assert "COMMONTRACE_HUB_URL" in out
+
+
+def test_sync_warns_when_api_key_passed_on_the_command_line(store, capsys, monkeypatch):
+    """A CLI argument is readable by any local user via `ps`/
+    /proc/<pid>/cmdline and can land in shell history / auditd's
+    process-exec logs -- none of which apply to COMMONTRACE_HUB_API_KEY.
+    --help already recommends the env var; this is the same warning at
+    the moment someone actually uses the flag."""
+    monkeypatch.delenv("COMMONTRACE_HUB_URL", raising=False)
+    monkeypatch.delenv("COMMONTRACE_HUB_API_KEY", raising=False)
+    assert main(["sync", "--dest", str(store), "--hub-api-key", "ct_live_test"]) == 0
+    err = capsys.readouterr().err
+    assert "WARN" in err
+    assert "--hub-api-key" in err
 
 
 def test_query_lexical_finds_matching_lesson(store, capsys):
@@ -405,6 +447,19 @@ def test_query_lexical_reports_no_matches_cleanly(store, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "no lexical matches" in out
+
+
+def test_query_rejects_a_negative_top_k(store, capsys):
+    """`order[:top_k]` is a Python slice, not a bounds check --
+    `order[:-1]` means "all but the last", not "nothing" -- so
+    `--top-k -1` used to silently return nearly the whole ranked list
+    instead of failing. argparse now rejects it at parse time."""
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        main(["query", "anything", "--lexical", "--top-k", "-1", "--dest", str(store)])
+    assert exc.value.code != 0
+    assert "--top-k must be >= 1" in capsys.readouterr().err
 
 
 def test_query_lexical_excludes_review_status_lessons(store, capsys):

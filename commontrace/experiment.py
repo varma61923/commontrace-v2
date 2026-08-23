@@ -91,6 +91,19 @@ def is_held_out(
     it must stay fixed for the life of an experiment -- rotating it mid-flight
     silently mixes two different randomizations into one comparison.
     """
+    # NaN compares False against everything (`nan <= 0`, `nan >= 1`, and
+    # `x < nan` are all False), so an unvalidated NaN rate fell through
+    # every branch below to `_uniform_from(...) < rate` -- itself always
+    # False -- and this function silently returned False for EVERY call,
+    # forever. That is not "no holdout": it is the holdout experiment
+    # running with 0% of assignments actually withheld while reporting
+    # (and believing) it configured whatever --holdout-rate was passed,
+    # a silent, undetectable measurement failure rather than a loud one.
+    # +/-inf is equally nonsensical as a probability. Checked once, here,
+    # rather than at each of the (CLI-argparse-parsed, so unvalidated by
+    # construction) call sites.
+    if not math.isfinite(rate):
+        raise ValueError(f"holdout rate must be a finite number, got {rate!r}")
     if rate <= 0:
         return False
     if rate >= 1:

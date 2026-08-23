@@ -12,31 +12,16 @@ optional semantic attention layer, not a replacement for it.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
-# \w with re.UNICODE, not [a-z0-9]: the ASCII-only class silently mutilates
-# any non-English text. "résumé" tokenized to ['sum'] (the accented letters
-# split the word and the fragments were dropped by the len>1 filter), and
-# CJK/Cyrillic/Arabic text tokenized to nothing at all -- so a fleet working
-# in any of those got zero lexical retrieval with no error to explain it.
-# \d is excluded from the strip below only via the stopword/length filters,
-# same as before.
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+from commontrace._lexical import STOPWORDS as _STOPWORDS
+from commontrace._lexical import WORD_RE as _WORD_RE
 
-# Cheap English stopword list -- filtering these out of both the task query
-# and lesson text keeps scores from being dominated by words that carry no
-# discriminating signal ("the", "to", "a", ...).
-_STOPWORDS = frozenset(
-    """
-    a an the of to in on for with and or but is are was were be been being
-    this that these those it its as at by from into over under again
-    further then once here there when where why how all any both each
-    few more most other some such no nor not only own same so than too
-    very can will just don should now i you he she we they them his her
-    """.split()
-)
+# \d is excluded from the strip below only via the stopword/length filters,
+# same as before. See commontrace/_lexical.py for why \w/re.UNICODE and this
+# exact stopword list: non-English text and the historical drift-between-
+# copies bug this replaced.
 
 
 def _tokenize(text: str) -> list[str]:
@@ -128,4 +113,10 @@ def rank_lessons(
             ))
 
     scored.sort(key=lambda item: (item[0].score, item[1], item[2]), reverse=True)
-    return [lesson for lesson, _, _ in scored[:top_k]]
+    # max(0, ...): a plain `scored[:top_k]` on a negative top_k is a Python
+    # slice, not a bounds check -- `scored[:-1]` means "all but the last
+    # item", not "nothing", so a negative top_k silently returned nearly
+    # the whole ranked list instead of failing. query_cmd.py's CLI already
+    # rejects a negative --top-k before it reaches here; this clamp is the
+    # same guarantee for any other caller of this function directly.
+    return [lesson for lesson, _, _ in scored[: max(0, top_k)]]

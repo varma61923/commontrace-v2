@@ -85,7 +85,10 @@ def evaluate() -> dict:
         # The cost of having no threshold: what fraction of failures the
         # corpus CANNOT answer still come back with a non-empty result.
         "neg_returns_something": {
-            k: sum(1 for p in neg if retrieval.rank_lessons(_query(p), lessons, top_k=k)) / len(neg)
+            k: (
+                sum(1 for p in neg if retrieval.rank_lessons(_query(p), lessons, top_k=k)) / len(neg)
+                if neg else 0.0
+            )
             for k in (1, 3, 5)
         },
         "score_true": [top_score(p) for p in pos],
@@ -108,10 +111,16 @@ def main() -> int:
         print(f"    top_k={k}                     {v:>6.1%}")
     print()
     t, a = r["score_true"], r["score_absent"]
-    print(f"  top-1 score, true match      median {statistics.median(t):.1f}  "
-          f"range {min(t):.1f}-{max(t):.1f}")
-    print(f"  top-1 score, absent          median {statistics.median(a):.1f}  "
-          f"range {min(a):.1f}-{max(a):.1f}")
+    if t:
+        print(f"  top-1 score, true match      median {statistics.median(t):.1f}  "
+              f"range {min(t):.1f}-{max(t):.1f}")
+    else:
+        print("  top-1 score, true match      (no positive probes)")
+    if a:
+        print(f"  top-1 score, absent          median {statistics.median(a):.1f}  "
+              f"range {min(a):.1f}-{max(a):.1f}")
+    else:
+        print("  top-1 score, absent          (no negative-control probes)")
     print("  (distributions overlap -- the score separates on average, not per case)")
     print()
     print("COMMONS matcher, same corpus and probes (commons/eval/RESULTS.md)")

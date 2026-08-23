@@ -49,6 +49,60 @@ async def test_malformed_key_does_not_verify(session_factory, config):
     assert resolved is None
 
 
+async def test_unknown_prefix_still_pays_the_argon2_cost(session_factory, config, monkeypatch):
+    """A presented key whose prefix matches no row in the database used to
+    return None immediately -- no argon2id verify() call at all -- while a
+    key whose prefix DOES match a row (but the rest is wrong) always paid
+    for a full verify(). That's a timing oracle: a remote attacker times
+    responses to learn which key_prefix values exist without ever guessing
+    a real key. verify_api_key must now burn the same verify() cost (against
+    _DUMMY_HASH) on the no-candidate path too, so the two cases are not
+    distinguishable by whether a hash was computed at all."""
+    from argon2 import PasswordHasher
+
+    calls = []
+    real_verify = PasswordHasher.verify
+
+    def _tracking_verify(self, hash_, key):
+        calls.append(hash_)
+        return real_verify(self, hash_, key)
+
+    monkeypatch.setattr(PasswordHasher, "verify", _tracking_verify)
+
+    async with session_scope(session_factory) as session:
+        # well-formed prefix, but no ApiKey row has it at all
+        resolved = await auth.verify_api_key(session, "ct_live_" + "z" * 40)
+    assert resolved is None
+    assert calls == [auth._DUMMY_HASH]
+
+
+async def test_a_corrupt_stored_hash_is_skipped_not_a_500(session_factory, config):
+    """key_hash rows are assumed to always be well-formed argon2 hashes, but
+    nothing enforces that at the DB layer -- corruption, a hand-edited row,
+    or a hash written by code from a different scheme all produce a string
+    argon2 can't parse. verify() then raises InvalidHashError, a ValueError
+    subclass (not VerificationError), which the original `except
+    VerifyMismatchError` did not catch -- it escaped verify_api_key
+    entirely, turning one bad row into an unhandled exception (an HTTP 500
+    via the auth middleware) instead of "this key doesn't match"."""
+    from hub.models import ApiKey
+
+    org_id = await _make_org(session_factory)
+    raw_key = auth.generate_raw_key()
+    async with session_scope(session_factory) as session:
+        session.add(
+            ApiKey(
+                org_id=org_id,
+                key_prefix=raw_key[: auth._PREFIX_LEN],
+                key_hash="not-a-valid-argon2-hash-at-all",
+            )
+        )
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, raw_key)  # must not raise
+    assert resolved is None
+
+
 async def test_revoked_key_no_longer_verifies(session_factory, config):
     org_id = await _make_org(session_factory)
     async with session_scope(session_factory) as session:

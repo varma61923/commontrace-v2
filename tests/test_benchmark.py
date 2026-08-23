@@ -1,12 +1,27 @@
 """Tests for commontrace/reference/measure_performance.py."""
+import importlib.util
 import os
 
 # Import the benchmark module under test
 import measure_performance as bm
 import pytest
 
-# Fixtures and helpers from conftest
-from conftest import write_episode, write_lesson
+# Fixtures and helpers from conftest.py -- loaded by explicit file path via
+# importlib rather than `from conftest import ...`. hub/tests/ also has its
+# own conftest.py; a bare `import conftest` resolves against whichever
+# same-named module is first on sys.path, which pytest's default "prepend"
+# import mode populates in COLLECTION order -- running `pytest tests/
+# hub/tests/` together, `hub/tests/conftest.py` could collect first and
+# silently shadow this one, breaking this import with a confusing
+# "cannot import name 'write_episode' from 'conftest'" (naming the wrong
+# file). Loading this exact file by path is unambiguous regardless of what
+# else is being collected alongside it.
+_conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
+_conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
+_conftest = importlib.util.module_from_spec(_conftest_spec)
+_conftest_spec.loader.exec_module(_conftest)
+write_episode = _conftest.write_episode
+write_lesson = _conftest.write_lesson
 
 # ---------------------------------------------------------------------------
 # YAML / frontmatter parsing
@@ -391,7 +406,7 @@ class TestIntegrationExamples:
         bm.BASE_DIR = self._old_base
 
     def test_example_episode_loads(self):
-        episodes = bm.load_episodes()
+        episodes, _skipped = bm.load_episodes()
         assert len(episodes) >= 1
         ep = episodes[0]
         assert "name" in ep
@@ -399,7 +414,7 @@ class TestIntegrationExamples:
 
     def test_example_episode_verdict_conform(self):
         """Example episode should have CONFORM verdict (not French CONFORME)."""
-        episodes = bm.load_episodes()
+        episodes, _skipped = bm.load_episodes()
         for ep in episodes:
             assert ep.get("verdict") in ("CONFORM", "ARBITRATION", "ABANDON", None), (
                 f"Unexpected verdict '{ep.get('verdict')}' in episode '{ep.get('name')}'. "
@@ -407,21 +422,37 @@ class TestIntegrationExamples:
             )
 
     def test_example_lessons_load(self):
-        lessons = bm.load_lessons()
+        lessons, _skipped = bm.load_lessons()
         assert len(lessons) >= 1
 
     def test_example_lesson_importance_valid(self):
-        lessons = bm.load_lessons()
+        lessons, _skipped = bm.load_lessons()
         for slug, lesson in lessons.items():
             if "importance" in lesson:
                 assert isinstance(lesson["importance"], int), f"{slug}: importance must be int"
                 assert 1 <= lesson["importance"] <= 5, f"{slug}: importance must be 1-5"
 
     def test_benchmark_runs_without_error(self):
-        episodes = bm.load_episodes()
-        lessons = bm.load_lessons()
+        episodes, _skipped = bm.load_episodes()
+        lessons, _skipped = bm.load_lessons()
         lq, lq_n = bm.compute_lesson_quality(episodes)
         ir_s, ir_p, ir_n = bm.compute_implicit_retrieval(episodes)
         tg, tg_n, tg_u = bm.compute_transfer_gap(episodes, lessons)
         bm.compute_extras(episodes, lessons)  # just verify it doesn't raise
         assert lq is None or (0.0 <= lq)  # lesson_quality can exceed 1.0 (retro-validation)
+
+
+class TestComputeExtrasNeverHitHandlesNullUses:
+    """`lessons.get("uses", 0) == 0` only applies the default when the KEY
+    is absent -- a hand-edited `uses: null` (key present, value None) made
+    `.get` return None, and `None == 0` is False, so that lesson silently
+    vanished from the never-hit report instead of correctly appearing in it."""
+
+    def test_a_lesson_with_uses_null_appears_in_never_hit(self):
+        lessons = {
+            "lesson_a": {"uses": None},
+            "lesson_b": {"uses": 3},
+            "lesson_c": {},  # key absent entirely -- must also count as 0
+        }
+        extras = bm.compute_extras([], lessons)
+        assert extras["never_hit"] == ["lesson_a", "lesson_c"]

@@ -44,6 +44,18 @@ async def _tool_names(cfg: HubConfig, session_factory) -> set[str]:
     return {t.name for t in tools}
 
 
+async def test_mcp_server_reports_the_unified_product_version(enabled_config, session_factory):
+    """PROTOCOL.md #9 explicitly unified the package/protocol/CLI version
+    numbers into one 2.0.0 the whole product reports identically, to stop
+    drift like a stale hardcoded MCP server version -- this Hub used to
+    announce "0.1.0" to every connecting client regardless of the actual
+    2.0.0 product/protocol version everywhere else."""
+    from commontrace import __version__
+
+    mcp = build_mcp_server(enabled_config, session_factory, make_rate_limiter(enabled_config))
+    assert mcp.version == __version__
+
+
 class TestCommonsEnabledByDefault:
     """Existing deployments that never set HUB_COMMONS_ENABLED must see no
     change -- the default has to preserve current behavior, not opt every

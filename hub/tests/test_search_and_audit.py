@@ -7,10 +7,10 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from hub import audit, auth, crud
-from hub.abuse import make_rate_limiter
+from hub.abuse import TraceRejected, make_rate_limiter
 from hub.config import MAX_SEARCH_LIMIT
 from hub.db import session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization
+from hub.models import ApiKey, AuditLogEntry, Organization, Trace
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,6 +19,15 @@ pytestmark = pytest.mark.asyncio
 async def org(session_factory):
     async with session_scope(session_factory) as session:
         o = Organization(name="search-org")
+        session.add(o)
+        await session.flush()
+        return o.id
+
+
+@pytest_asyncio.fixture
+async def other_org(session_factory):
+    async with session_scope(session_factory) as session:
+        o = Organization(name="other-search-org")
         session.add(o)
         await session.flush()
         return o.id
@@ -71,6 +80,17 @@ class TestPagination:
             page = await crud.search_traces(session, org, limit=0, offset=-5)
         assert page["limit"] == 1
         assert page["offset"] == 0
+
+    async def test_offset_is_capped_not_left_unbounded(self, session_factory, config, org):
+        """OFFSET pagination costs Postgres work proportional to the offset
+        itself -- it still has to walk and discard every skipped row. An
+        unbounded caller-supplied offset turned one request into a scan of
+        the org's entire trace table just to throw the results away."""
+        from hub.config import MAX_SEARCH_OFFSET
+
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, offset=MAX_SEARCH_OFFSET + 50_000)
+        assert page["offset"] == MAX_SEARCH_OFFSET
 
 
 class TestFullTextSearch:
@@ -227,6 +247,99 @@ class TestApiKeyExpiry:
             with pytest.raises(ValueError):
                 await auth.issue_api_key(session, org, expires_days=0)
 
+    async def test_revocation_during_verification_is_honored_not_missed(
+        self, session_factory, org, monkeypatch
+    ):
+        """verify_api_key's initial SELECT filters on `revoked_at IS NULL`,
+        then spends most of its time in Argon2 verification (offloaded to a
+        worker thread -- deliberately expensive CPU work). An operator's
+        revoke_api_key landing in that window used to still authenticate the
+        request, because the in-memory candidate loaded before the revoke
+        has no way to see a commit that happened after it was loaded. The
+        fix re-reads revocation state fresh immediately after verify()
+        returns; this simulates a revoke landing exactly inside that
+        window by hooking the asyncio.to_thread call verify() is offloaded
+        through."""
+        import asyncio as asyncio_module
+
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+
+        real_to_thread = asyncio_module.to_thread
+        revoked_once = False
+
+        async def revoke_during_verify(func, *args, **kwargs):
+            nonlocal revoked_once
+            result = await real_to_thread(func, *args, **kwargs)
+            if not revoked_once:
+                revoked_once = True
+                async with session_scope(session_factory) as revoke_session:
+                    await auth.revoke_api_key(revoke_session, issued.key_id)
+            return result
+
+        monkeypatch.setattr(asyncio_module, "to_thread", revoke_during_verify)
+
+        async with session_scope(session_factory) as session:
+            result = await auth.verify_api_key(session, issued.raw_key)
+        assert result is None, "a key revoked mid-verification must not authenticate"
+
+
+class TestLastUsedAtIsThrottled:
+    """last_used_at exists for idle-key auditing, which needs roughly-
+    current information, not per-request precision. Writing it
+    unconditionally means a hot key under real QPS issues an UPDATE
+    against its own single row on every authenticated request -- every one
+    of those write transactions briefly locks the same row, serializing
+    concurrent requests against each other for no operational benefit."""
+
+    async def test_a_fresh_last_used_at_is_not_rewritten_on_the_next_call(
+        self, session_factory, org
+    ):
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            first_seen = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            second_seen = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        assert first_seen == second_seen, "a call within the throttle interval must not rewrite the column"
+
+    async def test_a_stale_last_used_at_is_refreshed(self, session_factory, org):
+        from datetime import datetime, timedelta, timezone
+
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        stale = datetime.now(timezone.utc) - timedelta(hours=1)
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, issued.key_id)
+            key.last_used_at = stale
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            refreshed = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        assert refreshed > stale
+
+    async def test_a_never_used_key_gets_last_used_at_set_on_first_call(
+        self, session_factory, org
+    ):
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, issued.key_id)
+            assert key.last_used_at is None
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            assert (await session.get(ApiKey, issued.key_id)).last_used_at is not None
+
 
 class TestVoteTrustAggregate:
     """`vote_trace` recomputes trust from a COUNT/GROUP BY aggregate rather
@@ -234,14 +347,13 @@ class TestVoteTrustAggregate:
     fraction, not just that the call doesn't crash, since the query shape
     changed.
 
-    `vote_trace` scopes its trace lookup to `Trace.org_id == org_id` (same
-    tenant-isolation rule as `get_trace`, see hub/crud.py:257-265), so only
-    the trace's own owning org can ever vote on it. Combined with the
-    `uq_votes_trace_org` unique constraint, that means a given trace can
-    have at most one Vote row in practice, ever -- there is no reachable
-    multi-org scenario to aggregate across. The only real aggregate
-    behavior to pin is a single org's vote being *replaced*, not
-    accumulated, on revote.
+    `vote_trace`'s trace lookup allows an org to vote on its own trace OR
+    any other org's trace currently shared to the commons (hub/crud.py --
+    see TestCrossOrgVoting below for the multi-org case this unlocks). A
+    given (trace, org) pair still has at most one Vote row, per
+    `uq_votes_trace_org`; revoting replaces it rather than accumulating a
+    second row. The single-org tests here pin that replace-not-accumulate
+    behavior.
     """
 
     async def test_changing_a_vote_recomputes_trust_not_double_counts_it(
@@ -257,3 +369,185 @@ class TestVoteTrustAggregate:
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, org, trace["id"], "down")
         assert result["trust"] == pytest.approx(0.0)
+
+
+class TestVoteInputValidation:
+    """feedback_tag is constrained to a small enum, and feedback_text has no
+    length cap, at the DATABASE layer only (hub/models.py's CheckConstraint /
+    unbounded Text). Without matching application-level validation, a bad
+    tag reaches the DB's CHECK constraint as an uncaught IntegrityError --
+    an opaque HTTP 500 instead of a clean 400 -- and an oversized
+    feedback_text is a free storage/audit-log flooding vector (every vote
+    writes an AuditLogEntry)."""
+
+    async def test_invalid_feedback_tag_is_a_clean_value_error_not_a_db_crash(
+        self, session_factory, config, org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(session, org, trace["id"], "up", feedback_tag="not-a-real-tag")
+
+    async def test_oversized_feedback_text_is_rejected(self, session_factory, config, org):
+        from hub.models import MAX_FEEDBACK_TEXT_CHARS
+
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(
+                    session, org, trace["id"], "up", feedback_text="x" * (MAX_FEEDBACK_TEXT_CHARS + 1)
+                )
+
+    async def test_valid_feedback_tag_still_works(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "down", feedback_tag="outdated")
+        assert result["votes"][0]["feedback_tag"] == "outdated"
+
+
+class TestCrossOrgVoting:
+    """vote_trace used to scope its trace lookup to `Trace.org_id ==
+    org_id` only, which made trust a self-rating: an org's own vote on its
+    own trace, never a community signal, even though `trust` is surfaced to
+    every other org a shared trace matches for (commons_overlap). An org
+    may now also vote on any OTHER org's trace, but only once it is in the
+    commons -- a private trace stays exactly as invisible to other orgs as
+    every other read path makes it."""
+
+    async def test_another_org_can_vote_on_a_shared_trace(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, org, trace["id"])
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "up")
+        assert result is not None
+        assert result["trust"] == pytest.approx(1.0)
+
+    async def test_another_org_cannot_vote_on_a_private_trace(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        # Never shared -- must be exactly as unreachable to other_org as
+        # get_trace/search_traces already make it.
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "up")
+        assert result is None
+
+    async def test_cross_org_vote_response_excludes_private_fields(
+        self, session_factory, config, org, other_org
+    ):
+        """The vote succeeded and the response reflects it (id, trust), but
+        a cross-org voter gets the same narrow projection commons_overlap
+        returns (H-08) -- voting on someone else's trace is not an
+        invitation to see its contributor/extensions/outcome/etc."""
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace["id"])
+            row.contributor = "alice@example.com"
+            await crud.share_trace(session, org, trace["id"])
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "down", feedback_tag="outdated")
+
+        assert result["id"] == trace["id"]
+        assert result["trust"] == pytest.approx(0.0)
+        for private_field in ("contributor", "extensions", "outcome", "votes", "related"):
+            assert private_field not in result
+
+    async def test_owner_voting_on_its_own_trace_still_gets_the_full_view(
+        self, session_factory, config, org
+    ):
+        """Unchanged behavior for the owner: full wire shape, including its
+        own votes list, same as before this fix."""
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace["id"], "up")
+        assert "votes" in result
+        assert result["votes"][0]["vote_type"] == "up"
+
+    async def test_owner_and_another_org_votes_both_count_toward_trust(
+        self, session_factory, config, org, other_org
+    ):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        async with session_scope(session_factory) as session:
+            await crud.share_trace(session, org, trace["id"])
+            await crud.vote_trace(session, org, trace["id"], "up")
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, other_org, trace["id"], "down")
+        # 1 up (owner) + 1 down (other_org) = 0.5, an actual aggregate
+        # across two distinct orgs' votes -- previously unreachable, since
+        # only the owner could ever cast one.
+        assert result["trust"] == pytest.approx(0.5)
+
+
+class TestMalformedIdsAreCleanNotFoundNot500s:
+    """get_trace/vote_trace/amend_trace/share_trace/unshare_trace all
+    compare a caller-supplied trace_id directly against Trace.id, a UUID
+    column. asyncpg validates the bind parameter against the column's real
+    type -- a non-UUID string raised asyncpg.DataError (wrapped as
+    DBAPIError by SQLAlchemy), which is not an IntegrityError and isn't
+    caught by any handler in hub/server.py's _error_response, reaching the
+    caller as an opaque HTTP 500 instead of the same clean "not found" a
+    well-formed-but-nonexistent id already produces."""
+
+    async def test_get_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.get_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+    async def test_vote_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, "not-a-uuid-at-all", "up")
+        assert result is None
+
+    async def test_amend_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.amend_trace(
+                session, org, "not-a-uuid-at-all", config, rate_limiter, title="x", actor="test",
+            )
+        assert result is None
+
+    async def test_share_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.share_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+    async def test_unshare_trace_with_a_non_uuid_id_returns_none_not_raises(
+        self, session_factory, config, org
+    ):
+        async with session_scope(session_factory) as session:
+            result = await crud.unshare_trace(session, org, "not-a-uuid-at-all")
+        assert result is None
+
+
+class TestOversizedIdempotencyKeyIsRejectedCleanly:
+    """Trace.idempotency_key is String(128) at the DB layer; a too-long
+    value raised asyncpg.StringDataRightTruncation on INSERT -- not an
+    IntegrityError, so not caught by contribute_trace's own IntegrityError
+    handler, reaching the caller as an HTTP 500 instead of a clean
+    rejection of a malformed request."""
+
+    async def test_an_oversized_idempotency_key_is_rejected_before_it_reaches_the_db(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.contribute_trace(
+                    session, org, config, rate_limiter,
+                    title="t", context_text="c", solution_text="s",
+                    tags=[], agent_type="code", actor="test",
+                    idempotency_key="x" * 129,
+                )

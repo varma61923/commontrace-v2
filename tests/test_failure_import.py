@@ -160,6 +160,50 @@ class TestRefusalsAreActionable:
         assert "title" in str(exc.value) and "owner" in str(exc.value)
 
 
+class TestBracketPrefixedLogFallsBackToLines:
+    """A `.log`/`.txt` (or extension-less) file of log lines that happen to
+    start with '[' -- "[2026-08-23 12:00:00] ERROR: connection refused" --
+    sniffs as JSON on that leading bracket (_sniff has no way to tell a log
+    timestamp from a JSON array) and then fails to parse as JSON at all.
+    That is a wrong GUESS about an unlabeled file, not evidence the file is
+    bad, so it falls back to the lines parser instead of refusing outright."""
+
+    def test_bracket_prefixed_log_lines_are_read_as_one_failure_per_line(self, tmp_path):
+        p = _write(
+            tmp_path, "incidents.log",
+            "[2026-08-23 12:00:00] ERROR: connection refused\n"
+            "[2026-08-23 12:05:00] ERROR: timeout waiting for upstream\n",
+        )
+        failures, stats = failure_import.read_failures(p)
+        assert stats["format"] == "lines"
+        assert len(failures) == 2
+        assert "connection refused" in failures[0]["text"]
+
+    def test_an_explicit_json_extension_still_hard_fails(self, tmp_path):
+        """The fallback is only for a GUESSED format. A file explicitly
+        named .json declares what it is; its real parse error stays more
+        useful than silently reinterpreting it as one-failure-per-line."""
+        p = _write(tmp_path, "bad.json", "[not valid json\n")
+        with pytest.raises(failure_import.FailureImportError):
+            failure_import.read_failures(p)
+
+    def test_an_explicit_format_override_still_hard_fails(self, tmp_path):
+        p = _write(tmp_path, "incidents.log", "[2026-08-23 12:00:00] ERROR: x\n")
+        with pytest.raises(failure_import.FailureImportError):
+            failure_import.read_failures(p, fmt_override="json")
+
+    def test_format_override_forces_the_parser_regardless_of_sniffing(self, tmp_path):
+        p = _write(tmp_path, "incidents.data", "title,text\nfoo,bar\n")
+        failures, stats = failure_import.read_failures(p, fmt_override="csv")
+        assert stats["format"] == "csv"
+        assert len(failures) == 1
+
+    def test_unknown_format_override_is_rejected_cleanly(self, tmp_path):
+        p = _write(tmp_path, "x.txt", "anything\n")
+        with pytest.raises(failure_import.FailureImportError, match="unknown format"):
+            failure_import.read_failures(p, fmt_override="xml")
+
+
 class TestSignaturesAreComparable:
     def test_an_imported_failure_signs_identically_to_the_same_trace(self, tmp_path):
         """The property the whole feature rests on. If an imported

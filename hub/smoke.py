@@ -75,10 +75,7 @@ class Reporter:
 
 def _session(url: str, api_key: str):
     """An MCP client session against the live server, carrying the API key."""
-    try:
-        import httpx
-    except ImportError:  # the SDK vendors its own httpx under a different name
-        import httpx2 as httpx
+    import httpx
     from mcp.client.streamable_http import streamable_http_client
 
     return streamable_http_client(
@@ -98,10 +95,7 @@ def _preflight(url: str, api_key: str) -> str | None:
     Returns a message describing the problem, or None if the endpoint is
     reachable and the key is accepted.
     """
-    try:
-        import httpx
-    except ImportError:
-        import httpx2 as httpx
+    import httpx
 
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -251,15 +245,27 @@ async def _entitlements(session, report: Reporter) -> None:
 
 
 async def _rejects_bad_credentials(url: str, report: Reporter) -> None:
-    from mcp import ClientSession
-
-    try:
-        async with _session(url, "ct_live_definitely-not-a-real-key") as (read, write, *_):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
+    """Must observe an actual HTTP 401/403 from the server, not merely "some
+    exception happened" while opening the MCP session. The bare `except
+    Exception: report.ok(...)` this replaced treated a TLS failure, a
+    timeout, or a proxy connection reset identically to a genuine
+    credential rejection -- all three raise from inside the MCP session
+    the same way, and all three reported [PASS] "an invalid API key is
+    refused" without the server having rejected anything, or even having
+    been reached. _preflight already exists for exactly this reason (see
+    its own docstring): a raw HTTP request whose real status code can be
+    told apart from a connection failure, used here with the bogus key
+    instead of the real one.
+    """
+    problem = _preflight(url, "ct_live_definitely-not-a-real-key")
+    if problem is None:
         report.fail("an invalid API key is refused", "the server ACCEPTED a bogus key")
-    except Exception:
+    elif "rejected the API key" in problem:
         report.ok("an invalid API key is refused")
+    else:
+        # Reachable-but-not-a-401 (404, 5xx) or entirely unreachable: this
+        # check did not observe a rejection, so it must not report success.
+        report.fail("an invalid API key is refused", f"could not verify: {problem}")
 
 
 async def _tenant_isolation(

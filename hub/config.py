@@ -17,6 +17,16 @@ from dataclasses import dataclass, field
 # blast-radius concern.
 DEFAULT_SEARCH_LIMIT = 50  # matches the previous hard-coded cap
 MAX_SEARCH_LIMIT = 200
+# OFFSET/LIMIT pagination costs Postgres work proportional to `offset`
+# itself (it still has to walk and discard every skipped row), unlike
+# `limit` which is already bounded above. A caller-supplied offset was
+# otherwise unbounded, so a very large one turns one request into a scan
+# of an org's entire trace table just to throw away the results. This is
+# a blunt cap, not the real fix (keyset/cursor pagination, tracked as
+# follow-up work) -- but it bounds the damage a single request can do in
+# the meantime without changing the offset/limit/has_more response shape
+# every existing caller (including commontrace/hub_client.py) depends on.
+MAX_SEARCH_OFFSET = 100_000
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,12 +74,61 @@ class HubConfig:
     max_tags: int = 20
     max_tag_chars: int = 64
     max_trace_bytes: int = 65_536  # serialized JSON size ceiling for one trace
-    rate_limit_per_minute: int = 20  # contribute_trace calls, per org
+    rate_limit_per_minute: int = 20  # contribute_trace/amend_trace calls, per org
     rate_limit_burst: int = 5
     suspect_url_threshold: int = 5  # >N URLs in one submission -> quarantine
 
+    # --- Rate limiting: every authenticated request, and auth itself ---
+    #
+    # rate_limit_per_minute above only ever gated the two write tools
+    # (contribute_trace/amend_trace). search_traces, get_trace, vote_trace,
+    # list_tags, and commons_overlap had no limit at all: a single valid API
+    # key could drive unmetered full-text search, ranking computation, and
+    # MinHash corpus scans. This is a second, more generous ceiling applied
+    # to EVERY authenticated request in ApiKeyAuthMiddleware, on top of (not
+    # instead of) the tighter per-write-op limiter.
+    read_rate_limit_per_minute: int = 300  # all authenticated requests, per org
+    read_rate_limit_burst: int = 60
+
+    # Argon2id verification is deliberately expensive CPU work
+    # (hub/auth.py), run per candidate key sharing a presented key's prefix,
+    # on every request carrying an Authorization header -- valid or not.
+    # Without a limit, a remote attacker can flood the endpoint with
+    # credentials sharing a known/guessed prefix to exhaust the process's
+    # to_thread worker pool. Checked BEFORE verify_api_key runs, keyed by
+    # the request's client address, so it bounds the CPU cost per source
+    # rather than only counting failures after paying for them.
+    auth_attempts_per_minute: int = 60
+    auth_attempts_burst: int = 20
+
+    # /readyz executes a real `SELECT 1` against the database pool and is
+    # necessarily unauthenticated (an orchestrator's prober carries no
+    # tenant API key), so it sits outside every limiter above. Keyed by
+    # client address; default is generous relative to a real orchestrator's
+    # poll interval (typically every few seconds).
+    readyz_rate_limit_per_minute: int = 120
+    readyz_rate_limit_burst: int = 30
+
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
+
+    # --- Transport safety ---
+    # The Hub itself always speaks plain HTTP (I-06: TLS termination is
+    # delegated to an upstream reverse proxy) -- that is a supported,
+    # documented deployment shape when `host` is loopback-only, or when a
+    # proxy sits in front on the same trusted network. It stops being safe
+    # the moment `host` binds a non-loopback interface directly reachable by
+    # clients with no proxy in between: every call carries the org's API key
+    # as a plaintext Bearer token, and there is no per-call review that
+    # would catch a stray public HTTP bind the way hub_client.py's own
+    # _validate_hub_url check catches one on the client side. This is the
+    # server-side mirror of that check -- refuse to start rather than silently
+    # serve credentials in cleartext to the public internet. Set explicitly
+    # for a deployment that intentionally terminates TLS elsewhere on the
+    # same host/network without an operator ever setting `host` itself to
+    # anything but loopback (e.g. a sidecar proxy on 127.0.0.1 in front of a
+    # loopback-bound Hub still passes the check with this left False).
+    allow_insecure_http: bool = False
 
     # --- Cross-org commons ---
     # Off is the wrong default for this flag: existing deployments that
@@ -102,6 +161,24 @@ class HubConfig:
     log_level: str = "INFO"
     extra: dict = field(default_factory=dict)
 
+    def validate_transport_safety(self) -> None:
+        """Refuse to construct a config that would serve plaintext HTTP on a
+        publicly reachable interface. Called from hub/main.py at startup --
+        not from __post_init__, so tests and callers building a HubConfig
+        for a loopback-bound local server (the common case in hub/tests/)
+        never have to think about this."""
+        if self.allow_insecure_http:
+            return
+        if self.host not in ("127.0.0.1", "localhost", "::1"):
+            raise RuntimeError(
+                f"refusing to start: HUB_HOST={self.host!r} is not loopback-only, and this Hub "
+                "speaks plain HTTP -- every call carries the org's API key as a plaintext Bearer "
+                "token. Put a TLS-terminating reverse proxy in front and bind HUB_HOST to "
+                "127.0.0.1 (or localhost/::1), or set HUB_ALLOW_INSECURE_HTTP=true to "
+                "acknowledge this is intentional (e.g. TLS is terminated elsewhere on a "
+                "network you trust)."
+            )
+
     @classmethod
     def from_env(cls) -> HubConfig:
         database_url = os.environ.get("HUB_DATABASE_URL")
@@ -125,6 +202,13 @@ class HubConfig:
             rate_limit_per_minute=_env_int("HUB_RATE_LIMIT_PER_MINUTE", 20),
             rate_limit_burst=_env_int("HUB_RATE_LIMIT_BURST", 5),
             suspect_url_threshold=_env_int("HUB_SUSPECT_URL_THRESHOLD", 5),
+            read_rate_limit_per_minute=_env_int("HUB_READ_RATE_LIMIT_PER_MINUTE", 300),
+            read_rate_limit_burst=_env_int("HUB_READ_RATE_LIMIT_BURST", 60),
+            auth_attempts_per_minute=_env_int("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60),
+            auth_attempts_burst=_env_int("HUB_AUTH_ATTEMPTS_BURST", 20),
+            readyz_rate_limit_per_minute=_env_int("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120),
+            readyz_rate_limit_burst=_env_int("HUB_READYZ_RATE_LIMIT_BURST", 30),
+            allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),
             db_max_overflow=_env_int("HUB_DB_MAX_OVERFLOW", 5),

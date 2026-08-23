@@ -195,7 +195,15 @@ class TestPushSkipsAlreadyPushedLessons:
         frontmatter.write(str(p), fm, "## Rule\nr\n\n## How to apply\nh\n")
         return p
 
-    def test_a_lesson_with_a_hub_trace_id_is_not_recontributed(self, tmp_path, monkeypatch):
+    def test_a_lesson_with_a_hub_trace_id_is_never_recontributed(self, tmp_path, monkeypatch):
+        """contribute_trace mints a new trace every call, so it must never
+        be reachable for a lesson that already has a hub_trace_id --
+        updating one is amend_trace's job. This lesson has no stored
+        hub_pushed_fingerprint (as any lesson pushed before that field
+        existed would not), so it's treated as possibly-changed and
+        amended -- never re-contributed as a duplicate. See
+        tests/test_hub_client.py's TestPushPropagatesEdits for the
+        fingerprint-matches-so-skip-entirely case this split off from."""
         import asyncio
 
         from commontrace import hub_client
@@ -211,10 +219,11 @@ class TestPushSkipsAlreadyPushedLessons:
 
         results = asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
 
-        assert calls == [], "contribute_trace must not be called for an already-pushed lesson"
+        assert all(tool == "amend_trace" for tool, _args in calls), (
+            "contribute_trace must never be called for an already-pushed lesson"
+        )
         assert len(results) == 1
-        assert results[0].skipped is True
-        assert results[0].hub_trace_id == "existing-uuid"
+        assert results[0].hub_trace_id == "newly-minted-id"
 
     def test_a_never_pushed_lesson_is_contributed_with_an_idempotency_key(
         self, tmp_path, monkeypatch
@@ -496,6 +505,67 @@ class TestExperimentLoopCloses:
         assert out_path.startswith(traces_dir), f"escaped to {out_path}"
         inst, _ = trace_io_read(out_path)
         assert inst["id"] == "../../etc/pwned", "the id itself must not be rewritten"
+
+
+class TestCaptureOccasionIdMergesRatherThanOverwrites:
+    """Re-capturing an existing occasion used to replace title/context/
+    solution wholesale with whatever was passed on the second call --
+    --title/--context/--solution are still required on every `capture`
+    invocation, so a second call meant to attach an outcome (--resolved,
+    hours after the task actually ran) silently discarded the original
+    narrative the moment its text differed even slightly from the first
+    call's."""
+
+    def _run(self, *args, dest):
+        return subprocess.run(
+            [sys.executable, "-m", "commontrace", *args, "--dest", str(dest)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+
+    def test_recapture_preserves_original_context_and_solution_by_default(self, tmp_path):
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "original title", "--context", "original context",
+            "--solution", "original solution", "--agent-type", "code",
+            "--occasion-id", "task-1", dest=tmp_path,
+        )
+        assert first.returncode == 0, first.stderr
+        out_path = first.stdout.strip()
+
+        second = self._run(
+            "capture", "--title", "placeholder", "--context", "placeholder",
+            "--solution", "placeholder", "--agent-type", "code", "--resolved",
+            "--occasion-id", "task-1", dest=tmp_path,
+        )
+        assert second.returncode == 0, second.stderr
+        assert second.stdout.strip() == out_path, "must update the SAME file, not write a second one"
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["title"] == "original title"
+        assert inst["context_text"] == "original context"
+        assert inst["solution_text"] == "original solution"
+        assert inst["outcome"]["resolved"] is True, "the outcome must still merge in"
+
+    def test_overwrite_flag_replaces_the_narrative(self, tmp_path):
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "original title", "--context", "original context",
+            "--solution", "original solution", "--agent-type", "code",
+            "--occasion-id", "task-2", dest=tmp_path,
+        )
+        out_path = first.stdout.strip()
+
+        self._run(
+            "capture", "--title", "corrected title", "--context", "corrected context",
+            "--solution", "corrected solution", "--agent-type", "code", "--resolved",
+            "--occasion-id", "task-2", "--overwrite", dest=tmp_path,
+        )
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["title"] == "corrected title"
+        assert inst["context_text"] == "corrected context"
+        assert inst["solution_text"] == "corrected solution"
+        assert inst["outcome"]["resolved"] is True
 
 
 def trace_io_read(path):

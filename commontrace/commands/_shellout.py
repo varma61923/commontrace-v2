@@ -83,9 +83,27 @@ def run_script(
     # normal-looking report full of store A's numbers.
     env["COMMONTRACE_ROOT"] = root
     if capture:
+        # Both ends of the pipe pinned to UTF-8 explicitly, not left to the
+        # host locale: text=True alone decodes using
+        # locale.getpreferredencoding(False), which on Windows is commonly
+        # a legacy codepage (cp1252, cp932, ...), and the CHILD's own
+        # stdout defaults to the same locale-dependent encoding when
+        # (as here) it's redirected to a pipe rather than a real console
+        # (PEP 528's UTF-8 console fix does not apply to redirected
+        # stdout). Every reference script here writes UTF-8 in practice
+        # (this project's file I/O is UTF-8 throughout -- lesson/trace
+        # content routinely contains non-ASCII text), so leaving either
+        # end to the locale risks a mismatch that mangles that output into
+        # mojibake or raises UnicodeDecodeError, depending on the exact
+        # bytes involved. PYTHONUTF8 forces the child's interpreter into
+        # UTF-8 mode (PEP 540) so its stdout write side matches this
+        # explicit read side. errors="replace" so an unexpected
+        # undecodable byte still degrades to U+FFFD instead of crashing
+        # the parent CLI over the child's stdout.
+        env["PYTHONUTF8"] = "1"
         result = subprocess.run(
             [sys.executable, script, *extra_args], env=env,
-            stdout=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode, result.stdout
     result = subprocess.run([sys.executable, script, *extra_args], env=env)

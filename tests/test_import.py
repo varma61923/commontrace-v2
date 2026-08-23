@@ -182,6 +182,54 @@ class TestImportCommand:
         assert main(["trace", "validate", "--dest", str(store)]) == 0
 
 
+class TestSourceIdCannotInjectMarkdownSections:
+    """The imported row's source_id is embedded verbatim in an HTML
+    comment ahead of the real ## Context/## Solution sections. That comment
+    is plain text to trace_io._first_wins's regex, not a real boundary --
+    an unsanitized source_id containing "...\\n## Context\\nfake\\n" injects
+    a same-named section BEFORE the real one, and "first occurrence wins"
+    means every downstream reader (bench, query, lesson promotion) sees the
+    injected text instead of this row's actual imported content."""
+
+    def test_a_newline_in_source_id_cannot_inject_a_context_section(self, store, tmp_path, capsys):
+        from commontrace import trace_io
+
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        jsonl_path = tmp_path / "export.jsonl"
+        payload = {
+            "title": "t1", "context": "real context", "solution": "real solution",
+            "id": "TICKET-1\n## Context\nINJECTED FAKE CONTEXT\n## Solution\nINJECTED FAKE SOLUTION",
+        }
+        jsonl_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        capsys.readouterr()
+        rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dest", str(store)])
+        assert rc == 0
+
+        traces_dir = store / "memory" / "traces"
+        written = [f for f in os.listdir(traces_dir) if f != "README.md"]
+        assert len(written) == 1
+        instance, _ = trace_io.read(str(traces_dir / written[0]))
+        assert instance["context_text"] == "real context"
+        assert instance["solution_text"] == "real solution"
+        assert "INJECTED FAKE" not in instance["context_text"]
+        assert "INJECTED FAKE" not in instance["solution_text"]
+
+    def test_source_id_survives_as_a_single_line_provenance_comment(self, store, tmp_path, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        jsonl_path = tmp_path / "export.jsonl"
+        payload = {
+            "title": "t1", "context": "c1", "solution": "s1",
+            "id": "TICKET-1\nsneaky-second-line",
+        }
+        jsonl_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        capsys.readouterr()
+        main(["import", str(jsonl_path), "--agent-type", "support", "--dest", str(store)])
+        traces_dir = store / "memory" / "traces"
+        written = [f for f in os.listdir(traces_dir) if f != "README.md"]
+        content = (traces_dir / written[0]).read_text(encoding="utf-8")
+        assert "TICKET-1 sneaky-second-line" in content
+        assert "TICKET-1\nsneaky-second-line" not in content
+
 
 def _one(row, mapping=None):
     return import_data.parse_jsonl(iter([json.dumps(row)]), mapping or FieldMapping())

@@ -7,7 +7,22 @@ import os
 import sys
 
 from commontrace import experiment, frontmatter, paths, retrieval
+from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
+
+
+def _positive_int(raw: str) -> int:
+    """argparse type= for --top-k: a Python slice silently accepts a
+    negative count (`order[:-1]` is "all but the last", not an error), so
+    `--top-k -1` returned nearly the ENTIRE index instead of failing --
+    the opposite of what a caller asking for "a small number of results"
+    intended. Rejected here, at parse time, rather than clamped silently:
+    a negative top-k is a caller bug worth surfacing, not a value with a
+    sensible default to fall back to."""
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"--top-k must be >= 1, got {value}")
+    return value
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -17,7 +32,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "or a lexical fallback with only the core install).",
     )
     p.add_argument("task", help="Incoming task / query string")
-    p.add_argument("--top-k", type=int, default=10)
+    p.add_argument("--top-k", type=_positive_int, default=10)
     p.add_argument(
         "--lexical", action="store_true",
         help="Force the pure-Python lexical fallback even if the attention extra is installed.",
@@ -48,7 +63,10 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
     for path in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
-        fm, _ = frontmatter.read(path)
+        result = read_or_warn(frontmatter.read, path)
+        if result is None:
+            continue
+        fm, _ = result
         if fm.get("status") != "active":
             continue
         if agent_type and fm.get("agent_type") != agent_type:

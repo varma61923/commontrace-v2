@@ -75,7 +75,18 @@ else
   mkdir -p "${DEST}"
 
   if command -v rsync &>/dev/null; then
-    rsync -a \
+    # --no-times: `-a` (archive mode) implies `-t`, which preserves each
+    # file's SOURCE mtime at the destination. build_index.py's staleness
+    # check compares memory/lessons/*.md mtimes against index.npz's own
+    # mtime to decide whether a rebuild is needed -- with source mtimes
+    # preserved, a lesson file copied here (e.g. this repo's own shipped
+    # example lessons) can land with an mtime OLDER than an existing
+    # index.npz at DEST from a previous install, even though its content
+    # just changed at this destination for the first time. The index then
+    # reports "up to date" and silently serves stale embeddings. Every
+    # copied file gets DEST's actual copy time instead, which is what the
+    # staleness check needs it to mean.
+    rsync -a --no-times \
       --exclude='.git' \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
@@ -84,6 +95,10 @@ else
       --exclude='memory/benchmark_reports/' \
       --exclude='.venv' \
       --exclude='venv' \
+      --include='.env.example' \
+      --include='*/.env.example' \
+      --exclude='.env' \
+      --exclude='.env.*' \
       "${SCRIPT_DIR}/" "${DEST}/"
   else
     # Fallback: plain copy
@@ -93,6 +108,14 @@ else
     rm -rf "${DEST}/.git" 2>/dev/null || true
     find "${DEST}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     find "${DEST}" -name '*.pyc' -delete 2>/dev/null || true
+    # .env* files can hold live database passwords / API keys (see
+    # hub/.env.example's own warning that hub/.env must stay gitignored
+    # once it holds real values) -- the rsync branch above excludes them
+    # up front, but `cp -r` copies everything unconditionally first, so
+    # this fallback path must clean them up explicitly too rather than
+    # silently installing credentials into ${DEST}. .env.example is a
+    # committed, secret-free template and is deliberately spared.
+    find "${DEST}" -name '.env' -o -name '.env.*' ! -name '.env.example' 2>/dev/null | xargs -r rm -f
   fi
 
   echo "      Done."

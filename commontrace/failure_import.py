@@ -181,6 +181,16 @@ def _parse_lines(raw: str) -> list[tuple[str, str, list[str]]]:
     return out
 
 
+def _has_explicit_extension(path: str) -> bool:
+    """Whether `path`'s extension alone determines the format (see _sniff).
+    An extension is a deliberate declaration by whoever named the file; a
+    leading '[' or '{' is a guess about content that could just as easily be
+    a bracket-prefixed log line. read_failures only falls back from a failed
+    json/jsonl parse to the lines parser when the format was guessed, never
+    when it was declared."""
+    return os.path.splitext(path)[1].lower() in (".jsonl", ".ndjson", ".json", ".csv", ".tsv")
+
+
 def _sniff(path: str, raw: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".jsonl", ".ndjson"):
@@ -204,7 +214,10 @@ def _sniff(path: str, raw: str) -> str:
     return "lines"
 
 
-def read_failures(path: str) -> tuple[list[dict], dict]:
+_VALID_FORMATS = ("jsonl", "json", "csv", "lines")
+
+
+def read_failures(path: str, fmt_override: str | None = None) -> tuple[list[dict], dict]:
     """Parse `path` into failure records, plus a report of what happened.
 
     Returns (failures, stats) where each failure is
@@ -213,9 +226,26 @@ def read_failures(path: str) -> tuple[list[dict], dict]:
     actually measured. Silence about a 400-row collapse or a 500-row cap
     would make the coverage number describe something other than the file
     the user handed over.
+
+    `fmt_override`, when given, skips sniffing entirely and forces one of
+    _VALID_FORMATS -- for a file `_sniff` guesses wrong on (e.g. an
+    extension-less export), or to get the real parse error instead of the
+    silent lines-parser fallback below.
     """
+    if fmt_override is not None and fmt_override not in _VALID_FORMATS:
+        raise FailureImportError(
+            f"unknown format {fmt_override!r}; expected one of {'/'.join(_VALID_FORMATS)}"
+        )
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        # utf-8-sig, not plain utf-8: a BOM-prefixed export (the common case
+        # for a CSV/JSON file saved from Excel or a Windows tool) otherwise
+        # leaves a literal U+FEFF at the start of `raw`, which lands inside
+        # the first JSON key or the first CSV header cell -- either an
+        # immediate JSONDecodeError on line 1, or a header column that never
+        # matches the name callers expect. utf-8-sig strips the BOM when
+        # present and is identical to plain utf-8 when it is not, so this is
+        # strictly more permissive with no behavior change for BOM-less files.
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
             raw = fh.read()
     except OSError as exc:
         raise FailureImportError(f"cannot read {path}: {exc}") from exc
@@ -223,14 +253,38 @@ def read_failures(path: str) -> tuple[list[dict], dict]:
     if not raw.strip():
         raise FailureImportError(f"{path} is empty")
 
-    fmt = _sniff(path, raw)
+    fmt = fmt_override or _sniff(path, raw)
+    allow_lines_fallback = fmt_override is None and not _has_explicit_extension(path)
     parsers = {"jsonl": _parse_jsonl, "json": _parse_json, "csv": _parse_csv, "lines": _parse_lines}
     try:
         parsed = parsers[fmt](raw)
-    except FailureImportError:
-        raise
-    except ValueError as exc:
-        raise FailureImportError(f"could not read {path} as {fmt}: {exc}") from exc
+    except (FailureImportError, ValueError) as exc:
+        # A bracket-prefixed log line ("[2026-08-23 12:00:00] ERROR: ...")
+        # sniffs as JSON on its leading '[' and then fails to parse as JSON
+        # at all -- content `_sniff` guessed wrong about, not a file that is
+        # actually malformed JSON. Falling back to the lines parser (one
+        # failure per line, which is exactly what this file already is)
+        # turns that into a usable result instead of a hard refusal.
+        #
+        # Only when the format was a content GUESS: an extension of .json/
+        # .jsonl/.csv/.tsv (_has_explicit_extension) is a deliberate
+        # declaration by whoever named the file, and an explicit
+        # fmt_override is a deliberate assertion by the caller -- in both
+        # cases the real parse error is more useful than a silent
+        # reinterpretation of a file that says what it is.
+        if allow_lines_fallback and fmt in ("json", "jsonl"):
+            fallback = _parse_lines(raw)
+            if fallback:
+                fmt = "lines"
+                parsed = fallback
+            elif isinstance(exc, FailureImportError):
+                raise
+            else:
+                raise FailureImportError(f"could not read {path} as json/jsonl: {exc}") from exc
+        elif isinstance(exc, FailureImportError):
+            raise
+        else:
+            raise FailureImportError(f"could not read {path} as {fmt}: {exc}") from exc
 
     if not parsed:
         raise FailureImportError(
