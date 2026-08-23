@@ -117,3 +117,167 @@ class TestHubUrlSchemeGuard:
 
         asyncio.run(go())
         assert calls == [], "a bad scheme must not trigger retry backoff"
+
+
+def _write_active_lesson(ldir, name, description, applies_when, rule, tags=None, extra=None):
+    fm = {
+        "name": name, "description": description, "tags": tags or [], "agent_type": "code",
+        "domain": "testing", "importance": 3, "importance_rationale": "r",
+        "importance_history": [], "applies_when": applies_when, "do_not_apply_when": "never",
+        "uses": 0, "last_hit": "NEVER", "source_traces": [], "source_episodes": [],
+        "hub_trace_id": None, "status": "active",
+    }
+    if extra:
+        fm.update(extra)
+    frontmatter.write(os.path.join(ldir, f"{name}.md"), fm, f"## Rule\n{rule}\n")
+
+
+class TestPushPropagatesEdits:
+    """push_active_lessons used to skip ANY lesson that already had a
+    hub_trace_id, forever -- a local edit to an already-pushed lesson's
+    rule/description/applies-when/tags never reached the Hub again, so the
+    two copies silently diverged the moment anyone edited a promoted
+    lesson. It now fingerprints the pushed fields and calls amend_trace
+    when they've changed since the last push."""
+
+    def test_first_push_contributes_and_stamps_a_fingerprint(self, store, monkeypatch):
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        _write_active_lesson(ldir, "lesson_a", "desc", "when", "do the thing")
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            assert name == "contribute_trace"
+            return {"id": "trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert results[0].hub_trace_id == "trace-1"
+        assert results[0].skipped is False
+        fm, _ = frontmatter.read(os.path.join(ldir, "lesson_a.md"))
+        assert fm["hub_trace_id"] == "trace-1"
+        assert fm["hub_pushed_fingerprint"]
+
+    def test_unchanged_lesson_is_skipped_without_a_second_call(self, store, monkeypatch):
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        fingerprint = hub_client._push_fingerprint("desc", "when", "do the thing", [])
+        _write_active_lesson(
+            ldir, "lesson_a", "desc", "when", "do the thing",
+            extra={"hub_trace_id": "trace-1", "hub_pushed_fingerprint": fingerprint},
+        )
+
+        async def explode(*a, **k):
+            raise AssertionError("must not call the Hub for an unchanged, already-pushed lesson")
+
+        monkeypatch.setattr(hub_client, "_call_tool", explode)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert results[0].skipped is True
+        assert results[0].hub_trace_id == "trace-1"
+
+    def test_edited_lesson_is_propagated_via_amend_trace(self, store, monkeypatch):
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        stale_fingerprint = hub_client._push_fingerprint("old desc", "when", "old rule", [])
+        _write_active_lesson(
+            ldir, "lesson_a", "new desc", "when", "new rule",
+            extra={"hub_trace_id": "trace-1", "hub_pushed_fingerprint": stale_fingerprint},
+        )
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            assert name == "amend_trace"
+            assert arguments["id"] == "trace-1"
+            assert arguments["title"] == "new desc"
+            return {"id": "trace-2", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert calls[0][0] == "amend_trace"
+        assert results[0].hub_trace_id == "trace-2"
+        # hub_trace_id must move forward to the amended (superseding) id --
+        # amend_trace never mutates the original in place.
+        fm, _ = frontmatter.read(os.path.join(ldir, "lesson_a.md"))
+        assert fm["hub_trace_id"] == "trace-2"
+        assert fm["hub_pushed_fingerprint"] != stale_fingerprint
+
+    def test_never_pushed_lesson_with_no_stored_fingerprint_but_a_hub_id_still_amends(
+        self, store, monkeypatch
+    ):
+        """A lesson pushed before this fix has hub_trace_id set but no
+        hub_pushed_fingerprint at all -- must be treated as "possibly
+        changed" (propagate) rather than crashing on a missing key or being
+        silently skipped forever."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        _write_active_lesson(ldir, "lesson_a", "desc", "when", "rule", extra={"hub_trace_id": "trace-1"})
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            assert name == "amend_trace"
+            return {"id": "trace-2", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+        assert results[0].hub_trace_id == "trace-2"
+
+
+class TestPullPaginatesAllResults:
+    """pull_search_results used to call search_traces exactly once --
+    search_traces caps a single response at 50 results, so a Hub with more
+    than one page of matches silently returned only the first page with no
+    indication anything was left out."""
+
+    def test_pages_until_has_more_is_false(self, store, monkeypatch):
+        import asyncio
+
+        pages = [
+            {"traces": [{"id": f"t{i}", "title": f"trace {i}"} for i in range(50)],
+             "limit": 50, "offset": 0, "has_more": True},
+            {"traces": [{"id": f"t{i}", "title": f"trace {i}"} for i in range(50, 75)],
+             "limit": 50, "offset": 50, "has_more": False},
+        ]
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append(arguments["offset"])
+            return pages[len(calls) - 1]
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        result = asyncio.run(
+            hub_client.pull_search_results("http://localhost:8420/mcp", "key", str(store))
+        )
+
+        assert calls == [0, 50]
+        assert result.n_found == 75
+        assert len(result.written_paths) == 75
+
+    def test_stops_at_max_results_even_if_more_pages_remain(self, store, monkeypatch):
+        import asyncio
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            offset = arguments["offset"]
+            return {
+                "traces": [{"id": f"t{offset + i}", "title": f"trace {offset + i}"} for i in range(50)],
+                "limit": 50, "offset": offset, "has_more": True,
+            }
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        result = asyncio.run(
+            hub_client.pull_search_results(
+                "http://localhost:8420/mcp", "key", str(store), max_results=120
+            )
+        )
+        assert result.n_found == 120

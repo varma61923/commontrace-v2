@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import hashlib
 import json
 import os
 import re
@@ -206,6 +207,18 @@ async def _call_tool(
     ) from last_exc
 
 
+def _push_fingerprint(title: str, context_text: str, solution_text: str, tags: list[str]) -> str:
+    """Fingerprint of exactly the fields amend_trace can change (title/
+    context_text/solution_text/tags -- NOT agent_type, which amend_trace has
+    no parameter for and always carries forward from the original
+    unchanged, hub/crud.py:amend_trace). Order-independent over tags for the
+    same reason hub/crud.py:_contribute_request_hash is: a client may
+    reasonably reorder an unordered set between edits without that counting
+    as a change worth re-pushing."""
+    parts = [title, context_text, solution_text, "\x1f".join(sorted(tags))]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
 async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[PushResult]:
     """Push every `status: active` lesson to the Hub via contribute_trace,
     recording the returned id back into the lesson's `hub_trace_id`
@@ -214,6 +227,16 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
     (commontrace/commands/sync_cmd.py):
         contribute_trace(title=lesson.description, context_text=applies_when,
                           solution_text="Rule + How to apply", tags=lesson.tags)
+
+    A lesson already on the Hub (`hub_trace_id` set) is not re-contributed --
+    contribute_trace MINTS A NEW TRACE on every call, so without that guard
+    each `sync --push` would accumulate one duplicate per lesson per run.
+    Instead its current content is fingerprinted (`_push_fingerprint`) and
+    compared against the fingerprint recorded at the last successful push
+    (`hub_pushed_fingerprint`): unchanged, it's skipped; changed -- a local
+    edit to the rule/description/applies-when/tags since the last push --
+    it's propagated via amend_trace, so the Hub copy stops silently
+    diverging from the local one the moment anyone edits it.
     """
     results: list[PushResult] = []
     for path in _iter_active_lesson_paths(root):
@@ -222,21 +245,53 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             continue
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
 
-        # Already on the Hub -- do not contribute it a second time.
-        # contribute_trace MINTS A NEW TRACE on every call, so without this
-        # guard each `sync --push` re-submitted every active lesson and the
-        # Hub accumulated one duplicate per lesson per run, each with a
-        # fresh id that then overwrote the local hub_trace_id. Updating an
-        # already-pushed lesson is amend_trace's job, not contribute's.
-        existing_hub_id = fm.get("hub_trace_id")
-        if existing_hub_id:
-            results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
-            continue
-
         sections = _lesson_sections(body)
         solution_text = "\n\n".join(
             part for part in (sections.get("rule", ""), sections.get("how to apply", "")) if part
         ) or "(no Rule/How to apply section found in the lesson body)"
+        title = fm.get("description") or slug
+        context_text = fm.get("applies_when") or ""
+        tags = list(fm.get("tags") or []) if isinstance(fm.get("tags"), list) else []
+        fingerprint = _push_fingerprint(title, context_text, solution_text, tags)
+
+        existing_hub_id = fm.get("hub_trace_id")
+        if existing_hub_id:
+            if fm.get("hub_pushed_fingerprint") == fingerprint:
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
+                continue
+            try:
+                result = await _call_tool(
+                    hub_url,
+                    api_key,
+                    "amend_trace",
+                    {
+                        "id": str(existing_hub_id),
+                        "title": title,
+                        "context_text": context_text,
+                        "solution_text": solution_text,
+                        "tags": tags,
+                    },
+                )
+            except (HubClientUnavailable, HubConnectionError) as exc:
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc)))
+                continue
+            if result.get("error"):
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"]))
+                continue
+            # amend_trace supersedes rather than mutating in place
+            # (hub/crud.py:amend_trace), so the id returned here is a NEW
+            # trace and hub_trace_id must move forward to it -- the old id
+            # is now the head of a chain, not the trace to amend next time.
+            amended_id = result.get("id")
+            with frontmatter.locked(path):
+                fm, body = frontmatter.read(path)
+                fm["hub_trace_id"] = amended_id
+                fm["hub_pushed_fingerprint"] = fingerprint
+                frontmatter.write(path, fm, body)
+            results.append(
+                PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
+            )
+            continue
 
         try:
             result = await _call_tool(
@@ -244,10 +299,10 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                 api_key,
                 "contribute_trace",
                 {
-                    "title": fm.get("description") or slug,
-                    "context_text": fm.get("applies_when") or "",
+                    "title": title,
+                    "context_text": context_text,
                     "solution_text": solution_text,
-                    "tags": list(fm.get("tags") or []) if isinstance(fm.get("tags"), list) else [],
+                    "tags": tags,
                     "agent_type": fm.get("agent_type") or "",
                     # Belt and braces alongside the hub_trace_id guard
                     # above. That guard stops a SECOND run from
@@ -280,6 +335,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
         with frontmatter.locked(path):
             fm, body = frontmatter.read(path)
             fm["hub_trace_id"] = hub_trace_id
+            fm["hub_pushed_fingerprint"] = fingerprint
             frontmatter.write(path, fm, body)
         results.append(PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False)))
     return results
@@ -337,16 +393,44 @@ async def account_usage(hub_url: str, api_key: str) -> dict:
     return response
 
 
+DEFAULT_MAX_PULL_RESULTS = 2000
+
+
 async def pull_search_results(
-    hub_url: str, api_key: str, root: str, query: str = "", tags: list[str] | None = None
+    hub_url: str,
+    api_key: str,
+    root: str,
+    query: str = "",
+    tags: list[str] | None = None,
+    max_results: int = DEFAULT_MAX_PULL_RESULTS,
 ) -> PullResult:
     """Pull search_traces results into memory/traces/ as candidate Traces
-    awaiting `commontrace lesson new` promotion (protocol/PROTOCOL.md §5)."""
-    response = await _call_tool(hub_url, api_key, "search_traces", {"query": query, "tags": tags or []})
-    if response.get("error"):
-        raise HubConnectionError(f"search_traces failed: {response['error']}")
+    awaiting `commontrace lesson new` promotion (protocol/PROTOCOL.md §5).
 
-    traces = response.get("traces", [])
+    Pages through search_traces via `offset`/`has_more` rather than a single
+    call -- search_traces caps each response at DEFAULT_SEARCH_LIMIT (50)
+    results, so a single call silently pulled only the first page while
+    reporting a normal-looking result, with nothing telling the caller more
+    was available. Stops when the Hub reports no more results OR
+    `max_results` is reached: a configurable safety cap, not a promise that
+    every result set is small enough to pull to disk in full.
+    """
+    traces: list[dict] = []
+    offset = 0
+    while True:
+        response = await _call_tool(
+            hub_url, api_key, "search_traces", {"query": query, "tags": tags or [], "offset": offset}
+        )
+        if response.get("error"):
+            raise HubConnectionError(f"search_traces failed: {response['error']}")
+        page = response.get("traces", [])
+        traces.extend(page)
+        if not page or not response.get("has_more") or len(traces) >= max_results:
+            break
+        offset = int(response.get("offset", offset)) + (int(response.get("limit", 0)) or len(page))
+    if len(traces) > max_results:
+        traces = traces[:max_results]
+
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
     tdir_abs = os.path.abspath(tdir)

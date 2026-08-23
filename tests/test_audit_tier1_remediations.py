@@ -195,7 +195,15 @@ class TestPushSkipsAlreadyPushedLessons:
         frontmatter.write(str(p), fm, "## Rule\nr\n\n## How to apply\nh\n")
         return p
 
-    def test_a_lesson_with_a_hub_trace_id_is_not_recontributed(self, tmp_path, monkeypatch):
+    def test_a_lesson_with_a_hub_trace_id_is_never_recontributed(self, tmp_path, monkeypatch):
+        """contribute_trace mints a new trace every call, so it must never
+        be reachable for a lesson that already has a hub_trace_id --
+        updating one is amend_trace's job. This lesson has no stored
+        hub_pushed_fingerprint (as any lesson pushed before that field
+        existed would not), so it's treated as possibly-changed and
+        amended -- never re-contributed as a duplicate. See
+        tests/test_hub_client.py's TestPushPropagatesEdits for the
+        fingerprint-matches-so-skip-entirely case this split off from."""
         import asyncio
 
         from commontrace import hub_client
@@ -211,10 +219,11 @@ class TestPushSkipsAlreadyPushedLessons:
 
         results = asyncio.run(hub_client.push_active_lessons("http://h/mcp", "k", str(tmp_path)))
 
-        assert calls == [], "contribute_trace must not be called for an already-pushed lesson"
+        assert all(tool == "amend_trace" for tool, _args in calls), (
+            "contribute_trace must never be called for an already-pushed lesson"
+        )
         assert len(results) == 1
-        assert results[0].skipped is True
-        assert results[0].hub_trace_id == "existing-uuid"
+        assert results[0].hub_trace_id == "newly-minted-id"
 
     def test_a_never_pushed_lesson_is_contributed_with_an_idempotency_key(
         self, tmp_path, monkeypatch
