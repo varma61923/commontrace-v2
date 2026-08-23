@@ -25,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
+from commontrace import __version__ as _COMMONTRACE_VERSION
 from hub import auth, commons, crud, plans
 from hub.abuse import (
     RateLimited,
@@ -167,7 +168,12 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
     mcp = MCPServer(
         name="commontrace",
-        version="0.1.0",
+        # Not an independent MCP-server-specific version: PROTOCOL.md §9
+        # explicitly unified the package/protocol/CLI version numbers into
+        # one 2.0.0 the whole product reports identically, precisely to
+        # stop drift like a Hub still announcing a stale "0.1.0" to every
+        # connecting MCP client.
+        version=_COMMONTRACE_VERSION,
         instructions=(
             "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
