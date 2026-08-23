@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from hub import auth, crud, manage
 from hub.abuse import make_rate_limiter
@@ -25,6 +25,37 @@ async def two_orgs(session_factory):
         session.add_all([org_a, org_b])
         await session.flush()
         return {"org_a": org_a.id, "org_b": org_b.id}
+
+
+class TestCreateOrgWarnsOnDuplicateName:
+    """Organization.name carries no DB uniqueness constraint, and every
+    hub/manage.py operation resolves an org by org_id, never by name -- so
+    a duplicate name cannot make an operation resolve the wrong org
+    programmatically. The real risk is an operator scanning a listing by
+    eye and picking the wrong row when two orgs share a display name.
+    create_org warns (not blocks) when that happens."""
+
+    async def test_first_org_with_a_name_is_silent(self, session_factory, capsys):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "WARN" not in err
+
+    async def test_a_second_org_with_the_same_name_warns(self, session_factory, capsys):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "WARN" in err
+        assert "Acme Corp" in err
+
+    async def test_creation_still_succeeds_despite_the_warning(self, session_factory):
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        await manage.create_org("Acme Corp", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            count = await session.scalar(
+                select(func.count()).select_from(Organization).where(Organization.name == "Acme Corp")
+            )
+        assert count == 2
 
 
 async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
@@ -269,6 +300,81 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
     assert result is False
 
 
+@pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
+class TestPurgeRequiresConfirmation:
+    """purge-trace/purge-org are irreversible (no soft-delete, no undo).
+    Without a confirmation gate, a mistyped id or an extra stray Enter in a
+    terminal session silently deletes a customer's data with no chance to
+    reconsider. `main()` now requires either --yes or an interactive 'yes'
+    response before calling through to purge_trace/purge_org; direct
+    Python calls to those functions (every other test in this file) are
+    unaffected -- the gate lives in the CLI dispatch layer, not the
+    function itself."""
+
+    def test_refuses_without_yes_when_stdin_is_not_a_tty(self, config, monkeypatch, capsys):
+        """pytest's captured stdin is never a tty, so this exercises the
+        same non-interactive path a cron job or CI script would hit."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert err.startswith("error: refusing")
+        assert "--yes" in err
+
+    def test_nothing_is_deleted_when_confirmation_is_refused(self, config, monkeypatch, capsys):
+        # Every step goes through manage.main(), which builds and tears
+        # down its own fresh engine/event loop per call (asyncio.run()
+        # inside main()) -- mixing that with the pytest-asyncio
+        # session_factory fixture's own loop caused asyncpg connections
+        # bound to one loop to be used from another ("Task ... attached to
+        # a different loop"). Chaining plain main() calls, the same
+        # pattern test_malformed_uuid_reports_a_clean_error_not_a_traceback
+        # already relies on, avoids that entirely.
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+
+        assert manage.main(["create-org", "confirm-gate-org"]) == 0
+        org_id = capsys.readouterr().out.strip().removeprefix("org_id:").strip()
+
+        exit_code = manage.main(["purge-org", org_id])
+        assert exit_code == 2
+        capsys.readouterr()
+
+        # Org must still be listable -- purge_org never ran.
+        assert manage.main(["usage", org_id]) == 0
+        out = capsys.readouterr().out
+        assert "error" not in out.lower()
+
+    def test_yes_flag_bypasses_the_prompt(self, config, monkeypatch, capsys):
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000", "--yes"])
+        # Reaches the real function (proven by the *lookup* error, not the
+        # confirmation-refused error) -- no prompt, no tty needed.
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "no such organization" in err
+        assert "refusing" not in err
+
+    def test_typing_yes_at_the_prompt_proceeds(self, config, monkeypatch, capsys):
+        """Simulates a real interactive session: stdin.isatty() reports
+        True and input() returns the operator's typed response."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2  # unknown id -- reached the real lookup, not refused
+        err = capsys.readouterr().err
+        assert "no such organization" in err
+
+    def test_typing_anything_else_at_the_prompt_refuses(self, config, monkeypatch, capsys):
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")  # not the exact word "yes"
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "aborted" in err
+
+
 async def test_argument_count_validation():
     assert manage.main(["purge-trace"]) == 2
     assert manage.main(["purge-trace", "a", "b"]) == 2
@@ -312,13 +418,19 @@ def test_main_exits_nonzero_when_a_destructive_op_fails(config, monkeypatch, cap
     $? after e.g. `purge-org <id>` (to confirm a GDPR deletion actually
     happened) would see success on a no-op."""
     monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
-    for command, unknown_id in (
-        ("revoke-key", "00000000-0000-0000-0000-000000000000"),
-        ("release-quarantine", "00000000-0000-0000-0000-000000000000"),
-        ("purge-trace", "00000000-0000-0000-0000-000000000000"),
-        ("purge-org", "00000000-0000-0000-0000-000000000000"),
+    for command, unknown_id, extra_args in (
+        ("revoke-key", "00000000-0000-0000-0000-000000000000", []),
+        ("release-quarantine", "00000000-0000-0000-0000-000000000000", []),
+        # --yes: this test is pinning the *lookup failure* path (an unknown
+        # id must still exit non-zero), not the separate --yes confirmation
+        # gate covered by TestPurgeRequiresConfirmation below. Without it,
+        # a non-interactive test run (stdin is not a tty) would refuse on
+        # the confirmation prompt before ever reaching purge_trace/
+        # purge_org, and this test would stop testing what it says it does.
+        ("purge-trace", "00000000-0000-0000-0000-000000000000", ["--yes"]),
+        ("purge-org", "00000000-0000-0000-0000-000000000000", ["--yes"]),
     ):
-        exit_code = manage.main([command, unknown_id])
+        exit_code = manage.main([command, unknown_id, *extra_args])
         assert exit_code == 2, f"{command} on an unknown id must exit non-zero, got {exit_code}"
         assert capsys.readouterr().err.startswith("error:")
 

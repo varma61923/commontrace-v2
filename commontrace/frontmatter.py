@@ -81,6 +81,32 @@ class _StrictBoolLoader(yaml.SafeLoader):
         for first_char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
     }
 
+    def compose_node(self, parent, index):
+        # YAML anchors/aliases (`&name` / `*name`) are part of the spec
+        # SafeLoader still implements -- "safe" there means no arbitrary
+        # Python object construction, not no algorithmic-complexity attack.
+        # A handful of nested anchors referencing each other expands
+        # exponentially at parse time (the classic "billion laughs"
+        # pattern): a payload under 1KB inflates to gigabytes and multi-
+        # second CPU time in this process, well within reach of a file
+        # planted in a cloned/forked repo's memory/traces or memory/lessons
+        # -- exactly the untrusted-file threat model this project already
+        # applies to index.npz's model_name (see memory/attention/query.py).
+        # No frontmatter field (title, tags, status, timestamps, ...) has
+        # any legitimate use for either construct, so both are rejected
+        # outright rather than merely bounded -- a ComposerError here is a
+        # yaml.YAMLError, so it flows through the exact same "malformed
+        # YAML frontmatter" FrontmatterError path every caller already
+        # handles as a skippable, reportable error.
+        event = self.peek_event()
+        if isinstance(event, yaml.events.AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise yaml.composer.ComposerError(
+                None, None,
+                "YAML anchors/aliases are not permitted in CommonTrace frontmatter",
+                event.start_mark,
+            )
+        return super().compose_node(parent, index)
+
 
 # Re-added narrower than YAML 1.1's: only the six spellings YAML 1.2 core
 # treats as booleans. `yes`/`no`/`on`/`off` fall through to plain strings.

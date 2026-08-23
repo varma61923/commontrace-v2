@@ -54,6 +54,19 @@ def run(args: argparse.Namespace) -> int:
     hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
     hub_api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
 
+    if args.hub_api_key:
+        # A CLI argument is readable by any local user via `ps`/
+        # /proc/<pid>/cmdline, and can land in shell history and auditd's
+        # process-exec logs -- none of which apply to an environment
+        # variable. --help already says the env var is preferred; this is
+        # the same warning at the moment it actually matters.
+        print(
+            "[commontrace] [WARN] --hub-api-key was passed on the command line, which is "
+            "visible to other local users (`ps`, /proc, shell history). Prefer setting "
+            "COMMONTRACE_HUB_API_KEY instead.",
+            file=sys.stderr,
+        )
+
     if not hub_url or not hub_api_key:
         print(_MESSAGE)
         return 0

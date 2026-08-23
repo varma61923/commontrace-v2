@@ -29,12 +29,14 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
-    purge-trace <trace_id>         -> permanently deletes the trace AND every trace in
+    purge-trace <trace_id> [--yes] -> permanently deletes the trace AND every trace in
                                        its amendment chain (+ their votes and any relation
-                                       edges referencing them). Irreversible.
-    purge-org <org_id>             -> permanently deletes an org and everything scoped to
+                                       edges referencing them). Irreversible. Prompts for
+                                       interactive confirmation unless --yes is passed.
+    purge-org <org_id> [--yes]     -> permanently deletes an org and everything scoped to
                                        it (api_keys, traces, votes -- FK ondelete=CASCADE).
-                                       Irreversible. See DATA_RETENTION.md.
+                                       Irreversible. See DATA_RETENTION.md. Prompts for
+                                       interactive confirmation unless --yes is passed.
 
 The raw API key is only ever available at issuance/rotation time -- it is
 never stored in recoverable form (hub/auth.py hashes it with argon2 before
@@ -75,6 +77,26 @@ def _default_session_factory() -> async_sessionmaker[AsyncSession]:
 async def create_org(name: str, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
+        # Organization.name carries no uniqueness constraint (and adding one
+        # via migration is not safe to do blindly -- it would fail outright
+        # against any existing deployment that already has two orgs sharing
+        # a name). The realistic risk isn't a lookup bug: every hub/manage.py
+        # operation takes org_id, never name, so nothing programmatic can
+        # resolve the wrong org this way. It's an operator scanning a
+        # listing (`usage`, `list-quarantined`, ...) by eye and picking the
+        # wrong row when two orgs look identical. Warn at the one point a
+        # duplicate is actually introduced, rather than block it outright --
+        # a shared display name across regional entities under one brand
+        # may be entirely intentional.
+        existing = (
+            await session.execute(select(Organization.id).where(Organization.name == name))
+        ).scalars().all()
+        if existing:
+            print(
+                f"[WARN] another org already uses the name {name!r} "
+                f"(org_id: {', '.join(existing)}) -- creating anyway.",
+                file=sys.stderr,
+            )
         org = Organization(name=name)
         session.add(org)
         await session.flush()
@@ -753,9 +775,37 @@ _COMMANDS = {
     "revenue": (revenue, 0, 0),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
-    "purge-trace": (purge_trace, 1, 1),
-    "purge-org": (purge_org, 1, 1),
+    # +1 on max_args: the optional trailing --yes flag, stripped in main()
+    # before the underlying function ever sees it.
+    "purge-trace": (purge_trace, 1, 2),
+    "purge-org": (purge_org, 1, 2),
 }
+
+# Deletion here is permanent (no soft-delete, no undo -- see purge_trace/
+# purge_org's own docstrings and DATA_RETENTION.md). Every other _COMMANDS
+# entry either only reads, or is itself reversible (revoke-key has
+# rotate-key, release-quarantine has nothing to reverse but also nothing to
+# lose). Gated on an interactive prompt so a mistyped id or a fat-fingered
+# extra Enter in a terminal session doesn't silently delete a customer's
+# data; --yes bypasses it for scripted/automated use, which must ask for
+# this explicitly rather than get it by default.
+_DESTRUCTIVE_COMMANDS: dict[str, str] = {
+    "purge-trace": "permanently delete this trace and its full amendment chain",
+    "purge-org": "permanently delete this organization and everything scoped to it "
+                 "(api_keys, traces, votes)",
+}
+
+
+def _confirm_destructive(action: str) -> bool:
+    if not sys.stdin.isatty():
+        print(
+            f"error: refusing to {action} without --yes (stdin is not a terminal, "
+            "cannot prompt for confirmation)",
+            file=sys.stderr,
+        )
+        return False
+    reply = input(f"This will {action.upper()}. This cannot be undone. Type 'yes' to continue: ")
+    return reply.strip().lower() == "yes"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -770,6 +820,17 @@ def main(argv: list[str] | None = None) -> int:
         expected = str(min_args) if min_args == max_args else f"{min_args}-{max_args}"
         print(f"error: {argv[0]} takes {expected} argument(s), got {len(args)}", file=sys.stderr)
         return 2
+
+    if argv[0] in _DESTRUCTIVE_COMMANDS:
+        skip_confirm = "--yes" in args
+        args = [a for a in args if a != "--yes"]
+        if len(args) != min_args:
+            print(f"error: {argv[0]} takes {min_args} argument(s) (plus optional --yes), "
+                  f"got {len(args)}", file=sys.stderr)
+            return 2
+        if not skip_confirm and not _confirm_destructive(_DESTRUCTIVE_COMMANDS[argv[0]]):
+            print("aborted (no changes made)", file=sys.stderr)
+            return 2
 
     try:
         result = asyncio.run(fn(*args))

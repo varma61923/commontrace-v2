@@ -99,6 +99,7 @@ def _validate_hub_url(hub_url: str) -> None:
     is exempt because it is the standard way to develop against a local
     Hub without a certificate, and traffic to it never leaves the host.
     """
+    import ipaddress
     from urllib.parse import urlparse
 
     parsed = urlparse(hub_url)
@@ -113,6 +114,37 @@ def _validate_hub_url(hub_url: str) -> None:
             f"refusing to use plaintext http:// for remote Hub URL {hub_url!r}: "
             "the API key is sent as a Bearer token on every call. Use https://, "
             "or connect to localhost/127.0.0.1 for local development."
+        )
+    # Link-local addresses (169.254.0.0/16, fe80::/10) are where AWS/GCP/
+    # Azure's cloud metadata service lives (169.254.169.254 -- and GCP's
+    # own metadata.google.internal hostname resolves there too), which
+    # serves instance credentials over plain HTTP with no auth of its own.
+    # COMMONTRACE_HUB_URL is normally an operator-set value trusted for
+    # the life of the process, not attacker-controlled per request -- but
+    # this client sends the org's Bearer API key on every call it makes to
+    # whatever URL is configured, so a Hub URL that got misconfigured or
+    # tampered with (a compromised .env, a copy-pasted value from an
+    # untrusted source) pointing here would leak that key straight into an
+    # SSRF against the host's own cloud credentials. Checked against the
+    # literal hostname only, not a DNS resolution -- consistent with the
+    # rest of this function, and enough to catch the address actually
+    # being configured rather than a same-process TOCTOU DNS-rebind, which
+    # is a materially different, harder attack this check does not claim
+    # to cover.
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+    # AWS's IPv6 metadata address is a Unique Local Address (fd00::/8), not
+    # link-local (fe80::/10) -- checked by literal value rather than
+    # widening the range check, since blocking ULA/RFC1918 space generally
+    # would break the legitimate case of a Hub deployed on a private
+    # network address, which this project explicitly supports.
+    if ip is not None and (ip.is_link_local or str(ip) == "fd00:ec2::254"):
+        raise HubConnectionError(
+            f"refusing to use Hub URL {hub_url!r}: {hostname} is a link-local or "
+            "cloud-metadata address (e.g. 169.254.169.254, fd00:ec2::254) -- "
+            "refusing to send the Hub API key there."
         )
 
 

@@ -141,6 +141,39 @@ class TestHubUrlSchemeGuard:
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://hub.example.com/mcp")
 
+    @pytest.mark.parametrize("metadata_url", [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://169.254.170.2/v2/credentials/",  # ECS task metadata, same /16
+        "https://[fd00:ec2::254]/latest/meta-data/",  # AWS IPv6 metadata (a ULA, not link-local)
+        "https://[fe80::1]/",
+    ])
+    def test_link_local_and_cloud_metadata_addresses_are_rejected(self, metadata_url):
+        """169.254.0.0/16 (IPv4 link-local) is where AWS/GCP/Azure's
+        instance-metadata service lives -- it serves credentials over plain
+        HTTP with no auth of its own. A Hub URL that got misconfigured or
+        tampered with pointing here would leak the org's Bearer API key
+        straight into an SSRF against the host's own cloud credentials."""
+        with pytest.raises(hub_client.HubConnectionError, match="link-local|cloud-metadata"):
+            hub_client._validate_hub_url(metadata_url)
+
+    def test_plaintext_http_to_a_metadata_address_is_also_rejected(self):
+        """Caught by the plaintext-http-to-non-loopback check before ever
+        reaching the link-local check -- still rejected, just for the
+        earlier-triggered reason. Blocked either way."""
+        with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
+            hub_client._validate_hub_url("http://169.254.169.254/latest/meta-data/")
+
+    @pytest.mark.parametrize("private_url", [
+        "https://10.0.0.5/mcp",
+        "https://192.168.1.50/mcp",
+        "https://172.16.0.1/mcp",
+    ])
+    def test_ordinary_private_network_addresses_still_pass(self, private_url):
+        """Must not overreach into blocking RFC1918 space generally -- a
+        Hub deployed on a private network address is the documented,
+        supported case, not an attack."""
+        hub_client._validate_hub_url(private_url)  # must not raise
+
     def test_plaintext_http_to_an_ip_that_is_not_loopback_is_rejected(self):
         with pytest.raises(hub_client.HubConnectionError, match="plaintext http"):
             hub_client._validate_hub_url("http://10.0.0.5:8420/mcp")

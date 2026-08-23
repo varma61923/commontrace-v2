@@ -1,21 +1,28 @@
-"""Regression tests pinning four concurrency invariants in hub/crud.py
-under real asyncio.gather() concurrency against a live Postgres:
+"""Regression tests pinning concurrency invariants in hub/crud.py under
+real asyncio.gather() concurrency against a live Postgres:
 
   1. vote_trace: a concurrent race for the first vote on a trace must not
      raise IntegrityError (fixed via an atomic INSERT ... ON CONFLICT
      upsert -- see hub/crud.py:vote_trace); exactly one Vote row must
      survive and trust must stay consistent with it.
   2. contribute_trace: retrying an identical call (simulating a client
-     retry after a lost response) still creates a second Trace row today
-     -- contribute_trace has no idempotency mechanism. This test pins
-     that as a known, not-yet-implemented gap (see task: add
-     idempotency_key to contribute_trace) rather than silently accepting
-     duplication as correct.
+     retry after a lost response) with the SAME `idempotency_key` now
+     returns the original trace rather than creating a duplicate (fixed
+     via an optional idempotency_key param backed by UNIQUE(org_id,
+     idempotency_key) -- see hub/crud.py:contribute_trace). Calling
+     without a key (the default, matching the pre-idempotency behavior)
+     still creates a new row on every call -- that is by design, not a
+     remaining gap: there is nothing to deduplicate against without a key
+     the caller supplies, and every existing caller that never passes one
+     must keep working exactly as before.
   3. search_traces pagination: with tied created_at values, `ORDER BY
      created_at DESC, id DESC` (fixed to include an id tiebreaker) must
      not skip/duplicate rows across pages.
   4. retrievals counter: concurrent get_trace/search_traces calls must
      not lose increments (already atomic via UPDATE ... SET x = x + 1).
+  5. amend_trace / contribute_trace storage quota: concurrent writes
+     against a plan's max_traces cap must never let the org's trace count
+     exceed it (see TestContributeTraceStorageQuotaRace below).
 
 Run with: HUB_TEST_DATABASE_URL=... pytest -s -v \
     hub/tests/test_concurrency_audit.py

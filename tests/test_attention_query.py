@@ -72,6 +72,31 @@ class TestTamperedModelName:
         assert rc == 0
         assert called == [attn_query._TRUSTED_MODEL_NAME]
 
+    def test_a_network_load_failure_is_a_clean_error_not_a_traceback(self, tmp_path, monkeypatch, capsys):
+        """SentenceTransformer downloads the model from Hugging Face Hub on
+        first use if it isn't already cached locally -- an air-gapped host,
+        or a cache the operator didn't realize was never populated, raises
+        a raw OSError from deep inside huggingface_hub. Must surface as the
+        same clean [ERR]/return 1 pattern every other failure path here
+        uses, not an uncaught traceback."""
+        index_path = tmp_path / "index.npz"
+        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME)
+        monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
+        monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
+
+        def _raise_offline(name):
+            raise OSError(f"We couldn't connect to 'https://huggingface.co' to load {name}")
+
+        monkeypatch.setattr(attn_query, "SentenceTransformer", _raise_offline)
+        monkeypatch.setattr(sys, "argv", ["query.py", "some task"])
+
+        rc = attn_query.main()
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "[ERR]" in err
+        assert "HF_HUB_OFFLINE" in err
+
 
 class TestAlphaTelemetry:
     """Tests for the Phase 3 (P5) operational-cost instrumentation: query.py must append

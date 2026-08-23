@@ -241,7 +241,25 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    model = SentenceTransformer(_TRUSTED_MODEL_NAME)
+    try:
+        # SentenceTransformer downloads the model from Hugging Face Hub on
+        # first use if it isn't already in the local cache
+        # (~/.cache/huggingface/), which needs internet access this
+        # process may not have -- an air-gapped deployment, or a
+        # cache the operator didn't realize was never populated. Left
+        # uncaught this raised a raw OSError/traceback from deep inside
+        # huggingface_hub instead of the clean, actionable error every
+        # other failure path in this function already gives.
+        model = SentenceTransformer(_TRUSTED_MODEL_NAME)
+    except OSError as exc:
+        print(
+            f"[ERR] Could not load model {_TRUSTED_MODEL_NAME!r}: {exc}\n"
+            "If this host has no internet access, pre-download the model on a "
+            "connected machine and copy ~/.cache/huggingface/ over, or set "
+            "HF_HUB_OFFLINE=1 once it's cached locally.",
+            file=sys.stderr,
+        )
+        return 1
     q_emb = model.encode(args.query, normalize_embeddings=True, convert_to_numpy=True)
 
     # An index built by a different (or later, wider) embedding model has a

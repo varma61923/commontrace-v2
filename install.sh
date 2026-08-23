@@ -75,7 +75,18 @@ else
   mkdir -p "${DEST}"
 
   if command -v rsync &>/dev/null; then
-    rsync -a \
+    # --no-times: `-a` (archive mode) implies `-t`, which preserves each
+    # file's SOURCE mtime at the destination. build_index.py's staleness
+    # check compares memory/lessons/*.md mtimes against index.npz's own
+    # mtime to decide whether a rebuild is needed -- with source mtimes
+    # preserved, a lesson file copied here (e.g. this repo's own shipped
+    # example lessons) can land with an mtime OLDER than an existing
+    # index.npz at DEST from a previous install, even though its content
+    # just changed at this destination for the first time. The index then
+    # reports "up to date" and silently serves stale embeddings. Every
+    # copied file gets DEST's actual copy time instead, which is what the
+    # staleness check needs it to mean.
+    rsync -a --no-times \
       --exclude='.git' \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
