@@ -1,12 +1,27 @@
 """Tests for commontrace/reference/measure_performance.py."""
+import importlib.util
 import os
 
 # Import the benchmark module under test
 import measure_performance as bm
 import pytest
 
-# Fixtures and helpers from conftest
-from conftest import write_episode, write_lesson
+# Fixtures and helpers from conftest.py -- loaded by explicit file path via
+# importlib rather than `from conftest import ...`. hub/tests/ also has its
+# own conftest.py; a bare `import conftest` resolves against whichever
+# same-named module is first on sys.path, which pytest's default "prepend"
+# import mode populates in COLLECTION order -- running `pytest tests/
+# hub/tests/` together, `hub/tests/conftest.py` could collect first and
+# silently shadow this one, breaking this import with a confusing
+# "cannot import name 'write_episode' from 'conftest'" (naming the wrong
+# file). Loading this exact file by path is unambiguous regardless of what
+# else is being collected alongside it.
+_conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
+_conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
+_conftest = importlib.util.module_from_spec(_conftest_spec)
+_conftest_spec.loader.exec_module(_conftest)
+write_episode = _conftest.write_episode
+write_lesson = _conftest.write_lesson
 
 # ---------------------------------------------------------------------------
 # YAML / frontmatter parsing

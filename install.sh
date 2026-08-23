@@ -84,6 +84,10 @@ else
       --exclude='memory/benchmark_reports/' \
       --exclude='.venv' \
       --exclude='venv' \
+      --include='.env.example' \
+      --include='*/.env.example' \
+      --exclude='.env' \
+      --exclude='.env.*' \
       "${SCRIPT_DIR}/" "${DEST}/"
   else
     # Fallback: plain copy
@@ -93,6 +97,14 @@ else
     rm -rf "${DEST}/.git" 2>/dev/null || true
     find "${DEST}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     find "${DEST}" -name '*.pyc' -delete 2>/dev/null || true
+    # .env* files can hold live database passwords / API keys (see
+    # hub/.env.example's own warning that hub/.env must stay gitignored
+    # once it holds real values) -- the rsync branch above excludes them
+    # up front, but `cp -r` copies everything unconditionally first, so
+    # this fallback path must clean them up explicitly too rather than
+    # silently installing credentials into ${DEST}. .env.example is a
+    # committed, secret-free template and is deliberately spared.
+    find "${DEST}" -name '.env' -o -name '.env.*' ! -name '.env.example' 2>/dev/null | xargs -r rm -f
   fi
 
   echo "      Done."

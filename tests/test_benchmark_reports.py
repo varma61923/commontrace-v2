@@ -9,6 +9,7 @@
 Uses tmp directories throughout -- never touches the real repo memory/.
 """
 import glob
+import importlib.util
 import json
 import os
 import sys
@@ -21,6 +22,19 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+
+# Loaded by explicit file path, not `from conftest import ...` -- see
+# tests/test_benchmark.py's identical comment for why: hub/tests/ also has
+# its own conftest.py, and a bare `import conftest` resolves against
+# whichever same-named module pytest's default import mode put on sys.path
+# first, which depends on collection order when both test suites run
+# together (`pytest tests/ hub/tests/`).
+_conftest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py")
+_conftest_spec = importlib.util.spec_from_file_location("commontrace_tests_conftest", _conftest_path)
+_conftest = importlib.util.module_from_spec(_conftest_spec)
+_conftest_spec.loader.exec_module(_conftest)
+write_episode = _conftest.write_episode
+write_lesson = _conftest.write_lesson
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +442,6 @@ class TestMainPersistsByDefault:
             sys.argv = old_argv
 
     def test_default_invocation_persists_json_report(self, tmp_memory, monkeypatch, capsys):
-        from conftest import write_episode
         write_episode(tmp_memory, "2026-01-01_ep1", proposed=["lesson_a"], validated=["lesson_a"])
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
@@ -446,7 +459,6 @@ class TestMainPersistsByDefault:
         assert "semantic_duplicates" in data
 
     def test_no_save_skips_persistence(self, tmp_memory, capsys):
-        from conftest import write_episode
         write_episode(tmp_memory, "2026-01-01_ep1", proposed=["lesson_a"], validated=["lesson_a"])
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
@@ -458,7 +470,6 @@ class TestMainPersistsByDefault:
         assert len(stored) == 0
 
     def test_strict_flag_causes_nonzero_exit_on_alert(self, tmp_memory):
-        from conftest import write_episode
         # lesson_quality = 0/1 = 0.0, well under the 0.7 default threshold -> alert.
         write_episode(tmp_memory, "2026-01-01_ep1", proposed=["lesson_a"], validated=[])
         old_base = bm.BASE_DIR
@@ -470,7 +481,6 @@ class TestMainPersistsByDefault:
         assert code == 2
 
     def test_without_strict_alert_is_informational_exit_zero(self, tmp_memory):
-        from conftest import write_episode
         write_episode(tmp_memory, "2026-01-01_ep1", proposed=["lesson_a"], validated=[])
         old_base = bm.BASE_DIR
         bm.BASE_DIR = str(tmp_memory)
@@ -499,7 +509,6 @@ class TestExistingMetricsUnchangedByPhase3:
         assert permissive == pytest.approx(0.5)
 
     def test_transfer_gap_formula_unchanged(self, tmp_memory):
-        from conftest import write_lesson
         write_lesson(tmp_memory, "lesson_foo", source_episodes=["ep_1"], uses=1)
         episodes = [
             {"name": "ep_2", "project": "proj-a", "lessons_hit": ["lesson_foo"]},

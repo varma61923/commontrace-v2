@@ -273,6 +273,63 @@ class TestApiKeyExpiry:
         assert result is None, "a key revoked mid-verification must not authenticate"
 
 
+class TestLastUsedAtIsThrottled:
+    """last_used_at exists for idle-key auditing, which needs roughly-
+    current information, not per-request precision. Writing it
+    unconditionally means a hot key under real QPS issues an UPDATE
+    against its own single row on every authenticated request -- every one
+    of those write transactions briefly locks the same row, serializing
+    concurrent requests against each other for no operational benefit."""
+
+    async def test_a_fresh_last_used_at_is_not_rewritten_on_the_next_call(
+        self, session_factory, org
+    ):
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            first_seen = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            second_seen = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        assert first_seen == second_seen, "a call within the throttle interval must not rewrite the column"
+
+    async def test_a_stale_last_used_at_is_refreshed(self, session_factory, org):
+        from datetime import datetime, timedelta, timezone
+
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        stale = datetime.now(timezone.utc) - timedelta(hours=1)
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, issued.key_id)
+            key.last_used_at = stale
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            refreshed = (await session.get(ApiKey, issued.key_id)).last_used_at
+
+        assert refreshed > stale
+
+    async def test_a_never_used_key_gets_last_used_at_set_on_first_call(
+        self, session_factory, org
+    ):
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, issued.key_id)
+            assert key.last_used_at is None
+
+        async with session_scope(session_factory) as session:
+            await auth.verify_api_key(session, issued.raw_key)
+        async with session_scope(session_factory) as session:
+            assert (await session.get(ApiKey, issued.key_id)).last_used_at is not None
+
+
 class TestVoteTrustAggregate:
     """`vote_trace` recomputes trust from a COUNT/GROUP BY aggregate rather
     than hydrating every vote row for the trace -- this pins the actual

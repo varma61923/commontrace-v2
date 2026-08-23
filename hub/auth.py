@@ -34,6 +34,11 @@ _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking
 
 _hasher = PasswordHasher()
 
+# How stale last_used_at may be before verify_api_key bothers to refresh it.
+# See the write site below for why this exists: idle-key auditing needs
+# roughly-current information, not per-request precision.
+_LAST_USED_AT_UPDATE_INTERVAL = timedelta(minutes=5)
+
 
 @dataclass(frozen=True)
 class IssuedKey:
@@ -155,7 +160,19 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
             # Expired reads exactly like invalid: an expired key must not be
             # distinguishable from a wrong one at the transport layer.
             return None
-        candidate.last_used_at = now
+        # Throttled, not written on every call: last_used_at exists for
+        # idle-key auditing (hub/manage.py's key listing), which needs
+        # roughly-current information, not per-request precision. Writing
+        # it unconditionally means a hot key under real production QPS
+        # issues an UPDATE against its own single row on every single
+        # authenticated request -- every one of those write transactions
+        # briefly locks the same row, so a busy key serializes concurrent
+        # requests against each other for no operational benefit. Skipping
+        # the write when the existing value is already within the
+        # interval keeps the column meaningfully fresh while cutting write
+        # volume by roughly the same factor as the interval.
+        if candidate.last_used_at is None or (now - candidate.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
+            candidate.last_used_at = now
         return AuthenticatedKey(org_id=candidate.org_id, key_prefix=candidate.key_prefix)
     return None
 
