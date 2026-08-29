@@ -24,6 +24,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--agent-type", choices=paths.AGENT_TYPES, default=None,
         help="Defaults to the agent_type this store was initialized with.",
     )
+    p.add_argument(
+        "--agent-id", default="",
+        help="WHICH agent produced this trace, as opposed to --agent-type (what KIND it is). "
+             "A fleet of 25 support agents shares one --agent-type, so only this distinguishes "
+             "them -- it is what makes 'how many agents does this fleet run' answerable, and "
+             "what a Hub plan's agent limit is enforced against. Optional; omitting it "
+             "attributes the trace to a single 'unattributed' agent for the org.",
+    )
     p.add_argument("--profile", default="", help="Optional profile name (e.g. code-review)")
     p.add_argument("--dest", default=None, help="Store root (default: auto-detect / $COMMONTRACE_ROOT)")
     p.add_argument(
@@ -195,7 +203,9 @@ def run(args: argparse.Namespace) -> int:
 
     outcome = _outcome_from_args(args)
     agent_type = args.agent_type or paths.store_agent_type(root)
-    fm = templates.trace_frontmatter(trace_id, title, agent_type, tags, args.profile, outcome)
+    fm = templates.trace_frontmatter(
+        trace_id, title, agent_type, tags, args.profile, outcome, agent_id=args.agent_id
+    )
     body = templates.trace_body(context, solution)
 
     # Validate BEFORE writing, so the store is invalid-by-construction

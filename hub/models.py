@@ -122,6 +122,21 @@ class Trace(Base):
     solution_text: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
     agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The AGENT, as distinct from the KIND of agent above. agent_type is a
+    # category ("support", "sales", "code"): a fleet of 25 support agents
+    # shares one value, so it can never answer "how many agents does this
+    # org run" -- the variable STRATEGY.md §12.6 concludes the business
+    # should be run on, and which nothing in this system could compute
+    # before this column existed.
+    #
+    # Empty string, not NULL, for "the client did not say" -- matching
+    # profile/contributor above, and letting the migration backfill every
+    # pre-existing row with a server_default rather than leaving NULLs that
+    # every COUNT(DISTINCT ...) would then have to special-case. The
+    # counting layer maps "" to plans.UNATTRIBUTED_AGENT_ID exactly once
+    # (hub/crud.py:agents_under_management), so the magic value lives in
+    # one place instead of in every row.
+    agent_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     profile: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     extensions: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     watch_condition: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -254,6 +269,15 @@ class Trace(Base):
         # search_traces orders by created_at DESC within an org; without this
         # the ordering step sorts the whole org partition on every query.
         Index("ix_traces_org_created_at", "org_id", "created_at"),
+        # agents_under_management is COUNT(DISTINCT agent_id) over one org
+        # within a trailing time window, and it runs on the write path
+        # (_reserve_agent_slot) on every contribute_trace, not just in
+        # reporting. Leading org_id + created_at serves the equality-then-
+        # range predicate, and carrying agent_id as the third column makes
+        # the distinct step index-only rather than a heap fetch per row --
+        # which matters precisely for the largest fleets, the ones whose
+        # agent count this exists to measure.
+        Index("ix_traces_org_created_agent", "org_id", "created_at", "agent_id"),
         UniqueConstraint("org_id", "idempotency_key", name="uq_traces_org_idempotency_key"),
         # commons_overlap scans the commons corpus -- traces shared, not
         # quarantined -- across ALL orgs. Partial index: the commons is

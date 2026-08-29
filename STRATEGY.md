@@ -734,6 +734,39 @@ identity does establish is what to instrument: the Hub already meters
 per-org usage (`hub/plans.py`, `manage usage`), so agents-under-management
 is measurable from day one rather than reconstructed later.
 
+> **Correction (2026-08-29): that last sentence was false, and it was false
+> in the same way §13.2's "the machinery already ships" was.** The Hub did
+> meter per-org usage — but it metered *traces stored* and *commons
+> queries*. It had no concept of an agent at all. `Trace.agent_type` is a
+> CATEGORY (`support`, `sales`, `code`), so a fleet of 25 support agents
+> shared one value and was indistinguishable from one agent; `grep` for
+> `agent_id`/`max_agents` across the repository returned nothing. **The
+> variable §12.6 concludes the company should be run on could not be
+> computed, and the per-agent tiers in the sales deck — 5 / 25 / unlimited
+> — were unenforceable**, since `Plan` had no agent field and `crud.py`
+> checked no agent limit.
+>
+> This is now built: `Trace.agent_id`, `Plan.max_agents`, and
+> `crud.agents_under_management`, reported per org by `manage usage`.
+> Two design choices are load-bearing and are stated here because they
+> change what the number means:
+>
+> - It counts agents **active in a trailing 30-day window**, not distinct
+>   agents all-time. An all-time count can only rise, so it could never
+>   show churn and would bill a customer forever for an agent they ran once
+>   and decommissioned. This number can fall, which is the point of it.
+> - It is a **floor, not a total**, for any org whose clients do not send
+>   `agent_id` — those traces collapse into one `unattributed` agent
+>   however many really produced them. `manage usage` marks such orgs with
+>   a trailing `+` rather than quoting the number as exact. Same discipline
+>   as the commons coverage figure, and for the same reason.
+>
+> What this does **not** do is make the §13.1 identity answerable. It makes
+> the first term countable. Which shape — many agents cheap, or few agents
+> expensive — is reachable is still exactly what nobody here knows, and
+> still the first thing a real pilot would measure. The difference is that
+> a pilot can now measure it instead of estimating it afterwards.
+
 ### 13.2 The chain, in dependency order
 
 **Link 1 — per-org memory delivers measurable value.** *Status: evidence

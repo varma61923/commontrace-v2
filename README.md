@@ -118,6 +118,11 @@ unescaped tool list leaked quotes into a JSON string field) for both `cursor` an
 
 ```bash
 commontrace capture --title "..." --context "..." --solution "..." --tags a,b --agent-type support
+# --agent-id identifies WHICH agent, not what kind -- a fleet of 25 support agents
+# shares one --agent-type, so this is what makes the fleet countable (and is what a
+# Hub plan's agent limit is metered on). Optional; omitting it is never an error.
+commontrace capture --title "..." --context "..." --solution "..." \
+  --agent-type support --agent-id support-worker-7
 commontrace lesson new --slug lesson_x --description "..." --domain escalation \
   --agent-type support --applies-when "..." --do-not-apply-when "..." --importance 4 \
   --importance-rationale "..."
@@ -621,6 +626,7 @@ customer did not get:
 |---|---|---|---|
 | Traces stored | 1,000 | 50,000 | unlimited |
 | Commons queries / month | 20 | 1,000 | 25,000 |
+| Active agents | 5 | 25 | unlimited |
 
 Storage is real cost and grows monotonically. **Commons queries are the
 metered unit** because that is the only call whose value comes from *other
@@ -628,6 +634,28 @@ orgs'* contributions — everything else an org does is with its own data,
 and charging per query against your own memory is rent, not price. Purging
 frees storage allowance, so the deletion right in `DATA_RETENTION.md` is
 not a right in name only.
+
+**Active agents** is the expansion axis, and it is metered on `Trace.agent_id`
+— *which* agent produced a trace, as opposed to `agent_type`, which is what
+*kind* it is. A fleet of 25 support agents shares one `agent_type`, so only
+`agent_id` can answer how many agents a fleet actually runs (see
+[`commontrace capture --agent-id`](#4--capture-experience-and-curate-lessons)).
+Three properties of the count are deliberate:
+
+- **It counts agents active in a trailing 30-day window, not all-time.** An
+  all-time count can only rise: it could never show a fleet shrinking, and it
+  would bill for an agent that ran once and was decommissioned. Retiring an
+  agent frees its slot, for the same reason purging frees storage.
+- **The cap blocks expansion, never operation.** An org at its limit keeps
+  serving every agent it already runs; only registering a *new* agent is
+  refused. A commercial limit must not become a production outage, so
+  lowering an org's plan below its current fleet size never breaks that
+  fleet either — the overage surfaces in `manage usage` for a human.
+- **It is a floor, not a total, when `agent_id` is missing.** Traces from a
+  client that sends no `agent_id` are never rejected (that would break every
+  client written before this existed) but they all collapse into one
+  `unattributed` agent. `manage usage` marks those orgs with a trailing `+`
+  rather than quoting the number as exact.
 
 **Contributing earns allowance, mechanically.** Every time a trace you
 shared covers another fleet's failure, you get 25 more commons queries this

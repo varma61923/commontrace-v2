@@ -20,6 +20,29 @@ something the customer did not get:
   everything else an org does is with its own data, and charging per query
   against your own memory is rent, not price.
 
+* `max_agents` -- how many distinct agents an org may have ACTIVE at once.
+  This is the expansion axis: STRATEGY.md §12.2 argues value here compounds
+  with agents per fleet, tasks over time, and fleets per customer, and
+  §12.6 concludes the variable to run on is "agents under management, not
+  logos". A metric nobody counts cannot be run on, so it is counted here.
+
+  Two properties of the count are deliberate and are the whole design:
+
+  1. It is ACTIVE agents in a trailing window (ACTIVE_AGENT_WINDOW_DAYS),
+     not distinct agents all-time. An all-time count only ever grows: it
+     cannot show a fleet shrinking, so it cannot show churn, and it would
+     bill a customer forever for an agent they ran once and decommissioned.
+     That is the same defect the storage limit already avoids by counting
+     live rows so purging frees allowance -- a number that can only go up
+     is a vanity metric, not a meter.
+
+  2. It is enforced at NEW-agent registration, never on every write. See
+     hub/crud.py:_reserve_agent_slot. An org sitting exactly at its cap
+     must keep serving its existing fleet; refusing their writes would turn
+     a commercial limit into a production outage, which is never the right
+     failure mode for infrastructure the customer is running live traffic
+     through. Hitting the cap blocks EXPANSION, not OPERATION.
+
 WHY CONTRIBUTION EARNS ALLOWANCE
 --------------------------------
 A knowledge commons where contributing is pure altruism fills with filler
@@ -61,6 +84,34 @@ from dataclasses import dataclass
 # operator should expect to turn.
 QUERY_CREDIT_PER_HIT = 25
 
+# How recently an agent must have written a trace to count as "under
+# management". A policy number, and the second dial in this file.
+#
+# 30 days because it is the shortest window that survives an agent which
+# runs on a monthly cadence (a billing-close reconciliation agent, a
+# monthly report generator). Too short and a real, paid-for agent silently
+# drops out of the count between runs, which reads as churn that did not
+# happen; too long and a decommissioned agent keeps being billed, which is
+# the all-time-count defect this window exists to avoid.
+ACTIVE_AGENT_WINDOW_DAYS = 30
+
+# Traces written by a client that sent no agent_id are attributed to this
+# single sentinel agent per org.
+#
+# The alternative designs are both worse. Rejecting the write breaks every
+# client that predates agent identity, for a metering concern the customer
+# did not ask for. Counting such traces as zero agents makes the meter
+# trivially avoidable by omitting one field, which is not a meter.
+#
+# Counting them as exactly ONE agent per org is backward compatible and
+# cannot be gamed downward -- but it is also a FLOOR, not a measurement:
+# an unknown number of real agents hides behind it. Every surface that
+# reports the count therefore reports the unattributed trace count beside
+# it (hub/crud.py:agents_under_management), so nobody -- operator or
+# customer -- reads a floor as a total. Same discipline as the commons
+# coverage number, which is published as a floor for the same reason.
+UNATTRIBUTED_AGENT_ID = "unattributed"
+
 # The name every org gets until someone says otherwise. Chosen so that
 # forgetting to set a plan fails closed into the *smallest* entitlement
 # rather than an unlimited one.
@@ -80,6 +131,14 @@ class Plan:
     commons_queries_per_month: int
     commons_access: bool
     summary: str
+    # Defaulted so that a Plan built ad hoc (only tests do this, to pin one
+    # specific cap) does not accidentally enforce an agent limit it was not
+    # written to test. The fail-closed guarantee this file cares about lives
+    # in get(), which resolves every real plan through PLANS -- and
+    # TestEveryPlanSetsMaxAgents asserts every entry there sets this
+    # explicitly, so the permissive default can never silently reach a
+    # customer.
+    max_agents: int = -1  # UNLIMITED; defined below, referenced by value here
 
 
 PLANS: dict[str, Plan] = {
@@ -87,6 +146,11 @@ PLANS: dict[str, Plan] = {
         name="free",
         max_traces=1_000,
         commons_queries_per_month=20,
+        # 5 agents: an individual developer's fleet. Deliberately a real
+        # working limit rather than 1 -- the product's own thesis is that
+        # lessons compound ACROSS agents, so a tier that permits a single
+        # agent cannot demonstrate the thing being sold.
+        max_agents=5,
         commons_access=True,
         summary="Evaluate on real memory. Commons access included, because a "
                 "commons nobody may query cannot demonstrate that it works.",
@@ -95,6 +159,7 @@ PLANS: dict[str, Plan] = {
         name="team",
         max_traces=50_000,
         commons_queries_per_month=1_000,
+        max_agents=25,
         commons_access=True,
         summary="A fleet's working memory plus routine commons coverage checks.",
     ),
@@ -102,6 +167,7 @@ PLANS: dict[str, Plan] = {
         name="scale",
         max_traces=UNLIMITED,
         commons_queries_per_month=25_000,
+        max_agents=UNLIMITED,
         commons_access=True,
         summary="Unmetered storage; commons queries still metered, because "
                 "they consume other orgs' contributions rather than your own.",
@@ -113,6 +179,7 @@ PLANS: dict[str, Plan] = {
         name="operator",
         max_traces=UNLIMITED,
         commons_queries_per_month=UNLIMITED,
+        max_agents=UNLIMITED,
         commons_access=True,
         summary="Operator-internal. Not for sale; excluded from revenue reporting.",
     ),

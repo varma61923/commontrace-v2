@@ -58,11 +58,13 @@ def trace_frontmatter(
     tags: list[str],
     profile: str = "",
     outcome: dict[str, Any] | None = None,
+    agent_id: str = "",
 ) -> dict[str, Any]:
     fm = {
         "id": trace_id,
         "title": title,
         "agent_type": agent_type,
+        "agent_id": agent_id,
         "tags": tags,
         "profile": profile,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),

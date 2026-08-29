@@ -355,6 +355,12 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                     "solution_text": solution_text,
                     "tags": tags,
                     "agent_type": fm.get("agent_type") or "",
+                    # Carries WHICH agent produced this, not just what kind.
+                    # A Hub plan's agent limit is enforced against distinct
+                    # agent_ids, so a fleet that never sends one has its whole
+                    # population collapse into a single 'unattributed' agent
+                    # and reads as 1 agent however many really run.
+                    "agent_id": fm.get("agent_id") or "",
                     # Belt and braces alongside the hub_trace_id guard
                     # above. That guard stops a SECOND run from
                     # re-contributing; this stops THIS run from

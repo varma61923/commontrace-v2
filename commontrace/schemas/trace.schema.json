@@ -37,6 +37,12 @@
       "description": "The kind of agent that produced this trace. Open vocabulary; 'code' is the reference implementation shipped in this repo.",
       "examples": ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
     },
+    "agent_id": {
+      "type": "string",
+      "description": "WHICH agent produced this trace, as opposed to `agent_type` (what KIND it is). A fleet of 25 support agents shares one agent_type, so only this field distinguishes them -- it is what makes 'how many agents does this fleet run' answerable, and what a Hub plan's agent limit is enforced against. Stable per agent and opaque to the protocol (a name, a worker id, a deployment slot); no format is imposed. Optional: an empty/absent value attributes the trace to a single 'unattributed' agent for the owning org, which is never rejected but makes that org's agent count a floor rather than an exact figure.",
+      "default": "",
+      "maxLength": 128
+    },
     "profile": {
       "type": "string",
       "description": "Optional name of a domain-specific extension profile that governs the `extensions` payload (e.g. 'code-review' for the Alpha/A/B/Omega/Lambda pipeline shipped in SKILL.md).",

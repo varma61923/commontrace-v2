@@ -690,16 +690,33 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
 
     period = rows[0]["period"]
     print(f"billing period {period} (UTC)")
-    print(f"{'organization':<26} {'plan':<9} {'traces':>14} "
+    print(f"{'organization':<26} {'plan':<9} {'agents':>12} {'traces':>14} "
           f"{'commons q':>12} {'granted':>8} {'earned':>7} {'hits':>6}")
-    print("-" * 88)
+    print("-" * 101)
+    any_floor = False
+    total_agents = 0
     for org, r in zip(orgs, rows):
         q = r["commons_queries"]
+        a = r["agents"]
+        any_floor = any_floor or a["is_floor"]
+        total_agents += a["active"]
+        # A trailing '+' marks a floor: this org has traces from clients
+        # that sent no agent_id, so its real agent count is at least this.
+        agents = f"{a['active']:,}{'+' if a['is_floor'] else ''}/{plans.describe(a['limit'])}"
         traces = f"{r['traces']['used']:,}/{plans.describe(r['traces']['limit'])}"
         used = f"{q['used']:,}/{plans.describe(q['allowance'])}"
-        print(f"{org.name[:25]:<26} {r['plan']:<9} {traces:>14} "
+        print(f"{org.name[:25]:<26} {r['plan']:<9} {agents:>12} {traces:>14} "
               f"{used:>12} {plans.describe(q['granted']):>8} "
               f"{q['earned']:>7,} {r['delivered_hits']:>6,}")
+    print()
+    print(f"agents under management (all orgs): {total_agents:,}"
+          f"{'+ -- see below' if any_floor else ''}")
+    print(f"'agents' counts distinct agent_ids active in the last {plans.ACTIVE_AGENT_WINDOW_DAYS} "
+          "days, so it can fall as well as rise.")
+    if any_floor:
+        print("A trailing '+' is a FLOOR, not a total: that org has traces whose client sent no")
+        print("agent_id, and they collapse into one 'unattributed' agent however many really sent")
+        print("them. Have those clients pass agent_id to make the number exact.")
     print()
     print(f"'earned' is allowance nobody paid for: {plans.QUERY_CREDIT_PER_HIT} commons queries "
           "per time this org's")

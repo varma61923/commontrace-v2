@@ -215,6 +215,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         solution_text: str,
         tags: list[str] | None = None,
         agent_type: str = "",
+        agent_id: str = "",
         idempotency_key: str | None = None,
     ) -> dict:
         """Contribute a new trace. Returns its id and quarantine status.
@@ -225,6 +226,15 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         result instead of creating a duplicate trace. Reusing a key with a
         different payload is rejected as a conflict rather than silently
         returning the wrong trace.
+
+        `agent_id` identifies WHICH agent produced this trace, as opposed to
+        `agent_type`, which is the kind of agent it is ("support", "code").
+        A fleet of 25 support agents shares one agent_type, so only agent_id
+        can answer how many agents an org runs -- the number its plan's
+        agent limit is enforced against. Optional and backward compatible:
+        omitting it attributes the trace to a single 'unattributed' agent
+        for that org, which is never refused but also cannot be counted
+        precisely, so the org's reported agent count becomes a floor.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -239,6 +249,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     solution_text=solution_text,
                     tags=tags,
                     agent_type=agent_type,
+                    agent_id=agent_id,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,
                 )

@@ -23,9 +23,9 @@ import hashlib
 import math
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -306,6 +306,125 @@ async def _reserve_trace_slot(session: AsyncSession, org_id: str, plan: plans.Pl
         )
 
 
+def _active_agent_cutoff(now: datetime | None = None) -> datetime:
+    """Start of the trailing window an agent must have written in to count."""
+    return (now or datetime.now(timezone.utc)) - timedelta(days=plans.ACTIVE_AGENT_WINDOW_DAYS)
+
+
+async def agents_under_management(session: AsyncSession, org_id: str) -> dict:
+    """How many distinct agents this org actually runs -- the expansion
+    variable STRATEGY.md §12.6 concludes the business should be measured on.
+
+    Returns the count plus the evidence for reading it honestly. `active`
+    is a FLOOR whenever `unattributed_traces` is non-zero: those traces
+    came from clients that sent no agent_id, and an unknown number of real
+    agents hides behind the single sentinel they collapse into. Callers
+    render `is_floor` rather than deciding on their own whether to trust
+    the number -- the same treatment the commons coverage percentage gets,
+    and for the same reason: a floor quoted as a total is how a measurement
+    turns into a claim nobody can defend.
+
+    Scoped by org_id in the WHERE clause like every other read path here
+    (hub/tests/test_tenant_isolation.py).
+    """
+    cutoff = _active_agent_cutoff()
+    named = int(await session.scalar(
+        select(func.count(distinct(Trace.agent_id))).where(
+            Trace.org_id == org_id,
+            Trace.created_at >= cutoff,
+            Trace.agent_id != "",
+        )
+    ) or 0)
+    unattributed_traces = int(await session.scalar(
+        select(func.count()).select_from(Trace).where(
+            Trace.org_id == org_id,
+            Trace.created_at >= cutoff,
+            Trace.agent_id == "",
+        )
+    ) or 0)
+    return {
+        "active": named + (1 if unattributed_traces else 0),
+        "named": named,
+        "unattributed_agent_id": plans.UNATTRIBUTED_AGENT_ID,
+        "unattributed_traces": unattributed_traces,
+        "is_floor": unattributed_traces > 0,
+        "window_days": plans.ACTIVE_AGENT_WINDOW_DAYS,
+    }
+
+
+async def _reserve_agent_slot(
+    session: AsyncSession, org_id: str, plan: plans.Plan, agent_id: str
+) -> None:
+    """Enforce plan.max_agents -- but only against a NEW agent.
+
+    The rule this implements, and the reason it is not simply
+    "count >= limit -> refuse":
+
+        An org at its cap must keep serving the fleet it already has.
+
+    Refusing writes from agents that are already active would convert a
+    commercial limit into a production outage for a paying customer, in a
+    system they are running live traffic through. So the cap blocks
+    EXPANSION -- registering an agent the org was not already running --
+    and never blocks OPERATION. hub/tests/test_agents.py pins this.
+
+    Two other refusals are deliberately absent:
+
+    * An unattributed write (no agent_id) is never refused. It cannot be
+      attributed to a *new* agent because it cannot be attributed at all,
+      and rejecting it would break every client written before agent
+      identity existed for a metering concern its author never saw.
+    * Nothing here is refused for an org over its cap because the LIMIT
+      was lowered (a downgrade). Those agents are already active; the same
+      "never break a running fleet" rule applies, and the overage shows up
+      in `manage usage` for a human to act on rather than as writes
+      failing in production.
+
+    Concurrency: the fast path -- an agent that is already active -- takes
+    no lock at all, which matters because that is nearly every call once a
+    fleet is running. Only a genuinely new agent pays for the
+    SELECT ... FOR UPDATE on the org row, and it re-checks *after*
+    acquiring it, so two concurrent registrations of the same new agent
+    cannot both pass the count. Same lock and same reasoning as
+    _reserve_trace_slot; a different org's row lock never blocks this one.
+    """
+    if plan.max_agents == plans.UNLIMITED or not agent_id:
+        return
+
+    cutoff = _active_agent_cutoff()
+
+    async def _already_active() -> bool:
+        return await session.scalar(
+            select(Trace.id).where(
+                Trace.org_id == org_id,
+                Trace.created_at >= cutoff,
+                Trace.agent_id == agent_id,
+            ).limit(1)
+        ) is not None
+
+    if await _already_active():
+        return
+
+    await session.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+    # Re-check under the lock: another transaction may have registered this
+    # very agent between the unlocked check above and the lock being granted.
+    if await _already_active():
+        return
+
+    active = (await agents_under_management(session, org_id))["active"]
+    if not plans.within(plan.max_agents, active):
+        raise plans.EntitlementExceeded(
+            metric="agents", limit=plan.max_agents, used=active, plan=plan.name,
+            remedy=(
+                f"'{agent_id}' would be a new agent. Agents already active in the last "
+                f"{plans.ACTIVE_AGENT_WINDOW_DAYS} days keep working; retire one, or move "
+                "to a plan with more agents."
+            ),
+        )
+
+
 async def entitlements(session: AsyncSession, org_id: str) -> dict:
     """Everything an org is entitled to and has used this period.
 
@@ -334,6 +453,7 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
                          else max(0, allowance - used),
         },
         "traces": {"used": traces, "limit": plan.max_traces},
+        "agents": {**(await agents_under_management(session, org_id)), "limit": plan.max_agents},
         "delivered_hits": hits,
     }
 
@@ -432,6 +552,7 @@ async def contribute_trace(
     solution_text: str,
     tags: list[str] | None = None,
     agent_type: str = "",
+    agent_id: str = "",
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
 ) -> dict:
@@ -461,6 +582,14 @@ async def contribute_trace(
     if idempotency_key is not None and len(idempotency_key) > 128:
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
 
+    # Trace.agent_id is String(128). Checked here for the same reason
+    # idempotency_key is above: left to the INSERT, an over-long value
+    # raises asyncpg.StringDataRightTruncation (a DataError, not an
+    # IntegrityError), which no handler below catches, so a malformed
+    # request surfaces as an opaque HTTP 500 instead of a clean rejection.
+    if len(agent_id) > 128:
+        raise TraceRejected(f"agent_id exceeds 128 chars ({len(agent_id)})")
+
     if idempotency_key is not None:
         existing = (
             await session.execute(
@@ -480,6 +609,10 @@ async def contribute_trace(
     # a safe retry into a failure exactly when the org is at its cap.
     plan = await _plan_for(session, org_id)
     await _reserve_trace_slot(session, org_id, plan)
+    # After the storage check and after the idempotent-replay path, for the
+    # same reason: a replay registers no new agent, so refusing it at the
+    # agent cap would turn a safe retry into a failure.
+    await _reserve_agent_slot(session, org_id, plan, agent_id)
 
     candidate_id = str(uuid.uuid4())
     wire = {
@@ -502,6 +635,7 @@ async def contribute_trace(
         solution_text=solution_text,
         tags=tags,
         agent_type=agent_type,
+        agent_id=agent_id,
         quarantined=reason is not None,
         quarantine_reason=reason or "",
         idempotency_key=idempotency_key,

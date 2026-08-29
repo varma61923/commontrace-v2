@@ -145,6 +145,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a skill is relevant — and a test now enforces the limit.
 
 ### Added
+- **Agents under management: the expansion meter, and the per-agent pricing
+  it makes enforceable.** STRATEGY.md §12.6 concludes the variable to run
+  this business on is "agents under management, not logos", and §13.1
+  asserted it was already measurable. It was not. The Hub metered traces
+  stored and commons queries and had no concept of an agent at all:
+  `Trace.agent_type` is a CATEGORY (`support`, `sales`), so a fleet of 25
+  support agents shared one value, `Plan` had no agent field, and a grep
+  for `agent_id`/`max_agents` across the repository returned nothing. The
+  per-agent tiers being sold (5 / 25 / unlimited) were unenforceable, and
+  the metric the strategy names as decisive could not be computed — the
+  same class of defect as the `--occasion-id` gap §13 found by checking a
+  confident claim.
+
+  Adds `Trace.agent_id` (protocol schema, CLI `capture --agent-id`, MCP
+  `contribute_trace`, and the `sync` payload), `Plan.max_agents`,
+  `crud.agents_under_management`, and per-org reporting in `manage usage`.
+  Three design properties are load-bearing and are tested as such:
+
+  - **Active in a trailing 30-day window, not distinct all-time.** An
+    all-time count can only rise, so it could never show churn and would
+    bill forever for a decommissioned agent. Retiring an agent frees its
+    slot, exactly as purging frees storage allowance.
+  - **The cap blocks expansion, never operation.** Enforcement runs only
+    against a *new* agent; an org at its limit keeps serving every agent it
+    already runs, and a plan downgrade below current fleet size does not
+    break that fleet. Refusing the wrong write here would turn a commercial
+    limit into a production outage, which is the one failure mode this
+    feature could plausibly have caused.
+  - **A floor, not a total, when `agent_id` is absent.** Legacy clients that
+    send none are never rejected, but their traces collapse into a single
+    `unattributed` agent; `manage usage` marks those orgs with a trailing
+    `+` instead of quoting the figure as exact.
+
+  STRATEGY.md §13.1 carries an inline correction recording that its claim
+  was false, following the same convention as §12.7.
+- **`maxLength` in `commontrace/validate.py`.** Required before the trace
+  schema could bound `agent_id` to the Hub's column width: the validator
+  enforces a deliberate subset and *raises* on an unknown keyword rather
+  than ignoring it, so an unimplemented constraint cannot ship as a silent
+  no-op. Its own test caught this. Over-long values now fail at `capture`
+  time rather than surviving on disk and being rejected later at `sync`.
 - **`commontrace taxonomy` / `commontrace impact` / `commontrace pilot` —
   the 30-day pilot's three leave-behinds, as real commands rather than a
   slide.** `taxonomy` groups recurring traces into a structured map of
