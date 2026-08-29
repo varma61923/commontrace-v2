@@ -5,6 +5,15 @@ per-org memory measurably cause better outcomes on this fleet's own work?**
 Every other link in that case is downstream of the answer. This is how to
 run it.
 
+**Want the bundled version of everything below?** `commontrace pilot` runs
+all three steps in one command — map the issues into a taxonomy, check how
+far the reinforcement loop below has progressed, and measure what changed
+(baseline-vs-current resolution rate plus the Impact Dashboard) — and ends
+in a yes/no gate that prefers the causal result from this page whenever one
+exists. See `commontrace pilot --help`, or `commontrace taxonomy` /
+`commontrace impact` for the two report halves on their own. It does not
+replace the loop below; it reports on where the loop currently stands.
+
 It is a randomized controlled experiment, not a before/after comparison,
 and the difference is the whole point. Every other number this repo
 produces — including `reliability`'s `lift` — is correlational, and the

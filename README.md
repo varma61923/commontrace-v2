@@ -259,6 +259,30 @@ Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 outcome data behind the outcome metrics (§ [Outcome Metrics](#outcome-metrics)
 below) — all optional, all additive to the base capture.
 
+### 10 — Run the pilot as one command: map, measure, and a yes/no
+
+```bash
+commontrace taxonomy      # "Map the issues": a structured map of the failure patterns found
+commontrace impact        # Impact Dashboard: errors avoided, lessons reused, value generated/saved
+commontrace pilot         # all of the above + baseline-vs-current resolution rate + a yes/no gate
+commontrace pilot --html  # a self-contained report written to memory/benchmark_reports/
+```
+
+`taxonomy` reuses `distill`'s clustering but never writes anything and does
+not exclude traces an existing lesson already covers — it shows the whole
+map, marking each recurring pattern **covered** (an active lesson references
+it) or a **gap**. `impact` counts errors avoided and lessons reused directly
+from the same retrieval evidence `reliability` reads (correlational, exactly
+like `reliability`'s `lift`); a dollar total is only ever computed from a
+`--cost-per-1k-tokens`/`--value-per-error-avoided` rate you supply — omit
+both and it reports the measured counts with no dollar figure attached,
+matching [the Plans section below](#plans-and-what-they-actually-enforce)'s
+"no currency appears anywhere in this repository." `pilot` bundles both plus
+`bench --pilot`'s resolution-rate delta into one report, and its yes/no gate
+is deliberately conservative: a causal result from `commontrace experiment`
+(§9 above) always outranks a correlational one, and correlational data alone
+never earns an outright yes — see PILOT.md.
+
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.
@@ -828,8 +852,13 @@ commontrace-v2/
       lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
   commontrace/                 — The `commontrace` CLI (pip-installable client)
     cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py,
-    distill.py (Curator clustering), retrieval.py (lexical fallback ranker), import_data.py
-    commands/                  — init, install, capture, import, trace, distill, lesson, query, index, bench, sync, doctor
+    distill.py (Curator clustering), retrieval.py (lexical fallback ranker), import_data.py,
+    reliability.py + evidence_io.py (lesson scoring/contradictions), experiment.py (causal
+    holdout), taxonomy.py + impact.py + pilot.py (the 30-day pilot's three leave-behinds),
+    report_html.py (shared HTML shell for taxonomy/impact/pilot --html)
+    commands/                  — init, install, capture, import, trace, distill, lesson, query,
+                                  index, bench, reliability, experiment, taxonomy, impact, pilot,
+                                  sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
   pyproject.toml               — packaging config for the `commontrace` CLI. Currently

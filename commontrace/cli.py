@@ -11,15 +11,18 @@ from commontrace.commands import (
     distill_cmd,
     doctor_cmd,
     experiment_cmd,
+    impact_cmd,
     import_cmd,
     index_cmd,
     init_cmd,
     install_cmd,
     lesson_cmd,
     overlap_cmd,
+    pilot_cmd,
     query_cmd,
     reliability_cmd,
     sync_cmd,
+    taxonomy_cmd,
     trace_cmd,
 )
 from commontrace.frontmatter import FrontmatterError
@@ -39,6 +42,9 @@ _SUBCOMMANDS = [
     bench_cmd,
     reliability_cmd,
     experiment_cmd,
+    taxonomy_cmd,
+    impact_cmd,
+    pilot_cmd,
     sync_cmd,
     doctor_cmd,
 ]

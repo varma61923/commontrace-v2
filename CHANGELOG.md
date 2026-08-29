@@ -145,6 +145,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a skill is relevant — and a test now enforces the limit.
 
 ### Added
+- **`commontrace taxonomy` / `commontrace impact` / `commontrace pilot` —
+  the 30-day pilot's three leave-behinds, as real commands rather than a
+  slide.** `taxonomy` groups recurring traces into a structured map of
+  failure patterns (reusing `distill`'s clustering, but read-only and
+  showing coverage status rather than writing candidate lessons). `impact`
+  is the Impact Dashboard: errors avoided and lessons reused, counted
+  directly from the same retrieval evidence `commontrace reliability`
+  reads (not modeled), plus a dollar estimate that is only ever computed
+  from a `--cost-per-1k-tokens`/`--value-per-error-avoided` rate the
+  caller supplies explicitly — matching `hub/plans.py`'s "no currency
+  appears anywhere in this repository, and that is deliberate"; omit both
+  flags and it reports the measured counts with no dollar figure at all.
+  `pilot` bundles both plus the baseline-vs-current resolution rate
+  (`bench --pilot`) into one report ending in a yes/no gate, and the gate
+  is conservative by construction: a randomized-holdout result
+  (`commontrace experiment`) always outranks a correlational one, and
+  correlational data alone tops out at "LIKELY -- not yet causal," never
+  an outright yes. All three support `--json` and `--html` (a
+  self-contained styled report written to `memory/benchmark_reports/`,
+  the same convention `bench --pilot --html` already uses).
 - **`python -m hub.smoke` — post-deploy verification against a live server.**
   CI proves the code and the compose stack work; it cannot prove *your*
   deployment works — your TLS terminator, your managed Postgres, your
