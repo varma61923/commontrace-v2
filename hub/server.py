@@ -179,8 +179,10 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
             "account_usage reports your plan and usage. All operations are scoped to "
             "your organization's own traces (hub/README.md 'Tenant isolation'). "
-            + ("share_trace/unshare_trace/commons_overlap add opt-in cross-org sharing "
-               "on top of that."
+            + ("share_trace/unshare_trace/commons_overlap/commons_search add opt-in "
+               "cross-org sharing on top of that: commons_search looks up ranked "
+               "candidate answers to one failure, commons_overlap reports the "
+               "conservative coverage fraction across many."
                if config.commons_enabled else
                "This deployment has HUB_COMMONS_ENABLED=false: no cross-org sharing "
                "tools exist on this server.")
@@ -409,6 +411,44 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                         session, org_id, failures or [],
                         threshold=threshold, include_matches=include_matches,
                         agent_type=agent_type,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
+        @mcp.tool()
+        async def commons_search(
+            query_signature: list[int] | None = None,
+            limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
+            agent_type: str = "",
+        ) -> dict:
+            """Ask the commons what it already knows about ONE failure, and get
+            back ranked candidate answers with their solutions.
+
+            This is the knowledge-base lookup: "has anyone solved this?".
+            `commons_overlap` answers the different, quotable question "what
+            FRACTION of my failures are solved" and buys 0% false positives
+            with a threshold that discards about nine of every ten real
+            answers. This tool ranks instead, and finds the right record
+            89.1% of the time at rank 1 and 100% within the top 10 on the
+            held-out evaluation (commons/eval/RESULTS.md).
+
+            Send one MinHash signature, generated locally by `commontrace
+            commons sign` -- no failure text leaves your machine, exactly as
+            with commons_overlap. Your own traces are excluded from the
+            corpus, and what comes back is drawn only from traces whose
+            owners explicitly shared them.
+
+            Results are CANDIDATES TO JUDGE, never coverage: a failure the
+            commons does not contain still returns a non-empty list every
+            time. Do not derive a percentage from this tool -- that is what
+            commons_overlap is for.
+            """
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return await crud.commons_search(
+                        session, org_id, query_signature or [],
+                        limit=limit, agent_type=agent_type,
                     )
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)

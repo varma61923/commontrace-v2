@@ -421,6 +421,31 @@ async def commons_overlap(
     return response
 
 
+async def commons_search(
+    hub_url: str,
+    api_key: str,
+    query_signature: list[int],
+    limit: int | None = None,
+    agent_type: str = "",
+) -> dict:
+    """Ask the Hub what it already knows about ONE failure, ranked.
+
+    Carries a MinHash signature only, exactly like commons_overlap -- the
+    failure text stays on this machine. What comes back are ranked
+    CANDIDATES with their solutions, not a coverage figure; see
+    hub/crud.py:commons_search for why the two are separate tools.
+    """
+    arguments: dict[str, Any] = {"query_signature": query_signature}
+    if limit is not None:
+        arguments["limit"] = limit
+    if agent_type:
+        arguments["agent_type"] = agent_type
+    response = await _call_tool(hub_url, api_key, "commons_search", arguments)
+    if response.get("error"):
+        raise HubConnectionError(f"commons_search failed: {response['error']}: {response.get('detail', '')}")
+    return response
+
+
 async def share_trace(hub_url: str, api_key: str, trace_id: str, rationale: str = "") -> dict:
     """Contribute one of your own Hub traces to the cross-org commons."""
     response = await _call_tool(

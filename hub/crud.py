@@ -1320,6 +1320,154 @@ async def commons_overlap(
     }
 
 
+_SEARCH_NOTE = (
+    "Ranked CANDIDATES, not coverage. Every result is a suggestion to judge, "
+    "the way a search engine's results are: on the held-out evaluation a "
+    "failure the commons does NOT contain still returns a non-empty list "
+    "100% of the time, and the score distributions of true and absent "
+    "matches overlap. Use `commons_overlap` -- thresholded, 0% false "
+    "positives -- for any figure you intend to quote. See "
+    "commons/eval/RESULTS.md."
+)
+
+
+async def commons_search(
+    session: AsyncSession,
+    org_id: str,
+    query_signature: object,
+    limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
+    agent_type: str = "",
+) -> dict:
+    """Ask the commons what it knows about one failure, and get back ranked
+    candidate answers -- the knowledge-base surface, as distinct from
+    `commons_overlap`'s coverage percentage.
+
+    WHY THIS EXISTS SEPARATELY FROM commons_overlap
+    -----------------------------------------------
+    They answer different questions and require opposite trades.
+    `commons_overlap` answers "what fraction of my failures has someone
+    already solved", emits a number a customer may quote, and therefore
+    buys 0% false positives with a threshold. That threshold was measured
+    to discard about nine of every ten real answers
+    (commons/eval/RESULTS.md), which is the correct price for a quotable
+    figure and the wrong price for looking something up.
+
+    This tool ranks instead of thresholding. Measured on the same corpus,
+    the same probes and the same signatures: 89.1% recall@1, 95.7%@5, 100%
+    within the top 10 (commons/eval/search_modes.py). The privacy
+    properties are unchanged -- the caller sends one MinHash signature,
+    no failure text leaves the fleet, and what comes back is drawn only
+    from traces their owners explicitly shared.
+
+    WHAT IT DELIBERATELY DOES NOT DO
+    --------------------------------
+    * It never reports coverage, and its result carries a note saying so.
+      Absent failures return a non-empty list every time.
+    * It does not credit `commons_hits`. A hit is the basis for contributor
+      value and for earned query allowance (hub/plans.py), and it is
+      supposed to mean "this trace covered someone's real failure" --
+      established at the conservative threshold. A search *candidate* is
+      not that, and crediting candidates would make the one metric that
+      resists filler trivially inflatable. Confirming that a candidate
+      actually helped is `vote_trace`, which is an explicit act by the
+      fleet it helped.
+
+    Scoping matches commons_overlap exactly: the caller's own traces are
+    excluded (the question is what you gain from everyone else) and
+    quarantined traces are excluded.
+    """
+    sig = commons.validate_query_signature(query_signature)
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise commons.CommonsInputError("limit must be an integer") from None
+    limit = max(1, min(limit, commons.MAX_SEARCH_CANDIDATES))
+
+    # Metered exactly like commons_overlap, and for the same reason: this is
+    # a call whose value comes from other orgs' contributions. Validation
+    # runs first so a malformed request is never a silently consumed query.
+    plan = await _plan_for(session, org_id)
+    if not plan.commons_access:
+        raise plans.EntitlementExceeded(
+            metric="commons_access", limit=0, used=0, plan=plan.name,
+            remedy="The commons is not included in this plan.",
+        )
+    allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
+    if allowance != plans.UNLIMITED:
+        await session.execute(
+            select(Organization.id).where(Organization.id == org_id).with_for_update()
+        )
+        used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
+        if not plans.within(allowance, used):
+            raise plans.EntitlementExceeded(
+                metric=METRIC_COMMONS_QUERIES, limit=allowance, used=used, plan=plan.name,
+                remedy=(
+                    "Share traces to the commons: every time your knowledge covers "
+                    f"another fleet's failure you earn {plans.QUERY_CREDIT_PER_HIT} "
+                    "more queries this period. Or move to a larger plan."
+                ),
+            )
+    await _meter(session, org_id, METRIC_COMMONS_QUERIES)
+
+    where = [
+        Trace.shared_with_commons.is_(True),
+        Trace.quarantined.is_(False),
+        Trace.commons_signature.isnot(None),
+        Trace.org_id != org_id,
+    ]
+    if agent_type:
+        where.append(Trace.agent_type == agent_type)
+
+    total_corpus = (
+        await session.execute(select(func.count()).select_from(Trace).where(*where))
+    ).scalar_one()
+
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*where)
+            .order_by(Trace.created_at.desc(), Trace.id.desc())
+            .limit(commons.max_corpus_scan())
+        )
+    ).scalars().all()
+
+    # Offloaded for the same reason commons_overlap offloads: a CPU-bound
+    # scan on the event loop starves every other request this process is
+    # serving, not just this one.
+    ranked = await asyncio.to_thread(
+        commons.rank_candidates, sig, [r.commons_signature or [] for r in rows], limit
+    )
+
+    # Similarity decides the order; delivered value and trust only break
+    # ties. Folding popularity into the score itself would let a
+    # well-corroborated answer to a DIFFERENT question outrank the right
+    # one, which is the failure mode a naive "rank by votes" blend has.
+    candidates = [
+        {
+            "rank": 0,
+            "similarity": round(sim, 4),
+            "commons_hits": rows[idx].commons_hits,
+            "trace": _to_commons_wire(rows[idx]),
+        }
+        for idx, sim in ranked
+    ]
+    candidates.sort(
+        key=lambda c: (-c["similarity"], -c["commons_hits"], -(c["trace"].get("trust") or 0.0))
+    )
+    for position, c in enumerate(candidates, start=1):
+        c["rank"] = position
+
+    return {
+        "n_candidates": len(candidates),
+        "n_commons_traces": len(rows),
+        "n_commons_traces_total": total_corpus,
+        "corpus_truncated": total_corpus > len(rows),
+        "candidates": candidates,
+        "note": _SEARCH_NOTE,
+    }
+
+
 # Measured, not estimated: against 46 held-out failures the corpus provably
 # contains, described in on-call vocabulary rather than the corpus's own,
 # the matcher found 5 -- with zero false positives across 22 deliberately

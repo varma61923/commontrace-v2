@@ -66,12 +66,12 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_ten_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_all_eleven_tools_present_by_default(self, enabled_config, session_factory):
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
             "amend_trace", "list_tags", "share_trace", "unshare_trace",
-            "commons_overlap", "account_usage",
+            "commons_overlap", "commons_search", "account_usage",
         }
 
 
@@ -81,6 +81,10 @@ class TestCommonsDisabled:
         assert "share_trace" not in names
         assert "unshare_trace" not in names
         assert "commons_overlap" not in names
+        # commons_search reads other orgs' shared traces exactly as
+        # commons_overlap does, so a deployment that turned cross-org
+        # sharing off must not acquire a second door to it.
+        assert "commons_search" not in names
 
     async def test_the_six_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
         names = await _tool_names(disabled_config, session_factory)

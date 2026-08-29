@@ -145,6 +145,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a skill is relevant — and a test now enforces the limit.
 
 ### Added
+- **`commons_search` / `commontrace commons ask` — the commons becomes a
+  knowledge base you can query, not just a meter that scores you.** The
+  positioning has always described a searchable, ranked corpus where "each
+  distinct problem need only be solved once". The commons shipped exactly
+  one query surface: `commons_overlap`, which thresholds and returns a
+  coverage *percentage* measured at 10.9% recall. There was no way to ask
+  it a question and get an answer.
+
+  §12.7 had shown that ranking rather than thresholding recovers the
+  answers, but it showed it with the per-org ranker, which reads query
+  **text** — so it did not transfer to a commons whose whole privacy
+  proposition is that text never leaves the fleet. The version that does
+  transfer was never measured. It is now
+  (`commons/eval/search_modes.py`, which reproduces the published 10.9% /
+  0% baseline exactly, validating the harness):
+
+  | | Recall@1 | @5 | @10 | Text sent? |
+  |---|---|---|---|---|
+  | Threshold (ships) | 10.9% | — | — | No |
+  | **Signature ranking** | **89.1%** | **95.7%** | **100%** | **No** |
+  | Text ranking (§12.7) | 84.8% | 95.7% | 95.7% | Yes |
+
+  **Ranking MinHash signatures beats ranking text at rank 1, with the
+  privacy guarantee fully intact.** The 10.9% was never the matcher or the
+  representation — it was purely the cutoff. Verified end to end against a
+  live Hub seeded with the shipped 46-record corpus: "customer charged
+  twice for one order" returns *Payment webhook delivered more than once*
+  at rank 1 with its solution, at similarity 0.125 — which
+  `commons report` correctly scores as **uncovered**, because a quoted
+  number must not over-claim.
+
+  Ships as a **separate** tool, deliberately. Ranked results are candidates
+  to judge and are never coverage: absent failures return a non-empty list
+  100% of the time and the score distributions overlap. `commons_overlap`'s
+  threshold, its 0% false-positive property, and every number it emits are
+  untouched. `commons_search` also does not credit `commons_hits` — that
+  metric is the basis for earned allowance and contributor value and means
+  "covered a real failure" at the conservative threshold; crediting
+  candidates would make the one number that cannot be self-dealt trivially
+  inflatable. It is metered as a commons query, absent when
+  `HUB_COMMONS_ENABLED=false`, and scoped exactly like `commons_overlap`
+  (own traces excluded, quarantined excluded, unshared never visible).
+
+  STRATEGY.md gains §11.4a: §11.4's "binding constraint" (recall above
+  ~60%, called a research task requiring embeddings and therefore a
+  privacy retraction) is **met for lookup at 89.1% with no privacy cost**.
+  It remains unmet for the coverage percentage, which is unchanged.
+  commons/eval/RESULTS.md's "the honest path forward" is narrowed
+  accordingly — embeddings are now an improvement to one number, not a
+  precondition for the commons being useful.
 - **Agents under management: the expansion meter, and the per-agent pricing
   it makes enforceable.** STRATEGY.md §12.6 concludes the variable to run
   this business on is "agents under management, not logos", and §13.1

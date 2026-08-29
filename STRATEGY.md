@@ -432,6 +432,58 @@ opens, it is an unvalidated hypothesis, and `commons-stats` deliberately
 reports contributing-orgs separately from seeded rows precisely so nobody —
 including us — can mistake operator seeding for a network effect.
 
+### 11.4a Update (2026-08-29): the gate's binding constraint was measured, and it does not bind
+
+§11.4 below names three conditions, and calls the first — "the instrument
+works", defined as recall above ~60% on the held-out set — *the binding
+constraint, and a research task, not a feature*. §11.1 reasoned that
+fixing it required semantic embeddings, which would retract the
+"failure text never leaves your fleet" guarantee, making condition 2
+(settle the privacy question first) unavoidable.
+
+**Measured, that chain does not hold.** §12.7 had already shown that
+ranking rather than thresholding recovers the answers — but it showed it
+using the per-org ranker, which reads query *text*, so it did not transfer
+to the commons. `commons/eval/search_modes.py` measures the version that
+does transfer: rank the commons's own **MinHash signatures**, no
+threshold, nothing but a signature on the wire.
+
+| | Recall@1 | @5 | @10 | Text leaves the fleet? |
+|---|---|---|---|---|
+| Threshold (what §11.1 measured) | 10.9% | — | — | No |
+| **Signature ranking** | **89.1%** | **95.7%** | **100%** | **No** |
+| Text ranking (§12.7) | 84.8% | 95.7% | 95.7% | Yes |
+
+Read against §11.4's own condition 1: **89.1% clears the ~60% bar it set,
+and clears it without touching the privacy guarantee** — so condition 2,
+which existed because the only known fix was embeddings, is moot for this
+surface. Signature ranking even beats text ranking at rank 1.
+
+**What this does and does not change.**
+
+- It does **not** improve the coverage *percentage*. That is still 10.9%
+  recall at the shipped threshold, still 0% false positives, and it is
+  untouched. Anything quoted to a customer still comes from there.
+- It **does** mean the commons can be useful without a trustworthy
+  coverage percentage, because the product surface becomes *lookup* —
+  "has anyone solved this?", answered with ranked candidates and their
+  solutions (`commons_search`) — rather than a number. That is the Stack
+  Overflow shape the positioning has always described, and the shape
+  §12.7 identified as the open question about the output contract.
+- The limit that keeps it honest is unchanged and is why the two tools
+  stay separate: absent failures return a non-empty list 100% of the time
+  and the score distributions overlap, so ranked results are candidates
+  to judge and are never coverage.
+
+So the honest status of the gate is: **condition 1 is met for lookup and
+unmet for coverage, and lookup is the surface that makes a commons worth
+joining.** Condition 3 — run the overlap report against real customer
+stores — is unchanged and still the thing that decides (B), and it is
+still gated on corpus, which §12.1 established comes from (A) at scale.
+§11.3's recommendation therefore stands: commit to (A), and note that
+(B)'s remaining cost just fell from "fund a research programme" to
+"accumulate a corpus", which (A) does as a byproduct.
+
 ### 11.4 The gate that would reopen (B)
 
 Three conditions, in order. All are falsifiable and none is a matter of

@@ -516,6 +516,52 @@ escalation policy, and qualification criteria are yours and always should
 be. CommonTrace cannot tell those apart — that judgment is yours, made
 explicitly per trace and recorded.
 
+### Ask the commons what it already knows
+
+```bash
+commontrace commons ask "customer charged twice for one order"
+```
+
+```
+## 1. Payment webhook delivered more than once
+*similarity 0.125 · trust 0.50 · code*
+
+**When it happens:** The payment provider re-delivers a webhook after a non-2xx
+or a timeout, so the handler runs twice and the customer is charged twice
+
+**Solution:** Persist the provider's event id and check it before any side
+effect. Make the handler idempotent at the write, not at the entry point.
+```
+
+This is the lookup — *"has anyone already solved this?"* — and it is a
+different question from the coverage percentage below, with a different
+answer shape and a different trade.
+
+Note the similarity on that result: **0.125, well under the 0.30 coverage
+threshold.** `commons commons report` scores that same failure as
+**uncovered**, because a number you quote to a customer must not
+over-claim. The knowledge was there the whole time; the meter was built to
+say no when unsure. Ranking the same signatures instead of thresholding
+them recovers it:
+
+| | Recall@1 | @5 | @10 | Failure text sent? |
+|---|---|---|---|---|
+| `commons report` (thresholded) | 10.9% | — | — | No |
+| **`commons ask` (ranked)** | **89.1%** | **95.7%** | **100%** | **No** |
+
+Measured on 46 held-out failures written in on-call vocabulary
+(`python commons/eval/search_modes.py`, recorded in
+[`commons/eval/RESULTS.md`](commons/eval/RESULTS.md)). Your question is
+MinHashed locally exactly as `sign` does it — **no failure text leaves your
+machine for either command.**
+
+**Results are candidates to judge, never coverage.** On the same
+evaluation, a failure the commons does *not* contain still comes back with
+a non-empty list 100% of the time, and the true/absent score distributions
+overlap. That is fine for a ranked list someone skims — a weak match costs
+a glance — and it is exactly why the coverage figure keeps its threshold
+and stays a separate command. Do not derive a percentage from `ask`.
+
 ### Ask what you'd gain, before contributing anything
 
 ```bash

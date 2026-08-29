@@ -68,6 +68,15 @@ DEFAULT_COMMONS_THRESHOLD = overlap.DEFAULT_MATCH_THRESHOLD
 MAX_SUBMITTED_FAILURES = 500
 MAX_LABEL_CHARS = 200
 
+# Ceiling on how many ranked candidates one commons_search returns.
+# Measured against the held-out probes (commons/eval/search_modes.py),
+# recall@10 is 100% and recall@5 is 95.7%, so a caller asking for more than
+# this is paying scan and payload cost for results past the point where the
+# answer is essentially always already present. Also bounds the response
+# size, since each candidate carries full solution text.
+MAX_SEARCH_CANDIDATES = 25
+DEFAULT_SEARCH_CANDIDATES = 5
+
 # Hard ceiling on how many query-credit hits ONE shared trace can earn from
 # ONE commons_overlap call. commons_hits (and the query allowance it earns
 # via QUERY_CREDIT_PER_HIT, see hub/plans.py) is credited once per submitted
@@ -178,25 +187,52 @@ def validate_submitted_failures(failures: object) -> list[tuple[str, list[int]]]
                 f"this Hub's commons uses num_perm={COMMONS_NUM_PERM}. "
                 "Re-sign with a matching width."
             )
-        sig: list[int] = []
-        for v in raw_sig:
-            # bool is an int subclass; a signature of booleans is a client bug.
-            # Range-checked to the uint64 domain MinHash signatures actually
-            # live in, not just type-checked: a value outside it still
-            # "is an int" but breaks the numpy path (`_np.array(..., dtype=
-            # uint64)` raises OverflowError on a negative or >2**64-1 value,
-            # surfacing as an unhandled 500) and silently wraps on the
-            # pure-Python path instead, so the two implementations would
-            # disagree on the exact same input depending on which one this
-            # host happens to run.
-            if not isinstance(v, int) or isinstance(v, bool) or not (0 <= v <= 2**64 - 1):
-                raise CommonsInputError(
-                    f"failures[{i}].signature must contain only integers in [0, 2**64 - 1]"
-                )
-            sig.append(v)
+        sig = _coerce_signature(raw_sig, f"failures[{i}].signature")
         label = str(item.get("label") or f"failure-{i}")[:MAX_LABEL_CHARS]
         out.append((label, sig))
     return out
+
+
+def _coerce_signature(raw_sig: object, field: str) -> list[int]:
+    """Validate one MinHash signature. Shared by every entry point that
+    accepts one, so the width and range rules cannot drift between them --
+    the same reason this module imports the hashing rather than
+    reimplementing it. A signature that passes one surface and fails
+    another is exactly the silent, confidently-wrong-number failure this
+    file's docstring exists to prevent.
+    """
+    if not isinstance(raw_sig, (list, tuple)):
+        raise CommonsInputError(f"{field} must be a list of integers")
+    if len(raw_sig) != COMMONS_NUM_PERM:
+        # A different width is not a comparison that can be salvaged --
+        # estimate_jaccard would compare mismatched positions and return
+        # a confident, meaningless number.
+        raise CommonsInputError(
+            f"{field} has {len(raw_sig)} values; this Hub's commons uses "
+            f"num_perm={COMMONS_NUM_PERM}. Re-sign with a matching width."
+        )
+    sig: list[int] = []
+    for v in raw_sig:
+        # bool is an int subclass; a signature of booleans is a client bug.
+        # Range-checked to the uint64 domain MinHash signatures actually
+        # live in, not just type-checked: a value outside it still
+        # "is an int" but breaks the numpy path (`_np.array(..., dtype=
+        # uint64)` raises OverflowError on a negative or >2**64-1 value,
+        # surfacing as an unhandled 500) and silently wraps on the
+        # pure-Python path instead, so the two implementations would
+        # disagree on the exact same input depending on which one this
+        # host happens to run.
+        if not isinstance(v, int) or isinstance(v, bool) or not (0 <= v <= 2**64 - 1):
+            raise CommonsInputError(f"{field} must contain only integers in [0, 2**64 - 1]")
+        sig.append(v)
+    return sig
+
+
+def validate_query_signature(signature: object) -> list[int]:
+    """Coerce and bound the single signature `commons_search` compares
+    against the corpus. Same rules as a submitted failure's signature,
+    enforced by the same code."""
+    return _coerce_signature(signature, "query_signature")
 
 
 def estimate(sig_a: list[int], sig_b: list[int]) -> float:
@@ -245,3 +281,60 @@ def best_matches(
                 best_idx, best_sim = i, sim
         out.append((best_idx, best_sim))
     return out
+
+
+def rank_candidates(
+    query_signature: list[int],
+    corpus_signatures: list[list[int]],
+    top_k: int,
+) -> list[tuple[int, float]]:
+    """The SAME comparison as best_matches, ranked and truncated instead of
+    thresholded: [(corpus_index, similarity), ...] best first, zero-scored
+    records dropped.
+
+    This is the whole difference between a coverage meter and a knowledge
+    base, and it is worth being precise about why it is not a tuning change.
+    Measured on the shipped corpus and the held-out probes
+    (commons/eval/search_modes.py, recorded in commons/eval/RESULTS.md):
+
+        thresholded coverage   10.9% recall,  0% false positives
+        ranked candidates      89.1% recall@1, 95.7%@5, 100%@10
+
+    Same signatures, same estimator, same corpus, same privacy properties --
+    the caller still sends only a MinHash signature and no failure text.
+    What the threshold was discarding was nine of every ten real answers.
+
+    The reason this may never be reported as coverage: on those same
+    probes, a failure the corpus does NOT contain still returns a non-empty
+    ranked list 100% of the time, and the score distributions overlap (true
+    match median 0.148, absent median 0.078, both ranging down to 0.039).
+    The score separates on average, not case by case. So these are
+    candidates for a human or agent to judge, exactly like a search
+    engine's results -- and `commons_overlap`'s conservative, thresholded
+    percentage remains the only thing this system will call coverage.
+
+    Ordering: similarity first, then delivered value (commons_hits) and
+    trust as tie-breaks, applied by the caller. Popularity never overrides
+    relevance -- a well-corroborated answer to a different question
+    outranking the right answer is the specific failure a naive
+    "rank by votes" blend produces.
+    """
+    if not corpus_signatures or top_k <= 0:
+        return []
+
+    if _np is not None:
+        corpus = _np.array(corpus_signatures, dtype=_np.uint64)
+        sims = (corpus == _np.array(query_signature, dtype=_np.uint64)).sum(axis=1) / COMMONS_NUM_PERM
+        # argpartition would be cheaper asymptotically, but top_k is small
+        # and bounded (MAX_SEARCH_CANDIDATES) while the corpus scan above it
+        # is already bounded too; a full argsort here is simpler to reason
+        # about and never the hot spot.
+        order = _np.argsort(-sims, kind="stable")[:top_k]
+        return [(int(i), float(sims[i])) for i in order if float(sims[i]) > 0.0]
+
+    scored = [(i, estimate(query_signature, c)) for i, c in enumerate(corpus_signatures)]
+    scored = [(i, s) for i, s in scored if s > 0.0]
+    # Stable sort on the negated score keeps corpus order as the tie-break,
+    # matching numpy's kind="stable" above so the two paths agree exactly.
+    scored.sort(key=lambda x: -x[1])
+    return scored[:top_k]

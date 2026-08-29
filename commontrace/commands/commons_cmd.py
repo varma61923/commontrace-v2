@@ -88,6 +88,31 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rep.add_argument("--dest", default=None)
     rep.set_defaults(func=run_report)
 
+    ask = sub.add_parser(
+        "ask",
+        help="Ask the commons what it already knows about one failure, in your own "
+        "words. Returns ranked candidate answers -- the lookup, not the coverage %.",
+    )
+    ask.add_argument(
+        "question",
+        help="The failure, described however you would describe it to a colleague. "
+        "Signed locally: the text never leaves this machine.",
+    )
+    ask.add_argument(
+        "--limit", type=int, default=None,
+        help="How many candidates to return (default 5). Measured recall is 89.1%% at "
+        "rank 1 and 100%% within the top 10.",
+    )
+    ask.add_argument(
+        "--agent-type", default="",
+        help="Narrow the corpus to one kind of agent (a support fleet's failures "
+        "should not be scored against CUDA substrate).",
+    )
+    ask.add_argument("--json", action="store_true", help="Emit raw JSON instead of markdown.")
+    ask.add_argument("--hub-url", default=None, help="Default: $COMMONTRACE_HUB_URL")
+    ask.add_argument("--hub-api-key", default=None, help="Default: $COMMONTRACE_HUB_API_KEY")
+    ask.set_defaults(func=run_ask)
+
     share = sub.add_parser(
         "share",
         help="Contribute one of your Hub traces to the commons (opt-in, revocable).",
@@ -380,6 +405,115 @@ def run_report(args: argparse.Namespace) -> int:
         return 1
 
     print(json.dumps(report, indent=2) if args.json else _render(report))
+    return 0
+
+
+def sign_question(question: str) -> list[int]:
+    """Sign a free-text question the same way a stored failure is signed.
+
+    Identical concatenation and identical `overlap.minhash` as
+    build_signatures(), because a question and a trace must land in the same
+    signature space or every similarity score is meaningless. A question has
+    no separate title/context/tags, so the whole string plays all three
+    roles -- which is exactly what build_signatures() does anyway once it
+    joins them with spaces.
+    """
+    return overlap.minhash(question, COMMONS_NUM_PERM)
+
+
+def _render_candidates(result: dict, question: str) -> str:
+    candidates = result.get("candidates") or []
+    lines = [f"# Commons: {question}", ""]
+
+    if not candidates:
+        total = result.get("n_commons_traces_total", 0)
+        if not total:
+            lines.append(
+                "The commons is empty (no org has shared a trace this Hub can offer you "
+                "yet), so there is nothing to search. This is a cold start, not a finding."
+            )
+        else:
+            lines.append(
+                f"No candidate shared a single content word with your question, across "
+                f"{total:,} commons trace(s). Matching is lexical, so try the wording an "
+                "on-call engineer would use for the symptom."
+            )
+        return "\n".join(lines)
+
+    lines.append(
+        f"**{len(candidates)} candidate answer(s)** from {result.get('n_commons_traces', 0):,} "
+        "shared traces. Ranked by similarity — judge them, do not assume them."
+    )
+    lines.append("")
+
+    for c in candidates:
+        trace = c.get("trace") or {}
+        title = trace.get("title") or "(untitled)"
+        lines.append(f"## {c.get('rank', '?')}. {title}")
+        sim = c.get("similarity")
+        bits = [f"similarity {sim:.3f}" if isinstance(sim, (int, float)) else "similarity ?"]
+        hits = c.get("commons_hits")
+        if hits:
+            # The Stack-Overflow-shaped corroboration signal: this answer has
+            # demonstrably covered other fleets' real failures before.
+            bits.append(f"has covered {hits:,} other fleet failure(s)")
+        trust = trace.get("trust")
+        if isinstance(trust, (int, float)) and trust:
+            bits.append(f"trust {trust:.2f}")
+        if trace.get("agent_type"):
+            bits.append(str(trace["agent_type"]))
+        lines.append("*" + " · ".join(bits) + "*")
+        lines.append("")
+        if trace.get("context_text"):
+            lines.append(f"**When it happens:** {trace['context_text']}")
+            lines.append("")
+        if trace.get("solution_text"):
+            lines.append(f"**Solution:** {trace['solution_text']}")
+            lines.append("")
+        if trace.get("tags"):
+            lines.append("`" + "` `".join(str(t) for t in trace["tags"]) + "`")
+            lines.append("")
+
+    if result.get("corpus_truncated"):
+        lines.append(
+            f"*Searched the {result.get('n_commons_traces', 0):,} most recent of "
+            f"{result.get('n_commons_traces_total', 0):,} commons traces (per-query scan limit). "
+            "Narrow with --agent-type for a tighter search.*"
+        )
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(f"*{result.get('note', '')}*")
+    return "\n".join(lines)
+
+
+def run_ask(args: argparse.Namespace) -> int:
+    question = (args.question or "").strip()
+    if not question:
+        print("[commontrace] ask what? Pass the failure as a quoted argument.", file=sys.stderr)
+        return 1
+
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+
+    if not args.json:
+        print("[commontrace] signing your question locally -- the text does not leave "
+              "this machine.\n")
+
+    try:
+        result = asyncio.run(
+            hub_client.commons_search(
+                hub_url, api_key, sign_question(question),
+                limit=args.limit, agent_type=args.agent_type,
+            )
+        )
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, indent=2) if args.json else _render_candidates(result, question))
     return 0
 
 

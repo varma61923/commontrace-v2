@@ -129,16 +129,65 @@ the score separates on average, not case by case. Any such output has to be
 labelled candidates-to-judge, not coverage. The shipped coverage number and
 its threshold are unchanged by this finding.
 
-## The honest path forward
+## Ranking the commons itself: measured, and it costs no privacy
 
-Recall is a representation problem, and the fix is semantic rather than
-lexical similarity — embedding each failure and comparing vectors. That is
-a real change, not a tweak, because **it breaks the current privacy
-story**: MinHash signatures are exchanged today precisely because failure
-text never leaves the fleet, and an embedding is computed by a model that
-has to see the text. Any move in that direction has to answer where the
-model runs before it answers whether recall improves. That work is not
-done, and this file does not pretend a number exists for it.
+The section above measured the *per-org* ranker, which reads query **text**.
+The commons cannot: its entire privacy proposition is that failure text
+never leaves the fleet, only MinHash signatures do. So that result did not
+transfer to the commons for free, and the question it left open — what does
+ranking the commons's own **signatures**, with no threshold, actually
+recover? — was never measured.
+
+`python commons/eval/search_modes.py` measures it, on this corpus and these
+probes. It reproduces the 10.9% / 0% baseline above exactly, which is what
+validates the harness:
+
+| | Recall@1 | @3 | @5 | @10 | Text leaves the fleet? |
+|---|---|---|---|---|---|
+| Threshold (`commons_overlap`, ships) | 10.9% | — | — | — | No |
+| **Signature ranking (`commons_search`)** | **89.1%** | **91.3%** | **95.7%** | **100%** | **No** |
+| Text ranking (`rank_lessons`, above) | 84.8% | 89.1% | 95.7% | 95.7% | **Yes** |
+
+**Signature ranking beats text ranking at rank 1 while keeping the privacy
+guarantee completely intact.** Same signatures, same estimator, same corpus
+as the shipped coverage query — the only difference is ranking instead of
+thresholding.
+
+**This retires "the honest path forward" as previously written here.** That
+paragraph said recall is a representation problem whose fix is semantic
+embeddings, and that embeddings break the privacy story. The first half is
+now measurably wrong for *lookup*: the representation recovers 89–100% of
+the answers once the cutoff is removed, so nothing about embeddings is
+required to get value out of this corpus. The second half stands and is
+unchanged — if embeddings are ever pursued, where the model runs is still
+the question to answer first.
+
+What remains true, and is why `commons_search` is a separate tool rather
+than a change to `commons_overlap`:
+
+- **Absent failures return a non-empty list 100% of the time** at every k.
+- **The score distributions overlap** — true-match top-1 median 0.148
+  (range 0.039–0.375), absent median 0.078 (range 0.039–0.203).
+
+So ranked results are candidates to judge and can never be reported as
+coverage. The shipped coverage number, its threshold, and its 0%
+false-positive property are untouched by this finding.
+
+## The honest path forward for the coverage *number*
+
+Recall **of the thresholded coverage figure** is a representation problem,
+and the fix is semantic rather than lexical similarity — embedding each
+failure and comparing vectors. That is a real change, not a tweak, because
+**it breaks the current privacy story**: MinHash signatures are exchanged
+today precisely because failure text never leaves the fleet, and an
+embedding is computed by a model that has to see the text. Any move in that
+direction has to answer where the model runs before it answers whether
+recall improves. That work is not done, and this file does not pretend a
+number exists for it.
+
+Note what the section above changes about the *urgency* of that work: it is
+now an improvement to one number, not a precondition for the commons being
+useful at all.
 
 ## Limits of this evaluation — read before quoting anything above
 
