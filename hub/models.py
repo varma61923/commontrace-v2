@@ -89,6 +89,25 @@ class Organization(Base):
     # judged worth publishing.
     bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
+    #
+    # A two-call design, deliberately: `request_account_deletion` alone
+    # never deletes anything, it only stores a hashed confirmation token and
+    # a window during which `confirm_account_deletion` may present the raw
+    # token to actually execute the purge. This answers the question
+    # hub/README.md's Operator CLI section originally left open --
+    # "should a single compromised key be able to wipe an org's entire
+    # trace history with no confirmation step?" -- with no: a second,
+    # differently-named call is required, and it cannot succeed before
+    # `crud.DELETION_GRACE_SECONDS` has elapsed, which is deliberately long
+    # enough for an operator watching the audit log (every request is
+    # recorded there) to revoke a compromised key first via
+    # `hub.manage revoke-key`. The raw token itself is never stored, only
+    # its hash -- same pattern as ApiKey.key_hash.
+    deletion_token_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 

@@ -201,8 +201,10 @@ re-display a key anyone has lost — rotate instead
       than never expiring.
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
-- [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — deletion is
-      operator-CLI-only by design.
+- [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
+      its own trace or its entire account self-service
+      (`delete_trace` / `request_account_deletion`), backed by an
+      operator-CLI path (`purge-trace`/`purge-org`) for when it can't.
 - [ ] If the CommonTrace Knowledge Base is not wanted for this deployment,
       do not call `commons-seed` or `approve-submission` — those are the
       only two things that ever put content into it (§13), so the corpus
@@ -218,7 +220,7 @@ re-display a key anyone has lost — rotate instead
 |---|---|
 | Rate limiting is per-process | §6, `hub/abuse.py` |
 | Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
-| No self-service data deletion (operator CLI only) | `DATA_RETENTION.md` |
+| No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
 | No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |

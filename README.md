@@ -938,7 +938,7 @@ tests, not left to convention:
 | Health checks | `/healthz` (liveness, no DB dependency — a database blip must not trigger a restart storm) and `/readyz` (readiness, real query). |
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
-| Data deletion | `manage.py purge-trace` / `purge-org` perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
+| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
 
 Before putting a client's data on it, work through the security checklist in

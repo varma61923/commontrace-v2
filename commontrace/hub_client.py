@@ -497,6 +497,57 @@ async def account_usage(hub_url: str, api_key: str) -> dict:
     return response
 
 
+async def delete_trace(hub_url: str, api_key: str, trace_id: str) -> bool:
+    """Permanently delete one of this org's own traces, and every trace in
+    its amendment chain. Irreversible. Returns False if no such trace
+    (including one belonging to another org)."""
+    response = await _call_tool(hub_url, api_key, "delete_trace", {"id": trace_id})
+    if response.get("error") == "not_found":
+        return False
+    if response.get("error"):
+        raise HubConnectionError(f"delete_trace failed: {response['error']}: {response.get('detail', '')}")
+    return bool(response.get("deleted"))
+
+
+async def request_account_deletion(hub_url: str, api_key: str) -> dict:
+    """Start permanently deleting this ENTIRE organization. Deletes
+    nothing by itself -- see hub/crud.py:request_org_deletion. Returns
+    {"confirmation_token", "confirm_not_before", "expires_at"}.
+    """
+    response = await _call_tool(hub_url, api_key, "request_account_deletion", {})
+    if response.get("error"):
+        raise HubConnectionError(
+            f"request_account_deletion failed: {response['error']}: {response.get('detail', '')}"
+        )
+    return response
+
+
+async def cancel_account_deletion(hub_url: str, api_key: str) -> bool:
+    """Cancel a pending request_account_deletion request. Returns False if
+    there was no pending request."""
+    response = await _call_tool(hub_url, api_key, "cancel_account_deletion", {})
+    if response.get("error"):
+        raise HubConnectionError(
+            f"cancel_account_deletion failed: {response['error']}: {response.get('detail', '')}"
+        )
+    return bool(response.get("cancelled"))
+
+
+async def confirm_account_deletion(hub_url: str, api_key: str, confirmation_token: str) -> None:
+    """The second call: permanently deletes this organization and
+    everything scoped to it. Irreversible. Raises HubConnectionError
+    (message carries 'deletion_not_ready') if called too soon, with a
+    mismatched/expired token, or with no pending request.
+    """
+    response = await _call_tool(
+        hub_url, api_key, "confirm_account_deletion", {"confirmation_token": confirmation_token}
+    )
+    if response.get("error"):
+        raise HubConnectionError(
+            f"confirm_account_deletion failed: {response['error']}: {response.get('detail', '')}"
+        )
+
+
 DEFAULT_MAX_PULL_RESULTS = 2000
 
 

@@ -141,6 +141,10 @@ CORE_TOOLS = [
     # the six org-scoped tools
     "amend_trace", "contribute_trace", "get_trace", "list_tags",
     "search_traces", "vote_trace",
+    # self-service deletion (hub/crud.py) -- org-scoped like the six above,
+    # unaffected by HUB_COMMONS_ENABLED
+    "delete_trace", "request_account_deletion", "cancel_account_deletion",
+    "confirm_account_deletion",
     # entitlements (hub/plans.py) -- unaffected by HUB_COMMONS_ENABLED,
     # since it reports an org's own plan and usage, never another org's data
     "account_usage",

@@ -21,11 +21,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import secrets
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, distinct, func, or_, select, update
+from sqlalchemy import and_, case, delete, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -879,6 +880,204 @@ async def vote_trace(
     # (contributor, extensions, outcome, ...), only to confirm the vote
     # registered and see the entry's current trust score.
     return _to_commons_wire(trace)
+
+
+async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
+    """Every trace id in `trace_id`'s amendment lineage: itself, every
+    trace it (transitively) supersedes, and every trace that (transitively)
+    supersedes it.
+
+    amend_trace creates a NEW row that carries most of the original's
+    content forward unchanged (see amend_trace below) -- title/context/
+    solution_text can be identical or near-identical across the whole
+    chain. A delete scoped to a single id in the middle of that chain
+    leaves the same content sitting in its neighbors, which is exactly the
+    gap "delete this trace" is supposed to close. Shared by
+    hub/manage.py:purge_trace and delete_trace below -- both walk the same
+    lineage, one at operator-CLI trust, one self-service and org-scoped.
+    """
+    seen: set[str] = {trace_id}
+    frontier: set[str] = {trace_id}
+    while frontier:
+        rows = (
+            await session.execute(
+                select(Trace.id, Trace.supersedes_trace_id).where(
+                    or_(Trace.id.in_(frontier), Trace.supersedes_trace_id.in_(frontier))
+                )
+            )
+        ).all()
+        next_frontier: set[str] = set()
+        for tid, supersedes in rows:
+            for candidate in (tid, supersedes):
+                if candidate is not None and candidate not in seen:
+                    seen.add(candidate)
+                    next_frontier.add(candidate)
+        frontier = next_frontier
+    return seen
+
+
+async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
+    """Self-service deletion: an org permanently deletes one of its own
+    traces via its own API key, plus every trace in its amendment chain
+    (amendment_chain above) -- the same completeness guarantee
+    hub/manage.py:purge_trace gives an operator, now reachable without
+    operator/DB-access trust.
+
+    Org-scoped and 404-shaped like every other read path here: a foreign
+    org's trace id (or a malformed one) returns False rather than raising,
+    so a caller cannot use this to learn whether an id exists in another
+    org. The chain-membership filter additionally requires
+    `Trace.org_id == org_id` on every id actually deleted -- amend_trace
+    can never produce a chain spanning two orgs, so this is defense in
+    depth, not a case that should ever trigger, exactly like
+    `commons_source == "seed"` is for the Knowledge Base boundary.
+
+    Irreversible, immediately, no grace period -- unlike whole-account
+    deletion below. Deleting traces one at a time is not categorically
+    riskier than what a compromised key can already do with amend_trace
+    (overwrite every trace's content); a confirmation delay would protect
+    against a different threat (a client bug or a compromised key wiping
+    EVERYTHING in one call) that only the whole-account path actually poses.
+    """
+    if not _is_uuid(trace_id):
+        return False
+    trace = await session.get(Trace, trace_id)
+    if trace is None or trace.org_id != org_id:
+        return False
+
+    chain_ids = await amendment_chain(session, trace_id)
+    await session.execute(
+        delete(TraceRelation).where(
+            TraceRelation.related_trace_id.in_(chain_ids),
+        )
+    )
+    await session.execute(delete(Trace).where(Trace.id.in_(chain_ids), Trace.org_id == org_id))
+    await audit.record(
+        session, actor=actor, action="delete_trace", org_id=org_id,
+        target_type="trace", target_id=trace_id,
+        summary=f"irreversible n_amendment_chain={len(chain_ids)}",
+    )
+    return True
+
+
+# --- Self-service account deletion --------------------------------------
+#
+# A single-call `delete_org` would let one compromised API key wipe an
+# org's ENTIRE history irreversibly, with no window for anyone to notice.
+# request_org_deletion/confirm_org_deletion split that into two
+# differently-named calls with a mandatory minimum delay between them
+# (DELETION_GRACE_SECONDS) -- long enough for an operator watching the
+# audit log (every request is recorded) to revoke a compromised key via
+# `hub.manage revoke-key` before the second call can succeed. See
+# hub/models.py:Organization's comment on the columns this uses.
+
+DELETION_GRACE_SECONDS = 300
+DELETION_TOKEN_TTL_HOURS = 24
+
+
+class DeletionNotReady(ValueError):
+    """Raised when confirm_org_deletion is called before the grace period
+    has elapsed, with no matching request, or past the token's expiry."""
+
+
+def _hash_deletion_token(raw_token: str) -> str:
+    # A 256-bit random token has no meaningful offline-brute-force surface
+    # for a slow KDF to defend against (unlike a human-memorable password),
+    # so a fast hash is the right tool here -- same reasoning as
+    # _contribute_request_hash elsewhere in this module, not the argon2id
+    # hub/auth.py uses for API keys.
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+async def request_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> dict:
+    """Start the two-step self-service account deletion. Deletes nothing.
+
+    Returns {"confirmation_token", "confirm_not_before", "expires_at"}. The
+    raw token is returned exactly once, here -- only its hash is stored,
+    same as an API key. A second call before this one is confirmed replaces
+    the pending request outright (a fresh token, a fresh grace-period
+    clock), so an org is never locked into an old token it lost track of.
+    """
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise ValueError(f"no such organization: {org_id}")
+
+    raw_token = "ctd_" + uuid.uuid4().hex + uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    org.deletion_token_hash = _hash_deletion_token(raw_token)
+    org.deletion_requested_at = now
+    org.deletion_expires_at = now + timedelta(hours=DELETION_TOKEN_TTL_HOURS)
+
+    await audit.record(
+        session, actor=actor, action="request_org_deletion", org_id=org_id,
+        target_type="org", target_id=org_id,
+        summary=f"confirm_not_before={(now + timedelta(seconds=DELETION_GRACE_SECONDS)).isoformat()}",
+    )
+    return {
+        "confirmation_token": raw_token,
+        "confirm_not_before": _iso(now + timedelta(seconds=DELETION_GRACE_SECONDS)),
+        "expires_at": _iso(org.deletion_expires_at),
+    }
+
+
+async def cancel_org_deletion(session: AsyncSession, org_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
+    """Cancel a pending deletion request. Needs no token: this is a safety
+    action, not a destructive one, so any of the org's own valid API keys
+    may call it -- the asymmetry with confirm (which DOES need the token)
+    is deliberate. Returns False if there was no pending request."""
+    org = await session.get(Organization, org_id)
+    if org is None or org.deletion_token_hash is None:
+        return False
+    org.deletion_token_hash = None
+    org.deletion_requested_at = None
+    org.deletion_expires_at = None
+    await audit.record(
+        session, actor=actor, action="cancel_org_deletion", org_id=org_id,
+        target_type="org", target_id=org_id, summary="pending deletion request cancelled",
+    )
+    return True
+
+
+async def confirm_org_deletion(
+    session: AsyncSession, org_id: str, token: str, actor: str = AUDIT_ACTOR_UNKNOWN
+) -> bool:
+    """The second call: permanently deletes the org and everything scoped
+    to it (api_keys, traces, votes, kb_submissions -- all FK
+    ondelete=CASCADE, hub/models.py). Irreversible.
+
+    Raises DeletionNotReady (never a bare ValueError, so a client can
+    distinguish "not yet" from "malformed request") for: no pending
+    request, a token that does not match, a call before
+    DELETION_GRACE_SECONDS has elapsed since the request, or a token past
+    its DELETION_TOKEN_TTL_HOURS expiry -- the last two are exactly the
+    window the two-call design exists to create.
+    """
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise ValueError(f"no such organization: {org_id}")
+    if org.deletion_token_hash is None or org.deletion_requested_at is None:
+        raise DeletionNotReady("no pending deletion request for this organization")
+
+    now = datetime.now(timezone.utc)
+    if org.deletion_expires_at is not None and now > org.deletion_expires_at:
+        raise DeletionNotReady("the confirmation token has expired; call request_account_deletion again")
+    if now < org.deletion_requested_at + timedelta(seconds=DELETION_GRACE_SECONDS):
+        wait = (org.deletion_requested_at + timedelta(seconds=DELETION_GRACE_SECONDS) - now).total_seconds()
+        raise DeletionNotReady(f"too soon: wait {int(wait)} more second(s) before confirming")
+    if not secrets.compare_digest(_hash_deletion_token(token), org.deletion_token_hash):
+        raise DeletionNotReady("confirmation token does not match the pending request")
+
+    trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
+    if trace_ids:
+        await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
+    org_name = org.name
+    await session.delete(org)
+    await audit.record(
+        session, actor=actor, action="confirm_org_deletion", org_id=org_id,
+        target_type="org", target_id=org_id,
+        summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+    )
+    return True
 
 
 async def amend_trace(

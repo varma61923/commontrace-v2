@@ -157,6 +157,12 @@ def _error_response(exc: Exception) -> dict:
         }
     if isinstance(exc, commons.CommonsInputError):
         return {"error": "invalid_request", "detail": str(exc)}
+    if isinstance(exc, crud.DeletionNotReady):
+        # Distinct from invalid_request: the request itself is well-formed,
+        # it is just too early, expired, or token-mismatched -- a client
+        # should surface this to a human, not treat it as a bug to fix and
+        # retry immediately.
+        return {"error": "deletion_not_ready", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -177,10 +183,14 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         instructions=(
             "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
+            "delete_trace permanently removes one of your own (irreversible); "
             "account_usage reports your plan and usage. All operations are scoped to "
             "your organization's own traces (hub/README.md 'Tenant isolation') -- "
             "there is no tool anywhere on this server that exposes one organization's "
-            "traces to another. "
+            "traces to another. request_account_deletion/confirm_account_deletion/"
+            "cancel_account_deletion delete your ENTIRE organization -- two calls with "
+            "a mandatory delay between them, by design; see request_account_deletion's "
+            "own description before calling it. "
             + ("commons_overlap/commons_search additionally let you consult the "
                "CommonTrace Knowledge Base: commons_search looks up ranked candidate "
                "answers to one failure, commons_overlap reports the conservative "
@@ -335,6 +345,82 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             async with session_scope(session_factory) as session:
                 tags = await crud.list_tags(session, org_id)
             return {"tags": tags}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    # --- Self-service deletion --------------------------------------------
+    #
+    # delete_trace is immediate and org-scoped, same trust level as every
+    # other write tool above. Whole-account deletion is split into two
+    # differently-named calls with a mandatory delay between them
+    # (crud.request_org_deletion's docstring) precisely because a single
+    # call here would let one compromised API key wipe an org's entire
+    # history irreversibly with no window for anyone to notice.
+
+    @mcp.tool()
+    async def delete_trace(id: str) -> dict:
+        """Permanently delete one of your own traces, and every trace in
+        its amendment chain (so an amended-and-superseded copy of the same
+        content cannot survive the original being deleted). Irreversible.
+        Not found (including a trace id belonging to another org) reports
+        not_found, never a permission error."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                deleted = await crud.delete_trace(session, org_id, id, actor=auth.get_current_actor())
+            if not deleted:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return {"id": id, "deleted": True}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def request_account_deletion() -> dict:
+        """Start permanently deleting YOUR ENTIRE ORGANIZATION -- every
+        trace, vote, api key, and Knowledge Base submission. Deletes
+        NOTHING by itself.
+
+        Returns a one-time confirmation_token and confirm_not_before /
+        expires_at timestamps. Call confirm_account_deletion with that
+        token, no sooner than confirm_not_before, to actually delete
+        everything -- irreversibly. Call cancel_account_deletion at any
+        time before then to stand down.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.request_org_deletion(session, org_id, actor=auth.get_current_actor())
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def cancel_account_deletion() -> dict:
+        """Cancel a pending request_account_deletion request. Needs no
+        token -- any valid API key for this org may call it, since
+        cancelling is a safety action, not a destructive one."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                cancelled = await crud.cancel_org_deletion(session, org_id, actor=auth.get_current_actor())
+            return {"cancelled": cancelled}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def confirm_account_deletion(confirmation_token: str) -> dict:
+        """The second call: permanently deletes this organization and
+        everything scoped to it. Irreversible. Fails with
+        'deletion_not_ready' if called too soon after
+        request_account_deletion, with an expired or mismatched token, or
+        with no pending request at all.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                await crud.confirm_org_deletion(
+                    session, org_id, confirmation_token, actor=auth.get_current_actor(),
+                )
+            return {"deleted": True}
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 

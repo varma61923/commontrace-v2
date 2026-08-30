@@ -17,19 +17,26 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Five more are Hub-specific and outside the protocol. `commons_overlap(failures)`
-and `commons_search(question)` query the CommonTrace Knowledge Base, a
-single corpus the operator authors and curates
-(`hub/manage.py commons_seed`, plus accepted community submissions --
-see "Community submissions" below). `submit_kb_entry(title, context_text,
-solution_text, tags, agent_type, rationale)` proposes a new entry for
-operator review and `list_my_kb_submissions()` checks its status; neither
-publishes anything by itself, so no customer's own trace is ever visible
-to any other org without an operator's own review-submission action
-deciding it should be. `account_usage()` reports the caller's own plan and
-meter, org-scoped like the six protocol tools. `hub/smoke.py` pins the
-tool surface, so a tool appearing or disappearing fails a post-deploy
-check rather than surprising a client.
+Nine more are Hub-specific and outside the protocol. `delete_trace(id)`
+permanently deletes one of your own traces (self-service, immediate,
+irreversible); `request_account_deletion()` / `confirm_account_deletion
+(confirmation_token)` / `cancel_account_deletion()` do the same for your
+entire organization, split into two differently-named calls with a
+mandatory delay between them so a single compromised API key cannot wipe
+an org's whole history with no chance for anyone to notice -- see
+"Self-service deletion" below. `commons_overlap(failures)` and
+`commons_search(question)` query the CommonTrace Knowledge Base, a single
+corpus the operator authors and curates (`hub/manage.py commons_seed`,
+plus accepted community submissions -- see "Community submissions"
+below). `submit_kb_entry(title, context_text, solution_text, tags,
+agent_type, rationale)` proposes a new entry for operator review and
+`list_my_kb_submissions()` checks its status; neither publishes anything
+by itself, so no customer's own trace is ever visible to any other org
+without an operator's own review-submission action deciding it should be.
+`account_usage()` reports the caller's own plan and meter, org-scoped like
+the six protocol tools. `hub/smoke.py` pins the tool surface, so a tool
+appearing or disappearing fails a post-deploy check rather than
+surprising a client.
 
 The four Knowledge Base tools can be removed from the surface entirely with
 `HUB_COMMONS_ENABLED=false` (hub/config.py) -- an unknown-tool error to any
@@ -223,6 +230,44 @@ whatever volume of "sharing" a credit formula alone would reward.
 the pending/approved/rejected funnel alongside the corpus's own
 content-quality numbers.
 
+### Self-service deletion: one call for a trace, two for an organization
+
+`delete_trace` is immediate, org-scoped, and irreversible -- and that is
+the right trust level for it. A compromised API key can already overwrite
+a trace's real content via `amend_trace`; letting it also delete one trace
+at a time is not a categorically new risk, so there is no reason to gate
+it behind anything beyond ordinary auth.
+
+Whole-organization deletion is a different risk shape: one call, and
+every trace, vote, api key, and Knowledge Base submission this org has is
+gone, unrecoverably, in the time it takes the request to round-trip. A
+single compromised key executing that with no confirmation step was an
+open authorization question in an earlier pass of this document. The
+answer implemented is a two-call design:
+
+- `request_account_deletion()` deletes nothing. It returns a one-time
+  confirmation token, plus the earliest time it may be used
+  (`confirm_not_before`) and when it expires.
+- `confirm_account_deletion(confirmation_token)` needs the exact token AND
+  `crud.DELETION_GRACE_SECONDS` (5 minutes) to have actually elapsed since
+  the request -- checked by comparing timestamps at confirm time, so this
+  needs no background scheduler or task queue, just two columns on
+  `organizations` (`hub/models.py`).
+- `cancel_account_deletion()` needs no token -- cancelling is a safety
+  action, not a destructive one, so any of the org's own valid keys may
+  call it at any point before confirmation.
+
+Five minutes is not a long delay, and it is not meant to stop a
+sophisticated attacker who holds the key for that whole window. It is
+meant to make the *common* failure modes non-catastrophic: a client bug
+that calls the wrong tool, a copy-pasted curl command run against the
+wrong org, a key an operator is already in the process of revoking when
+the request comes in. `request_account_deletion` is audit-logged like
+every other consequential action (`hub/audit.py`), so an operator alerting
+on that log has the whole grace window to notice and `revoke-key` a
+credential they don't recognize before `confirm_account_deletion` can
+possibly succeed.
+
 ### Why there's no `lessons` table
 
 `Trace` and `Lesson` are both loaded by `hub/schema_validation.py` (per the
@@ -321,13 +366,20 @@ hashed with argon2 before the row is written and never logged or returned by
 any tool/endpoint afterward. There is no "show me the key again" path by
 design; rotate if it's lost.
 
-`purge-trace`/`purge-org` are the data-deletion path DATA_RETENTION.md
-previously documented as entirely missing (only "a direct database
-operation run by whoever operates Postgres" existed). They're still
-operator/DB-access-trust-level only — deliberately not exposed as a
-seventh MCP tool an org's own API key could call. Handing self-service
-deletion to an org's own credential is a real feature with its own
-authorization questions (should a single compromised key be able to wipe
-an org's entire trace history with no confirmation step?) that this pass
-didn't design; CLI-only for now is the conservative default, not a
-permanent decision.
+`purge-trace`/`purge-org` are the operator/DB-access-trust-level data-
+deletion path — for when an org has lost its own API keys, or an operator
+needs to act without one. An org's own key can now do the equivalent
+itself, at MCP-tool trust level: `delete_trace` for one trace (immediate,
+same risk profile as any other write a key can already make via
+`amend_trace`), and `request_account_deletion` / `confirm_account_deletion`
+/ `cancel_account_deletion` for the whole organization. Whole-account
+deletion answers the authorization question an earlier pass of this
+document left open — *should a single compromised key be able to wipe an
+org's entire trace history with no confirmation step?* — with no:
+`request_account_deletion` deletes nothing by itself, only
+`confirm_account_deletion` does, and it refuses to run until a mandatory
+delay (`crud.DELETION_GRACE_SECONDS`, 5 minutes) has passed since the
+request — long enough for an operator watching the audit log (every
+request is recorded there) to `revoke-key` a compromised credential
+first. See hub/crud.py:request_org_deletion and
+`hub/tests/test_self_service_deletion.py`.

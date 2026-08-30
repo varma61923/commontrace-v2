@@ -44,7 +44,7 @@ apply to it and needs to be re-verified against that system.
 
 | Table (`hub/models.py`) | Contents |
 |---|---|
-| `organizations` | Org id + display name. |
+| `organizations` | Org id + display name. Plus, while a self-service whole-account deletion is pending: a hashed confirmation token and its request/expiry timestamps (never the raw token -- see §3). |
 | `api_keys` | Argon2 hash of each org's API key (never the raw key), a non-secret lookup prefix, issuance/revocation/last-used timestamps. |
 | `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). |
 | `votes` | Up/down votes + optional feedback, per (trace, org). |
@@ -78,25 +78,36 @@ never a customer's own submission either unless an operator republishes it).
   kept outside those files.
 - **Hub tier (`hub/`):** revoking an org's access is implemented
   (`python -m hub.manage revoke-key <key_id>` — see `hub/README.md`).
-  Permanently deleting data is also implemented, at the operator-CLI level:
-  `python -m hub.manage purge-trace <trace_id>` and `purge-org <org_id>`
-  (the latter cascades to that org's `api_keys`/`traces`/`votes` via FK
-  `ondelete=CASCADE`; both clean up any `trace_relations` row that would
-  otherwise dangle). `purge-trace` also walks and deletes the trace's
-  entire amendment chain (every trace it supersedes and every trace that
-  supersedes it) rather than just the one id given: `amend_trace` creates
-  a new row that carries most of the original's content forward, so a
-  purge scoped to a single link in that chain would leave the same
-  content sitting in its neighbors. Both are irreversible and require the same
-  database-access trust level as every other `hub/manage.py` command —
-  there is still **no self-service or API-level deletion path**: none of
-  the six Hub MCP tools (`search_traces`, `contribute_trace`, `get_trace`,
-  `vote_trace`, `amend_trace`, `list_tags`) includes a `delete_trace` or
-  `forget_org` operation, and an org's own API key cannot delete anything.
-  That's a deliberate scope boundary, not an oversight: letting a single
-  API key wipe an org's entire history with no confirmation step is a real
-  feature with its own authorization design questions this pass didn't
-  make (see `hub/README.md`'s Operator CLI section).
+  Permanently deleting data is implemented at two trust levels:
+
+  1. **Self-service, an org's own API key** (`commontrace account
+     delete-trace <id>` / `delete_trace` MCP tool): deletes one trace and
+     its entire amendment chain, immediately. **Whole-account deletion**
+     (`commontrace account request-deletion` then `confirm-deletion
+     <token>` / `request_account_deletion` + `confirm_account_deletion`
+     MCP tools) is two calls, not one: `request_account_deletion` deletes
+     nothing and only returns a one-time confirmation token plus a
+     mandatory minimum wait (`crud.DELETION_GRACE_SECONDS`, 5 minutes)
+     before `confirm_account_deletion` will accept it — specifically so a
+     single compromised API key cannot wipe an org's entire history with
+     no window for anyone to notice. `cancel_account_deletion` stands a
+     pending request down, no token required. See
+     `hub/crud.py:request_org_deletion` and `hub/README.md`'s
+     "Self-service deletion" section.
+  2. **Operator-CLI, database-access trust level**
+     (`python -m hub.manage purge-trace <trace_id>` /
+     `purge-org <org_id>`): the same operations, for when an org has lost
+     its own keys or an operator needs to act without one. `purge-org`
+     cascades to that org's `api_keys`/`traces`/`votes`/`kb_submissions`
+     via FK `ondelete=CASCADE`; both this and self-service deletion clean
+     up any `trace_relations` row that would otherwise dangle, and both
+     walk and delete a trace's entire amendment chain (every trace it
+     supersedes and every trace that supersedes it) rather than just the
+     one id given — `amend_trace` creates a new row that carries most of
+     the original's content forward, so scoping a purge to a single link
+     in that chain would leave the same content sitting in its neighbors.
+
+  Both trust levels are irreversible, with no soft-delete and no undo.
 
 ## 4. Does deleting an org's trace ever have to reach into another org's data?
 
@@ -140,12 +151,15 @@ Consequently:
 
 ## 5. Related open questions for whoever operates a `hub/` deployment
 
-- `hub/` still has no API/self-service data-deletion path (§3) — operator-CLI
-  purge is implemented (`purge-trace`/`purge-org`), but an org cannot delete
-  its own data via its own API key. Deciding whether/how to expose that
-  (a `delete_trace`/`forget_org` MCP tool, with what confirmation/
-  authorization step) needs to happen before this document can state a real
-  self-service deletion SLA.
+- ~~`hub/` still has no API/self-service data-deletion path~~ **Resolved:**
+  `delete_trace` (immediate, self-service) and `request_account_deletion` /
+  `confirm_account_deletion` (two-call, mandatory delay, self-service) now
+  exist alongside the operator-CLI `purge-trace`/`purge-org` path (§3).
+  What remains open: this document does not commit to a deletion-request
+  **SLA** (how quickly must a request be honored, in what jurisdiction) --
+  the mechanism exists and is instant once called, but "instant when
+  called" is an engineering fact, not a contractual one, and only whoever
+  operates a real deployment can make that commitment.
 - Where would a real deployment's Postgres actually be hosted, under what
   jurisdiction, and with what backup/retention configuration? Nothing in
   `hub/` prescribes this — it is deploy-target-specific and unset in

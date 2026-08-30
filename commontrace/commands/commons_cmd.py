@@ -42,6 +42,7 @@ import os
 import sys
 
 from commontrace import failure_import, hub_client, overlap, paths, trace_io
+from commontrace.commands import _format
 from commontrace.commands._format import read_or_warn
 
 # Kept in step with hub/commons.py's signing. Both sides sign a trace on
@@ -251,32 +252,13 @@ def _describe_import(stats: dict) -> None:
               f"{stats['truncated']} failure(s) not measured.", file=sys.stderr)
 
 
-def _resolve_hub(args) -> tuple[str, str] | None:
-    hub_url = args.hub_url or os.environ.get("COMMONTRACE_HUB_URL")
-    api_key = args.hub_api_key or os.environ.get("COMMONTRACE_HUB_API_KEY")
-    if args.hub_api_key:
-        # A CLI argument is readable by any local user via `ps`/
-        # `/proc/<pid>/cmdline`, and can land in shell history and
-        # auditd's process-exec logs -- none of which apply to an
-        # environment variable set via COMMONTRACE_HUB_API_KEY. --help
-        # already says the env var is preferred; this is the same warning
-        # at the moment it actually matters; someone who ran the command
-        # is more likely to see it than someone who read --help first.
-        print(
-            "[commontrace] [WARN] --hub-api-key was passed on the command line, which is "
-            "visible to other local users (`ps`, /proc, shell history). Prefer setting "
-            "COMMONTRACE_HUB_API_KEY instead.",
-            file=sys.stderr,
-        )
-    if not hub_url or not api_key:
-        print(
-            "[commontrace] a Hub URL and API key are required.\n"
-            "  Set COMMONTRACE_HUB_URL and COMMONTRACE_HUB_API_KEY, or pass\n"
-            "  --hub-url / --hub-api-key.",
-            file=sys.stderr,
-        )
-        return None
-    return hub_url, api_key
+# Kept as a module-level name (not called inline as _format.resolve_hub)
+# because tests monkeypatch commons_cmd._resolve_hub directly to stub out
+# Hub connectivity -- every run_* function below resolves this name at
+# call time, so the monkeypatch still takes effect regardless of where the
+# real implementation lives. See commontrace/commands/_format.py:resolve_hub
+# for the implementation, shared with account_cmd.py.
+_resolve_hub = _format.resolve_hub
 
 
 def run_sign(args: argparse.Namespace) -> int:

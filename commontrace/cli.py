@@ -5,6 +5,7 @@ import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
 from commontrace.commands import (
+    account_cmd,
     bench_cmd,
     capture_cmd,
     commons_cmd,
@@ -37,6 +38,7 @@ _SUBCOMMANDS = [
     lesson_cmd,
     overlap_cmd,
     commons_cmd,
+    account_cmd,
     query_cmd,
     index_cmd,
     bench_cmd,

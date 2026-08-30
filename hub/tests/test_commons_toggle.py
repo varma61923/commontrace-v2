@@ -12,9 +12,10 @@ tests that guarantee: with the flag off, all four Knowledge Base tools
 client that tries gets the framework's own "unknown tool" error rather
 than a per-call refusal that some future call site could forget to apply.
 
-account_usage is checked as the control: it reports an org's own plan and
-its own usage, never Knowledge Base content, so disabling the Knowledge
-Base must not disable it.
+account_usage and the self-service deletion tools (delete_trace,
+request/cancel/confirm_account_deletion) are checked as controls: they act
+on an org's own data only, never Knowledge Base content, so disabling the
+Knowledge Base must not disable any of them.
 """
 from __future__ import annotations
 
@@ -68,11 +69,13 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_eleven_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_all_fifteen_tools_present_by_default(self, enabled_config, session_factory):
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
             "amend_trace", "list_tags",
+            "delete_trace", "request_account_deletion",
+            "cancel_account_deletion", "confirm_account_deletion",
             "commons_overlap", "commons_search",
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage",
@@ -95,11 +98,13 @@ class TestCommonsDisabled:
         assert "submit_kb_entry" not in names
         assert "list_my_kb_submissions" not in names
 
-    async def test_the_six_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
+    async def test_the_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
         names = await _tool_names(disabled_config, session_factory)
         for tool in (
             "search_traces", "contribute_trace", "get_trace",
             "vote_trace", "amend_trace", "list_tags",
+            "delete_trace", "request_account_deletion",
+            "cancel_account_deletion", "confirm_account_deletion",
         ):
             assert tool in names, tool
 

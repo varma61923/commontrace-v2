@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Self-service deletion.** An org's own API key can now delete its own
+  data without operator/DB-access trust: `delete_trace` removes one trace
+  (and its full amendment chain) immediately, and
+  `request_account_deletion` / `confirm_account_deletion` /
+  `cancel_account_deletion` remove the entire organization -- every trace,
+  vote, api key, and Knowledge Base submission. Whole-account deletion is
+  deliberately two calls, not one: `request_account_deletion` deletes
+  nothing by itself, only returning a one-time confirmation token, and
+  `confirm_account_deletion` refuses to run until a mandatory delay
+  (`crud.DELETION_GRACE_SECONDS`, 5 minutes) has elapsed since the
+  request -- long enough for an operator watching the audit log (every
+  request is recorded there) to `revoke-key` a compromised credential
+  first. This closes the gap DATA_RETENTION.md previously flagged as open
+  ("an org cannot delete its own data via its own API key") and answers
+  the authorization question hub/README.md's Operator CLI section had
+  left unresolved ("should a single compromised key be able to wipe an
+  org's entire trace history with no confirmation step?") with no.
+
+  New: `Organization.deletion_token_hash`/`deletion_requested_at`/
+  `deletion_expires_at`, `hub/crud.py:delete_trace` /
+  `request_org_deletion` / `cancel_org_deletion` / `confirm_org_deletion`
+  / `amendment_chain` (the amendment-chain walk, shared with
+  `hub/manage.py:purge_trace` rather than duplicated), four new MCP tools,
+  `commontrace account delete-trace` / `request-deletion` /
+  `cancel-deletion` / `confirm-deletion` CLI subcommands, and 40+ new
+  tests (`hub/tests/test_self_service_deletion.py`,
+  `tests/test_account_cmd.py`) covering the tenant-isolation, grace-period,
+  and token-matching invariants against a real Postgres instance.
+
 - **A reviewed community-submission channel for the Knowledge Base**
   (`submit_kb_entry` / `list_my_kb_submissions` MCP tools, `commontrace
   commons submit` / `commons submissions` CLI, `hub/manage.py
