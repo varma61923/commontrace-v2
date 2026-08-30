@@ -1,21 +1,31 @@
-"""`commontrace commons` — consult the CommonTrace Knowledge Base.
+"""`commontrace commons` — consult, and optionally propose to, the
+CommonTrace Knowledge Base.
 
     Of the failures my fleet keeps hitting, what fraction does the
-    operator-maintained Knowledge Base already solve? And: has anyone
-    already written down the answer to this ONE failure?
+    Knowledge Base already solve? And: has anyone already written down
+    the answer to this ONE failure?
 
-This is not org-to-org sharing, and there is nothing to contribute:
-the Knowledge Base is a single corpus the operator authors and curates
-(substrate knowledge -- protocol semantics, vendor documentation,
-standards -- never another customer's trace), the way a team consults
-Stack Overflow or an internal wiki, not the way it would consult a
-competitor's support queue. `commons_access` (your plan) is the only
-"optional" here: whether you consult it at all. Nothing your fleet
-captures is ever added to it, and no other customer can ever see it.
+This is not org-to-org sharing: the Knowledge Base is a single corpus the
+operator authors and curates (substrate knowledge -- protocol semantics,
+vendor documentation, standards, and accepted community submissions --
+never another customer's own trace), the way a team consults Stack
+Overflow or an internal wiki, not the way it would consult a competitor's
+support queue. `commons_access` (your plan) is the "optional" part:
+whether you consult it at all.
 
-No failure text is sent either way. `sign` MinHashes locally and only
-signatures leave this machine; what comes back is drawn only from the
-operator's curated entries.
+`submit` lets you propose an entry -- like posting a Stack Overflow
+answer, not sharing your own incident history. Nothing is published by
+that call: an operator reviews it, and only an accepted submission ever
+becomes visible to anyone else, at which point it raises your Knowledge
+Base query allowance. `submissions` checks status. A pending or rejected
+submission is never visible to any other org, and is never added to your
+fleet's own coverage numbers either.
+
+No failure text is sent for `sign`/`report`/`ask`. `sign` MinHashes
+locally and only signatures leave this machine; what comes back is drawn
+only from the Knowledge Base's curated entries. `submit` is different by
+necessity -- proposing an entry means sending its actual text, since an
+operator has to read it to review it.
 
 (If you specifically want a bilateral, fully-offline comparison between
 two consenting fleets -- e.g. two teams inside the same company comparing
@@ -100,7 +110,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ask = sub.add_parser(
         "ask",
         help="Ask the Knowledge Base what it already knows about one failure, in your "
-        "own words. Returns ranked candidate answers -- the lookup, not the coverage %.",
+        "own words. Returns ranked candidate answers -- the lookup, not the coverage %%.",
     )
     ask.add_argument(
         "question",
@@ -129,6 +139,39 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     usage.add_argument("--hub-url", default=None)
     usage.add_argument("--hub-api-key", default=None)
     usage.set_defaults(func=run_usage)
+
+    submit = sub.add_parser(
+        "submit",
+        help="Propose an entry for the Knowledge Base (operator-reviewed; publishes "
+        "nothing by itself).",
+    )
+    submit.add_argument("--title", required=True, help="Short, symptom-first summary.")
+    submit.add_argument(
+        "--context", dest="context_text", required=True,
+        help="When/how this happens -- the situation, written as substrate knowledge, "
+        "not as your incident.",
+    )
+    submit.add_argument("--solution", dest="solution_text", required=True, help="The fix.")
+    submit.add_argument("--tags", default="", help="Comma-separated tags, e.g. stripe,webhooks.")
+    submit.add_argument("--agent-type", default="", help="Kind of agent this applies to.")
+    submit.add_argument(
+        "--rationale", required=True,
+        help="Why this is substrate knowledge and not your business logic -- required, "
+        "and it is the first thing an operator reads.",
+    )
+    submit.add_argument("--hub-url", default=None)
+    submit.add_argument("--hub-api-key", default=None)
+    submit.set_defaults(func=run_submit)
+
+    submissions = sub.add_parser(
+        "submissions",
+        help="Check the status of your own Knowledge Base submissions.",
+    )
+    submissions.add_argument("--limit", type=int, default=None)
+    submissions.add_argument("--json", action="store_true", help="Emit raw JSON instead of a table.")
+    submissions.add_argument("--hub-url", default=None)
+    submissions.add_argument("--hub-api-key", default=None)
+    submissions.set_defaults(func=run_submissions)
 
 
 def _safe_tags(raw: object) -> list[str]:
@@ -482,9 +525,11 @@ def run_ask(args: argparse.Namespace) -> int:
 
 
 def run_usage(args: argparse.Namespace) -> int:
-    """Show the meter: a flat plan allowance, no earning mechanic. There is
-    nothing to contribute in this model, so there is nothing to earn credit
-    for -- see hub/plans.py "why there is no org-to-org sharing here"."""
+    """Show the meter: a flat plan allowance, plus whatever this org has
+    permanently earned via accepted Knowledge Base submissions
+    (`commons submit`) -- never by the act of submitting alone. See
+    hub/plans.py "why bonus_commons_queries is not the same mistake
+    twice"."""
     resolved = _resolve_hub(args)
     if resolved is None:
         return 1
@@ -505,4 +550,64 @@ def run_usage(args: argparse.Namespace) -> int:
     print(f"  traces stored:      {r['traces']['used']:,} of {fmt(r['traces']['limit'])}")
     print(f"  knowledge base queries: {q['used']:,} of {fmt(q['allowance'])}"
           f"   ({fmt(q['remaining'])} remaining)")
+    bonus = q.get("bonus_from_accepted_submissions", 0)
+    if bonus:
+        print(f"    of which {bonus:,} earned via accepted `commons submit` proposals")
+    return 0
+
+
+def run_submit(args: argparse.Namespace) -> int:
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+
+    try:
+        result = asyncio.run(
+            hub_client.submit_kb_entry(
+                hub_url, api_key,
+                title=args.title, context_text=args.context_text, solution_text=args.solution_text,
+                tags=tags, agent_type=args.agent_type, rationale=args.rationale,
+            )
+        )
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    print(f"[commontrace] submitted {result['id']} for review (status: {result['status']}).")
+    print("  Nothing is published yet. An operator reviews it before anything changes;")
+    print("  check status with `commontrace commons submissions`.")
+    return 0
+
+
+def run_submissions(args: argparse.Namespace) -> int:
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+
+    try:
+        result = asyncio.run(hub_client.list_my_kb_submissions(hub_url, api_key, limit=args.limit))
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+
+    submissions = result.get("submissions") or []
+    if not submissions:
+        print("[commontrace] no submissions yet. `commontrace commons submit --help` to propose one.")
+        return 0
+
+    for s in submissions:
+        print(f"{s['id']}  status={s['status']}  submitted={s['created_at']}")
+        print(f"    {s['title']!r}")
+        if s["status"] == "approved":
+            print(f"    -> published; +{s['credit_awarded']} Knowledge Base queries credited")
+        elif s["status"] == "rejected" and s.get("rejection_reason"):
+            print(f"    reason: {s['rejection_reason']!r}")
     return 0

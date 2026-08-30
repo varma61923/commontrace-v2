@@ -611,6 +611,49 @@ class TestKbStats:
         assert "never matched a" in out.lower()
 
 
+class TestKbStatsSubmissionFunnel:
+    """Authorship has its own number now (community submissions), reported
+    alongside kb_stats' existing content-quality numbers, not instead of
+    them."""
+
+    async def test_no_submissions_prints_no_funnel_section(self, session_factory, orgs, capsys):
+        from hub import manage
+
+        await manage.kb_stats(session_factory=session_factory)
+        assert "community submissions" not in capsys.readouterr().out.lower()
+
+    async def test_reports_pending_approved_rejected_counts(self, session_factory, config, orgs, capsys):
+        from hub import manage
+
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            pending = await crud.submit_kb_entry(
+                session, orgs["customer-a"], config, rate_limiter,
+                title="p", context_text="c", solution_text="s", rationale="r", actor="test",
+            )
+            approved = await crud.submit_kb_entry(
+                session, orgs["customer-a"], config, rate_limiter,
+                title="a", context_text="c", solution_text="s", rationale="r", actor="test",
+                idempotency_key="approved-one",
+            )
+            rejected = await crud.submit_kb_entry(
+                session, orgs["customer-b"], config, rate_limiter,
+                title="r", context_text="c", solution_text="s", rationale="r", actor="test",
+                idempotency_key="rejected-one",
+            )
+        async with session_scope(session_factory) as session:
+            await crud.review_kb_submission(session, approved["id"], "approve", orgs["operator"], reviewer="op")
+            await crud.review_kb_submission(session, rejected["id"], "reject", orgs["operator"], reviewer="op")
+
+        await manage.kb_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "pending review:  1" in out
+        assert "approved:        1" in out
+        assert "rejected:        1" in out
+        assert "submitting orgs: 2" in out
+        assert pending["status"] == "pending"
+
+
 class TestValueLedger:
     """Trace.commons_hits is the operator's quality signal for its own
     curated content -- "this entry actually covered a real recurring

@@ -146,6 +146,124 @@ class TestSignCommandWritesSignaturesOnly:
         assert "no recurring failures" in capsys.readouterr().err.lower()
 
 
+class TestUsageShowsBonus:
+    def _args(self, **over):
+        base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base.update(over)
+        return type("A", (), base)()
+
+    def _usage(self, bonus=0):
+        return {
+            "plan": "free", "period": "2026-01",
+            "commons_queries": {
+                "used": 3, "allowance": 20 + bonus, "remaining": 17 + bonus,
+                "bonus_from_accepted_submissions": bonus,
+            },
+            "traces": {"used": 1, "limit": 1000},
+        }
+
+    def test_no_bonus_line_when_nothing_earned(self, capsys, monkeypatch):
+        async def fake_usage(hub, key):
+            return self._usage(bonus=0)
+
+        monkeypatch.setattr(commons_cmd.hub_client, "account_usage", fake_usage)
+        assert commons_cmd.run_usage(self._args()) == 0
+        assert "earned via accepted" not in capsys.readouterr().out
+
+    def test_bonus_line_shown_when_something_was_earned(self, capsys, monkeypatch):
+        async def fake_usage(hub, key):
+            return self._usage(bonus=25)
+
+        monkeypatch.setattr(commons_cmd.hub_client, "account_usage", fake_usage)
+        assert commons_cmd.run_usage(self._args()) == 0
+        assert "25 earned via accepted `commons submit` proposals" in capsys.readouterr().out
+
+
+class TestSubmit:
+    """`commons submit` -- proposes a Knowledge Base entry for operator
+    review. Nothing about this command publishes anything; it just calls
+    the Hub's submit_kb_entry tool and reports the pending status back."""
+
+    def _args(self, **over):
+        base = dict(
+            title="Stripe webhooks retry", context_text="duplicate delivery on 500",
+            solution_text="use an idempotency key", tags="stripe,webhooks", agent_type="code",
+            rationale="substrate, not our business logic",
+            hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
+        )
+        base.update(over)
+        return type("A", (), base)()
+
+    def test_submits_with_parsed_tags_and_reports_pending_status(self, capsys, monkeypatch):
+        captured = {}
+
+        async def fake_submit(hub, key, **kwargs):
+            captured.update(kwargs)
+            return {"id": "sub-123", "status": "pending"}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "submit_kb_entry", fake_submit)
+
+        assert commons_cmd.run_submit(self._args()) == 0
+        assert captured["tags"] == ["stripe", "webhooks"]
+        assert captured["title"] == "Stripe webhooks retry"
+        assert captured["rationale"] == "substrate, not our business logic"
+
+        out = capsys.readouterr().out
+        assert "sub-123" in out
+        assert "review" in out.lower()
+        assert "Nothing is published yet" in out
+
+    def test_a_hub_error_is_reported_not_raised(self, capsys, monkeypatch):
+        async def fake_submit(hub, key, **kwargs):
+            raise commons_cmd.hub_client.HubConnectionError("submit_kb_entry failed: invalid_request")
+
+        monkeypatch.setattr(commons_cmd.hub_client, "submit_kb_entry", fake_submit)
+        assert commons_cmd.run_submit(self._args()) == 1
+        assert "invalid_request" in capsys.readouterr().err
+
+
+class TestSubmissions:
+    def _args(self, **over):
+        base = dict(limit=None, json=False, hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base.update(over)
+        return type("A", (), base)()
+
+    def test_no_submissions_is_reported_cleanly(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": []}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args()) == 0
+        assert "no submissions yet" in capsys.readouterr().out.lower()
+
+    def test_renders_status_for_each_submission(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": [
+                {"id": "s1", "status": "pending", "created_at": "2026-01-01T00:00:00+00:00",
+                 "title": "A"},
+                {"id": "s2", "status": "approved", "created_at": "2026-01-02T00:00:00+00:00",
+                 "title": "B", "credit_awarded": 25},
+                {"id": "s3", "status": "rejected", "created_at": "2026-01-03T00:00:00+00:00",
+                 "title": "C", "rejection_reason": "too generic"},
+            ]}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args()) == 0
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "+25 Knowledge Base queries credited" in out
+        assert "too generic" in out
+
+    def test_json_flag_emits_raw_json(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": [{"id": "s1", "status": "pending"}]}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args(json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["submissions"][0]["id"] == "s1"
+
+
 class TestRender:
     def test_headline_states_the_fraction(self):
         rendered = commons_cmd._render({

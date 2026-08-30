@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A reviewed community-submission channel for the Knowledge Base**
+  (`submit_kb_entry` / `list_my_kb_submissions` MCP tools, `commontrace
+  commons submit` / `commons submissions` CLI, `hub/manage.py
+  list-submissions` / `approve-submission` / `reject-submission`
+  operator commands). An org may propose a Knowledge Base entry, but
+  nothing is published by that call: it writes to a new
+  `KnowledgeBaseSubmission` table that `commons_overlap`/`commons_search`
+  never read, and stays invisible to every other org -- submitter
+  included, as coverage -- until an operator's own `approve-submission`
+  action accepts it. Approval publishes it as a new
+  `Trace(commons_source='seed')` owned by the operator (never the
+  submitter, exactly like `commons-seed`) and permanently raises the
+  submitting org's Knowledge Base query allowance
+  (`Organization.bonus_commons_queries`, `plans.SUBMISSION_ACCEPTANCE_CREDIT`
+  by default); rejection awards nothing.
+
+  This reopens a growth channel without reopening the adverse-selection
+  problem the retired org-to-org design had (STRATEGY.md §3): crediting
+  the act of *sharing* rewards volume, so an org keeps its best lessons
+  and submits filler to farm allowance. Crediting *acceptance* rewards
+  quality instead, since filler gets rejected and earns nothing -- the
+  same discipline a Stack Overflow answer or a wiki edit is under, not a
+  reason to trust a customer with a raw sharing switch. See
+  `hub/models.py:KnowledgeBaseSubmission`, `hub/plans.py` "why
+  bonus_commons_queries is not the same mistake twice", and STRATEGY.md
+  §15 for the reasoning and for why this is a labor multiplier on
+  operator review throughput, not a network effect.
+
+  `hub/manage.py kb-stats` now also reports the submission funnel
+  (pending/approved/rejected, distinct submitting orgs) alongside its
+  existing content-quality numbers.
+
 ### Changed
 - **The commons is no longer org-to-org. It is a single, optional,
   operator-curated Knowledge Base.** The previous design let one org opt a

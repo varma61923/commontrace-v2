@@ -2,13 +2,15 @@
 
 Prompted by a real deployment shape: an internal-only B2B offering that must
 consult no content beyond what the fleet itself captured, full stop. The
-Knowledge Base is already operator-curated and opt-in per plan
-(`commons_access`) rather than customer contribution -- but a deployment
-that wants a stronger guarantee than "unused" can remove the surface
-entirely. This tests that guarantee: with the flag off, `commons_overlap`
-and `commons_search` are absent from the MCP tool surface, so a client that
-tries gets the framework's own "unknown tool" error rather than a per-call
-refusal that some future call site could forget to apply.
+Knowledge Base is already operator-curated (with an optional
+community-submission channel that publishes nothing without a review) and
+opt-in per plan (`commons_access`) -- but a deployment that wants a
+stronger guarantee than "unused" can remove the surface entirely. This
+tests that guarantee: with the flag off, all four Knowledge Base tools
+(`commons_overlap`, `commons_search`, `submit_kb_entry`,
+`list_my_kb_submissions`) are absent from the MCP tool surface, so a
+client that tries gets the framework's own "unknown tool" error rather
+than a per-call refusal that some future call site could forget to apply.
 
 account_usage is checked as the control: it reports an org's own plan and
 its own usage, never Knowledge Base content, so disabling the Knowledge
@@ -66,12 +68,14 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_nine_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_all_eleven_tools_present_by_default(self, enabled_config, session_factory):
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
             "amend_trace", "list_tags",
-            "commons_overlap", "commons_search", "account_usage",
+            "commons_overlap", "commons_search",
+            "submit_kb_entry", "list_my_kb_submissions",
+            "account_usage",
         }
 
 
@@ -85,6 +89,11 @@ class TestCommonsDisabled:
         # commons_overlap does, so a deployment that turned cross-org
         # sharing off must not acquire a second door to it.
         assert "commons_search" not in names
+        # Proposing to a Knowledge Base that has been removed from the
+        # deployment entirely makes no sense either -- both submission
+        # tools go with it.
+        assert "submit_kb_entry" not in names
+        assert "list_my_kb_submissions" not in names
 
     async def test_the_six_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
         names = await _tool_names(disabled_config, session_factory)

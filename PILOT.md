@@ -147,7 +147,8 @@ downstream.
 It says nothing about links 3–5: whether value compounds faster than cost
 to serve, whether the product survives agent platforms bundling memory, or
 whether an operator-curated Knowledge Base is worth the ongoing curation
-cost (STRATEGY.md §14 — this is no longer a cross-org network effect).
+cost (STRATEGY.md §14–15 — a funded editorial commitment plus a reviewed
+community-submission channel, neither one a cross-org network effect).
 Those need their own evidence, and §13 names the test for each.
 
 The instrument has been validated against a synthetic effect — seeded at

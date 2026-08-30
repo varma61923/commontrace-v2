@@ -39,6 +39,7 @@ from hub.models import (
     TEXT_SEARCH_CONFIG,
     VALID_FEEDBACK_TAGS,
     VALID_VOTE_TYPES,
+    KnowledgeBaseSubmission,
     Organization,
     Trace,
     TraceRelation,
@@ -226,6 +227,18 @@ def billing_period(now: datetime | None = None) -> str:
 async def _plan_for(session: AsyncSession, org_id: str) -> plans.Plan:
     org = await session.get(Organization, org_id)
     return plans.get(org.plan if org is not None else None)
+
+
+async def _plan_and_bonus_for(session: AsyncSession, org_id: str) -> tuple[plans.Plan, int]:
+    """Like `_plan_for`, plus the org's earned `bonus_commons_queries`
+    (hub/plans.py:query_allowance's second argument) -- split out rather
+    than folded into `_plan_for` because most callers (contribute_trace,
+    amend_trace, agent counting) never need the bonus and would otherwise
+    read a column they discard."""
+    org = await session.get(Organization, org_id)
+    if org is None:
+        return plans.get(None), 0
+    return plans.get(org.plan), org.bonus_commons_queries
 
 
 async def _usage(session: AsyncSession, org_id: str, metric: str, period: str | None = None) -> int:
@@ -418,8 +431,8 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
     charges you for checking the meter is the kind of detail that ends up
     in a support thread.
     """
-    plan = await _plan_for(session, org_id)
-    allowance = plans.query_allowance(plan)
+    plan, bonus = await _plan_and_bonus_for(session, org_id)
+    allowance = plans.query_allowance(plan, bonus)
     used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
     traces = int(await session.scalar(
         select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
@@ -432,6 +445,11 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
             "allowance": allowance,
             "remaining": plans.UNLIMITED if allowance == plans.UNLIMITED
                          else max(0, allowance - used),
+            # What of `allowance` came from accepted Knowledge Base
+            # submissions rather than the plan's flat grant -- broken out
+            # so a client can render "why is my allowance higher than my
+            # plan" without re-deriving it from kb_submissions history.
+            "bonus_from_accepted_submissions": bonus,
         },
         "traces": {"used": traces, "limit": plan.max_traces},
         "agents": {**(await agents_under_management(session, org_id)), "limit": plan.max_agents},
@@ -1005,17 +1023,326 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
     return sorted(tags)
 
 
+# --- Knowledge Base community submissions -------------------------------
+#
+# The one path by which a customer can influence Knowledge Base content --
+# and even then, only indirectly. submit_kb_entry writes a
+# KnowledgeBaseSubmission row, a table entirely separate from `Trace`; it
+# is invisible to commons_overlap/commons_search (which only ever read
+# `Trace.commons_source == "seed"`) and to every other org's
+# search_traces/get_trace (which are org-scoped to Trace, not this table).
+# review_kb_submission -- an operator-trust-level action, called from
+# hub/manage.py, never from an MCP tool -- is the only function that can
+# turn an approved submission into a real Trace. See
+# hub/models.py:KnowledgeBaseSubmission and hub/plans.py "why
+# bonus_commons_queries is not the same mistake twice" for the reasoning.
+
+MAX_PENDING_SUBMISSIONS_PER_ORG = 20
+VALID_SUBMISSION_DECISIONS = ("approve", "reject")
+
+
+def _submission_to_wire(s: KnowledgeBaseSubmission) -> dict:
+    return {
+        "id": s.id,
+        "title": s.title,
+        "context_text": s.context_text,
+        "solution_text": s.solution_text,
+        "tags": list(s.tags or []),
+        "agent_type": s.agent_type,
+        "rationale": s.rationale,
+        "status": s.status,
+        "created_at": _iso(s.created_at),
+        "reviewed_at": _iso(s.reviewed_at) if s.reviewed_at else None,
+        "reviewed_by": s.reviewed_by,
+        "rejection_reason": s.rejection_reason,
+        "resulting_trace_id": s.resulting_trace_id,
+        "credit_awarded": s.credit_awarded,
+    }
+
+
+def _submission_idempotent_replay_or_conflict(
+    existing: KnowledgeBaseSubmission,
+    idempotency_key: str,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+) -> dict:
+    incoming_hash = _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+    if existing.request_hash != incoming_hash:
+        raise IdempotencyKeyConflict(
+            f"idempotency_key {idempotency_key!r} was already used for a different submit_kb_entry "
+            "payload; reuse a key only to retry the exact same request"
+        )
+    return _submission_to_wire(existing)
+
+
+async def submit_kb_entry(
+    session: AsyncSession,
+    org_id: str,
+    config: HubConfig,
+    rate_limiter: RateLimiter,
+    *,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str] | None = None,
+    agent_type: str = "",
+    rationale: str = "",
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Propose a Knowledge Base entry for operator review. Nothing is
+    published by this call -- the submission is created with
+    status='pending' and stays that way until hub/manage.py
+    review-submission decides on it.
+
+    Validated like contribute_trace (schema, size limits, rate limit --
+    reusing the same checks because the content shape is identical) with
+    one deliberate omission: no quarantine heuristic. Every submission is
+    read by a human at review time regardless, so a cheap spam heuristic
+    here would only be a second, redundant gate -- the review step already
+    is quarantine, done properly.
+
+    Raises TraceRejected (bad schema/oversized/too many still-open
+    submissions) or RateLimited (429-shaped) without storing anything.
+    """
+    tags = tags or []
+
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
+    if len(rationale) > 500:
+        raise TraceRejected(f"rationale exceeds 500 chars ({len(rationale)})")
+
+    if idempotency_key is not None:
+        existing = (
+            await session.execute(
+                select(KnowledgeBaseSubmission).where(
+                    KnowledgeBaseSubmission.org_id == org_id,
+                    KnowledgeBaseSubmission.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return _submission_idempotent_replay_or_conflict(
+                existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+            )
+
+    # Namespaced within the same limiter/config contribute_trace uses,
+    # rather than a new config knob: proposing a Knowledge Base entry is a
+    # deliberate, occasional action, not a bulk capture path, so it does
+    # not need its own tuning -- but it gets its own bucket so a fleet
+    # capturing traces at volume cannot starve its own ability to submit.
+    if not rate_limiter.allow(f"kb_submit:{org_id}"):
+        raise RateLimited(f"org {org_id} exceeded submit_kb_entry rate limit")
+
+    # Bounds how large the operator's review queue can be forced to grow
+    # by one org -- not a quality gate (review is), just an anti-griefing
+    # cap so a queue is never buried under one org's backlog.
+    pending = int(await session.scalar(
+        select(func.count()).select_from(KnowledgeBaseSubmission).where(
+            KnowledgeBaseSubmission.org_id == org_id,
+            KnowledgeBaseSubmission.status == "pending",
+        )
+    ) or 0)
+    if pending >= MAX_PENDING_SUBMISSIONS_PER_ORG:
+        raise TraceRejected(
+            f"{pending} submission(s) already awaiting review; wait for those to be "
+            "reviewed before proposing more"
+        )
+
+    wire = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "context_text": context_text,
+        "solution_text": solution_text,
+        "tags": tags,
+        "agent_type": agent_type,
+    }
+    validate_trace(wire)  # raises SchemaValidationError -> hard reject
+    validate_size(wire, config)  # raises TraceRejected -> hard reject
+
+    submission = KnowledgeBaseSubmission(
+        org_id=org_id,
+        title=title,
+        context_text=context_text,
+        solution_text=solution_text,
+        tags=tags,
+        agent_type=agent_type,
+        rationale=rationale,
+        idempotency_key=idempotency_key,
+        request_hash=(
+            _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+            if idempotency_key is not None else None
+        ),
+    )
+    session.add(submission)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        existing = (
+            await session.execute(
+                select(KnowledgeBaseSubmission).where(
+                    KnowledgeBaseSubmission.org_id == org_id,
+                    KnowledgeBaseSubmission.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return _submission_idempotent_replay_or_conflict(
+            existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+        )
+
+    await audit.record(
+        session, actor=actor, action="submit_kb_entry", org_id=org_id,
+        target_type="kb_submission", target_id=submission.id,
+        summary=f"agent_type={agent_type or '?'} title_len={len(title)} n_tags={len(tags)}",
+    )
+    return _submission_to_wire(submission)
+
+
+async def list_my_kb_submissions(session: AsyncSession, org_id: str, limit: int = 50) -> list[dict]:
+    """An org's own proposals and their review status. Org-scoped like
+    every other read path in this module -- a pending or rejected
+    submission is never visible to any other org, and an approved one is
+    visible to other orgs only as an ordinary Knowledge Base Trace, not as
+    this row."""
+    rows = (await session.execute(
+        select(KnowledgeBaseSubmission)
+        .where(KnowledgeBaseSubmission.org_id == org_id)
+        .order_by(KnowledgeBaseSubmission.created_at.desc())
+        .limit(max(1, min(int(limit), 200)))
+    )).scalars().all()
+    return [_submission_to_wire(s) for s in rows]
+
+
+async def list_kb_submissions(
+    session: AsyncSession, status: str | None = None, limit: int = 100
+) -> list[dict]:
+    """The operator's review queue (or full history, if status=None).
+    Cross-org by design -- this IS the operator-trust-level surface, same
+    tier as purge-trace -- so it is called only from hub/manage.py, never
+    exposed as an MCP tool."""
+    stmt = select(KnowledgeBaseSubmission)
+    if status is not None:
+        stmt = stmt.where(KnowledgeBaseSubmission.status == status)
+    stmt = stmt.order_by(KnowledgeBaseSubmission.created_at.asc()).limit(max(1, min(int(limit), 1000)))
+    rows = (await session.execute(stmt)).scalars().all()
+    return [_submission_to_wire(s) for s in rows]
+
+
+async def review_kb_submission(
+    session: AsyncSession,
+    submission_id: str,
+    decision: str,
+    operator_org_id: str,
+    reviewer: str,
+    rejection_reason: str = "",
+    credit: int | None = None,
+) -> dict | None:
+    """The one deliberate action that can turn a customer's proposal into
+    Knowledge Base content. Returns None for an unknown or already-decided
+    submission id; raises ValueError for a decision other than
+    'approve'/'reject'.
+
+    On approve: creates a new Trace owned by `operator_org_id` -- never the
+    submitting org, exactly like hub/manage.py:commons_seed -- with
+    commons_source='seed', and permanently raises the submitting org's
+    Knowledge Base query allowance by `credit`
+    (plans.SUBMISSION_ACCEPTANCE_CREDIT unless overridden).
+
+    On reject: the submission is marked rejected with `rejection_reason`.
+    No Trace, no credit. That silence is the entire adverse-selection
+    defense (hub/plans.py "why bonus_commons_queries is not the same
+    mistake twice"): a submission that does not clear review earns
+    nothing, so filler cannot be a strategy for extracting allowance.
+    """
+    if decision not in VALID_SUBMISSION_DECISIONS:
+        raise ValueError(f"decision must be one of {VALID_SUBMISSION_DECISIONS}, got {decision!r}")
+    if not _is_uuid(submission_id):
+        return None
+
+    submission = (
+        await session.execute(
+            select(KnowledgeBaseSubmission)
+            .where(
+                KnowledgeBaseSubmission.id == submission_id,
+                KnowledgeBaseSubmission.status == "pending",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if submission is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if decision == "reject":
+        submission.status = "rejected"
+        submission.reviewed_at = now
+        submission.reviewed_by = reviewer
+        submission.rejection_reason = rejection_reason
+        await audit.record(
+            session, actor=reviewer, action="review_kb_submission", org_id=submission.org_id,
+            target_type="kb_submission", target_id=submission.id,
+            summary=f"rejected reason_len={len(rejection_reason)}",
+        )
+        return _submission_to_wire(submission)
+
+    awarded = plans.SUBMISSION_ACCEPTANCE_CREDIT if credit is None else max(0, int(credit))
+    trace = Trace(
+        org_id=operator_org_id,
+        title=submission.title,
+        context_text=submission.context_text,
+        solution_text=submission.solution_text,
+        tags=list(submission.tags or []),
+        agent_type=submission.agent_type,
+        shared_with_commons=True,
+        shared_at=now,
+        shared_rationale=(
+            submission.rationale or "community-contributed substrate knowledge, operator-reviewed"
+        )[:500],
+        commons_signature=commons.signature_for(
+            submission.title, submission.context_text, list(submission.tags or [])
+        ),
+        commons_source="seed",
+    )
+    session.add(trace)
+    await session.flush()
+
+    submission.status = "approved"
+    submission.reviewed_at = now
+    submission.reviewed_by = reviewer
+    submission.resulting_trace_id = trace.id
+    submission.credit_awarded = awarded
+
+    org = await session.get(Organization, submission.org_id)
+    if org is not None:
+        org.bonus_commons_queries = org.bonus_commons_queries + awarded
+
+    await audit.record(
+        session, actor=reviewer, action="review_kb_submission", org_id=submission.org_id,
+        target_type="kb_submission", target_id=submission.id,
+        summary=f"approved -> trace={trace.id} credit={awarded}",
+    )
+    return _submission_to_wire(submission)
+
+
 # --- The CommonTrace Knowledge Base (opt-in, operator-curated) ---------
 #
 # commons_overlap and commons_search are the only two places in this module
 # where a query reaches content outside the caller's own org. Neither one
 # can ever reach another CUSTOMER's data: both scope their corpus to
-# `Trace.commons_source == "seed"`, which is written only by the
-# operator-run `hub/manage.py:commons_seed` and by nothing else -- there is
-# no customer-facing path that sets `shared_with_commons` on a customer's
-# own trace. Everything else in this module stays unconditionally
-# org-scoped; hub/tests/test_tenant_isolation.py passes unchanged. See
-# hub/commons.py for why the query itself is a signature, never text.
+# `Trace.commons_source == "seed"`, which is written only by
+# `hub/manage.py:commons_seed` and by `review_kb_submission` above (itself
+# operator-trust-level, called only from hub/manage.py) -- there is no
+# MCP-exposed, customer-facing path that sets `shared_with_commons` on a
+# customer's own trace, or that can set `commons_source == "seed"` at all.
+# Everything else in this module stays unconditionally org-scoped;
+# hub/tests/test_tenant_isolation.py passes unchanged. See hub/commons.py
+# for why the query itself is a signature, never text.
 
 
 async def commons_overlap(
@@ -1059,13 +1386,13 @@ async def commons_overlap(
     # An empty submission is not metered either: it compares nothing, so
     # billing it would be charging for a no-op.
     if submitted:
-        plan = await _plan_for(session, org_id)
+        plan, bonus = await _plan_and_bonus_for(session, org_id)
         if not plan.commons_access:
             raise plans.EntitlementExceeded(
                 metric="commons_access", limit=0, used=0, plan=plan.name,
                 remedy="The Knowledge Base is not included in this plan.",
             )
-        allowance = plans.query_allowance(plan)
+        allowance = plans.query_allowance(plan, bonus)
         if allowance != plans.UNLIMITED:
             # SELECT ... FOR UPDATE on the org's own row, same pattern as
             # _reserve_trace_slot: read-check-then-increment across two
@@ -1307,13 +1634,13 @@ async def commons_search(
     # a call that reads the operator-maintained Knowledge Base rather than
     # the caller's own data. Validation runs first so a malformed request
     # is never a silently consumed query.
-    plan = await _plan_for(session, org_id)
+    plan, bonus = await _plan_and_bonus_for(session, org_id)
     if not plan.commons_access:
         raise plans.EntitlementExceeded(
             metric="commons_access", limit=0, used=0, plan=plan.name,
             remedy="The Knowledge Base is not included in this plan.",
         )
-    allowance = plans.query_allowance(plan)
+    allowance = plans.query_allowance(plan, bonus)
     if allowance != plans.UNLIMITED:
         await session.execute(
             select(Organization.id).where(Organization.id == org_id).with_for_update()

@@ -145,7 +145,7 @@ CORE_TOOLS = [
     # since it reports an org's own plan and usage, never another org's data
     "account_usage",
 ]
-COMMONS_TOOLS = ["commons_overlap", "commons_search"]
+COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
 
 

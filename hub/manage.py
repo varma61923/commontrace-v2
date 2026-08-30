@@ -12,12 +12,28 @@
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
     kb-stats                       -> Knowledge Base content quality: corpus size, hits
-                                       delivered, top/dead entries, orgs that query it
+                                       delivered, top/dead entries, orgs that query it,
+                                       and the community-submission funnel (pending /
+                                       approved / rejected)
     commons-seed <file.jsonl> <org_id>
                                    -> load or update the operator-curated Knowledge Base
-                                       content, marked commons_source='seed' -- the ONLY
-                                       way content ever enters it (see hub/plans.py "why
-                                       there is no org-to-org sharing here")
+                                       content, marked commons_source='seed' from a file
+                                       the operator wrote
+    list-submissions [pending|approved|rejected]
+                                   -> the community-submission review queue (or full
+                                       history if no status given) -- see submit_kb_entry
+                                       in hub/server.py for how a submission is created
+    approve-submission <submission_id> <operator_org_id> [credit]
+                                   -> accept a submission: publishes it as a new
+                                       Knowledge Base entry owned by <operator_org_id>
+                                       (never the submitting org) and permanently raises
+                                       the submitting org's query allowance by [credit]
+                                       (default: plans.SUBMISSION_ACCEPTANCE_CREDIT)
+    reject-submission <submission_id> [reason]
+                                   -> decline a submission. No entry, no credit -- the
+                                       whole point of reviewing before crediting
+                                       (hub/plans.py "why bonus_commons_queries is not
+                                       the same mistake twice")
     set-plan <org_id> <plan>       -> change an org's entitlements (hub/plans.py):
                                        free | team | scale | operator
     usage [org_id]                 -> what each org is entitled to and has used this
@@ -65,7 +81,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from hub import audit, auth, commons, crud, plans
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization, Trace, TraceRelation, UsageCounter, Vote
+from hub.models import (
+    ApiKey,
+    AuditLogEntry,
+    KnowledgeBaseSubmission,
+    Organization,
+    Trace,
+    TraceRelation,
+    UsageCounter,
+    Vote,
+)
 
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -205,13 +230,17 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     """Load or update the CommonTrace Knowledge Base from a JSONL file of
     curated substrate knowledge.
 
-    THIS IS THE ONLY WAY CONTENT EVER ENTERS THE KNOWLEDGE BASE. There is
-    no customer-facing tool that sets `commons_source='seed'` -- see
-    hub/plans.py "why there is no org-to-org sharing here" for why that is
-    a deliberate absence, not a gap: a customer's own trace should never be
-    able to become visible to another customer, and the surest way to
-    guarantee that is to have exactly one, operator-run code path capable
-    of writing this column at all.
+    This is the bulk-load path -- for individual community submissions, see
+    `approve-submission`, which writes the same `commons_source='seed'`
+    column through a different operator-run path (crud.review_kb_submission)
+    after a customer proposes one via `submit_kb_entry`. Both are
+    operator-run and both are the only two ways this column is ever set:
+    there is no customer-facing tool that can write it directly, or that
+    can publish a submission without an operator's own review-submission
+    action deciding to. See hub/plans.py "why there is no org-to-org
+    sharing here" for why that is a deliberate absence, not a gap: a
+    customer's own trace should never become visible to another customer
+    without a human at the operator judging it substrate knowledge first.
 
     Re-runnable: run it again after editing the source file to add new
     entries (existing ones are not deduplicated against by content, so
@@ -300,15 +329,20 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
 async def kb_stats(session_factory=None) -> None:
     """Is the CommonTrace Knowledge Base actually earning its query traffic?
 
-    There is no customer contribution to measure here, on purpose (see
-    hub/plans.py "why there is no org-to-org sharing here") -- so this is
-    not a network-effect report, it is a CONTENT QUALITY report: how big is
-    the corpus, how often does it actually cover a real recurring failure
-    (Trace.commons_hits, incremented only by the conservative
+    This is a CONTENT QUALITY report, not a network-effect metric: how big
+    is the corpus, how often does it actually cover a real recurring
+    failure (Trace.commons_hits, incremented only by the conservative
     commons_overlap threshold), which entries are pulling weight, and which
     have never once matched anything and are candidates to revise or prune.
-    Distinct customer orgs that have ever queried it is the one adoption
-    number worth watching -- readership, not authorship.
+    Distinct customer orgs that have ever queried it is one adoption number
+    worth watching -- readership, not authorship.
+
+    Authorship has its own number now: the community-submission funnel
+    (pending / approved / rejected -- see hub/models.py:
+    KnowledgeBaseSubmission). Every accepted submission became an entry
+    counted above; this section is what tells an operator whether the
+    review queue itself needs attention, separately from whether its
+    output is any good.
     """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -333,6 +367,34 @@ async def kb_stats(session_factory=None) -> None:
         n_orgs_total = (
             await session.execute(select(func.count()).select_from(Organization))
         ).scalar_one()
+        submission_counts = dict(
+            (
+                await session.execute(
+                    select(KnowledgeBaseSubmission.status, func.count())
+                    .group_by(KnowledgeBaseSubmission.status)
+                )
+            ).all()
+        )
+        n_submitting_orgs = (
+            await session.execute(
+                select(func.count(func.distinct(KnowledgeBaseSubmission.org_id)))
+            )
+        ).scalar_one()
+
+    if submission_counts:
+        pending = submission_counts.get("pending", 0)
+        approved = submission_counts.get("approved", 0)
+        rejected = submission_counts.get("rejected", 0)
+        decided = approved + rejected
+        print("community submissions:")
+        print(f"  pending review:  {pending}")
+        print(f"  approved:        {approved}"
+              + (f"  ({approved / decided:.0%} of reviewed)" if decided else ""))
+        print(f"  rejected:        {rejected}")
+        print(f"  submitting orgs: {n_submitting_orgs}")
+        if pending:
+            print(f"\n  `list-submissions pending` to review the {pending} waiting.")
+        print()
 
     if not entries:
         print("The Knowledge Base has no entries yet. `commons-seed <file.jsonl> "
@@ -368,6 +430,78 @@ async def kb_stats(session_factory=None) -> None:
             "hitting, or they are worded differently from how fleets describe them -- see "
             "commons/eval/RESULTS.md on lexical matching's recall limits."
         )
+
+
+async def list_submissions(status: str | None = None, session_factory=None) -> None:
+    """The community-submission review queue, or full history if no status
+    is given. `status`, when passed, must be 'pending', 'approved', or
+    'rejected' (crud.review_kb_submission's own vocabulary)."""
+    session_factory = session_factory or _default_session_factory()
+    if status is not None and status not in ("pending", "approved", "rejected"):
+        print(f"error: status must be one of pending/approved/rejected, got {status!r}", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        rows = await crud.list_kb_submissions(session, status=status, limit=200)
+
+    if not rows:
+        print("no submissions" + (f" with status={status}" if status else ""))
+        return
+
+    for s in rows:
+        print(f"{s['id']}  status={s['status']}  submitted={s['created_at']}")
+        print(f"    title: {s['title']!r}")
+        if s["rationale"]:
+            print(f"    rationale: {s['rationale']!r}")
+        if s["status"] != "pending":
+            print(f"    reviewed_by={s['reviewed_by']} at={s['reviewed_at']}")
+            if s["status"] == "approved":
+                print(f"    -> trace={s['resulting_trace_id']}  credit_awarded={s['credit_awarded']}")
+            else:
+                print(f"    reason: {s['rejection_reason']!r}")
+
+
+async def approve_submission(
+    submission_id: str, operator_org_id: str, credit: str | None = None, session_factory=None
+) -> bool:
+    """Accept a pending submission: publishes it as a new Knowledge Base
+    entry owned by `operator_org_id` (never the submitting org -- same
+    ownership rule as commons_seed) and permanently raises the submitting
+    org's Knowledge Base query allowance. See
+    hub/crud.py:review_kb_submission for the full contract."""
+    session_factory = session_factory or _default_session_factory()
+    credit_int = plans.SUBMISSION_ACCEPTANCE_CREDIT if credit is None else int(credit)
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, operator_org_id)
+        if org is None:
+            print(f"error: no such organization: {operator_org_id}", file=sys.stderr)
+            return False
+        result = await crud.review_kb_submission(
+            session, submission_id, "approve", operator_org_id,
+            reviewer=audit.ACTOR_OPERATOR_CLI, credit=credit_int,
+        )
+    if result is None:
+        print(f"error: no PENDING submission with id: {submission_id}", file=sys.stderr)
+        return False
+    print(f"approved {submission_id} -> new Knowledge Base entry {result['resulting_trace_id']}")
+    print(f"  credited {credit_int} bonus Knowledge Base queries to the submitting org")
+    return True
+
+
+async def reject_submission(submission_id: str, reason: str = "", session_factory=None) -> bool:
+    """Decline a pending submission. No entry is created and no credit is
+    awarded -- exactly the outcome hub/plans.py "why bonus_commons_queries
+    is not the same mistake twice" describes as the whole point."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        result = await crud.review_kb_submission(
+            session, submission_id, "reject", operator_org_id="", reviewer=audit.ACTOR_OPERATOR_CLI,
+            rejection_reason=reason,
+        )
+    if result is None:
+        print(f"error: no PENDING submission with id: {submission_id}", file=sys.stderr)
+        return False
+    print(f"rejected {submission_id}")
+    return True
 
 
 async def list_quarantined(org_id: str | None = None, session_factory=None) -> None:
@@ -672,6 +806,9 @@ _COMMANDS = {
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),
     "commons-seed": (commons_seed, 2, 2),
+    "list-submissions": (list_submissions, 0, 1),
+    "approve-submission": (approve_submission, 2, 3),
+    "reject-submission": (reject_submission, 1, 2),
     "set-plan": (set_plan, 2, 2),
     "usage": (usage, 0, 1),
     "revenue": (revenue, 0, 0),

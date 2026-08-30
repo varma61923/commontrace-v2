@@ -13,11 +13,12 @@ This repo ships two things:
    store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
    also bridges to the **CommonTrace Hub** (a self-hostable, multi-tenant trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
-   `vote_trace`, `amend_trace`, `list_tags`, plus an optional, operator-curated
-   Knowledge Base — `commons_overlap`, `commons_search`; server implementation
-   and setup in [`hub/`](hub/README.md), not a hosted service run by this
-   project). Every org's own traces stay private to that org; no org's data is
-   ever exposed to another org.
+   `vote_trace`, `amend_trace`, `list_tags`, plus an optional Knowledge Base
+   — `commons_overlap`, `commons_search` to consult it, `submit_kb_entry`/
+   `list_my_kb_submissions` to propose an entry for operator review; server
+   implementation and setup in [`hub/`](hub/README.md), not a hosted service
+   run by this project). Every org's own traces stay private to that org; no
+   org's data is ever exposed to another org.
 2. **A reference implementation for coding agents** (`SKILL.md`) — the
    double-review pipeline (**Implementer A** + independent **Reviewer B**, iterating
    until the task passes) that this whole protocol was distilled from. One profile
@@ -515,18 +516,21 @@ than to a shared corpus between customers.
 There is no org-to-org sharing anywhere in this system, and that is a
 deliberate, load-bearing property, not an oversight:
 
-> **No customer's trace is ever visible to another customer, because no
-> customer's trace ever enters the Knowledge Base at all.**
+> **No customer's own trace is ever visible to another customer, and no
+> customer's trace ever enters the Knowledge Base as itself — only as
+> content an operator has explicitly reviewed and republished.**
 
 The Knowledge Base is a single corpus the *operator* authors and curates —
 substrate knowledge ("Stripe webhook handlers need idempotency keys",
 "React 19 hydrates `Date` differently than 18") that isn't anyone's trade
 secret, shipped and maintained the way a vendor maintains documentation.
-`hub/manage.py commons-seed` is the only thing that ever writes to it; no
-customer-facing tool can. `commons_access` (a plan setting) makes
-consulting it optional per org, and `HUB_COMMONS_ENABLED=false` removes it
-from the deployment entirely — see [`hub/DEPLOYMENT.md`](hub/DEPLOYMENT.md)
-for the single-org deployment mode that needs neither.
+`hub/manage.py commons-seed` (bulk load) and `approve-submission` (one
+community proposal at a time — see "Propose an entry" below) are the only
+two things that ever write to it, both operator-run; no customer-facing
+tool can. `commons_access` (a plan setting) makes consulting it optional
+per org, and `HUB_COMMONS_ENABLED=false` removes it from the deployment
+entirely — see [`hub/DEPLOYMENT.md`](hub/DEPLOYMENT.md) for the single-org
+deployment mode that needs neither.
 
 An earlier design routed this as org-to-org sharing instead (customer A
 opts a trace in, customer B's queries can match it). That design is
@@ -643,12 +647,48 @@ evidence, since false positives measured 0%.
 
 | Property | How |
 |---|---|
-| No customer trace ever enters the Knowledge Base | Only `hub/manage.py commons-seed` writes `commons_source='seed'` rows, and no customer-facing tool can |
+| No customer trace ever enters the Knowledge Base without an operator's own decision | Only `hub/manage.py commons-seed` (bulk) and `approve-submission` (one community submission at a time) write `commons_source='seed'` rows — both operator-run, neither reachable from a customer's own API key |
 | The guarantee holds even against a hypothetical bug | `commons_overlap`/`commons_search` filter on `commons_source == "seed"` explicitly, not merely on the absence of a sharing tool |
+| Proposing is not publishing | `submit_kb_entry` writes to a separate table no commons query ever reads; it stays there, invisible to every other org, unless an operator's `approve-submission` accepts it |
 | Quarantined content can't enter | Refused at seed time — that would propagate exactly what quarantine contains |
 | Your own traces don't inflate your coverage number | The corpus excludes your rows: the question is what the Knowledge Base already knows, not what you told it |
 | Ordinary reads are unaffected | All six org-scoped tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
 | Consulting it is optional | `commons_access` (plan setting) per org, `HUB_COMMONS_ENABLED=false` for the whole deployment |
+
+### Propose an entry
+
+```bash
+commontrace commons submit \
+  --title "Postgres connection pool exhausted under retry storm" \
+  --context "a dependency outage triggers a retry storm that saturates the pool" \
+  --solution "bound retries with jittered backoff; set pool_timeout so callers fail fast" \
+  --tags postgres,retries \
+  --rationale "substrate connection-pool behavior, not our business logic"
+commontrace commons submissions               # check status
+```
+
+This is closer to posting a Stack Overflow answer than to sharing your own
+incident history: write it up as generalized substrate knowledge, not as
+your specific outage. **Nothing is published by `submit`.** It creates a
+row an operator reviews later (`hub/manage.py list-submissions` /
+`approve-submission` / `reject-submission`); until decided, it is invisible
+to every other org, including your own coverage numbers.
+
+An **accepted** submission becomes a normal Knowledge Base entry — owned
+by the operator, not by you, exactly like a seeded one — and permanently
+raises your org's Knowledge Base query allowance by
+`plans.SUBMISSION_ACCEPTANCE_CREDIT` (25 by default; an operator can grant
+a different amount per submission). A **rejected or still-pending** one
+earns nothing.
+
+That "earns nothing until accepted" rule is the entire fix for the problem
+an earlier, retired design had (§3 in `STRATEGY.md`): a credit for the act
+of *sharing* rewards volume, and an org keeps its best lessons while
+farming credit with filler. A credit for *acceptance* rewards quality
+instead, because filler gets rejected. It does not make the underlying
+incentive to withhold your best material disappear — nothing could — but
+what accumulates is self-selected for being worth a human's time to
+publish, the same as an actual Stack Overflow answer or wiki edit.
 
 ### Is the Knowledge Base actually earning its query traffic?
 
@@ -658,14 +698,15 @@ quality is measured, not assumed — every time an entry covers a real
 recurring failure, that entry's `commons_hits` increments:
 
 ```bash
-python -m hub.manage kb-stats    # entry count, hits, adoption, dead entries
+python -m hub.manage kb-stats    # entry count, hits, adoption, dead entries,
+                                  # and the submission funnel: pending/approved/rejected
 ```
 
-`kb-stats` is a content-quality report for the operator, not a network-effect
-metric: there is no "how many orgs contribute" number to report, because no
-org contributes. It flags entries that have never matched anything after
-real query volume, which is the honest signal that they need rewriting or
-removal.
+`kb-stats` is a content-quality report, not a vanity metric: it flags
+entries that have never matched anything after real query volume (the
+honest signal that they need rewriting or removal) and reports the
+submission funnel so an operator can tell whether the review queue itself
+needs attention, separately from whether its output is any good.
 
 ### Plans, and what they actually enforce
 
@@ -687,9 +728,10 @@ the metered unit** because that is the only call whose value comes from
 content the org did not itself produce — everything else an org does is
 with its own data, and charging per query against your own memory is rent,
 not price. Purging frees storage allowance, so the deletion right in
-`DATA_RETENTION.md` is not a right in name only. There is no
-credit-for-contributing mechanism, because there is nothing to
-contribute in this model — a flat plan allowance is the whole scheme.
+`DATA_RETENTION.md` is not a right in name only. The flat plan grant above
+is the floor, not the ceiling — see "Propose an entry" for the one way an
+org can permanently raise it, by having a Knowledge Base submission
+accepted rather than by the act of submitting.
 
 **Active agents** is the expansion axis, and it is metered on `Trace.agent_id`
 — *which* agent produced a trace, as opposed to `agent_type`, which is what
@@ -713,8 +755,11 @@ Three properties of the count are deliberate:
   `unattributed` agent. `manage usage` marks those orgs with a trailing `+`
   rather than quoting the number as exact.
 
-There is no earning mechanic: a flat allowance per plan, because there is
-no customer contribution in this model to earn credit for.
+The earning mechanic that exists is narrow and deliberate: an *accepted*
+Knowledge Base submission adds a permanent, one-time bonus
+(`Organization.bonus_commons_queries`) on top of the plan's flat grant.
+Nothing else moves this number — not submitting, not how much you submit,
+not how many queries you run.
 
 ```bash
 commontrace commons usage                      # what you have, what you've used

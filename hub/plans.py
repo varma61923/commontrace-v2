@@ -71,6 +71,21 @@ plan controls: whether this org may consult that corpus at all. Nothing
 about using it costs another org anything or requires them to have shared
 first, because there is no "them" to share with.
 
+WHY `bonus_commons_queries` IS NOT THE SAME MISTAKE TWICE
+----------------------------------------------------------
+An org may still propose a Knowledge Base entry
+(`hub/crud.py:submit_kb_entry`), and an accepted one still raises that
+org's allowance (`Organization.bonus_commons_queries`, added below). The
+difference from the retired design is where the credit attaches: not to
+the act of contributing, but to an operator's deliberate acceptance of it
+(`hub/manage.py:review_kb_submission`). A rejected or ignored submission
+earns nothing, so the adverse-selection failure this section just
+described -- contribute generic filler, collect the reward -- is not
+available here: filler gets rejected. What survives review is
+self-selected the same way a Stack Overflow answer or a Wikipedia edit
+is, not by a customer's incentive to withhold anything competitively
+sensitive.
+
 WHAT THIS FILE DOES NOT DO
 --------------------------
 It sets no prices in currency and takes no payment. Those belong to a
@@ -117,6 +132,13 @@ UNATTRIBUTED_AGENT_ID = "unattributed"
 DEFAULT_PLAN = "free"
 
 UNLIMITED = -1
+
+# What one accepted KnowledgeBaseSubmission permanently adds to an org's
+# monthly Knowledge Base query allowance. A flat amount, not scaled by
+# anything the submitter controls (length, tag count, self-reported
+# effort) -- the only lever that should move this number is an operator
+# judging the content worth publishing, once, at review time.
+SUBMISSION_ACCEPTANCE_CREDIT = 25
 
 
 @dataclass(frozen=True)
@@ -218,15 +240,18 @@ def get(plan_name: str | None) -> Plan:
     return PLANS.get((plan_name or "").strip().lower() or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])
 
 
-def query_allowance(plan: Plan) -> int:
-    """Monthly Knowledge Base query allowance.
+def query_allowance(plan: Plan, bonus: int = 0) -> int:
+    """Monthly Knowledge Base query allowance: the plan's flat grant, plus
+    whatever this org has permanently earned via accepted Knowledge Base
+    submissions (`Organization.bonus_commons_queries`).
 
-    A flat plan grant, not something an org can earn more of by
-    contributing -- there is no customer contribution in this model to
-    earn credit for. See this module's docstring, "why there is no
-    org-to-org sharing here".
+    An already-unlimited plan stays unlimited -- adding a finite bonus to
+    UNLIMITED would produce a large but finite number, which is a silent
+    downgrade dressed up as a reward.
     """
-    return plan.commons_queries_per_month
+    if plan.commons_queries_per_month == UNLIMITED:
+        return UNLIMITED
+    return plan.commons_queries_per_month + max(bonus, 0)
 
 
 def within(limit: int, used: int) -> bool:

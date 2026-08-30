@@ -79,6 +79,15 @@ class Organization(Base):
     # resolves to the smallest plan, never an unlimited one -- see
     # hub/plans.py:get.
     plan: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
+    # Permanent addition to this org's monthly Knowledge Base query
+    # allowance (hub/plans.py:query_allowance), earned one
+    # hub/manage.py review-submission approval at a time -- never by the
+    # act of submitting. That is what keeps this from being the same
+    # credit-for-volume mechanic STRATEGY.md §3 already ruled out: a
+    # rejected or ignored KnowledgeBaseSubmission earns nothing, so the
+    # only way to raise this number is to write something an operator
+    # judged worth publishing.
+    bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
@@ -286,6 +295,94 @@ class Trace(Base):
             "shared_with_commons",
             postgresql_where=text("shared_with_commons AND NOT quarantined"),
         ),
+    )
+
+
+VALID_SUBMISSION_STATUSES = ("pending", "approved", "rejected")
+
+
+class KnowledgeBaseSubmission(Base):
+    """A customer-proposed CommonTrace Knowledge Base entry, pending
+    operator review. This is the only path by which a customer can ever
+    cause new content to enter the Knowledge Base -- and even then, only
+    indirectly. Modeled on Stack Overflow / a wiki edit queue rather than
+    the retired org-to-org `share_trace`: an org writes up a generalized
+    substrate lesson (not a live pointer into its own private trace
+    history), and hub/manage.py review-submission is the one deliberate
+    operator action that can turn an *approved* row into a new `Trace`
+    with `commons_source='seed'`.
+
+    A submission is never itself queryable by commons_overlap/
+    commons_search: it carries no `commons_signature`, lives in a separate
+    table from `Trace` entirely, and a pending or rejected submission is
+    never even read by hub/commons.py's matching code. There is no window
+    in which unreviewed content is live.
+
+    WHY REVIEW, NOT JUST OPT-IN. STRATEGY.md §3's adverse-selection
+    argument holds against ANY credit-for-contributing design where
+    contribution alone earns the credit: an org keeps its genuinely
+    valuable lessons and contributes generic filler to collect the reward.
+    Gating the credit on operator ACCEPTANCE instead changes the incentive
+    from "contribute anything" to "write something worth publishing" --
+    filler gets rejected and earns nothing, so it stops being a viable
+    strategy for extracting query allowance. This does not make the
+    underlying tension disappear (an org still has no reason to hand over
+    its most differentiated knowledge), it only means what accumulates is
+    self-selected for being non-competitive, exactly like a Stack Overflow
+    answer or a Wikipedia edit.
+    """
+
+    __tablename__ = "kb_submissions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    title: Mapped[str] = mapped_column(String(1000), nullable=False)
+    context_text: Mapped[str] = mapped_column(Text, nullable=False)
+    solution_text: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
+    agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Caller-supplied justification for why this is substrate knowledge,
+    # not business logic -- the same judgment hub/manage.py:commons_seed
+    # already requires of the operator, asked of the proposer up front so
+    # an operator working through a review queue has a starting point
+    # instead of raw text alone.
+    rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    rejection_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    # Set only on approval. Not a ForeignKey, for the same reason
+    # Trace.supersedes_trace_id is not one: a later purge-trace on the
+    # resulting entry must not be blocked by this row referencing it.
+    resulting_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    # What review-submission actually granted. Recorded on the submission
+    # itself (not just added to the org's running total) so an audit of
+    # "why does this org have N bonus queries" is answerable from this
+    # table alone, without reconstructing it from AuditLogEntry summaries.
+    credit_awarded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Idempotency, identical in shape and purpose to Trace's -- a client
+    # that timed out waiting for a submit_kb_entry response must be able to
+    # retry with the same key rather than double-submitting.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')", name="ck_kb_submissions_status"
+        ),
+        Index("ix_kb_submissions_org_created_at", "org_id", "created_at"),
+        # The operator review queue lists pending submissions across ALL
+        # orgs -- a partial index keyed on the status Postgres will
+        # actually be asked to filter on keeps that query cheap regardless
+        # of how large the approved/rejected history grows.
+        Index("ix_kb_submissions_pending", "status", postgresql_where=text("status = 'pending'")),
+        UniqueConstraint("org_id", "idempotency_key", name="uq_kb_submissions_org_idempotency_key"),
     )
 
 

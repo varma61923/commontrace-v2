@@ -22,11 +22,18 @@ curates -- substrate knowledge ("Stripe webhook handlers need idempotency
 keys", "React 19 hydrates Date differently than 18") that isn't anyone's
 trade secret, shipped and maintained the way a vendor maintains
 documentation or a team maintains an internal wiki, not the way two
-competitors would maintain a joint one. `hub/manage.py:commons_seed` is the
-only thing that ever writes a `commons_source == "seed"` row, and nothing
-in the customer-facing API can. No customer's trace is ever visible to
-another customer through this system, because no customer's trace is ever
-in this corpus at all.
+competitors would maintain a joint one. `hub/manage.py:commons_seed`
+(bulk load) and `hub/crud.py:review_kb_submission` (one community
+submission at a time, called only from `hub/manage.py review-submission`)
+are the only two things that ever write a `commons_source == "seed"` row --
+both operator-run, neither reachable from a customer's own API key.
+A customer may *propose* an entry (`submit_kb_entry`), but proposing is
+not publishing: the row that creates lives in a separate table
+(`KnowledgeBaseSubmission`) that no commons query ever reads, and it stays
+there, invisible to every other org, unless and until an operator's own
+review-submission call accepts it. No customer's trace is ever visible to
+another customer through this system, because no customer's trace enters
+this corpus without a human at the operator deciding it should.
 
 `commons_access` (hub/plans.py) is the "optional" half: a plan controls
 whether an org may consult the Knowledge Base, not whether it must expose

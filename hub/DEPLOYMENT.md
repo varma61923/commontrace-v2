@@ -204,12 +204,13 @@ re-display a key anyone has lost — rotate instead
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — deletion is
       operator-CLI-only by design.
 - [ ] If the CommonTrace Knowledge Base is not wanted for this deployment,
-      do not call `commons-seed` — it is the only thing that ever puts
-      content into it (§13), so the corpus stays empty unless the operator
-      populates it. For a stronger guarantee that the surface is gone
-      entirely rather than merely empty, set `HUB_COMMONS_ENABLED=false`.
-      `commons_overlap` against an empty Knowledge Base returns 0% with a
-      note saying why, not an error.
+      do not call `commons-seed` or `approve-submission` — those are the
+      only two things that ever put content into it (§13), so the corpus
+      stays empty unless the operator acts. A pending `submit_kb_entry`
+      proposal alone publishes nothing. For a stronger guarantee that the
+      surface is gone entirely rather than merely empty, set
+      `HUB_COMMONS_ENABLED=false`. `commons_overlap` against an empty
+      Knowledge Base returns 0% with a note saying why, not an error.
 
 ## 11. Known limitations (deliberate, documented)
 

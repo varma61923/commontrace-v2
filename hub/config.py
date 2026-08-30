@@ -140,10 +140,12 @@ class HubConfig:
     # requirement of "no outside knowledge", where the point is a guarantee
     # stronger than merely "nobody happens to call commons_overlap." The
     # Knowledge Base is already opt-in per plan (`commons_access`) and holds
-    # only operator-curated content (hub/manage.py:commons_seed), never a
-    # customer's own traces -- this flag exists for deployments that want
-    # the surface gone entirely rather than merely unused. False removes
-    # commons_overlap and commons_search from the MCP tool surface entirely
+    # only operator-curated content (hub/manage.py:commons_seed, plus
+    # accepted community submissions -- see submit_kb_entry), never a
+    # customer's own traces directly -- this flag exists for deployments
+    # that want the surface gone entirely rather than merely unused. False
+    # removes commons_overlap, commons_search, submit_kb_entry, and
+    # list_my_kb_submissions from the MCP tool surface entirely
     # (hub/server.py) -- an unknown-tool error to any client that tries,
     # not a refused call -- so the property holds even if every org on the
     # deployment forgets the Knowledge Base exists. account_usage stays

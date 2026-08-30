@@ -17,17 +17,21 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Three more are Hub-specific and outside the protocol: `commons_overlap(failures)`
+Five more are Hub-specific and outside the protocol. `commons_overlap(failures)`
 and `commons_search(question)` query the CommonTrace Knowledge Base, a
 single corpus the operator authors and curates
-(`hub/manage.py commons_seed`) -- no customer-facing tool can write to it,
-so no customer's own trace is ever visible to any other org through it.
-`account_usage()` reports the caller's own plan and meter, org-scoped like
-the six protocol tools. `hub/smoke.py` pins the tool surface, so a tool
-appearing or disappearing fails a post-deploy check rather than surprising
-a client.
+(`hub/manage.py commons_seed`, plus accepted community submissions --
+see "Community submissions" below). `submit_kb_entry(title, context_text,
+solution_text, tags, agent_type, rationale)` proposes a new entry for
+operator review and `list_my_kb_submissions()` checks its status; neither
+publishes anything by itself, so no customer's own trace is ever visible
+to any other org without an operator's own review-submission action
+deciding it should be. `account_usage()` reports the caller's own plan and
+meter, org-scoped like the six protocol tools. `hub/smoke.py` pins the
+tool surface, so a tool appearing or disappearing fails a post-deploy
+check rather than surprising a client.
 
-The two Knowledge Base tools can be removed from the surface entirely with
+The four Knowledge Base tools can be removed from the surface entirely with
 `HUB_COMMONS_ENABLED=false` (hub/config.py) -- an unknown-tool error to any
 client that tries, not a per-call refusal, so the guarantee holds for a
 deployment even if every org on it forgets the feature exists. See
@@ -134,6 +138,14 @@ org-to-org sharing here" for the full reasoning.
 Overflow or wiki than to anything org-to-org. There is no tension left to
 resolve, because there is no second party's data in the picture at all.
 
+That corpus does grow from community contribution now -- `submit_kb_entry`
+lets an org propose an entry -- but proposing is not publishing. A
+submission lands in its own table (`KnowledgeBaseSubmission`), invisible
+to every commons query and to every other org, and stays there unless an
+operator's own `review-submission` action accepts it. See "Community
+submissions" below for why review (not opt-in) is what keeps this from
+reopening the adverse-selection problem the retired design had.
+
 **The walls.** Every one of the six original read paths —
 `search_traces`, `get_trace`, `vote_trace`, `amend_trace`, `list_tags`,
 `contribute_trace` — is still unconditionally scoped to the caller's own
@@ -143,9 +155,11 @@ Nothing about the Knowledge Base loosened them.
 **The boundary.** `Trace.commons_source == "seed"` is the only content any
 Knowledge Base query will ever match against:
 
-- `hub/manage.py commons_seed` is the only thing that ever writes a
-  `commons_source == "seed"` row, under an operator org. No
-  customer-facing tool can.
+- `hub/manage.py commons_seed` (bulk load) and `hub/crud.py:review_kb_submission`
+  (one accepted community submission at a time) are the only two things
+  that ever write a `commons_source == "seed"` row, both under an operator
+  org and both reachable only from `hub/manage.py`. No customer-facing
+  tool can write this column, directly or by triggering it automatically.
 - Quarantined content cannot enter — that would propagate exactly what
   quarantine exists to contain.
 - Both Knowledge Base queries, `commons_overlap` and `commons_search`,
@@ -177,6 +191,37 @@ read path stays org-scoped" -- it also reaches Knowledge Base entries
 `trust` is a signal surfaced to every org an entry matches for. It still
 cannot reach another org's own private trace; `amend_trace`/`get_trace`
 remain fully org-scoped.
+
+### Community submissions: review, not opt-in
+
+`submit_kb_entry` reopens a contribution channel the retired `share_trace`
+design also had, and it would reopen the same adverse-selection problem
+(`STRATEGY.md` §3) if contribution alone earned the reward: an org keeps
+its genuinely valuable lessons and submits generic filler to collect
+`bonus_commons_queries`. The fix is where the credit attaches.
+
+`share_trace` credited the act of sharing (later, hits delivered).
+`submit_kb_entry` credits nothing by itself -- it writes a
+`KnowledgeBaseSubmission` row with `status='pending'`, a table entirely
+separate from `Trace`, unreadable by `commons_overlap`/`commons_search`
+and invisible to every other org's tools. Credit
+(`plans.SUBMISSION_ACCEPTANCE_CREDIT`, permanently added to
+`Organization.bonus_commons_queries`) is granted only by
+`hub/crud.py:review_kb_submission`, called only from `hub/manage.py
+approve-submission` -- an operator reading the content and judging it
+worth publishing. A rejected or still-pending submission earns nothing, so
+submitting filler to farm allowance is not a viable strategy the way it
+was under `share_trace`'s "credit for sharing" rule.
+
+This does not make an org's underlying incentive to withhold its best
+lessons disappear -- nothing could. What it changes is what accumulates:
+self-selected for being non-competitive enough to pass a human's review,
+the same as a Stack Overflow answer or a Wikipedia edit, rather than
+whatever volume of "sharing" a credit formula alone would reward.
+
+`hub/manage.py list-submissions` is the review queue; `kb-stats` reports
+the pending/approved/rejected funnel alongside the corpus's own
+content-quality numbers.
 
 ### Why there's no `lessons` table
 

@@ -182,10 +182,13 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             "there is no tool anywhere on this server that exposes one organization's "
             "traces to another. "
             + ("commons_overlap/commons_search additionally let you consult the "
-               "operator-maintained CommonTrace Knowledge Base: commons_search looks "
-               "up ranked candidate answers to one failure, commons_overlap reports "
-               "the conservative coverage fraction across many. Nothing you submit is "
-               "ever added to that Knowledge Base."
+               "CommonTrace Knowledge Base: commons_search looks up ranked candidate "
+               "answers to one failure, commons_overlap reports the conservative "
+               "coverage fraction across many. submit_kb_entry proposes a new entry "
+               "for operator review (list_my_kb_submissions checks status) -- an "
+               "accepted proposal raises your Knowledge Base query allowance, but "
+               "nothing you submit is published, or visible to any other org, until "
+               "an operator accepts it."
                if config.commons_enabled else
                "This deployment has HUB_COMMONS_ENABLED=false: no Knowledge Base "
                "tools exist on this server.")
@@ -347,11 +350,19 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # never Knowledge Base content, so disabling it does not disable that.
     #
     # There is no share_trace/unshare_trace tool here, and there never will
-    # be: the Knowledge Base is authored and curated by the operator alone
-    # (hub/manage.py:commons_seed), never by promoting a customer's own
-    # trace. See hub/plans.py "why there is no org-to-org sharing here" --
-    # letting one customer's data become visible to another was the design
-    # this module used to have, and it was retired on purpose.
+    # be: an org's own trace can never be promoted directly into the
+    # Knowledge Base by anything an org's own API key can call. See
+    # hub/plans.py "why there is no org-to-org sharing here" -- letting one
+    # customer's data become visible to another was the design this module
+    # used to have, and it was retired on purpose.
+    #
+    # submit_kb_entry below is not that tool reborn: it writes a
+    # KnowledgeBaseSubmission row (a table entirely separate from Trace),
+    # which is invisible to every read path in this file until
+    # hub/manage.py review-submission -- an operator-trust-level action, not
+    # an MCP tool -- deliberately accepts it. See hub/crud.py's "Knowledge
+    # Base community submissions" section and
+    # hub/models.py:KnowledgeBaseSubmission.
     if config.commons_enabled:
 
         @mcp.tool()
@@ -419,6 +430,60 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                         session, org_id, query_signature or [],
                         limit=limit, agent_type=agent_type,
                     )
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
+        @mcp.tool()
+        async def submit_kb_entry(
+            title: str,
+            context_text: str,
+            solution_text: str,
+            tags: list[str] | None = None,
+            agent_type: str = "",
+            rationale: str = "",
+            idempotency_key: str | None = None,
+        ) -> dict:
+            """Propose an entry for the CommonTrace Knowledge Base -- like
+            posting an answer to a shared wiki, not sharing your own trace
+            history. Nothing is published by this call.
+
+            Write it as generalized substrate knowledge ("Stripe webhook
+            handlers need idempotency keys"), not as your own incident with
+            its specifics -- `rationale` should say why this is substrate
+            rather than your business logic. An operator reviews every
+            submission before anything is published
+            (`hub/manage.py review-submission`); check status with
+            `list_my_kb_submissions`. An accepted submission permanently
+            raises your org's Knowledge Base query allowance -- a rejected
+            or still-pending one earns nothing.
+
+            Pass a client-generated `idempotency_key` to make a retry after
+            a lost response safe, exactly like `contribute_trace`.
+            """
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return await crud.submit_kb_entry(
+                        session, org_id, config, rate_limiter,
+                        title=title, context_text=context_text, solution_text=solution_text,
+                        tags=tags, agent_type=agent_type, rationale=rationale,
+                        actor=auth.get_current_actor(), idempotency_key=idempotency_key,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
+        @mcp.tool()
+        async def list_my_kb_submissions(limit: int = 50) -> dict:
+            """Your org's own Knowledge Base submissions and their review
+            status ('pending', 'approved', or 'rejected'). Never shows
+            another org's submissions, and a submission of yours is never
+            visible to another org either, reviewed or not -- an approved
+            one is visible to other orgs only as an ordinary Knowledge Base
+            entry, with no link back to this row or to your org."""
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return {"submissions": await crud.list_my_kb_submissions(session, org_id, limit=limit)}
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 

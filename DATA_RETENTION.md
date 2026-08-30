@@ -49,11 +49,13 @@ apply to it and needs to be re-verified against that system.
 | `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). |
 | `votes` | Up/down votes + optional feedback, per (trace, org). |
 | `trace_relations` | AMENDS/SUPERSEDED_BY edges created by `amend_trace`. |
+| `kb_submissions` | An org's proposed Knowledge Base entries (title, context_text, solution_text, tags, agent_type, rationale) plus `org_id`, `status` (pending/approved/rejected), reviewer identity and timestamp, and -- once decided -- `resulting_trace_id`/`credit_awarded`. Never read by `commons_overlap`/`commons_search`; see `hub/models.py:KnowledgeBaseSubmission`. |
 
 Every read path is scoped to the calling org's own `org_id` at the query
 layer (`hub/crud.py`); see `hub/README.md`'s "Tenant isolation vs. the
 CommonTrace Knowledge Base" for the one deliberate exception (an
-optional, operator-curated corpus, never another customer's own data).
+optional, operator-curated corpus, never another customer's own data, and
+never a customer's own submission either unless an operator republishes it).
 
 ## 2. How long data is kept
 
@@ -110,21 +112,27 @@ for orgs to share their IP and data with each other, and doing so has an
 adverse-selection problem with no fix.
 
 What exists instead is the **CommonTrace Knowledge Base**: a single corpus
-the *operator* authors and curates (`hub/manage.py commons-seed`). No
-customer-facing tool can write to it, and no customer's own trace is ever
-in it — `commons_overlap`/`commons_search` filter explicitly on
-`commons_source == "seed"`, which only that operator command ever sets.
+the *operator* authors and curates, either directly (`hub/manage.py
+commons-seed`) or by accepting a community proposal
+(`approve-submission`). No customer-facing tool can write a
+`commons_source == "seed"` row, and no customer's own trace is ever
+directly in it — `commons_overlap`/`commons_search` filter explicitly on
+that column, which only those two operator-run paths ever set.
 Consequently:
 
 - Deleting an org's own trace (`purge-trace`/`purge-org`) is a clean, local
   operation exactly as described in §1–3. There is no other org's
   `memory/lessons/` file that could have derived anything from it, because
   no other org's tooling — and no Knowledge Base query — ever saw it.
+- A `submit_kb_entry` proposal is a separate row (`kb_submissions`, §1)
+  from the moment it is created, not a promoted `Trace` — deleting an
+  org's traces never touches its submissions, and vice versa.
 - The only content any org's query can ever draw on beyond its own data is
-  what the operator wrote into the Knowledge Base. Correcting or removing
-  a Knowledge Base entry is an operator decision, not a customer
-  deletion request, and there is currently no CLI command for it beyond
-  `commons-seed`'s own file-driven load — flagged as an open item in §5.
+  what the operator wrote or approved into the Knowledge Base. Correcting
+  or removing a Knowledge Base entry is an operator decision, not a
+  customer deletion request, and there is currently no CLI command for it
+  beyond `commons-seed`'s own file-driven load — flagged as an open item
+  in §5.
 - `vote_trace` lets any org vote on a Knowledge Base entry (feedback on
   the operator's content), and that vote is retained the same way any
   other row is (§2). It is never a customer's own trace data crossing an
@@ -142,6 +150,13 @@ Consequently:
   jurisdiction, and with what backup/retention configuration? Nothing in
   `hub/` prescribes this — it is deploy-target-specific and unset in
   `hub/.env.example`.
+- An org has no way to withdraw a `submit_kb_entry` proposal once sent --
+  only an operator's `approve-submission`/`reject-submission` decides it.
+  A pending submission is never visible to anyone but the submitting org
+  and the operator either way (§1), so the exposure this would address is
+  narrow, but a "you can always take back what you have not published
+  yet" self-service path is a reasonable expectation nothing here
+  currently meets.
 - There is no CLI command to correct or remove a single Knowledge Base
   entry after `commons-seed` has loaded it, short of a direct database
   operation — worth closing before an operator relies on the Knowledge

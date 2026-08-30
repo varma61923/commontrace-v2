@@ -446,6 +446,46 @@ async def commons_search(
     return response
 
 
+async def submit_kb_entry(
+    hub_url: str,
+    api_key: str,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str] | None = None,
+    agent_type: str = "",
+    rationale: str = "",
+    idempotency_key: str | None = None,
+) -> dict:
+    """Propose a Knowledge Base entry for operator review. Nothing is
+    published by this call -- see hub/crud.py:submit_kb_entry for the full
+    contract, and `commons_submissions` for checking status afterward.
+    """
+    arguments: dict[str, Any] = {
+        "title": title, "context_text": context_text, "solution_text": solution_text,
+        "tags": tags or [], "agent_type": agent_type, "rationale": rationale,
+    }
+    if idempotency_key is not None:
+        arguments["idempotency_key"] = idempotency_key
+    response = await _call_tool(hub_url, api_key, "submit_kb_entry", arguments)
+    if response.get("error"):
+        raise HubConnectionError(f"submit_kb_entry failed: {response['error']}: {response.get('detail', '')}")
+    return response
+
+
+async def list_my_kb_submissions(hub_url: str, api_key: str, limit: int | None = None) -> dict:
+    """This org's own Knowledge Base submissions and their review status."""
+    arguments: dict[str, Any] = {}
+    if limit is not None:
+        arguments["limit"] = limit
+    response = await _call_tool(hub_url, api_key, "list_my_kb_submissions", arguments)
+    if response.get("error"):
+        raise HubConnectionError(
+            f"list_my_kb_submissions failed: {response['error']}: {response.get('detail', '')}"
+        )
+    return response
+
+
 async def account_usage(hub_url: str, api_key: str) -> dict:
     """What this org's plan entitles it to, and what it has used.
 

@@ -300,6 +300,94 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
     assert result is False
 
 
+async def _submit_via_cli_path(session_factory, config, org_id, title="t"):
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        return await crud.submit_kb_entry(
+            session, org_id, config, rate_limiter,
+            title=title, context_text="c", solution_text="s", rationale="r", actor="test",
+        )
+
+
+class TestSubmissionReviewCommands:
+    """hub/manage.py's operator wrappers around crud.review_kb_submission --
+    the trust-tier-gated surface a community submission actually goes
+    through to become Knowledge Base content."""
+
+    async def test_list_submissions_reports_none_cleanly(self, session_factory, capsys):
+        await manage.list_submissions(session_factory=session_factory)
+        assert "no submissions" in capsys.readouterr().out
+
+    async def test_list_submissions_shows_a_pending_one(self, session_factory, config, two_orgs, capsys):
+        await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        await manage.list_submissions(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "'Stripe retries'" in out
+
+    async def test_list_submissions_rejects_a_bad_status_filter(self, session_factory, capsys):
+        result = await manage.list_submissions("bogus", session_factory=session_factory)
+        assert "must be one of" in capsys.readouterr().err
+        assert result is False
+
+    async def test_approve_submission_publishes_and_credits(self, session_factory, config, two_orgs, capsys):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        result = await manage.approve_submission(s["id"], two_orgs["org_b"], session_factory=session_factory)
+        assert result is True
+        out = capsys.readouterr().out
+        assert "approved" in out
+        assert "new Knowledge Base entry" in out
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == crud.plans.SUBMISSION_ACCEPTANCE_CREDIT
+
+    async def test_approve_submission_with_an_explicit_credit(self, session_factory, config, two_orgs):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        await manage.approve_submission(s["id"], two_orgs["org_b"], "42", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 42
+
+    async def test_approve_submission_unknown_operator_org_reports_error(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        result = await manage.approve_submission(
+            s["id"], "00000000-0000-0000-0000-000000000000", session_factory=session_factory,
+        )
+        assert "no such organization" in capsys.readouterr().err
+        assert result is False
+
+    async def test_approve_submission_unknown_submission_id_reports_error(
+        self, session_factory, two_orgs, capsys
+    ):
+        result = await manage.approve_submission(
+            "00000000-0000-0000-0000-000000000000", two_orgs["org_a"], session_factory=session_factory,
+        )
+        assert "no PENDING submission" in capsys.readouterr().err
+        assert result is False
+
+    async def test_reject_submission_records_reason_and_awards_nothing(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        result = await manage.reject_submission(s["id"], "too generic", session_factory=session_factory)
+        assert result is True
+        assert "rejected" in capsys.readouterr().out
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 0
+
+    async def test_reject_submission_unknown_id_reports_error(self, session_factory, capsys):
+        result = await manage.reject_submission(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory,
+        )
+        assert "no PENDING submission" in capsys.readouterr().err
+        assert result is False
+
+
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 class TestPurgeRequiresConfirmation:
     """purge-trace/purge-org are irreversible (no soft-delete, no undo).
@@ -379,6 +467,8 @@ async def test_argument_count_validation():
     assert manage.main(["purge-trace"]) == 2
     assert manage.main(["purge-trace", "a", "b"]) == 2
     assert manage.main(["list-quarantined", "a", "b"]) == 2  # takes 0 or 1, not 2
+    assert manage.main(["approve-submission", "a"]) == 2  # needs a submission id AND an operator org id
+    assert manage.main(["reject-submission"]) == 2
 
 
 async def test_auth_import_is_used():

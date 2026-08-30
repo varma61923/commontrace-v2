@@ -1019,3 +1019,71 @@ reasoning about (A)'s own economics and retrieval quality is unchanged.
 This update is scoped entirely to link 5 and to §3's problem statement —
 both of which were always the (B) side of the fork, and (B) remains, as
 §11.3 already concluded, not the thing to spend on next.
+
+---
+
+## 15. Update (2026-08-30): a reviewed community-submission channel, not a network effect reopened
+
+§14.2 identified a real cost of retiring org-to-org sharing: corpus growth
+stopped scaling with (A)'s install base and became direct, funded operator
+labor instead — writing and citing substrate knowledge one entry at a
+time. This update adds a second source, `submit_kb_entry` +
+`hub/manage.py review-submission`, without reopening §3's problem or
+walking back §14's retirement.
+
+**The mechanism.** An org may propose an entry; nothing is published by
+that call. It writes to a table (`KnowledgeBaseSubmission`) neither
+`commons_overlap` nor `commons_search` ever reads. Only an operator's own
+`review-submission` action can turn an *accepted* proposal into a real
+`Trace(commons_source='seed')`, owned by the operator, never by the
+submitter. Acceptance also awards a permanent, one-time addition to the
+submitting org's Knowledge Base query allowance
+(`Organization.bonus_commons_queries`); a rejected or still-pending
+proposal awards nothing.
+
+**Why this does not repeat §3's failure.** §3's naive fix ("reciprocity")
+fails because credit for the ACT of sharing rewards volume: an org keeps
+its best lessons and contributes filler to collect the reward. Credit for
+ACCEPTANCE changes what is being rewarded. Submitting costs nothing and
+proves nothing; only content an operator judged worth publishing earns
+anything, so filler is not a viable strategy for extracting allowance the
+way it would be under a credit-for-sharing rule. This does not make an
+org's incentive to withhold its most differentiated knowledge disappear —
+nothing could, and nothing here claims to. What it produces is content
+self-selected for being non-competitive enough to clear a human's review,
+the same category §14 already described the operator's own seeded
+content as: Stack-Overflow-shaped, not trade-secret-shaped.
+
+**What this is not.** It is not §12.1's retired thesis restored. §12.1
+claimed corpus size scales with (A)'s adoption automatically, as a
+byproduct of usage. This channel scales with review THROUGHPUT, which is
+still an operator-side constraint, not a customer-side one — nobody's
+corpus grows merely because more organizations run (A). What changes from
+§14.4's "direct, funded, ongoing editorial commitment" framing is narrower
+than a network effect: reviewing a submitted write-up (read, judge,
+accept/reject) is cheaper operator labor than authoring one from nothing
+(write, verify, cite a source), so this raises plausible curation
+throughput without changing who gates quality or removing the labor
+constraint entirely. Call it a labor multiplier for the operator, not a
+network effect — a real but modest claim, and the honest one.
+
+**§14.5's pricing correction, refined further.** `bonus_commons_queries`
+reintroduces a customer-facing incentive number, but it is not
+`commons-value` reborn as a pricing denominator. `commons-value` measured
+a two-sided commercial relationship: value a customer delivered to other
+customers, arguable as a basis for revenue share. This is one-sided: an
+org gets query allowance for helping build the *operator's own* product
+content, closer to a loyalty credit or a paid-in-product bounty for
+editorial labor than to IP licensing. It does not change §11.5's surviving
+pricing hypothesis (price (A) against measured resolution-rate
+improvement); it is a retention/engagement mechanic sitting next to that
+pricing, not a substitute for it.
+
+**§11.4's gate, condition 3, updated once more.** Corpus size is now
+funded by two paths instead of one: direct operator authorship (unchanged
+from §14.4) and reviewed community submissions (this section). Both are
+operator-labor-bound; neither is the free, adoption-driven growth §12.1
+originally assumed. The gate's status is otherwise unchanged from §14.4:
+condition 1 (instrument works) is met for lookup, unmet for a trustworthy
+coverage percentage; condition 3 (corpus large enough) remains a funded
+commitment, now with a second, likely cheaper channel feeding it.
