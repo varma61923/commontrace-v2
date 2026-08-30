@@ -67,3 +67,50 @@ class TestAgentsAreToldHowToMeasure:
         skill = install_cmd._GENERIC_POINTER_SKILL
         assert "search_traces" in skill
         assert "commontrace query --experiment" in skill
+
+
+class TestTheReferenceProfileAlsoTeachesIt:
+    """`install --target claude-code` copies the repo's own SKILL.md when
+    one is found, and only falls back to the pointer skill when it is not.
+
+    Anyone installing from a checkout -- the common case -- therefore gets
+    SKILL.md, so teaching the holdout only in the fallback fixes the path
+    fewer people take. That is exactly what happened: the fallback was
+    updated first and this file's other tests passed while the primary
+    path still taught nothing about measurement.
+    """
+
+    @staticmethod
+    def _skill() -> str:
+        """Whitespace-normalized, so an assertion about what the document
+        SAYS does not fail because a sentence happened to wrap. Prose gets
+        reflowed; the claim is what has to stay."""
+        import pathlib
+        import re
+
+        text = (pathlib.Path(__file__).resolve().parents[2] / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        return re.sub(r"\s+", " ", text)
+
+    def test_the_retrieval_phase_honours_a_running_holdout(self):
+        """Retrieval is the only point that knows which lessons were
+        ELIGIBLE, and eligibility is what makes the comparison causal
+        rather than confounded -- so the instruction belongs there and
+        nowhere else."""
+        skill = self._skill()
+        assert "randomized holdout is running" in skill
+        assert "occasion_id" in skill
+        assert "record_occasion_outcome" in skill
+        assert "commontrace query --experiment" in skill
+
+    def test_it_states_the_rule_the_tooling_cannot_enforce(self):
+        skill = self._skill()
+        assert "does not raise an error" in skill
+        assert "biasing the measured effect toward zero" in skill
+
+    def test_the_output_format_has_somewhere_to_report_withheld_lessons(self):
+        """Without a slot in the required output block, an agent honouring
+        the holdout has no way to say so, and a reviewer cannot tell a
+        withheld lesson from one that simply did not match."""
+        assert "### Withheld by the holdout" in self._skill()

@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **The measurement loop is now reachable from where agents actually
   are**: an optional `occasion_id` on `search_traces`, the Hub's full tool
-  surface in the generated MCP config, and holdout instructions in the
-  skill `commontrace install` writes.
+  surface in the generated MCP config, and holdout instructions in **both**
+  skills `commontrace install` can write -- the repo's own `SKILL.md`
+  (used whenever installing from a checkout, which is the common case) and
+  the pointer skill that stands in when no `SKILL.md` is found.
 
   Three layers of the same gap, found by checking rather than assuming.
   The randomized holdout existed on the Hub (§19) and in the CLI, and an
@@ -33,9 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a caller ignoring the block behaves exactly as before; omitting
   `occasion_id`, or running with no experiment, changes nothing at all.
 
+  In `SKILL.md` the instruction lands in Phase 0, the retrieval phase --
+  the only point that knows which lessons were *eligible*, and
+  eligibility is what makes the later comparison causal rather than
+  confounded. Its required output block gains a "Withheld by the
+  holdout" slot, so an agent honouring the experiment can say so and a
+  reviewer can tell a withheld lesson from one that simply did not
+  match.
+
   `hub/tests/test_install_template_surface.py` pins the advertised tool
-  list against `hub/smoke.py` and pins that the generated skill still
-  teaches the rule that fails silently -- using a withheld trace does not
+  list against `hub/smoke.py` and pins that both skills still
+  teach the rule that fails silently -- using a withheld trace does not
   raise, it just biases the effect toward zero, so an agent has to be told.
 
 - **`commontrace prove`**, the client path to the Hub's measurement tools
