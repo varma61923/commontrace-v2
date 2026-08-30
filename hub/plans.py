@@ -15,10 +15,13 @@ something the customer did not get:
   give back what it cost would be a deletion right in name only.
 
 * `commons_queries_per_month` -- how many times the org may ask the
-  commons the coverage question. This is the metered unit because it is
-  the only call whose value comes from *other people's* contributions;
-  everything else an org does is with its own data, and charging per query
-  against your own memory is rent, not price.
+  CommonTrace Knowledge Base a question. This is metered separately from
+  storage because it is the one call that reads content this org did not
+  write: an operator-maintained corpus of substrate knowledge (public
+  protocol semantics, vendor documentation, standards -- see
+  `commons/seed/substrate-v1.jsonl`), not this org's own memory. Charging
+  per query against your own memory would be rent, not price; this is
+  metered because it is a genuinely separate resource.
 
 * `max_agents` -- how many distinct agents an org may have ACTIVE at once.
   This is the expansion axis: STRATEGY.md §12.2 argues value here compounds
@@ -43,26 +46,30 @@ something the customer did not get:
      failure mode for infrastructure the customer is running live traffic
      through. Hitting the cap blocks EXPANSION, not OPERATION.
 
-WHY CONTRIBUTION EARNS ALLOWANCE
---------------------------------
-A knowledge commons where contributing is pure altruism fills with filler
-and dies -- the standard failure mode, and the one STRATEGY.md §3 names.
-`commons-value` already measures the thing that makes contribution
-non-altruistic: `Trace.commons_hits`, the number of times an org's shared
-knowledge actually covered someone else's failure. Measuring it and then
-not paying for it would be the same mistake in a nicer shirt.
+WHY THERE IS NO ORG-TO-ORG SHARING HERE
+----------------------------------------
+An earlier design routed the Knowledge Base through customer contribution:
+an org could opt a trace of its own into a pool other orgs' queries could
+match against, and earned extra query allowance for every hit that
+delivered. That is a peer-to-peer commons, and it has a fatal problem
+STRATEGY.md §3 already named and never solved: **adverse selection**. Why
+would an org contribute knowledge that helps a competitor? The naive
+answer ("reciprocity") fails because the most valuable lessons are the
+most proprietary -- contribution stays voluntary, orgs contribute their
+generic lessons and withhold their good ones, and the corpus fills with
+filler. And it asks a customer to trust that their own trace text, however
+"substrate-only" they judge it, will never leak anything competitively
+sensitive to another org reading it.
 
-So the allowance is `plan grant + delivered hits x QUERY_CREDIT_PER_HIT`.
-An org that puts real knowledge in pays less, mechanically, without anyone
-negotiating. Note carefully what is credited: hits DELIVERED, not traces
-SHARED. Sharing is free to do and easy to fake -- an org could dump ten
-thousand junk traces in an afternoon. A hit requires that someone else's
-genuine failure matched, at the shipped threshold, against a corpus that
-excludes the sharer's own rows. It cannot be self-dealt.
-
-Seeded rows are excluded from crediting for the same reason they are
-excluded from the network-effect metric: the operator crediting itself for
-its own primer is circular (hub/manage.py:commons_seed).
+There is no version of that trade a customer should take, so it is not
+offered. What replaced it: the Knowledge Base is authored and curated by
+the operator alone (`hub/manage.py:commons_seed`, `Trace.commons_source ==
+"seed"`) -- the same relationship a team has to Stack Overflow or an
+internal wiki, not to a competitor's support queue. No customer trace ever
+becomes visible to another customer. `commons_access` is the one thing a
+plan controls: whether this org may consult that corpus at all. Nothing
+about using it costs another org anything or requires them to have shared
+first, because there is no "them" to share with.
 
 WHAT THIS FILE DOES NOT DO
 --------------------------
@@ -75,14 +82,6 @@ to.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-# One delivered hit -- someone else's failure genuinely covered by this
-# org's shared knowledge -- is worth this many commons queries. Set so a
-# modestly useful contributor on the free plan stops needing to think about
-# the limit at all, while a non-contributor still meets it. It is a policy
-# number, not a measurement, and it is the one dial in this file that an
-# operator should expect to turn.
-QUERY_CREDIT_PER_HIT = 25
 
 # How recently an agent must have written a trace to count as "under
 # management". A policy number, and the second dial in this file.
@@ -152,8 +151,8 @@ PLANS: dict[str, Plan] = {
         # agent cannot demonstrate the thing being sold.
         max_agents=5,
         commons_access=True,
-        summary="Evaluate on real memory. Commons access included, because a "
-                "commons nobody may query cannot demonstrate that it works.",
+        summary="Evaluate on real memory, with Knowledge Base access included -- an "
+                "on-ramp nobody can try requires nothing to demonstrate its value.",
     ),
     "team": Plan(
         name="team",
@@ -161,7 +160,7 @@ PLANS: dict[str, Plan] = {
         commons_queries_per_month=1_000,
         max_agents=25,
         commons_access=True,
-        summary="A fleet's working memory plus routine commons coverage checks.",
+        summary="A fleet's working memory plus routine Knowledge Base lookups.",
     ),
     "scale": Plan(
         name="scale",
@@ -169,12 +168,12 @@ PLANS: dict[str, Plan] = {
         commons_queries_per_month=25_000,
         max_agents=UNLIMITED,
         commons_access=True,
-        summary="Unmetered storage; commons queries still metered, because "
-                "they consume other orgs' contributions rather than your own.",
+        summary="Unmetered storage; Knowledge Base queries still metered, because "
+                "that corpus is a separate resource from this org's own memory.",
     ),
-    # Not a customer plan. The org that owns seeded rows must be able to
-    # load a corpus larger than any paid tier without that looking like
-    # revenue, and must never be billed for priming its own commons.
+    # Not a customer plan. The org that owns the operator-curated Knowledge
+    # Base content must be able to write to it without that looking like
+    # a customer's own storage usage or query volume.
     "operator": Plan(
         name="operator",
         max_traces=UNLIMITED,
@@ -219,11 +218,15 @@ def get(plan_name: str | None) -> Plan:
     return PLANS.get((plan_name or "").strip().lower() or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])
 
 
-def query_allowance(plan: Plan, delivered_hits: int) -> int:
-    """Monthly commons-query allowance, including earned credit."""
-    if plan.commons_queries_per_month == UNLIMITED:
-        return UNLIMITED
-    return plan.commons_queries_per_month + max(0, int(delivered_hits)) * QUERY_CREDIT_PER_HIT
+def query_allowance(plan: Plan) -> int:
+    """Monthly Knowledge Base query allowance.
+
+    A flat plan grant, not something an org can earn more of by
+    contributing -- there is no customer contribution in this model to
+    earn credit for. See this module's docstring, "why there is no
+    org-to-org sharing here".
+    """
+    return plan.commons_queries_per_month
 
 
 def within(limit: int, used: int) -> bool:

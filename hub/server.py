@@ -178,13 +178,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
             "account_usage reports your plan and usage. All operations are scoped to "
-            "your organization's own traces (hub/README.md 'Tenant isolation'). "
-            + ("share_trace/unshare_trace/commons_overlap/commons_search add opt-in "
-               "cross-org sharing on top of that: commons_search looks up ranked "
-               "candidate answers to one failure, commons_overlap reports the "
-               "conservative coverage fraction across many."
+            "your organization's own traces (hub/README.md 'Tenant isolation') -- "
+            "there is no tool anywhere on this server that exposes one organization's "
+            "traces to another. "
+            + ("commons_overlap/commons_search additionally let you consult the "
+               "operator-maintained CommonTrace Knowledge Base: commons_search looks "
+               "up ranked candidate answers to one failure, commons_overlap reports "
+               "the conservative coverage fraction across many. Nothing you submit is "
+               "ever added to that Knowledge Base."
                if config.commons_enabled else
-               "This deployment has HUB_COMMONS_ENABLED=false: no cross-org sharing "
+               "This deployment has HUB_COMMONS_ENABLED=false: no Knowledge Base "
                "tools exist on this server.")
         ),
     )
@@ -332,58 +335,24 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    # --- Cross-org commons (opt-in), gated by HUB_COMMONS_ENABLED --------
+    # --- CommonTrace Knowledge Base (opt-in), gated by HUB_COMMONS_ENABLED
     #
     # `if config.commons_enabled:` around the @mcp.tool() registrations
     # themselves, not a check inside each handler -- a disabled deployment
     # must not even LIST these tools. A client that tries gets the MCP
     # framework's own "unknown tool" error, which holds even if an org
-    # forgets the commons exists; a per-call refusal only holds if every
-    # caller remembers to check first. account_usage is intentionally
+    # forgets the Knowledge Base exists; a per-call refusal only holds if
+    # every caller remembers to check first. account_usage is intentionally
     # outside this block: it reports an org's own plan and its own usage,
-    # never another org's data, so disabling the commons does not disable it.
+    # never Knowledge Base content, so disabling it does not disable that.
+    #
+    # There is no share_trace/unshare_trace tool here, and there never will
+    # be: the Knowledge Base is authored and curated by the operator alone
+    # (hub/manage.py:commons_seed), never by promoting a customer's own
+    # trace. See hub/plans.py "why there is no org-to-org sharing here" --
+    # letting one customer's data become visible to another was the design
+    # this module used to have, and it was retired on purpose.
     if config.commons_enabled:
-
-        @mcp.tool()
-        async def share_trace(id: str, rationale: str = "") -> dict:
-            """Contribute one of your own traces to the cross-org commons.
-
-            Opt-in and revocable. Only share SUBSTRATE failures -- things like
-            "this API needs an idempotency key" or "this library changed its
-            default" -- that every fleet rediscovers at full cost and nobody
-            considers proprietary. Do NOT share business logic: pricing rules,
-            escalation policy, qualification criteria. The Hub cannot make that
-            judgment for you, so `rationale` records why you decided this trace
-            is substrate.
-
-            Once shared, this trace's full content becomes visible to other orgs
-            whose recurring failures it matches. Withdraw it with unshare_trace.
-            """
-            try:
-                org_id = auth.get_current_org_id()
-                async with session_scope(session_factory) as session:
-                    result = await crud.share_trace(
-                        session, org_id, id, rationale=rationale, actor=auth.get_current_actor()
-                    )
-                if result is None:
-                    return {"error": "not_found", "detail": f"no trace with id {id}"}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _error_response(exc)
-
-        @mcp.tool()
-        async def unshare_trace(id: str) -> dict:
-            """Withdraw one of your traces from the cross-org commons. It stops
-            matching other orgs' queries immediately."""
-            try:
-                org_id = auth.get_current_org_id()
-                async with session_scope(session_factory) as session:
-                    result = await crud.unshare_trace(session, org_id, id, actor=auth.get_current_actor())
-                if result is None:
-                    return {"error": "not_found", "detail": f"no trace with id {id}"}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _error_response(exc)
 
         @mcp.tool()
         async def commons_overlap(
@@ -393,16 +362,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             agent_type: str = "",
         ) -> dict:
             """Of the recurring failures your fleet keeps hitting, what fraction
-            has some *other* fleet already solved?
+            does the CommonTrace Knowledge Base already solve?
+
+            The Knowledge Base is authored and curated by the operator -- public
+            substrate knowledge, never another customer's data. There is no
+            sharing to do first: nothing you submit is ever added to it, and
+            nothing here can expose your fleet's traces to anyone else.
 
             Send MinHash signatures of your own failures -- generated locally by
             `commontrace commons sign`, so no failure text ever leaves your
             machine. Each entry is {"label": str, "signature": [int, ...]}.
-
-            You do not have to contribute anything to ask this. What comes back
-            is drawn only from traces whose owners explicitly shared them, and
-            your own traces are excluded from the corpus so the number reflects
-            what you'd actually *gain* rather than counting your own work.
             """
             try:
                 org_id = auth.get_current_org_id()
@@ -421,27 +390,27 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
             agent_type: str = "",
         ) -> dict:
-            """Ask the commons what it already knows about ONE failure, and get
-            back ranked candidate answers with their solutions.
+            """Ask the CommonTrace Knowledge Base what it already knows about
+            ONE failure, and get back ranked candidate answers with their
+            solutions -- like searching a wiki, not a peer's ticket queue.
 
-            This is the knowledge-base lookup: "has anyone solved this?".
-            `commons_overlap` answers the different, quotable question "what
-            FRACTION of my failures are solved" and buys 0% false positives
-            with a threshold that discards about nine of every ten real
-            answers. This tool ranks instead, and finds the right record
-            89.1% of the time at rank 1 and 100% within the top 10 on the
-            held-out evaluation (commons/eval/RESULTS.md).
+            This is the lookup: "has anyone solved this?". `commons_overlap`
+            answers the different, quotable question "what FRACTION of my
+            failures are solved" and buys 0% false positives with a threshold
+            that discards about nine of every ten real answers. This tool
+            ranks instead, and finds the right record 89.1% of the time at
+            rank 1 and 100% within the top 10 on the held-out evaluation
+            (commons/eval/RESULTS.md).
 
             Send one MinHash signature, generated locally by `commontrace
-            commons sign` -- no failure text leaves your machine, exactly as
-            with commons_overlap. Your own traces are excluded from the
-            corpus, and what comes back is drawn only from traces whose
-            owners explicitly shared them.
+            commons sign` -- no failure text leaves your machine. What comes
+            back is drawn only from the operator-curated Knowledge Base,
+            never from another customer's traces.
 
             Results are CANDIDATES TO JUDGE, never coverage: a failure the
-            commons does not contain still returns a non-empty list every
-            time. Do not derive a percentage from this tool -- that is what
-            commons_overlap is for.
+            Knowledge Base does not contain still returns a non-empty list
+            every time. Do not derive a percentage from this tool -- that is
+            what commons_overlap is for.
             """
             try:
                 org_id = auth.get_current_org_id()
@@ -457,12 +426,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     async def account_usage() -> dict:
         """What your plan entitles you to, and what you have used this period.
 
-        Free to call and does not consume a commons query -- a meter that
-        charges you for reading the meter is a support ticket waiting to
-        happen. `commons_queries.earned` is allowance you did not pay for:
-        every time a trace you shared covers another fleet's failure, your
-        allowance grows. That is the whole reason contributing is worth
-        doing rather than a favour you do for strangers.
+        Free to call and does not consume a Knowledge Base query -- a meter
+        that charges you for reading the meter is a support ticket waiting
+        to happen.
         """
         try:
             org_id = auth.get_current_org_id()

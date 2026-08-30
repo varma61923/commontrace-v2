@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The commons is no longer org-to-org. It is a single, optional,
+  operator-curated Knowledge Base.** The previous design let one org opt a
+  trace into a shared corpus other orgs' queries could match against
+  (`share_trace`/`unshare_trace`, `commontrace commons contribute`). That
+  design is retired: it does not make sense for orgs to share their IP and
+  data with each other, and it has an adverse-selection problem with no fix
+  (STRATEGY.md §3) — why would an org contribute knowledge that might help
+  a competitor? Removing the contribution mechanism entirely dissolves that
+  problem rather than mitigating it; there is no contribution decision left
+  for any org to face adverse selection about (STRATEGY.md §14).
+
+  What replaced it is closer to a vendor-maintained Stack Overflow or wiki
+  than to anything shared between customers: a single corpus the *operator*
+  authors and curates via `hub/manage.py commons-seed`, the only thing that
+  ever writes a `commons_source == "seed"` row. No customer-facing tool can
+  write to it, and no customer's own trace is ever in it — enforced not
+  just by removing the sharing tool but by `commons_overlap` and
+  `commons_search` both filtering explicitly on `commons_source == "seed"`
+  in their SQL, a guarantee that holds even against a hypothetical future
+  bug
+  (`hub/tests/test_commons.py::test_a_shared_row_that_is_not_seed_sourced_is_still_invisible`).
+  Consulting it stays optional per org (`commons_access`, a plan setting)
+  and removable per deployment (`HUB_COMMONS_ENABLED=false`) exactly as
+  before.
+
+  `vote_trace` keeps its cross-org reach, narrowed to the same boundary:
+  any org may vote on a Knowledge Base entry (`commons_source == "seed"`),
+  never on another org's own private trace.
+
+  This is the on-prem, self-learning fleet everything else in this repo
+  already builds, plus an optional Knowledge Base layer next to it — not a
+  peer-to-peer sharing network between customers.
+
+### Removed
+- **`share_trace` / `unshare_trace` MCP tools**, and the `commontrace
+  commons contribute` / `commons unshare` CLI subcommands built on them.
+  There is nothing for a customer to opt a trace into any more.
+- **The "earn query allowance by contributing" mechanic**
+  (`plans.QUERY_CREDIT_PER_HIT`, `entitlements()["commons_queries"]["earned"]`,
+  `entitlements()["delivered_hits"]`). A plan's Knowledge Base query
+  allowance is now a flat grant, because there is nothing a customer
+  contributes to earn credit for.
+- **`hub/manage.py commons-value` and `commons-stats`** — the per-org
+  contribution ledger and the "how many distinct orgs contribute" adoption
+  metric. Replaced by `hub/manage.py kb-stats`, a content-quality report
+  for the operator (entry count, hits delivered, which entries have never
+  matched anything) rather than a network-effect measurement, because
+  there is no network effect to measure in this model.
+
 ### Fixed
 - **CI was red: two new test files crashed pytest collection with no
   numpy installed.** `tests/test_m2_empirical_challenger.py` and

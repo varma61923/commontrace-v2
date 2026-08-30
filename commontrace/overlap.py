@@ -1,9 +1,12 @@
 """Fleet Overlap: how much would fleet B gain from fleet A's lessons?
 
-This measures the one quantity the cross-org "commons" thesis rests on (see
-STRATEGY.md §5) -- *of the failures a fleet keeps hitting, what fraction has
-some other fleet already solved?* -- and it does so **without either fleet
-sending the other any lesson or trace text.**
+This is a deliberately bilateral, opt-in tool for two CONSENTING fleets who
+have already agreed to compare notes -- distinct from, and unrelated to,
+the CommonTrace Knowledge Base (hub/commons.py), which is a single
+operator-curated corpus with no fleet-to-fleet data flow at all. It
+measures *of the failures a fleet keeps hitting, what fraction has some
+other, specific fleet already solved?* -- and it does so **without either
+fleet sending the other any lesson or trace text.**
 
 Mechanism: each side reduces every lesson/failure to a fixed-length MinHash
 signature locally, and only signatures are exchanged. MinHash estimates the

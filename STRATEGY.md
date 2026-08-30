@@ -916,3 +916,106 @@ Run link 1's falsifier first. It is the cheapest, it gates everything
 downstream, and as of `capture --occasion-id` the loop actually closes —
 which it did not when this section was written, and which nobody would have
 discovered without trying to run the thing the section recommends.
+
+---
+
+## 14. Update (2026-08-30): the org-to-org commons is retired — §3's problem is resolved, §12.1's claim is not
+
+Every section above through §13 was written assuming the shape §3 named:
+org A opts a trace in, org B's queries can match it, and the hard problem
+is adverse selection (§3) — why would an org contribute knowledge that
+might help a competitor? That shape is now gone from the codebase.
+`share_trace`/`unshare_trace` and `commontrace commons contribute` do not
+exist any more. There is no tool, customer-facing or otherwise, by which
+one org's trace can ever become visible to another org.
+
+**What replaced it.** A single corpus the *operator* authors and curates —
+`hub/manage.py commons-seed` is the only thing that ever writes to it —
+optional per org (`commons_access`, a plan setting) and removable per
+deployment (`HUB_COMMONS_ENABLED=false`). Closer to a vendor-maintained
+Stack Overflow or wiki than to anything shared between customers. See
+`hub/commons.py`'s module docstring for the full reasoning.
+
+**Why, stated plainly rather than re-derived:** orgs do not share their IP
+and data with each other. Asking them to was solving a problem nobody
+actually has a reason to opt into, adverse selection or not.
+
+### 14.1 §3 is not mitigated, it is dissolved
+
+§3 asked how to design incentives so that voluntary contribution does not
+fill the commons with filler. There is no answer to that question that
+survives contact with self-interest, which is exactly what §3 already
+concluded. The fix taken here is not a better incentive — it is removing
+the thing the incentive was for. There is no contribution decision for any
+org to face adverse selection about, because no org is ever asked to
+contribute. This is not a workaround; it is the honest reading of §3's own
+conclusion, taken to its actual end instead of designed around.
+
+### 14.2 §12.1's load-bearing claim is false under the new architecture
+
+§12.1 argued **"(A) is the corpus engine for (B)"**: every org running (A)
+accumulates traces as a byproduct, and `share_trace` / `commons contribute`
+were one call away from turning that accumulation into commons corpus. That
+mechanism is exactly what no longer exists. Running (A) at any scale now
+produces **zero** bytes of Knowledge Base content — corpus growth requires
+the operator to deliberately author and run `commons-seed`, which is
+editorial work, not a byproduct of usage.
+
+This reopens the question §12.1 believed it had closed: where does the
+corpus come from? The honest answer now is **operator labor**, not
+customer adoption. That is a real, ongoing cost this business must fund
+directly (writing and maintaining substrate knowledge, the way a vendor
+maintains documentation) rather than one that "falls out" of selling (A)
+well. It does not scale with the install base the way §12.1 described; it
+scales with however much the operator is willing to write and curate.
+
+### 14.3 What survives measurement, unchanged
+
+The instrument numbers in §11.1 and §11.4a are properties of the *matching
+algorithm* against whatever corpus exists, not of who populated that
+corpus. They hold exactly as measured:
+
+| | Recall@1 | @5 | @10 | Text leaves the fleet? |
+|---|---|---|---|---|
+| Threshold (§11.1) | 10.9% | — | — | No |
+| Signature ranking (§11.4a, shipped as `commons_search`) | 89.1% | 95.7% | 100% | No |
+
+An operator-curated corpus of the same size and quality as an org-contributed
+one would score identically on both. What changed is the source and the
+growth curve of the corpus, not the retrieval properties measured against it.
+
+### 14.4 §11.4's gate, re-read
+
+Condition 1 ("the instrument works") is unaffected — met for lookup per
+§11.4a, unmet for a trustworthy coverage percentage, exactly as before.
+Condition 3 ("corpus large enough to mean something") is the one §12.1
+mis-costed: it is no longer a byproduct of (A) at scale, it is a direct,
+funded, ongoing editorial commitment. §11.3's recommendation to commit to
+(A) still stands on its own terms — (A) remains the whole product for
+customers who never touch the Knowledge Base — but it no longer doubles as
+an argument for how (B) gets its corpus. Those are now two separate
+investments, not one.
+
+### 14.5 §11.5's pricing denominator loses a term
+
+§11.5 named two computable denominators for pricing: measured
+resolution-rate improvement (§8.4), and "delivered commons hits
+(`commons-value`)" if (B) ever opened. `commons-value` — the per-org
+ledger of what an org shared versus what that delivered — no longer exists,
+because there is no org contribution to have a ledger about. `hub/manage.py
+kb-stats` replaces it with a content-quality report (which Knowledge Base
+entries are actually earning their query traffic), but that is an operator
+diagnostic, not a customer-facing pricing denominator: no customer
+contributed anything to be credited for. §11.5's surviving pricing
+hypothesis is the first one alone — price (A) against measured
+resolution-rate improvement per fleet — and it was already the stronger of
+the two.
+
+### 14.6 What this does not touch
+
+Links 1–4 of §13.2 are per-fleet or per-platform claims about (A); none of
+them mentioned the commons and none of them are affected. §12.2–§12.7's
+reasoning about (A)'s own economics and retrieval quality is unchanged.
+This update is scoped entirely to link 5 and to §3's problem statement —
+both of which were always the (B) side of the fork, and (B) remains, as
+§11.3 already concluded, not the thing to spend on next.

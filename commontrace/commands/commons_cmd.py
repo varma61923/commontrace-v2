@@ -1,18 +1,26 @@
-"""`commontrace commons` — the self-serve cross-org coverage question.
+"""`commontrace commons` — consult the CommonTrace Knowledge Base.
 
-    Of the failures my fleet keeps hitting, what fraction has some other
-    fleet already solved?
+    Of the failures my fleet keeps hitting, what fraction does the
+    operator-maintained Knowledge Base already solve? And: has anyone
+    already written down the answer to this ONE failure?
 
-This is the number STRATEGY.md §5 says the cross-org thesis lives or dies
-on, and the point of this command is that answering it takes one call and
-requires contributing nothing first. `commontrace overlap` can answer the
-same question, but only bilaterally: both fleets export signature files and
-somebody exchanges them by hand. That is a research instrument. This is the
-product version -- ask the Hub, get the number.
+This is not org-to-org sharing, and there is nothing to contribute:
+the Knowledge Base is a single corpus the operator authors and curates
+(substrate knowledge -- protocol semantics, vendor documentation,
+standards -- never another customer's trace), the way a team consults
+Stack Overflow or an internal wiki, not the way it would consult a
+competitor's support queue. `commons_access` (your plan) is the only
+"optional" here: whether you consult it at all. Nothing your fleet
+captures is ever added to it, and no other customer can ever see it.
 
-No failure text is sent. `sign` MinHashes locally and only signatures leave
-this machine; what comes back is drawn only from traces whose owners
-explicitly shared them.
+No failure text is sent either way. `sign` MinHashes locally and only
+signatures leave this machine; what comes back is drawn only from the
+operator's curated entries.
+
+(If you specifically want a bilateral, fully-offline comparison between
+two consenting fleets -- e.g. two teams inside the same company comparing
+notes -- see `commontrace overlap`, a separate, manual research tool that
+exchanges signature files by hand and involves no Hub.)
 """
 from __future__ import annotations
 
@@ -36,7 +44,8 @@ COMMONS_NUM_PERM = overlap.DEFAULT_NUM_PERM
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "commons",
-        help="Ask the Hub how many of your recurring failures another fleet has already solved.",
+        help="Consult the CommonTrace Knowledge Base (operator-maintained, optional) -- "
+        "not another fleet's data.",
     )
     sub = p.add_subparsers(dest="commons_cmd", required=True)
 
@@ -62,7 +71,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
     rep = sub.add_parser(
         "report",
-        help="Ask the Hub's commons how much of your failure set it already covers.",
+        help="Ask the Knowledge Base how much of your failure set it already covers.",
     )
     rep.add_argument(
         "--signatures", default=None,
@@ -90,8 +99,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
     ask = sub.add_parser(
         "ask",
-        help="Ask the commons what it already knows about one failure, in your own "
-        "words. Returns ranked candidate answers -- the lookup, not the coverage %.",
+        help="Ask the Knowledge Base what it already knows about one failure, in your "
+        "own words. Returns ranked candidate answers -- the lookup, not the coverage %.",
     )
     ask.add_argument(
         "question",
@@ -113,55 +122,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ask.add_argument("--hub-api-key", default=None, help="Default: $COMMONTRACE_HUB_API_KEY")
     ask.set_defaults(func=run_ask)
 
-    share = sub.add_parser(
-        "share",
-        help="Contribute one of your Hub traces to the commons (opt-in, revocable).",
-    )
-    share.add_argument("trace_id")
-    share.add_argument(
-        "--rationale", default="",
-        help="Why this trace is substrate rather than business logic. Recorded for audit.",
-    )
-    share.add_argument("--hub-url", default=None)
-    share.add_argument("--hub-api-key", default=None)
-    share.set_defaults(func=run_share)
-
-    unshare = sub.add_parser("unshare", help="Withdraw one of your traces from the commons.")
-    unshare.add_argument("trace_id")
-    unshare.add_argument("--hub-url", default=None)
-    unshare.add_argument("--hub-api-key", default=None)
-    unshare.set_defaults(func=run_unshare)
-
-    contrib = sub.add_parser(
-        "contribute",
-        help="Review and bulk-share a selected set of your Hub traces. "
-        "Previews by default; requires --confirm to actually share.",
-    )
-    contrib.add_argument(
-        "--tags", default="",
-        help="Comma-separated tags. Only traces carrying one of these are considered.",
-    )
-    contrib.add_argument("--query", default="", help="Full-text filter on your own traces.")
-    contrib.add_argument(
-        "--limit", type=int, default=50,
-        help="Cap on how many traces to consider in one pass (default 50).",
-    )
-    contrib.add_argument(
-        "--rationale", default="",
-        help="Why this batch is substrate rather than business logic. Recorded per trace.",
-    )
-    contrib.add_argument(
-        "--confirm", action="store_true",
-        help="Actually share. Without this the command only shows what WOULD be shared.",
-    )
-    contrib.add_argument("--hub-url", default=None)
-    contrib.add_argument("--hub-api-key", default=None)
-    contrib.set_defaults(func=run_contribute)
-
     usage = sub.add_parser(
         "usage",
-        help="What your plan entitles you to this period, and how much "
-        "allowance you have EARNED by contributing.",
+        help="What your plan entitles you to this period, and how much you have used.",
     )
     usage.add_argument("--hub-url", default=None)
     usage.add_argument("--hub-api-key", default=None)
@@ -318,12 +281,12 @@ def _render(report: dict) -> str:
     n_cov = report["n_covered"]
     frac = report["covered_fraction"]
     lines = [
-        "# Commons Coverage Report",
+        "# Knowledge Base Coverage Report",
         "",
         f"**{n_cov} of {n_f}** of your recurring failures "
-        f"(**{frac:.0%}**) have already been solved by another fleet.",
+        f"(**{frac:.0%}**) are already solved in the CommonTrace Knowledge Base.",
         "",
-        f"- Commons corpus searched: {report['n_commons_traces']} shared trace(s) from other orgs",
+        f"- Knowledge Base entries searched: {report['n_commons_traces']}",
         f"- Match threshold: {report['threshold']}",
         "",
     ]
@@ -338,7 +301,7 @@ def _render(report: dict) -> str:
 
     matches = report.get("matches") or []
     if matches:
-        lines += ["## What the commons already knows", ""]
+        lines += ["## What the Knowledge Base already knows", ""]
         for m in matches:
             trace = m.get("trace") or {}
             lines += [
@@ -423,20 +386,20 @@ def sign_question(question: str) -> list[int]:
 
 def _render_candidates(result: dict, question: str) -> str:
     candidates = result.get("candidates") or []
-    lines = [f"# Commons: {question}", ""]
+    lines = [f"# Knowledge Base: {question}", ""]
 
     if not candidates:
         total = result.get("n_commons_traces_total", 0)
         if not total:
             lines.append(
-                "The commons is empty (no org has shared a trace this Hub can offer you "
-                "yet), so there is nothing to search. This is a cold start, not a finding."
+                "The Knowledge Base has no entries yet, so there is nothing to search. "
+                "This is a cold start, not a finding."
             )
         else:
             lines.append(
-                f"No candidate shared a single content word with your question, across "
-                f"{total:,} commons trace(s). Matching is lexical, so try the wording an "
-                "on-call engineer would use for the symptom."
+                f"No entry shared a single content word with your question, across "
+                f"{total:,} Knowledge Base entries. Matching is lexical, so try the "
+                "wording an on-call engineer would use for the symptom."
             )
         return "\n".join(lines)
 
@@ -454,9 +417,10 @@ def _render_candidates(result: dict, question: str) -> str:
         bits = [f"similarity {sim:.3f}" if isinstance(sim, (int, float)) else "similarity ?"]
         hits = c.get("commons_hits")
         if hits:
-            # The Stack-Overflow-shaped corroboration signal: this answer has
-            # demonstrably covered other fleets' real failures before.
-            bits.append(f"has covered {hits:,} other fleet failure(s)")
+            # The Stack-Overflow-shaped corroboration signal: this entry has
+            # demonstrably covered a real recurring failure before, for this
+            # fleet or another customer -- not a vote, an actual match.
+            bits.append(f"has covered {hits:,} recurring failure(s) before")
         trust = trace.get("trust")
         if isinstance(trust, (int, float)) and trust:
             bits.append(f"trust {trust:.2f}")
@@ -477,8 +441,8 @@ def _render_candidates(result: dict, question: str) -> str:
     if result.get("corpus_truncated"):
         lines.append(
             f"*Searched the {result.get('n_commons_traces', 0):,} most recent of "
-            f"{result.get('n_commons_traces_total', 0):,} commons traces (per-query scan limit). "
-            "Narrow with --agent-type for a tighter search.*"
+            f"{result.get('n_commons_traces_total', 0):,} Knowledge Base entries "
+            "(per-query scan limit). Narrow with --agent-type for a tighter search.*"
         )
         lines.append("")
     lines.append("---")
@@ -517,133 +481,10 @@ def run_ask(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_share(args: argparse.Namespace) -> int:
-    resolved = _resolve_hub(args)
-    if resolved is None:
-        return 1
-    hub_url, api_key = resolved
-    try:
-        result = asyncio.run(
-            hub_client.share_trace(hub_url, api_key, args.trace_id, args.rationale)
-        )
-    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
-        print(f"[commontrace] {exc}", file=sys.stderr)
-        return 1
-    print(f"[commontrace] shared {result['id']} with the commons.")
-    print("  Other orgs whose failures match it can now see this trace in full.")
-    print(f"  Withdraw it any time: commontrace commons unshare {result['id']}")
-    return 0
-
-
-def run_contribute(args: argparse.Namespace) -> int:
-    """Bulk-share a selected batch, with a mandatory preview step.
-
-    Deliberately NOT a classifier. Deciding what is substrate and what is
-    proprietary is a judgment call with asymmetric cost -- over-sharing is
-    irreversible in the way that matters (another org may already have
-    copied it), while under-sharing costs nothing but a second pass. So the
-    operator states the selection, sees exactly what it resolved to, and
-    has to say --confirm. Nothing is inferred and nothing is shared by
-    default.
-    """
-    resolved = _resolve_hub(args)
-    if resolved is None:
-        return 1
-    hub_url, api_key = resolved
-
-    tags = [t.strip() for t in args.tags.split(",") if t.strip()]
-    if not tags and not args.query:
-        print(
-            "[commontrace] refusing to consider every trace you own.\n"
-            "  Narrow the batch with --tags and/or --query. Sharing is\n"
-            "  effectively publication, so the selection has to be deliberate.",
-            file=sys.stderr,
-        )
-        return 1
-
-    limit = max(1, min(int(args.limit), 200))
-    try:
-        found = asyncio.run(
-            hub_client._call_tool(
-                hub_url, api_key, "search_traces",
-                {"query": args.query, "tags": tags, "limit": limit},
-            )
-        )
-    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
-        print(f"[commontrace] {exc}", file=sys.stderr)
-        return 1
-    if found.get("error"):
-        print(f"[commontrace] search_traces failed: {found['error']}", file=sys.stderr)
-        return 1
-
-    traces = found.get("traces") or []
-    already = [t for t in traces if t.get("shared_with_commons")]
-    candidates = [t for t in traces if not t.get("shared_with_commons")]
-
-    if not candidates:
-        print("[commontrace] nothing new to share for that selection.")
-        if already:
-            print(f"  ({len(already)} matching trace(s) are already in the commons.)")
-        return 0
-
-    print(f"[commontrace] {len(candidates)} trace(s) selected for the commons:\n")
-    for t in candidates:
-        tag_str = ", ".join(t.get("tags") or []) or "(no tags)"
-        print(f"  {t['id'][:8]}  {str(t.get('title', ''))[:64]}")
-        print(f"            tags: {tag_str}")
-    if found.get("has_more"):
-        print(f"\n  (more matches exist beyond --limit {limit}; re-run to continue)")
-
-    if not args.confirm:
-        print(
-            "\n  PREVIEW ONLY -- nothing has been shared.\n"
-            "  Read the list above carefully. A shared trace's full content (title,\n"
-            "  context, solution) can be returned to another org whose failure matches\n"
-            "  it. Withdrawal stops future matches but cannot retract what someone has\n"
-            "  already retrieved. Share substrate, never business logic.\n"
-            "\n  Re-run with --confirm to share these."
-        )
-        return 0
-
-    shared, failed = 0, 0
-    for t in candidates:
-        try:
-            asyncio.run(hub_client.share_trace(hub_url, api_key, t["id"], args.rationale))
-            shared += 1
-        except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
-            failed += 1
-            print(f"[commontrace] could not share {t['id'][:8]}: {exc}", file=sys.stderr)
-
-    print(f"\n[commontrace] shared {shared} trace(s) with the commons.")
-    if failed:
-        print(f"  {failed} failed -- see errors above. Re-running is safe: "
-              "already-shared traces are skipped.", file=sys.stderr)
-    print("  Withdraw any of them with: commontrace commons unshare <trace_id>")
-    return 1 if failed else 0
-
-
-def run_unshare(args: argparse.Namespace) -> int:
-    resolved = _resolve_hub(args)
-    if resolved is None:
-        return 1
-    hub_url, api_key = resolved
-    try:
-        result = asyncio.run(hub_client.unshare_trace(hub_url, api_key, args.trace_id))
-    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
-        print(f"[commontrace] {exc}", file=sys.stderr)
-        return 1
-    print(f"[commontrace] withdrew {result['id']} from the commons.")
-    return 0
-
-
 def run_usage(args: argparse.Namespace) -> int:
-    """Show the meter.
-
-    Prints `earned` separately from `granted` on purpose: the difference is
-    the entire argument for contributing. An org that can see it is ahead
-    on credit has a reason to keep sharing; an org that cannot is being
-    asked for a favour.
-    """
+    """Show the meter: a flat plan allowance, no earning mechanic. There is
+    nothing to contribute in this model, so there is nothing to earn credit
+    for -- see hub/plans.py "why there is no org-to-org sharing here"."""
     resolved = _resolve_hub(args)
     if resolved is None:
         return 1
@@ -661,20 +502,7 @@ def run_usage(args: argparse.Namespace) -> int:
         return "unlimited" if n == unlimited else f"{n:,}"
 
     print(f"[commontrace] plan: {r['plan']}   billing period {r['period']} (UTC)")
-    print(f"  traces stored:    {r['traces']['used']:,} of {fmt(r['traces']['limit'])}")
-    print(f"  commons queries:  {q['used']:,} of {fmt(q['allowance'])}"
+    print(f"  traces stored:      {r['traces']['used']:,} of {fmt(r['traces']['limit'])}")
+    print(f"  knowledge base queries: {q['used']:,} of {fmt(q['allowance'])}"
           f"   ({fmt(q['remaining'])} remaining)")
-    print(f"    granted by plan:  {fmt(q['granted'])}")
-    print(f"    earned by contributing: {q['earned']:,}")
-    print()
-    if r["delivered_hits"]:
-        print(f"  Your shared traces have covered another fleet's failure "
-              f"{r['delivered_hits']:,} time(s).")
-        print("  That is what earned the allowance above -- it is not a discount "
-              "anyone negotiated.")
-    else:
-        print("  You have not delivered any commons hits yet. Sharing traces that "
-              "cover other")
-        print("  fleets' failures earns query allowance directly: "
-              "`commontrace commons contribute --tags <...>`.")
     return 0

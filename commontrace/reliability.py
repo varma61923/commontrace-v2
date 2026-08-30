@@ -31,12 +31,16 @@ being recorded and was, until now, joined by nothing.
 
 WHY IT MATTERS COMMERCIALLY (see STRATEGY.md)
 ---------------------------------------------
-Human review does not scale past a few hundred lessons, and pooling
-knowledge across organizations *amplifies* contradiction rather than
-averaging it out: two fleets can hold opposite rules that are each correct
-in their own unstated context. A commons that injects contradictory
-guidance is worse than no commons. Self-auditing is therefore a
-precondition for the cross-org thesis, not a nicety.
+Human review does not scale past a few hundred lessons, and a single
+fleet's own lesson corpus can accumulate contradictions just as easily as
+a pooled one would: two decision points recorded months apart can encode
+opposite rules that were each correct in their own unstated context.
+Injecting contradictory guidance into a live decision is worse than
+injecting none -- and the same risk applies to the CommonTrace Knowledge
+Base, which the operator authors and curates but does not exempt from
+needing to be internally consistent. Self-auditing is therefore a
+precondition for a lesson corpus staying trustworthy at scale, not a
+nicety.
 
 WHAT THIS DOES NOT DO
 ---------------------

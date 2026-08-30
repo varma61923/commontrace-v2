@@ -134,11 +134,13 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         "votes": votes,
         "related": related,
         "outcome": dict(trace.outcome or {}),
-        # Whether this trace is in the cross-org commons. Surfaced so an org
-        # can see its own sharing state (and so `commontrace commons
-        # contribute` can skip what is already shared) without a second
-        # round trip. Not a disclosure: on a commons result this is true by
-        # definition, and on your own traces it is your own decision.
+        # Whether this trace is in the CommonTrace Knowledge Base. For a
+        # customer's own trace this is always False: only the operator-run
+        # `hub/manage.py:commons_seed` ever sets it, and it sets it on rows
+        # under the operator's own org_id, never a customer's. Kept on the
+        # wire rather than dropped so that stays visibly, checkably true
+        # rather than merely asserted -- a customer can see for themselves
+        # that nothing of theirs is flagged.
         "shared_with_commons": trace.shared_with_commons,
         # Whether this trace is quarantined, and why. Surfaced (unlike the
         # models.py column comment's original framing of these as
@@ -149,31 +151,29 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         # with no indication it is excluded from search and pending review.
         # Safe to expose on every call site: get_trace/vote_trace are
         # org-scoped to the trace's owner, and the one cross-org call site
-        # (commons_overlap's `_to_wire(hit, ...)`) only ever reaches rows
-        # already filtered to `quarantined.is_(False)`, so this is always
-        # False there.
+        # (commons_overlap/commons_search's `_to_commons_wire(hit)`) only
+        # ever reaches rows already filtered to `quarantined.is_(False)`,
+        # so this is always False there.
         "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
     }
 
 
 def _to_commons_wire(trace: Trace) -> dict:
-    """Cross-org projection for a commons_overlap match -- deliberately
-    narrower than _to_wire, which is used everywhere a caller is looking at
-    its OWN trace.
+    """Projection for a Knowledge Base match (commons_overlap/
+    commons_search) -- deliberately narrower than _to_wire, which is used
+    everywhere a caller is looking at its OWN trace.
 
-    share_trace opts a trace's title/context/solution text and tags into
-    the commons; that is not the same as opting in every other column on
-    the row. `contributor` in particular is free text that routinely holds
-    an email address or name (see e.g. templates.trace_frontmatter),
-    `extensions`/`outcome` are freeform JSON the owning org may have used
-    for internal project ids, cost data, or other operational metadata, and
-    `watch_condition`/`review_after`/`retrievals`/`depth`/
-    `supersedes_trace_id` are internal bookkeeping never reviewed for
-    cross-org disclosure. None of it is what another fleet needs to answer
-    "does this solve my failure" -- that is title/context/solution/tags/
-    agent_type, plus `trust` so the requester can judge how reliable the
-    match is."""
+    Every row this ever runs against is operator-curated
+    (`commons_source == "seed"`), so there is no customer disclosure
+    question here the way there would be for a customer-contributed
+    row -- but the projection stays narrow anyway, because the extra
+    columns are simply not what a lookup needs. `contributor`,
+    `extensions`/`outcome`, and `watch_condition`/`review_after`/
+    `retrievals`/`depth`/`supersedes_trace_id` are operational bookkeeping
+    fields with no meaning on curated content. What answers "does this
+    solve my failure" is title/context/solution/tags/agent_type, plus
+    `trust` so the requester can judge how reliable the match is."""
     return {
         "id": trace.id,
         "title": trace.title,
@@ -201,12 +201,13 @@ async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
 
 # --- Entitlements: the plan, enforced ----------------------------------
 #
-# The measurement half of the business model already existed
-# (`commons-value`: what each org's shared knowledge delivered). This is the
-# capture half. It lives in crud.py rather than in the MCP layer for the
-# same reason tenant isolation does: a limit checked at the transport is a
-# limit that a second call site forgets, and hub/manage.py is already a
-# second call site.
+# `hub/manage.py:kb_stats` is the measurement half (is the Knowledge Base
+# actually earning its query traffic). This is the enforcement half: refuse
+# a request once an org's plan-defined allowance for a metered resource is
+# spent. It lives in crud.py rather than in the MCP layer for the same
+# reason tenant isolation does: a limit checked at the transport is a limit
+# that a second call site forgets, and hub/manage.py is already a second
+# call site.
 
 METRIC_COMMONS_QUERIES = "commons_queries"
 
@@ -220,22 +221,6 @@ def billing_period(now: datetime | None = None) -> str:
     """
     now = now or datetime.now(timezone.utc)
     return f"{now.year:04d}-{now.month:02d}"
-
-
-async def _delivered_hits(session: AsyncSession, org_id: str) -> int:
-    """How many times this org's shared knowledge covered someone else's
-    failure. This is what earns query credit, and it is deliberately not
-    "traces shared": sharing is free and forgeable in bulk, while a hit
-    requires a real match from a corpus that excludes the sharer's own
-    rows. Seeded rows are excluded -- crediting the operator for priming
-    its own commons would be circular (hub/plans.py)."""
-    total = await session.scalar(
-        select(func.coalesce(func.sum(Trace.commons_hits), 0)).where(
-            Trace.org_id == org_id,
-            Trace.commons_source != "seed",
-        )
-    )
-    return int(total or 0)
 
 
 async def _plan_for(session: AsyncSession, org_id: str) -> plans.Plan:
@@ -434,8 +419,7 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
     in a support thread.
     """
     plan = await _plan_for(session, org_id)
-    hits = await _delivered_hits(session, org_id)
-    allowance = plans.query_allowance(plan, hits)
+    allowance = plans.query_allowance(plan)
     used = await _usage(session, org_id, METRIC_COMMONS_QUERIES)
     traces = int(await session.scalar(
         select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
@@ -445,16 +429,12 @@ async def entitlements(session: AsyncSession, org_id: str) -> dict:
         "period": billing_period(),
         "commons_queries": {
             "used": used,
-            "granted": plan.commons_queries_per_month,
-            "earned": allowance - plan.commons_queries_per_month
-                      if allowance != plans.UNLIMITED else 0,
             "allowance": allowance,
             "remaining": plans.UNLIMITED if allowance == plans.UNLIMITED
                          else max(0, allowance - used),
         },
         "traces": {"used": traces, "limit": plan.max_traces},
         "agents": {**(await agents_under_management(session, org_id)), "limit": plan.max_agents},
-        "delivered_hits": hits,
     }
 
 
@@ -769,20 +749,30 @@ async def vote_trace(
     if not _is_uuid(trace_id):
         return None
 
-    # An org may vote on its own trace, or on any OTHER org's trace that is
-    # currently in the commons -- previously this was scoped to
-    # `Trace.org_id == org_id` only, which made "vote" mean "the owner
-    # rates its own submission": trust could only ever be 0.0/0.5/1.0 from
-    # a single self-interested party, never a community signal, even though
-    # a shared trace's `trust` is now surfaced to every org it matches for
-    # (commons_overlap's projection, hub/crud.py:_to_commons_wire). Gated on
-    # `shared_with_commons` (not merely "any trace, any org" -- that would
-    # let an org vote on private traces it has no business seeing at all)
-    # and `not quarantined`, the same boundary every other cross-org read
-    # already enforces.
+    # An org may vote on its own trace, or on a CommonTrace Knowledge Base
+    # entry (operator-curated, `commons_source == "seed"`) -- previously
+    # this was scoped to `Trace.org_id == org_id` only, which made "vote"
+    # mean "the owner rates its own submission": trust could only ever be
+    # 0.0/0.5/1.0 from a single self-interested party, never a real signal,
+    # even though a Knowledge Base entry's `trust` is surfaced to every org
+    # it matches for (commons_overlap/commons_search's projection,
+    # hub/crud.py:_to_commons_wire). This is customer-to-operator-content
+    # feedback -- rating a Stack-Overflow-style answer -- never
+    # customer-to-customer: gated on `shared_with_commons` AND
+    # `commons_source == "seed"` (not merely "any trace, any org" -- that
+    # would let an org vote on private traces it has no business seeing at
+    # all) and `not quarantined`, the same boundary the two Knowledge Base
+    # queries enforce.
     stmt = select(Trace).where(
         Trace.id == trace_id,
-        or_(Trace.org_id == org_id, and_(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))),
+        or_(
+            Trace.org_id == org_id,
+            and_(
+                Trace.shared_with_commons.is_(True),
+                Trace.commons_source == "seed",
+                Trace.quarantined.is_(False),
+            ),
+        ),
     )
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -865,11 +855,11 @@ async def vote_trace(
     )
     if is_owner:
         return await _hydrate_one(session, trace)
-    # A cross-org vote on someone else's shared trace gets the same narrow
-    # projection commons_overlap returns (H-08/_to_commons_wire) -- voting
-    # on a trace is not an invitation to see its owner's internal metadata
+    # A vote on a Knowledge Base entry gets the same narrow projection
+    # commons_overlap/commons_search return (_to_commons_wire) -- voting on
+    # an entry is not an invitation to see operator-internal metadata
     # (contributor, extensions, outcome, ...), only to confirm the vote
-    # registered and see the trace's current community trust score.
+    # registered and see the entry's current trust score.
     return _to_commons_wire(trace)
 
 
@@ -1015,96 +1005,17 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
     return sorted(tags)
 
 
-# --- The cross-org commons (opt-in) ------------------------------------
+# --- The CommonTrace Knowledge Base (opt-in, operator-curated) ---------
 #
-# These three functions are the ONLY place in this module where a row can
-# cross an org boundary, and they can only ever reach a trace whose owner
-# explicitly put it there. Everything above stays unconditionally
+# commons_overlap and commons_search are the only two places in this module
+# where a query reaches content outside the caller's own org. Neither one
+# can ever reach another CUSTOMER's data: both scope their corpus to
+# `Trace.commons_source == "seed"`, which is written only by the
+# operator-run `hub/manage.py:commons_seed` and by nothing else -- there is
+# no customer-facing path that sets `shared_with_commons` on a customer's
+# own trace. Everything else in this module stays unconditionally
 # org-scoped; hub/tests/test_tenant_isolation.py passes unchanged. See
-# hub/commons.py for why the exchange is signatures-in / consented-text-out.
-
-
-async def share_trace(
-    session: AsyncSession,
-    org_id: str,
-    trace_id: str,
-    rationale: str = "",
-    actor: str = AUDIT_ACTOR_UNKNOWN,
-) -> dict | None:
-    """Contribute one of your own traces to the cross-org commons.
-
-    Org-scoped lookup, so an org can only ever share a trace it owns -- the
-    same `Trace.org_id == org_id` guard as get_trace, for the same reason.
-    Returns None (not a permission error) for a trace that isn't yours, so
-    this cannot be used as an existence oracle for another org's ids.
-    """
-    if not _is_uuid(trace_id):
-        return None
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
-    trace = (await session.execute(stmt)).scalar_one_or_none()
-    if trace is None:
-        return None
-
-    # A quarantined trace is content the Hub already flagged as suspect.
-    # Letting it into a corpus other orgs read would propagate exactly what
-    # quarantine exists to contain.
-    if trace.quarantined:
-        raise TraceRejected(
-            f"trace {trace_id} is quarantined ({trace.quarantine_reason or 'no reason recorded'}) "
-            "and cannot be shared to the commons until an operator releases it"
-        )
-
-    trace.shared_with_commons = True
-    trace.shared_at = datetime.now(timezone.utc)
-    trace.shared_rationale = (rationale or "")[:500]
-    trace.commons_signature = commons.signature_for(trace.title, trace.context_text, trace.tags)
-    await session.flush()
-
-    await audit.record(
-        session,
-        actor=actor,
-        action="share_trace",
-        org_id=org_id,
-        target_type="trace",
-        target_id=trace_id,
-        # Content-free, like every other audit summary: records that the
-        # decision was made and whether a rationale was given, not the text.
-        summary=f"shared_to_commons rationale_len={len(rationale or '')}",
-    )
-    return {"id": trace.id, "shared_with_commons": True, "shared_at": _iso(trace.shared_at)}
-
-
-async def unshare_trace(
-    session: AsyncSession,
-    org_id: str,
-    trace_id: str,
-    actor: str = AUDIT_ACTOR_UNKNOWN,
-) -> dict | None:
-    """Withdraw a trace from the commons. Clears the signature too, so it
-    stops matching immediately rather than lingering in results."""
-    if not _is_uuid(trace_id):
-        return None
-    stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
-    trace = (await session.execute(stmt)).scalar_one_or_none()
-    if trace is None:
-        return None
-
-    trace.shared_with_commons = False
-    trace.shared_at = None
-    trace.shared_rationale = ""
-    trace.commons_signature = None
-    await session.flush()
-
-    await audit.record(
-        session,
-        actor=actor,
-        action="unshare_trace",
-        org_id=org_id,
-        target_type="trace",
-        target_id=trace_id,
-        summary="withdrawn_from_commons",
-    )
-    return {"id": trace.id, "shared_with_commons": False}
+# hub/commons.py for why the query itself is a signature, never text.
 
 
 async def commons_overlap(
@@ -1115,21 +1026,22 @@ async def commons_overlap(
     include_matches: bool = True,
     agent_type: str = "",
 ) -> dict:
-    """**The number the cross-org thesis lives or dies on** (STRATEGY.md §5):
-    of the recurring failures this fleet keeps hitting, what fraction has
-    some *other* fleet already solved?
+    """Of the recurring failures this fleet keeps hitting, what fraction
+    does the CommonTrace Knowledge Base already solve?
+
+    The Knowledge Base is a corpus the OPERATOR authors and curates
+    (`hub/manage.py:commons_seed`) -- public substrate knowledge (protocol
+    semantics, vendor documentation, standards), never another customer's
+    trace. There is no org-to-org sharing in this system: see hub/plans.py
+    "why there is no org-to-org sharing here" for why that was the design
+    and not an oversight.
 
     The caller sends MinHash signatures of its own failures -- computed
     locally, no failure text leaves the client. What comes back is drawn
-    only from traces whose owners explicitly shared them.
+    only from `commons_source == "seed"` rows, so the answer can never
+    contain another customer's content even by accident.
 
-    Two deliberate scoping decisions:
-
-    1. **The caller's own traces are excluded from the corpus.** The
-       question is what you would *gain* from everyone else, so counting
-       your own contributions would inflate the headline number into
-       something meaningless for exactly the decision it informs.
-    2. **Quarantined traces are excluded**, same as every other read path.
+    Quarantined rows are excluded, same as every other read path.
     """
     submitted = commons.validate_submitted_failures(failures)
 
@@ -1138,8 +1050,8 @@ async def commons_overlap(
         raise commons.CommonsInputError("threshold must be a finite number")
     threshold = max(0.0, min(threshold, 1.0))
 
-    # Metered here, and only here: this is the one call whose value comes
-    # from other orgs' contributions rather than the caller's own data.
+    # Metered here, and only here: this is the one call that reads the
+    # operator-maintained Knowledge Base rather than the caller's own data.
     # Validation runs first so a malformed request is a 400 rather than a
     # silently consumed query -- charging for a call that returned an error
     # is the kind of thing customers notice and remember.
@@ -1151,9 +1063,9 @@ async def commons_overlap(
         if not plan.commons_access:
             raise plans.EntitlementExceeded(
                 metric="commons_access", limit=0, used=0, plan=plan.name,
-                remedy="The commons is not included in this plan.",
+                remedy="The Knowledge Base is not included in this plan.",
             )
-        allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
+        allowance = plans.query_allowance(plan)
         if allowance != plans.UNLIMITED:
             # SELECT ... FOR UPDATE on the org's own row, same pattern as
             # _reserve_trace_slot: read-check-then-increment across two
@@ -1172,11 +1084,7 @@ async def commons_overlap(
             if not plans.within(allowance, used):
                 raise plans.EntitlementExceeded(
                     metric=METRIC_COMMONS_QUERIES, limit=allowance, used=used, plan=plan.name,
-                    remedy=(
-                        "Share traces to the commons: every time your knowledge covers "
-                        f"another fleet's failure you earn {plans.QUERY_CREDIT_PER_HIT} "
-                        "more queries this period. Or move to a larger plan."
-                    ),
+                    remedy="Move to a plan with a larger Knowledge Base query allowance.",
                 )
         # Metered before the scan rather than after: a query that times out
         # or errors mid-scan still consumed the corpus read it asked for,
@@ -1186,6 +1094,13 @@ async def commons_overlap(
 
     where = [
         Trace.shared_with_commons.is_(True),
+        # The one line that makes "no org-to-org sharing" a guarantee rather
+        # than a policy: even if some future bug set shared_with_commons on
+        # a customer's own trace, it still could not surface here without
+        # ALSO being commons_source == "seed", which only commons_seed
+        # writes. hub/tests/test_commons_search.py and test_commons.py both
+        # assert a non-seed shared row is invisible to this scan.
+        Trace.commons_source == "seed",
         Trace.quarantined.is_(False),
         Trace.commons_signature.isnot(None),
         Trace.org_id != org_id,
@@ -1249,7 +1164,10 @@ async def commons_overlap(
                     "agent_type": hit.agent_type,
                     "tags": list(hit.tags or []),
                     # The payoff. Safe to return in full: `hit` is only in
-                    # the corpus because its owning org explicitly shared it.
+                    # the corpus because the operator curated it as public
+                    # substrate knowledge, never because another customer's
+                    # trace leaked into it (the commons_source == "seed"
+                    # filter above is what guarantees that).
                     "trace": _to_commons_wire(hit),
                 }
             )
@@ -1257,11 +1175,14 @@ async def commons_overlap(
     if hit_ids:
         # Atomic in-database increment, same pattern as the retrievals
         # counter: a read-modify-write through the ORM would lose counts
-        # under concurrent queries, and this number is the basis for
-        # contributor value (hub/models.py:Trace.commons_hits). Counted
-        # once per covered failure, not once per query, so an org
-        # re-running the same report does not inflate a contributor's
-        # standing for free -- but a genuinely repeated need does register.
+        # under concurrent queries, and this number is the operator's
+        # quality signal for its own curated content
+        # (hub/models.py:Trace.commons_hits) -- which entries actually
+        # cover real recurring failures, worth keeping and expanding on,
+        # versus which ones never hit and are candidates to prune. Counted
+        # once per covered failure, not once per query, so re-running the
+        # same report does not inflate an entry's standing for free -- but
+        # a genuinely repeated need does register.
         #
         # `hit_ids` can repeat: two different submitted failures in the same
         # call can both best-match the same shared trace (a fleet hitting
@@ -1278,17 +1199,16 @@ async def commons_overlap(
         # Capped per trace, per call: nothing on the wire stops a caller
         # from submitting the SAME signature hundreds of times in one
         # request (MAX_SUBMITTED_FAILURES allows up to 500), and without a
-        # cap that credits whichever trace it best-matches once per
+        # cap that credits whichever entry it best-matches once per
         # repetition -- turning one submitted failure, repeated, into
-        # hundreds of query-credit hits for its owner. A small multiplicity
-        # from one call is the legitimate case (a fleet hitting one
-        # substrate failure across a handful of distinct tasks, submitted
-        # together -- see hub/tests/test_commons.py
+        # hundreds of hits on the operator's quality signal for that entry.
+        # A small multiplicity from one call is the legitimate case (a
+        # fleet hitting one substrate failure across a handful of distinct
+        # tasks, submitted together -- see hub/tests/test_commons.py
         # test_two_failures_in_one_query_hitting_the_same_trace_both_count);
         # hundreds of repeats of the identical signature is not that, it is
-        # the same submission counted as if it were hundreds of them. Two
-        # colluding orgs could otherwise mint unbounded query allowance for
-        # one of them just by repeating one signature in a single request.
+        # the same submission counted as if it were hundreds of them, which
+        # would make one entry look far more useful than it actually is.
         hit_counts = {
             tid: min(cnt, commons.MAX_HITS_PER_TRACE_PER_QUERY) for tid, cnt in hit_counts.items()
         }
@@ -1338,43 +1258,42 @@ async def commons_search(
     limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
     agent_type: str = "",
 ) -> dict:
-    """Ask the commons what it knows about one failure, and get back ranked
-    candidate answers -- the knowledge-base surface, as distinct from
-    `commons_overlap`'s coverage percentage.
+    """Ask the CommonTrace Knowledge Base what it knows about one failure,
+    and get back ranked candidate answers -- the lookup surface, as
+    distinct from `commons_overlap`'s coverage percentage.
 
     WHY THIS EXISTS SEPARATELY FROM commons_overlap
     -----------------------------------------------
     They answer different questions and require opposite trades.
-    `commons_overlap` answers "what fraction of my failures has someone
-    already solved", emits a number a customer may quote, and therefore
-    buys 0% false positives with a threshold. That threshold was measured
-    to discard about nine of every ten real answers
+    `commons_overlap` answers "what fraction of my failures does the
+    Knowledge Base already solve", emits a number a customer may quote, and
+    therefore buys 0% false positives with a threshold. That threshold was
+    measured to discard about nine of every ten real answers
     (commons/eval/RESULTS.md), which is the correct price for a quotable
     figure and the wrong price for looking something up.
 
     This tool ranks instead of thresholding. Measured on the same corpus,
     the same probes and the same signatures: 89.1% recall@1, 95.7%@5, 100%
     within the top 10 (commons/eval/search_modes.py). The privacy
-    properties are unchanged -- the caller sends one MinHash signature,
-    no failure text leaves the fleet, and what comes back is drawn only
-    from traces their owners explicitly shared.
+    properties are unchanged -- the caller sends one MinHash signature, no
+    failure text leaves the fleet, and what comes back is drawn only from
+    `commons_source == "seed"` rows the operator curated (see
+    hub/plans.py "why there is no org-to-org sharing here" -- this was
+    never a pool of other customers' traces, and cannot become one).
 
     WHAT IT DELIBERATELY DOES NOT DO
     --------------------------------
     * It never reports coverage, and its result carries a note saying so.
       Absent failures return a non-empty list every time.
-    * It does not credit `commons_hits`. A hit is the basis for contributor
-      value and for earned query allowance (hub/plans.py), and it is
-      supposed to mean "this trace covered someone's real failure" --
-      established at the conservative threshold. A search *candidate* is
-      not that, and crediting candidates would make the one metric that
-      resists filler trivially inflatable. Confirming that a candidate
-      actually helped is `vote_trace`, which is an explicit act by the
-      fleet it helped.
+    * It does not credit `commons_hits`. A hit is the operator's quality
+      signal for its own curated content -- "this entry covered a real
+      recurring failure" -- established at the conservative threshold. A
+      search *candidate* is not that, and crediting candidates would make
+      the one metric that resists noise trivially inflatable.
 
     Scoping matches commons_overlap exactly: the caller's own traces are
-    excluded (the question is what you gain from everyone else) and
-    quarantined traces are excluded.
+    excluded (they are never in this corpus regardless -- see the
+    commons_source filter below) and quarantined rows are excluded.
     """
     sig = commons.validate_query_signature(query_signature)
 
@@ -1385,15 +1304,16 @@ async def commons_search(
     limit = max(1, min(limit, commons.MAX_SEARCH_CANDIDATES))
 
     # Metered exactly like commons_overlap, and for the same reason: this is
-    # a call whose value comes from other orgs' contributions. Validation
-    # runs first so a malformed request is never a silently consumed query.
+    # a call that reads the operator-maintained Knowledge Base rather than
+    # the caller's own data. Validation runs first so a malformed request
+    # is never a silently consumed query.
     plan = await _plan_for(session, org_id)
     if not plan.commons_access:
         raise plans.EntitlementExceeded(
             metric="commons_access", limit=0, used=0, plan=plan.name,
-            remedy="The commons is not included in this plan.",
+            remedy="The Knowledge Base is not included in this plan.",
         )
-    allowance = plans.query_allowance(plan, await _delivered_hits(session, org_id))
+    allowance = plans.query_allowance(plan)
     if allowance != plans.UNLIMITED:
         await session.execute(
             select(Organization.id).where(Organization.id == org_id).with_for_update()
@@ -1402,16 +1322,16 @@ async def commons_search(
         if not plans.within(allowance, used):
             raise plans.EntitlementExceeded(
                 metric=METRIC_COMMONS_QUERIES, limit=allowance, used=used, plan=plan.name,
-                remedy=(
-                    "Share traces to the commons: every time your knowledge covers "
-                    f"another fleet's failure you earn {plans.QUERY_CREDIT_PER_HIT} "
-                    "more queries this period. Or move to a larger plan."
-                ),
+                remedy="Move to a plan with a larger Knowledge Base query allowance.",
             )
     await _meter(session, org_id, METRIC_COMMONS_QUERIES)
 
     where = [
         Trace.shared_with_commons.is_(True),
+        # See commons_overlap's identical filter: this is what guarantees
+        # the corpus can never contain another customer's trace, not just a
+        # policy that happens to hold today.
+        Trace.commons_source == "seed",
         Trace.quarantined.is_(False),
         Trace.commons_signature.isnot(None),
         Trace.org_id != org_id,
@@ -1477,8 +1397,8 @@ async def commons_search(
 # than a floor will conclude the commons is empty when it is not.
 _FLOOR_CAVEAT = (
     "This figure is a FLOOR, not an estimate: matching is lexical, so a failure "
-    "the commons does contain but your fleet words differently is counted as "
-    "uncovered. Measured recall against known-present failures is roughly 1 in 9 "
+    "the Knowledge Base does contain but your fleet words differently is counted "
+    "as uncovered. Measured recall against known-present failures is roughly 1 in 9 "
     "(commons/eval/RESULTS.md). Matches are reliable; misses are not evidence of absence."
 )
 
@@ -1501,14 +1421,14 @@ def _commons_note(
         # Stated first and unambiguously: a truncated scan can only ever
         # under-count coverage, so the honest framing is a lower bound.
         return (
-            f"Compared against the {n_corpus:,} most recent of {total:,} commons traces "
-            f"(per-query scan limit). Real coverage is AT LEAST this figure -- treat it "
-            "as a lower bound, and narrow with agent_type for a tighter answer. "
+            f"Compared against the {n_corpus:,} most recent of {total:,} Knowledge Base "
+            f"entries (per-query scan limit). Real coverage is AT LEAST this figure -- "
+            "treat it as a lower bound, and narrow with agent_type for a tighter answer. "
             + _FLOOR_CAVEAT
         )
     if n_corpus == 0:
         return (
-            "No other org has contributed to the commons yet, so this measures nothing. "
+            "The Knowledge Base has no entries yet, so this measures nothing. "
             "Coverage is 0% by construction, not by finding."
         )
     if n_failures == 0:
@@ -1525,7 +1445,7 @@ def _commons_note(
         )
     if n_corpus < 50:
         return (
-            f"The commons holds only {n_corpus} shared traces from other orgs; "
-            "coverage will grow with it. " + _FLOOR_CAVEAT
+            f"The Knowledge Base holds only {n_corpus} entries so far; "
+            "coverage will grow as the operator curates more. " + _FLOOR_CAVEAT
         )
     return _FLOOR_CAVEAT

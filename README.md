@@ -11,10 +11,13 @@ This repo ships two things:
 1. **The `commontrace` CLI** (`pip install -e .`) — client-installable, works with
    any agent fleet (code, support, sales, HR, marketing, ...), and can wire a local
    store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
-   also bridges to the **CommonTrace Hub** (a self-hostable, cross-org shared trace
+   also bridges to the **CommonTrace Hub** (a self-hostable, multi-tenant trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
-   `vote_trace`, `amend_trace`, `list_tags`; server implementation and setup in
-   [`hub/`](hub/README.md), not a hosted service run by this project).
+   `vote_trace`, `amend_trace`, `list_tags`, plus an optional, operator-curated
+   Knowledge Base — `commons_overlap`, `commons_search`; server implementation
+   and setup in [`hub/`](hub/README.md), not a hosted service run by this
+   project). Every org's own traces stay private to that org; no org's data is
+   ever exposed to another org.
 2. **A reference implementation for coding agents** (`SKILL.md`) — the
    double-review pipeline (**Implementer A** + independent **Reviewer B**, iterating
    until the task passes) that this whole protocol was distilled from. One profile
@@ -37,7 +40,7 @@ MCP, which all of the above already support natively.
 6. [Memory System](#memory-system)
 7. [Benchmark](#benchmark)
 8. [Outcome Metrics](#outcome-metrics)
-9. [The Cross-Org Commons](#the-cross-org-commons)
+9. [The CommonTrace Knowledge Base](#the-commontrace-knowledge-base)
 10. [Deploying to Production](#deploying-to-production)
 11. [File Layout](#file-layout)
 12. [Requirements](#requirements)
@@ -167,8 +170,9 @@ commontrace overlap report --ours acme.json --theirs partner.json
 ```
 
 Answers *"of the failures we keep hitting, how many has another fleet
-already solved?"* — the quantity the cross-org value proposition depends on
-and which has never been measured (see [`STRATEGY.md`](STRATEGY.md)).
+already solved?"* for two fleets who have agreed to compare notes directly
+— distinct from the CommonTrace Knowledge Base below, which has no
+fleet-to-fleet data flow at all (see [`STRATEGY.md`](STRATEGY.md)).
 Neither side sends the other any lesson or trace text; only MinHash
 signatures are exchanged.
 
@@ -500,23 +504,38 @@ correlational answer on a specific lesson, see `commontrace experiment`
 
 ---
 
-## The Cross-Org Commons
+## The CommonTrace Knowledge Base
 
-Everything above compounds a fleet's experience *for that fleet*. The
-commons is the opt-in exception: a shared corpus where one org's solved
-substrate failure can save another org from rediscovering it at full cost.
+Everything above is the on-prem, self-learning fleet: a fleet's own
+experience compounds *for that fleet*, on its own infrastructure, and no
+other customer ever reads it. The Knowledge Base is a separate, optional
+layer next to it — closer to a vendor-maintained Stack Overflow or wiki
+than to a shared corpus between customers.
 
-The line it draws is deliberately narrow:
+There is no org-to-org sharing anywhere in this system, and that is a
+deliberate, load-bearing property, not an oversight:
 
-> **Substrate failures are shared. Business logic stays private.**
+> **No customer's trace is ever visible to another customer, because no
+> customer's trace ever enters the Knowledge Base at all.**
 
-"Stripe webhook handlers need idempotency keys" is not a trade secret, and
-every fleet on earth rediscovers it independently. Your pricing rules,
-escalation policy, and qualification criteria are yours and always should
-be. CommonTrace cannot tell those apart — that judgment is yours, made
-explicitly per trace and recorded.
+The Knowledge Base is a single corpus the *operator* authors and curates —
+substrate knowledge ("Stripe webhook handlers need idempotency keys",
+"React 19 hydrates `Date` differently than 18") that isn't anyone's trade
+secret, shipped and maintained the way a vendor maintains documentation.
+`hub/manage.py commons-seed` is the only thing that ever writes to it; no
+customer-facing tool can. `commons_access` (a plan setting) makes
+consulting it optional per org, and `HUB_COMMONS_ENABLED=false` removes it
+from the deployment entirely — see [`hub/DEPLOYMENT.md`](hub/DEPLOYMENT.md)
+for the single-org deployment mode that needs neither.
 
-### Ask the commons what it already knows
+An earlier design routed this as org-to-org sharing instead (customer A
+opts a trace in, customer B's queries can match it). That design is
+retired: it has an adverse-selection problem with no fix (why would an org
+contribute knowledge that might help a competitor?), and it doesn't make
+sense in the first place — orgs do not share their IP and data with each
+other, so a design that asked them to was solving the wrong problem.
+
+### Ask the Knowledge Base what it already knows
 
 ```bash
 commontrace commons ask "customer charged twice for one order"
@@ -538,7 +557,7 @@ different question from the coverage percentage below, with a different
 answer shape and a different trade.
 
 Note the similarity on that result: **0.125, well under the 0.30 coverage
-threshold.** `commons commons report` scores that same failure as
+threshold.** `commons report` scores that same failure as
 **uncovered**, because a number you quote to a customer must not
 over-claim. The knowledge was there the whole time; the meter was built to
 say no when unsure. Ranking the same signatures instead of thresholding
@@ -556,13 +575,13 @@ MinHashed locally exactly as `sign` does it — **no failure text leaves your
 machine for either command.**
 
 **Results are candidates to judge, never coverage.** On the same
-evaluation, a failure the commons does *not* contain still comes back with
+evaluation, a failure the Knowledge Base does *not* contain still comes back with
 a non-empty list 100% of the time, and the true/absent score distributions
 overlap. That is fine for a ranked list someone skims — a weak match costs
 a glance — and it is exactly why the coverage figure keeps its threshold
 and stays a separate command. Do not derive a percentage from `ask`.
 
-### Ask what you'd gain, before contributing anything
+### Ask what you'd gain, before adopting anything
 
 ```bash
 commontrace commons sign --out failures.json      # local; signatures only
@@ -570,7 +589,7 @@ commontrace commons report --signatures failures.json
 ```
 
 ```
-**2 of 3** of your recurring failures (67%) have already been solved by another fleet.
+**2 of 3** of your recurring failures (67%) are already solved in the CommonTrace Knowledge Base.
 
 ### Postgres connection pool exhausted under retry storm
 - Matches your `c9afa48d-761` at similarity 0.6406
@@ -579,8 +598,9 @@ commontrace commons report --signatures failures.json
 
 `sign` MinHashes your recurring failures locally — **no failure text leaves
 your machine**, and text cannot be reconstructed from a signature. What
-comes back is drawn only from traces whose owners explicitly shared them.
-You do not need to contribute anything to ask.
+comes back is drawn only from the operator-curated Knowledge Base — never
+from another customer's own traces, because no customer's trace is ever in
+that corpus. There is nothing to contribute in order to ask.
 
 Stated plainly, because it matters: MinHash is not a cryptographic privacy
 guarantee. Someone who can already guess a candidate string can test
@@ -590,7 +610,7 @@ assumption.
 
 ### Evaluate before adopting anything
 
-The commons thesis is one empirical claim — that a meaningful share of what
+The Knowledge Base thesis is one empirical claim — that a meaningful share of what
 your fleet keeps hitting is *substrate* failure someone else already
 solved. Testing it should not require adopting CommonTrace first, so it
 doesn't:
@@ -619,51 +639,39 @@ A low number here is weak evidence: the matcher is lexical and misses most
 failures worded differently from the corpus. A *high* number is strong
 evidence, since false positives measured 0%.
 
-### Contribute
-
-```bash
-commontrace commons contribute --tags stripe,webhooks     # previews, shares nothing
-commontrace commons contribute --tags stripe,webhooks --confirm
-commontrace commons unshare <trace_id>                    # withdraw
-```
-
-Contribution is opt-in, previewed, and revocable. It refuses to run without
-an explicit `--tags`/`--query` narrowing rather than defaulting to
-everything you own.
-
-**Treat sharing as publication, not a revocable ACL.** Withdrawal stops
-future matches; it cannot retract what another org already retrieved.
-
 ### What is guaranteed
 
 | Property | How |
 |---|---|
-| Private by default | `shared_with_commons` is false unless you set it; nothing shares implicitly |
-| You can only share what you own | Org-scoped lookup, 404-shaped for a foreign id so it can't confirm one exists |
-| Quarantined traces can't enter | Refused — that would propagate exactly what quarantine contains |
-| Your own traces don't inflate your number | The corpus excludes your rows: the question is what you'd *gain* |
-| Ordinary reads are unaffected | All six original tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
+| No customer trace ever enters the Knowledge Base | Only `hub/manage.py commons-seed` writes `commons_source='seed'` rows, and no customer-facing tool can |
+| The guarantee holds even against a hypothetical bug | `commons_overlap`/`commons_search` filter on `commons_source == "seed"` explicitly, not merely on the absence of a sharing tool |
+| Quarantined content can't enter | Refused at seed time — that would propagate exactly what quarantine contains |
+| Your own traces don't inflate your coverage number | The corpus excludes your rows: the question is what the Knowledge Base already knows, not what you told it |
+| Ordinary reads are unaffected | All six org-scoped tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
+| Consulting it is optional | `commons_access` (plan setting) per org, `HUB_COMMONS_ENABLED=false` for the whole deployment |
 
-### Why contributing is worth it
+### Is the Knowledge Base actually earning its query traffic?
 
-A commons where contribution is pure altruism fills with low-value filler —
-the standard reason these plays fail. So the value a contributor *delivers*
-is measured: every time a shared trace covers another fleet's recurring
-failure, that trace's `commons_hits` increments.
+The operator-curated model has its own failure mode: a corpus nobody wrote
+carefully fills with entries that never match anything real. So content
+quality is measured, not assumed — every time an entry covers a real
+recurring failure, that entry's `commons_hits` increments:
 
 ```bash
-python -m hub.manage commons-value    # per org: what it shared, what that delivered
-python -m hub.manage commons-stats    # how many DISTINCT orgs contribute
+python -m hub.manage kb-stats    # entry count, hits, adoption, dead entries
 ```
 
-`commons-value` is the honest denominator for pricing or revenue share, and
-it is what makes contributing a position rather than a favour.
+`kb-stats` is a content-quality report for the operator, not a network-effect
+metric: there is no "how many orgs contribute" number to report, because no
+org contributes. It flags entries that have never matched anything after
+real query volume, which is the honest signal that they need rewriting or
+removal.
 
 ### Plans, and what they actually enforce
 
-Measuring value is half a business model. The other half is the server
-refusing the request that exceeds the plan, and that is implemented rather
-than described — `hub/plans.py`, enforced in `hub/crud.py`.
+A plan is only real if the server refuses the request that exceeds it, and
+that is implemented rather than described — `hub/plans.py`, enforced in
+`hub/crud.py`.
 
 Two things are metered, chosen so neither can charge for something the
 customer did not get:
@@ -671,15 +679,17 @@ customer did not get:
 | | `free` | `team` | `scale` |
 |---|---|---|---|
 | Traces stored | 1,000 | 50,000 | unlimited |
-| Commons queries / month | 20 | 1,000 | 25,000 |
+| Knowledge Base queries / month | 20 | 1,000 | 25,000 |
 | Active agents | 5 | 25 | unlimited |
 
-Storage is real cost and grows monotonically. **Commons queries are the
-metered unit** because that is the only call whose value comes from *other
-orgs'* contributions — everything else an org does is with its own data,
-and charging per query against your own memory is rent, not price. Purging
-frees storage allowance, so the deletion right in `DATA_RETENTION.md` is
-not a right in name only.
+Storage is real cost and grows monotonically. **Knowledge Base queries are
+the metered unit** because that is the only call whose value comes from
+content the org did not itself produce — everything else an org does is
+with its own data, and charging per query against your own memory is rent,
+not price. Purging frees storage allowance, so the deletion right in
+`DATA_RETENTION.md` is not a right in name only. There is no
+credit-for-contributing mechanism, because there is nothing to
+contribute in this model — a flat plan allowance is the whole scheme.
 
 **Active agents** is the expansion axis, and it is metered on `Trace.agent_id`
 — *which* agent produced a trace, as opposed to `agent_type`, which is what
@@ -703,25 +713,14 @@ Three properties of the count are deliberate:
   `unattributed` agent. `manage usage` marks those orgs with a trailing `+`
   rather than quoting the number as exact.
 
-**Contributing earns allowance, mechanically.** Every time a trace you
-shared covers another fleet's failure, you get 25 more commons queries this
-period:
-
-```
-allowance = plan grant + delivered hits × 25
-```
-
-Note what is credited: hits **delivered**, not traces **shared**. Sharing
-is free and trivial to fake in bulk; a hit requires that someone else's
-real failure matched, at the shipped threshold, against a corpus that
-excludes your own rows. It cannot be self-dealt — which is why crediting
-hits is the mechanism and crediting shares would *be* the filler problem.
+There is no earning mechanic: a flat allowance per plan, because there is
+no customer contribution in this model to earn credit for.
 
 ```bash
-commontrace commons usage                      # what you have, what you earned
+commontrace commons usage                      # what you have, what you've used
 python -m hub.manage set-plan <org_id> team    # operator: move an org
 python -m hub.manage usage                     # operator: every org's meter
-python -m hub.manage revenue                   # billable orgs: consumed vs delivered
+python -m hub.manage revenue                   # billable orgs: consumption of both metered resources
 ```
 
 Exceeding a limit returns `entitlement_exceeded` — deliberately *not*
@@ -741,14 +740,16 @@ This implements the entitlement, not the invoice. Payment, tax, dunning,
 refunds and disputes belong to a billing system, and printing a dollar
 figure computed from a hardcoded rate would read as revenue reporting while
 being arithmetic on a number nobody agreed to. `manage revenue` prints the
-denominator a price should be argued from — per paying org, how much they
-consumed from the commons versus how much they delivered to it.
+denominator a price should be argued from — per paying org, real
+consumption of storage and Knowledge Base queries. There is no "delivered"
+side to net against: customers do not contribute to what they consume in
+this model, so consumption is the whole number, not one side of a ledger.
 
 ### The cold start
 
-An empty commons returns 0% to every prospect — by construction, not as a
-finding — so nobody sees value and nobody contributes. A starter corpus of
-public substrate knowledge ships in the repository to break that:
+An empty Knowledge Base returns 0% to every prospect — by construction, not
+as a finding — so a starter corpus of public substrate knowledge ships in
+the repository to break that:
 
 ```bash
 python -m hub.manage commons-seed commons/seed/substrate-v1.jsonl <operator_org_id>
@@ -769,13 +770,12 @@ What it is *not* is a coverage claim. What fraction of a real fleet's
 failures this corpus covers is measured separately, on held-out data, in
 `commons/eval/` — see [Measuring coverage honestly](#measuring-coverage-honestly).
 
-Seeded rows are marked `commons_source='seed'` and are reported **separately
-everywhere it matters**. They answer real queries and deliver real value —
-but they never count toward "how many orgs contribute", because that number
-is the one that says whether a network effect exists, and an operator
-seeding its own corpus is not evidence of one. `commons-stats` says so in
-those words, and warns when one org dominates: a large corpus from a single
-contributor is one fleet's memory with extra steps.
+Seeded rows are marked `commons_source='seed'` — the only value any
+Knowledge Base query will ever match against, so this is also the security
+boundary, not just a label. `kb-stats` reports which entries are actually
+answering real queries and which have never matched anything, so the
+operator can tell curated substrate knowledge apart from filler that reads
+well but never helps.
 
 ### Measuring coverage honestly
 
@@ -800,11 +800,11 @@ several chosen as near misses). At the shipped 0.30 threshold:
 
 Read plainly, and it is not the flattering result:
 
-**The number a fleet sees is a floor, not an estimate.** When the commons
-genuinely contains a fleet's failure and the fleet describes it in its own
-words, the matcher finds it about one time in nine. A prospect who sees 5%
-should conclude the commons covers *at least* 5% of their problems, not
-about 5%.
+**The number a fleet sees is a floor, not an estimate.** When the Knowledge
+Base genuinely contains a fleet's failure and the fleet describes it in its
+own words, the matcher finds it about one time in nine. A prospect who sees
+5% should conclude the Knowledge Base covers *at least* 5% of their
+problems, not about 5%.
 
 **What it does match, it matches correctly.** Every match landed on the
 exact record it was written against, and not one absent failure was

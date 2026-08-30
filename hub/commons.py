@@ -1,34 +1,47 @@
-"""The cross-org knowledge commons: signature helpers and input validation.
+"""The CommonTrace Knowledge Base: signature helpers and input validation.
 
 WHAT THIS IS FOR
 ----------------
 Every other read path in this Hub is unconditionally scoped to the calling
 org (see hub/crud.py's module docstring). That is correct, and it stays
-correct. But it also means the product is per-org memory: a fleet's own
-experience compounds for that fleet and nobody else, so value grows
-linearly with customers and there is no network effect.
+correct: a fleet's own experience compounds for that fleet, on its own
+infrastructure, and no other customer ever reads it.
 
-The commons is the opt-in exception, and it is deliberately narrow:
+This module is the one deliberate, additive exception -- and it is NOT
+org-to-org sharing. An earlier design routed it that way (customer A opts a
+trace in, customer B's queries can match it) and that design is retired.
+The reason is adverse selection, and it does not have a fix: why would an
+org contribute knowledge that might help a competitor? The most valuable
+lessons are the most proprietary, so voluntary contribution biases toward
+generic filler and withholds anything that would actually matter, and no
+amount of incentive design changes that a customer is being asked to trust
+a stranger with their own trace text.
 
-    Substrate failures are shared. Business logic stays private.
+So instead: the Knowledge Base is a single corpus the OPERATOR authors and
+curates -- substrate knowledge ("Stripe webhook handlers need idempotency
+keys", "React 19 hydrates Date differently than 18") that isn't anyone's
+trade secret, shipped and maintained the way a vendor maintains
+documentation or a team maintains an internal wiki, not the way two
+competitors would maintain a joint one. `hub/manage.py:commons_seed` is the
+only thing that ever writes a `commons_source == "seed"` row, and nothing
+in the customer-facing API can. No customer's trace is ever visible to
+another customer through this system, because no customer's trace is ever
+in this corpus at all.
 
-"Stripe webhook handlers need idempotency keys" is not a trade secret and
-every fleet on earth rediscovers it at full cost. Your pricing rules and
-escalation policy are yours and always should be. The Hub cannot tell those
-apart -- that judgment is the contributing org's, made explicitly per trace
-(crud.share_trace), recorded with a rationale, and revocable
-(crud.unshare_trace).
+`commons_access` (hub/plans.py) is the "optional" half: a plan controls
+whether an org may consult the Knowledge Base, not whether it must expose
+anything to unlock that access. An org that never queries it, or a
+deployment with `HUB_COMMONS_ENABLED=false`, loses nothing about its own
+per-org memory -- see hub/DEPLOYMENT.md's single-org deployment mode.
 
 WHY SIGNATURES AND NOT TEXT
 ---------------------------
-The question a prospect wants answered before contributing anything is
-"of the failures my fleet keeps hitting, how many has someone else already
-solved?" Answering it must not require them to upload their failures.
-
-So the client MinHashes its own failures locally and sends only signatures.
-Text cannot be reconstructed from a MinHash signature. What comes *back*
-is drawn only from traces their owners explicitly placed in the commons, so
-the exchange is signature-in, consented-content-out.
+Even though there is no other customer to protect data from, the query
+itself still never needs to send failure text to ask "has this been seen
+before" -- so it doesn't. The client MinHashes its own failure locally and
+sends only a signature; text cannot be reconstructed from one. What comes
+*back* is drawn only from the operator's curated corpus, so the exchange is
+signature-in, operator-curated-content-out.
 
 Stated limitation, same as commontrace/overlap.py's: this is not a
 cryptographic privacy guarantee. A party who can guess a candidate string
@@ -77,18 +90,19 @@ MAX_LABEL_CHARS = 200
 MAX_SEARCH_CANDIDATES = 25
 DEFAULT_SEARCH_CANDIDATES = 5
 
-# Hard ceiling on how many query-credit hits ONE shared trace can earn from
-# ONE commons_overlap call. commons_hits (and the query allowance it earns
-# via QUERY_CREDIT_PER_HIT, see hub/plans.py) is credited once per submitted
-# failure that best-matches a trace -- deliberately, so a fleet that
-# genuinely hits the same substrate failure across several distinct tasks in
-# one batch gets full credit for each. But nothing about the wire format
-# stops a caller from submitting the identical signature MAX_SUBMITTED_
-# FAILURES times in a single request, and without this cap that would credit
-# whichever trace it matches once per repetition -- one submission, counted
-# as if it were hundreds. This bound is set well above any plausible
-# legitimate multi-task batch (hub/tests/test_commons.py's own such test
-# uses 2) while keeping the credit a single call can farm for a trace small.
+# Hard ceiling on how many hits ONE Knowledge Base entry can accrue from ONE
+# commons_overlap call. commons_hits is the content-quality signal
+# hub/manage.py:kb_stats reports (which entries are actually earning their
+# query traffic) -- incremented once per submitted failure that
+# best-matches an entry, deliberately, so a fleet that genuinely hits the
+# same substrate failure across several distinct tasks in one batch counts
+# for each. But nothing about the wire format stops a caller from
+# submitting the identical signature MAX_SUBMITTED_FAILURES times in a
+# single request, and without this cap that would count whichever entry it
+# matches once per repetition -- one submission, counted as if it were
+# hundreds. This bound is set well above any plausible legitimate
+# multi-task batch (hub/tests/test_commons.py's own such test uses 2)
+# while keeping the count a single call can inflate for an entry small.
 MAX_HITS_PER_TRACE_PER_QUERY = 20
 
 # Hard ceiling on how many commons traces one query will compare against.
@@ -313,7 +327,7 @@ def rank_candidates(
     engine's results -- and `commons_overlap`'s conservative, thresholded
     percentage remains the only thing this system will call coverage.
 
-    Ordering: similarity first, then delivered value (commons_hits) and
+    Ordering: similarity first, then measured usefulness (commons_hits) and
     trust as tie-breaks, applied by the caller. Popularity never overrides
     relevance -- a well-corroborated answer to a different question
     outranking the right answer is the specific failure a naive

@@ -130,21 +130,25 @@ class HubConfig:
     # loopback-bound Hub still passes the check with this left False).
     allow_insecure_http: bool = False
 
-    # --- Cross-org commons ---
+    # --- CommonTrace Knowledge Base ---
     # Off is the wrong default for this flag: existing deployments that
     # never set HUB_COMMONS_ENABLED must keep the tool surface they already
     # have, so the default preserves current behavior rather than opting
     # every install into a narrower one. Set explicitly to false for a
-    # deployment that must not expose cross-org sharing at all -- e.g. an
-    # internal-only offering with no other org's data to compare against,
-    # where the requirement is "no common knowledge" rather than merely
-    # "nobody happens to call share_trace." False removes share_trace,
-    # unshare_trace, and commons_overlap from the MCP tool surface entirely
+    # deployment that must not consult any content beyond what the fleet
+    # itself captured -- e.g. an internal-only offering with a hard
+    # requirement of "no outside knowledge", where the point is a guarantee
+    # stronger than merely "nobody happens to call commons_overlap." The
+    # Knowledge Base is already opt-in per plan (`commons_access`) and holds
+    # only operator-curated content (hub/manage.py:commons_seed), never a
+    # customer's own traces -- this flag exists for deployments that want
+    # the surface gone entirely rather than merely unused. False removes
+    # commons_overlap and commons_search from the MCP tool surface entirely
     # (hub/server.py) -- an unknown-tool error to any client that tries,
     # not a refused call -- so the property holds even if every org on the
-    # deployment forgets the commons exists. account_usage stays available
-    # either way: it reports an org's own plan and its own usage, never
-    # another org's data, so disabling the commons does not touch it.
+    # deployment forgets the Knowledge Base exists. account_usage stays
+    # available either way: it reports an org's own plan and its own usage,
+    # never Knowledge Base content, so disabling it does not touch that.
     commons_enabled: bool = True
 
     # --- Connection pool ---

@@ -17,16 +17,20 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Four more are Hub-specific and outside the protocol, all org-scoped like
-the six: `share_trace(id)` · `unshare_trace(id)` · `commons_overlap(failures)`
-for the opt-in cross-org commons, and `account_usage()` for the caller's own
-plan and meter. `hub/smoke.py` pins the tool surface, so a tool appearing or
-disappearing fails a post-deploy check rather than surprising a client.
+Three more are Hub-specific and outside the protocol: `commons_overlap(failures)`
+and `commons_search(question)` query the CommonTrace Knowledge Base, a
+single corpus the operator authors and curates
+(`hub/manage.py commons_seed`) -- no customer-facing tool can write to it,
+so no customer's own trace is ever visible to any other org through it.
+`account_usage()` reports the caller's own plan and meter, org-scoped like
+the six protocol tools. `hub/smoke.py` pins the tool surface, so a tool
+appearing or disappearing fails a post-deploy check rather than surprising
+a client.
 
-The three commons tools can be removed from the surface entirely with
+The two Knowledge Base tools can be removed from the surface entirely with
 `HUB_COMMONS_ENABLED=false` (hub/config.py) -- an unknown-tool error to any
-client that tries, not a per-call refusal, so "no cross-org sharing" holds
-for a deployment even if every org on it forgets the feature exists. See
+client that tries, not a per-call refusal, so the guarantee holds for a
+deployment even if every org on it forgets the feature exists. See
 `hub/DEPLOYMENT.md` §13 for an internal-only deployment that wants this.
 
 Any MCP-capable agent (Claude Code, Cursor, Devin, Windsurf, a generic MCP
@@ -108,7 +112,7 @@ bare `pip install -e .`.
 
 ## Design decisions worth reading before you extend this
 
-### Tenant isolation vs. the cross-org "commons" pitch
+### Tenant isolation vs. the CommonTrace Knowledge Base
 
 The brief this server was built from calls tenant isolation "the
 highest-priority requirement" and specifies a hard test: as `org_a`, zero
@@ -116,52 +120,63 @@ rows belonging to `org_b` may ever appear in any tool's responses,
 and `get_trace` on a known `org_b` id must 404, never 403 (never confirm the
 id exists). `hub/tests/test_tenant_isolation.py` enforces exactly that.
 
-That is in real tension with the product pitch elsewhere in this repo
-("CommonTrace ... turning AI agent experience into validated, reusable
-lessons ... across organizations"): a Hub where every org only ever sees its
-own traces isn't a commons at all.
+An earlier design opened a second door alongside the six protocol tools:
+an org could opt a trace into a shared corpus other orgs' queries could
+match against (`share_trace`/`unshare_trace`). That design is retired --
+it does not make sense for orgs to share their IP and data with each
+other, and it has an adverse-selection problem with no fix (why would an
+org contribute knowledge that might help a competitor?). See
+`hub/commons.py`'s module docstring and `hub/plans.py` "why there is no
+org-to-org sharing here" for the full reasoning.
 
-This implementation resolves that tension by getting the walls right first
-and then opening exactly one door, deliberately.
+**What replaced it.** The CommonTrace Knowledge Base: a single corpus the
+*operator* authors and curates, closer to a vendor-maintained Stack
+Overflow or wiki than to anything org-to-org. There is no tension left to
+resolve, because there is no second party's data in the picture at all.
 
 **The walls.** Every one of the six original read paths —
 `search_traces`, `get_trace`, `vote_trace`, `amend_trace`, `list_tags`,
 `contribute_trace` — is still unconditionally scoped to the caller's own
 `org_id`, and `hub/tests/test_tenant_isolation.py` passes unchanged.
-Nothing about the commons loosened them.
+Nothing about the Knowledge Base loosened them.
 
-**The door.** `Trace.shared_with_commons` is now live, and it is the only
-field by which a row can cross an org boundary:
+**The boundary.** `Trace.commons_source == "seed"` is the only content any
+Knowledge Base query will ever match against:
 
-- It is `false` by default and is **never** set implicitly. An org opts in
-  per trace via `share_trace`, which records a `shared_rationale` for audit
-  and can only reach traces that org already owns.
-- `unshare_trace` withdraws it, clearing the stored signature so it stops
-  matching immediately.
-- Quarantined traces cannot enter the commons — that would propagate
-  exactly what quarantine exists to contain.
-- The one query that reads across orgs, `commons_overlap`, requires
-  `shared_with_commons AND NOT quarantined` and additionally excludes the
-  caller's own rows.
+- `hub/manage.py commons_seed` is the only thing that ever writes a
+  `commons_source == "seed"` row, under an operator org. No
+  customer-facing tool can.
+- Quarantined content cannot enter — that would propagate exactly what
+  quarantine exists to contain.
+- Both Knowledge Base queries, `commons_overlap` and `commons_search`,
+  filter explicitly on `commons_source == "seed"` in their SQL, not merely
+  on the absence of a customer-facing sharing tool -- a stronger guarantee
+  that holds even against a hypothetical future bug
+  (`hub/tests/test_commons.py::test_a_shared_row_that_is_not_seed_sourced_is_still_invisible`
+  pins this).
 
-The boundary being drawn is **substrate failures are shared; business logic
-stays private** (`STRATEGY.md` §4). The Hub cannot judge which is which, so
-that call is the contributing org's, made explicitly and recorded.
+The boundary being drawn on *content* is **substrate knowledge is
+Knowledge-Base material; any customer's business logic is theirs alone**
+(`STRATEGY.md` §4). That call belongs to the operator authoring the
+corpus, not to any customer, because no customer's own trace ever reaches
+it to need a call made about it.
 
-**Why it is signatures-in, consented-content-out.** The question a prospect
-wants answered before contributing anything is "how many of the failures my
-fleet keeps hitting has someone else already solved?" Answering it must not
-require uploading those failures. So the client MinHashes locally and sends
-only signatures; what comes back is drawn only from traces whose owners
-explicitly shared them. Stated limitation, not glossed: MinHash is not a
-cryptographic privacy guarantee — a party who can guess a candidate string
-can test whether it is present. Private set intersection is the real fix and
-is a named follow-up, not a quiet assumption.
+**Why it is signatures-in, always.** The question an org wants answered is
+"how many of the failures my fleet keeps hitting has the Knowledge Base
+already solved?" Answering it must not require uploading those failures.
+So the client MinHashes locally and sends only signatures; what comes back
+is drawn only from the operator-curated corpus. Stated limitation, not
+glossed: MinHash is not a cryptographic privacy guarantee — a party who
+can guess a candidate string can test whether it is present. Private set
+intersection is the real fix and is a named follow-up, not a quiet
+assumption.
 
-One consequence worth knowing: because `vote_trace`/`amend_trace`/
-`get_trace` remain scoped to the caller's own org, an org can only vote on
-or amend its own traces. That is correct, not a bug — commons participation
-grants visibility, not write access to someone else's history.
+One consequence worth knowing: `vote_trace` is the one exception to "every
+read path stays org-scoped" -- it also reaches Knowledge Base entries
+(`commons_source == "seed"`) regardless of which org is voting, since
+`trust` is a signal surfaced to every org an entry matches for. It still
+cannot reach another org's own private trace; `amend_trace`/`get_trace`
+remain fully org-scoped.
 
 ### Why there's no `lessons` table
 

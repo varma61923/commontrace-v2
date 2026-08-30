@@ -181,27 +181,27 @@ class Trace(Base):
     # Governance / abuse-control fields, not part of the wire Trace object
     quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quarantine_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
-    # --- Cross-org commons (opt-in, explicit, revocable) -----------------
+    # --- CommonTrace Knowledge Base membership ----------------------------
     #
     # This is the ONLY field that can make a trace visible outside its owning
     # org, and it is false by default and never set implicitly. Every other
     # read path in hub/crud.py stays unconditionally scoped to the caller's
-    # own org_id regardless of this flag; the commons is a separate, additive
-    # query surface (crud.commons_overlap), not a relaxation of the existing
-    # one. hub/tests/test_tenant_isolation.py passes unchanged.
+    # own org_id regardless of this flag; the Knowledge Base is a separate,
+    # additive query surface (crud.commons_overlap, crud.commons_search),
+    # not a relaxation of the existing one. hub/tests/test_tenant_isolation.py
+    # passes unchanged.
     #
-    # The boundary being drawn is the one in STRATEGY.md §4: substrate
-    # failures are shareable ("Stripe webhooks need idempotency keys"),
-    # business logic is not (your pricing rules, your escalation policy).
-    # The Hub cannot judge that for you -- it is the contributing org's
-    # explicit call, recorded per trace, with the classification stored so
-    # the decision is auditable after the fact.
+    # In production this is set ONLY by hub/manage.py:commons_seed, on rows
+    # owned by the operator's own org -- never by a customer action, and
+    # never on a customer's own trace. `commons_source == "seed"` (below) is
+    # the field every Knowledge Base query actually filters on; this flag
+    # alone is defense-in-depth, not the boundary itself.
     shared_with_commons: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Free-text, caller-supplied justification for why this trace is
-    # substrate rather than business logic. Not validated by the Hub (it
-    # cannot be); stored so a security reviewer can audit what an org
-    # believed it was sharing and why.
+    # Free-text justification recorded at seed time for why this entry
+    # belongs in the Knowledge Base -- substrate knowledge (STRATEGY.md §4),
+    # never any customer's business logic. Stored so a reviewer can audit
+    # what the operator believed it was publishing and why.
     shared_rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     # MinHash signature of this trace's matchable text, computed once at
     # share time by commontrace.overlap. Precomputed rather than derived per
@@ -211,35 +211,32 @@ class Trace(Base):
     # trace that is not in the commons.
     commons_signature: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
 
-    # --- Commons economics -----------------------------------------------
+    # --- Knowledge Base content quality ------------------------------------
     #
-    # How many times this shared trace has actually covered ANOTHER org's
-    # recurring failure. This is the answer to the question that decides
-    # whether a knowledge commons survives contact with self-interest
-    # (STRATEGY.md §3): why would an org contribute knowledge that helps a
-    # competitor? "Because it is nice" does not hold, and a commons where
-    # contribution is undifferentiated fills with low-value filler.
+    # How many times this Knowledge Base entry has actually matched another
+    # org's recurring failure. hub/manage.py:kb_stats uses this to answer
+    # "is the Knowledge Base actually earning its query traffic" -- an entry
+    # with zero hits after real query volume is filler, not knowledge,
+    # however confident the operator was when writing it.
     #
-    # Making the value a contributor DELIVERS measurable changes that:
-    # contribution stops being altruism and becomes a position, it gives an
-    # operator a defensible basis for pricing or revenue share, and it lets
-    # the highest-value contributors be identified rather than guessed at.
-    #
-    # Deliberately a counter and not a join table of who-matched-what:
-    # the aggregate is what pricing and incentives need, while a per-match
-    # log of "org X's failure resembled org Y's trace" is a far more
-    # sensitive artifact for a marginal gain. Incremented with the same
-    # atomic in-database UPDATE the retrievals counter uses. BigInteger for
-    # the same overflow reason as retrievals/depth above.
+    # Deliberately a counter and not a join table of who-matched-what: the
+    # aggregate is what a content-quality report needs, while a per-match
+    # log of "org X's failure resembled entry Y" is a far more sensitive
+    # artifact for a marginal gain. Incremented with the same atomic
+    # in-database UPDATE the retrievals counter uses. BigInteger for the
+    # same overflow reason as retrievals/depth above.
     commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
-    # Where this commons entry came from. A commons with no contributors
-    # returns 0% coverage for everyone, which is a cold start, not a
-    # finding -- so an operator may seed it with public substrate knowledge
-    # to make the first query meaningful. That seeded content must stay
-    # DISTINGUISHABLE, or "how many orgs contribute" (the actual
-    # network-effect metric) silently counts the operator's own seeding and
-    # the number stops meaning anything. "org" | "seed".
+    # Where this row came from. An empty Knowledge Base returns 0% coverage
+    # for everyone, which is a cold start, not a finding -- so an operator
+    # seeds it with authored substrate knowledge to make the first query
+    # meaningful. Seeded content must stay DISTINGUISHABLE, or "how many
+    # orgs actually consult it" (hub/manage.py:kb_stats' adoption count)
+    # silently counts queries against the operator's own seeding and the
+    # number stops meaning anything. "org" | "seed" -- "seed" is the only
+    # value any Knowledge Base query (commons_overlap, commons_search,
+    # vote_trace) will ever match against; see hub/commons.py's module
+    # docstring.
     commons_source: Mapped[str] = mapped_column(String(16), default="org", nullable=False)
 
     # Full-text search vector, maintained by Postgres itself (GENERATED ...

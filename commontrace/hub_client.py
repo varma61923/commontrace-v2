@@ -405,12 +405,12 @@ async def commons_overlap(
     threshold: float | None = None,
     include_matches: bool = True,
 ) -> dict:
-    """Ask the Hub: of these recurring failures, how many has some other
-    fleet already solved?
+    """Ask the Hub: of these recurring failures, how many does the
+    CommonTrace Knowledge Base already solve?
 
     `failures` carries MinHash signatures only -- generated locally by
     `commontrace commons sign`. No failure text is sent. See hub/commons.py
-    for the boundary on what comes back.
+    for what the Knowledge Base is and what comes back.
     """
     arguments: dict[str, Any] = {"failures": failures, "include_matches": include_matches}
     if threshold is not None:
@@ -443,24 +443,6 @@ async def commons_search(
     response = await _call_tool(hub_url, api_key, "commons_search", arguments)
     if response.get("error"):
         raise HubConnectionError(f"commons_search failed: {response['error']}: {response.get('detail', '')}")
-    return response
-
-
-async def share_trace(hub_url: str, api_key: str, trace_id: str, rationale: str = "") -> dict:
-    """Contribute one of your own Hub traces to the cross-org commons."""
-    response = await _call_tool(
-        hub_url, api_key, "share_trace", {"id": trace_id, "rationale": rationale}
-    )
-    if response.get("error"):
-        raise HubConnectionError(f"share_trace failed: {response['error']}: {response.get('detail', '')}")
-    return response
-
-
-async def unshare_trace(hub_url: str, api_key: str, trace_id: str) -> dict:
-    """Withdraw one of your traces from the cross-org commons."""
-    response = await _call_tool(hub_url, api_key, "unshare_trace", {"id": trace_id})
-    if response.get("error"):
-        raise HubConnectionError(f"unshare_trace failed: {response['error']}: {response.get('detail', '')}")
     return response
 
 

@@ -1,18 +1,18 @@
-"""HUB_COMMONS_ENABLED=false: the cross-org commons removed, not just refused.
+"""HUB_COMMONS_ENABLED=false: the Knowledge Base removed, not just refused.
 
 Prompted by a real deployment shape: an internal-only B2B offering that must
-have "no common knowledge" with any other organization until traction is
-proven. `share_trace`/`unshare_trace`/`commons_overlap` being opt-in and
-unused by every org already gets there in practice -- but "in practice" is
-discipline, not a guarantee, and this deployment's whole point is not
-depending on discipline. This tests the guarantee: with the flag off, the
-three commons tools are absent from the MCP tool surface entirely, so a
-client that tries gets the framework's own "unknown tool" error rather than
-a per-call refusal that some future call site could forget to apply.
+consult no content beyond what the fleet itself captured, full stop. The
+Knowledge Base is already operator-curated and opt-in per plan
+(`commons_access`) rather than customer contribution -- but a deployment
+that wants a stronger guarantee than "unused" can remove the surface
+entirely. This tests that guarantee: with the flag off, `commons_overlap`
+and `commons_search` are absent from the MCP tool surface, so a client that
+tries gets the framework's own "unknown tool" error rather than a per-call
+refusal that some future call site could forget to apply.
 
 account_usage is checked as the control: it reports an org's own plan and
-its own usage, never another org's data, so disabling the commons must not
-disable it.
+its own usage, never Knowledge Base content, so disabling the Knowledge
+Base must not disable it.
 """
 from __future__ import annotations
 
@@ -66,11 +66,11 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_eleven_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_all_nine_tools_present_by_default(self, enabled_config, session_factory):
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
-            "amend_trace", "list_tags", "share_trace", "unshare_trace",
+            "amend_trace", "list_tags",
             "commons_overlap", "commons_search", "account_usage",
         }
 

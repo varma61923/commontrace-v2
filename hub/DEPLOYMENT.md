@@ -203,10 +203,12 @@ re-display a key anyone has lost — rotate instead
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — deletion is
       operator-CLI-only by design.
-- [ ] If the cross-org commons is not wanted for this deployment, do not
-      call `commons-seed` and tell your orgs not to `share_trace` — it is
-      opt-in per trace (§13) and stays empty unless something is shared
-      into it. `commons_overlap` on an empty commons returns 0% with a
+- [ ] If the CommonTrace Knowledge Base is not wanted for this deployment,
+      do not call `commons-seed` — it is the only thing that ever puts
+      content into it (§13), so the corpus stays empty unless the operator
+      populates it. For a stronger guarantee that the surface is gone
+      entirely rather than merely empty, set `HUB_COMMONS_ENABLED=false`.
+      `commons_overlap` against an empty Knowledge Base returns 0% with a
       note saying why, not an error.
 
 ## 11. Known limitations (deliberate, documented)
@@ -216,7 +218,7 @@ re-display a key anyone has lost — rotate instead
 | Rate limiting is per-process | §6, `hub/abuse.py` |
 | Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
 | No self-service data deletion (operator CLI only) | `DATA_RETENTION.md` |
-| Cross-org commons is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
+| The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
 | No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
@@ -277,20 +279,22 @@ not a stripped-down mode. Tenant isolation, migrations, health probes,
 backups, and the security checklist are identical whether one org uses
 the Hub or a thousand do. Two things are specific to running it alone:
 
-- **The cross-org commons defaults to inert, and can be removed outright.**
-  Left at its default, `share_trace` is per-trace opt-in and nothing is
-  shared unless someone calls it — `commons_overlap` on an empty commons
-  costs nothing and returns 0% with a note explaining why, never an error.
-  That is "nobody happens to use it." If the requirement is stronger than
-  that — an internal-only deployment where the commons must not exist,
-  full stop, regardless of what any org's traces do — set
-  `HUB_COMMONS_ENABLED=false`. `share_trace`, `unshare_trace`, and
-  `commons_overlap` are then absent from the MCP tool surface entirely
-  (an unknown-tool error to any client that tries), not merely refused;
+- **The CommonTrace Knowledge Base defaults to empty, and can be removed
+  outright.** Left at its default, nothing is in it unless the operator
+  runs `commons-seed` — there is no customer-facing tool that can put
+  anything there, so `commons_overlap`/`commons_search` on an empty
+  Knowledge Base cost nothing and return 0%/no candidates with a note
+  explaining why, never an error. That is "nobody populated it." If the
+  requirement is stronger than that — an internal-only deployment that
+  must not consult anything beyond what the fleet itself captured, full
+  stop — set `HUB_COMMONS_ENABLED=false`. `commons_overlap` and
+  `commons_search` are then absent from the MCP tool surface entirely (an
+  unknown-tool error to any client that tries), not merely empty;
   `python -m hub.smoke`'s tool-surface check reflects whichever mode the
   server is actually running in. Skip `commons-seed` either way if there
-  is only ever going to be one org — there is no other org for it to
-  compare against.
+  is only ever going to be one org running this fleet's own on-prem
+  memory — the Knowledge Base is optional substrate knowledge, not
+  something a single-org deployment needs.
 - **Entitlements can be ignored.** A new org lands on the `free` plan
   (1,000 traces, 20 commons queries/month — §5). If that is not the
   point of running your own Hub, `python -m hub.manage set-plan <org_id>

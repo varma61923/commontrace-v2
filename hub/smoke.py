@@ -5,8 +5,9 @@ a customer. It is deliberately end-to-end and deliberately paranoid: it
 exercises the full MCP tool surface against the live server over real
 HTTP, and it verifies the properties that matter more than uptime does --
 that an unauthenticated caller is refused, that one tenant cannot see
-another's data, and that a trace not opted into the commons stays private
-to the org that owns it.
+another's data, and that a trace a customer contributed never surfaces to
+another org through the Knowledge Base -- the Knowledge Base holds only
+operator-curated content, never customer contributions.
 
     python -m hub.smoke --url https://hub.example.com --api-key ct_live_...
 
@@ -144,7 +145,7 @@ CORE_TOOLS = [
     # since it reports an org's own plan and usage, never another org's data
     "account_usage",
 ]
-COMMONS_TOOLS = ["commons_overlap", "share_trace", "unshare_trace"]
+COMMONS_TOOLS = ["commons_overlap", "commons_search"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
 
 
@@ -237,10 +238,9 @@ async def _entitlements(session, report: Reporter) -> None:
         f"allowance={q.get('allowance')} (only the operator plan may be unlimited here)",
     )
     report.check(
-        "earned allowance is accounted separately from granted",
-        q.get("granted") is not None and q.get("earned") is not None,
-        f"granted={q.get('granted')}, earned={q.get('earned')}, "
-        f"delivered_hits={usage.get('delivered_hits')}",
+        "commons_queries reports used/allowance/remaining",
+        all(q.get(k) is not None for k in ("used", "allowance", "remaining")),
+        f"used={q.get('used')}, allowance={q.get('allowance')}, remaining={q.get('remaining')}",
     )
 
 
@@ -293,17 +293,18 @@ async def _tenant_isolation(
                 )
 
             if not commons_enabled:
-                # Nothing to probe: _tool_surface already proved these three
+                # Nothing to probe: _tool_surface already proved these two
                 # tools are entirely absent from the server, which is a
                 # stronger guarantee than "refused when called" -- there is
                 # no path left to check.
                 return
 
-            # The commons is the ONLY path by which a row may cross an org
-            # boundary, so a deployment check has to prove it stays shut for
-            # a trace nobody opted in. The round-trip trace above was never
-            # shared, so probing with a signature built from its EXACT text
-            # -- the strongest possible probe -- must still find nothing.
+            # The Knowledge Base holds only operator-curated content
+            # (commons_source == "seed"), never a customer's own traces, so
+            # a deployment check has to prove a customer-contributed trace
+            # never surfaces there. Probing with a signature built from its
+            # EXACT text -- the strongest possible probe -- must still find
+            # nothing.
             from hub import commons
 
             probe = commons.signature_for(
@@ -316,17 +317,9 @@ async def _tenant_isolation(
             ))
             leaked = isinstance(overlap, dict) and foreign_id in json.dumps(overlap)
             report.check(
-                "an unshared trace stays out of the commons",
+                "a customer's trace never surfaces through the Knowledge Base",
                 isinstance(overlap, dict) and not leaked,
-                f"the other org's commons_overlap returned our unshared trace: {overlap!r}",
-            )
-
-            # And an org cannot place someone else's trace into the commons.
-            shared = _content(await session.call_tool("share_trace", {"id": foreign_id}))
-            report.check(
-                "share_trace across a tenant boundary is refused",
-                isinstance(shared, dict) and shared.get("error") == "not_found",
-                f"expected error=not_found, got {shared!r}",
+                f"the other org's commons_overlap returned our trace: {overlap!r}",
             )
 
 

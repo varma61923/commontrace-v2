@@ -3,10 +3,11 @@
 WHY THIS EXISTS -- it is the difference between a testable thesis and an
 untestable one.
 
-The cross-org commons rests on one empirical claim: that a meaningful
-fraction of what a fleet keeps hitting is *substrate* failure, the kind
-another org has already solved. That claim is testable in an afternoon --
-sign a fleet's recurring failures, ask the commons, read the number.
+The CommonTrace Knowledge Base rests on one empirical claim: that a
+meaningful fraction of what a fleet keeps hitting is *substrate* failure,
+the kind already documented in the Knowledge Base. That claim is testable
+in an afternoon -- sign a fleet's recurring failures, ask the Knowledge
+Base, read the number.
 
 Except it wasn't, because the only way to produce those signatures was
 `memory/traces/*.md` with `outcome.repeated_error: true`, which exists only

@@ -81,7 +81,7 @@ class TestRendering:
         """The Stack-Overflow-shaped signal: this answer has covered other
         fleets' real failures before."""
         out = commons_cmd._render_candidates(self._result(), "q")
-        assert "covered 3 other fleet failure(s)" in out
+        assert "covered 3 recurring failure(s) before" in out
 
     def test_it_always_carries_the_candidates_not_coverage_note(self):
         out = commons_cmd._render_candidates(self._result(), "q")

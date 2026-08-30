@@ -1,8 +1,12 @@
 """Abuse controls for contribute_trace.
 
-This is a shared cross-org store: one careless or malicious contributor can
-degrade retrieval quality for every other org, so contribute_trace runs
-through, in order:
+contribute_trace writes into the calling org's own private corpus only --
+it can never reach the CommonTrace Knowledge Base, which only
+hub/manage.py:commons_seed writes to -- so a careless or malicious
+contributor can only degrade its own org's retrieval quality, never
+another org's. The controls below exist anyway: to protect the shared
+Postgres instance every org's writes land on, and to keep an org's own
+search useful for that org. contribute_trace runs through, in order:
 
   1. schema validation (hub/schema_validation.py)      -> hard reject, 4xx
   2. per-field / per-trace size limits (this module)     -> hard reject, 4xx

@@ -146,8 +146,9 @@ downstream.
 
 It says nothing about links 3–5: whether value compounds faster than cost
 to serve, whether the product survives agent platforms bundling memory, or
-whether a cross-org commons has real overlap. Those need their own
-evidence, and §13 names the test for each.
+whether an operator-curated Knowledge Base is worth the ongoing curation
+cost (STRATEGY.md §14 — this is no longer a cross-org network effect).
+Those need their own evidence, and §13 names the test for each.
 
 The instrument has been validated against a synthetic effect — seeded at
 +45%, recovered as +43% with a 95% CI of [+23%, +64%] — so the statistics

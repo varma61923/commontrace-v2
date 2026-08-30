@@ -1,20 +1,25 @@
-"""`commons_search` -- the knowledge-base lookup, as distinct from the
+"""`commons_search` -- the Knowledge Base lookup, as distinct from the
 coverage meter.
 
-The commons shipped one query surface: `commons_overlap`, which thresholds
-and emits a percentage measured at 10.9% recall. Ranking the same
-signatures against the same corpus with no threshold gets 89.1% recall@1
-and 100% within the top 10 (commons/eval/search_modes.py). That is the
-difference between a meter and a knowledge base, and it costs nothing in
-privacy: both surfaces take a MinHash signature and no failure text.
+The Knowledge Base shipped one query surface: `commons_overlap`, which
+thresholds and emits a percentage measured at 10.9% recall. Ranking the
+same signatures against the same corpus with no threshold gets 89.1%
+recall@1 and 100% within the top 10 (commons/eval/search_modes.py). That is
+the difference between a meter and a knowledge base, and it costs nothing
+in privacy: both surfaces take a MinHash signature and no failure text.
 
 What is pinned here is mostly the DISCIPLINE, not the retrieval. A ranked
 surface with no threshold returns something for every query, including
 questions the corpus cannot answer. So the tests below assert that it never
-claims coverage, never credits contributor value, and never becomes a
-second way to read another org's private traces.
+claims coverage, never credits contributor value, and never becomes a way
+to read one customer's private traces from another -- there is no such
+path at all, since the only content this can ever reach is operator-
+curated (`commons_source == "seed"`; see hub/plans.py "why there is no
+org-to-org sharing here").
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -31,6 +36,10 @@ pytestmark = pytest.mark.asyncio
 async def orgs(session_factory):
     async with session_scope(session_factory) as session:
         made = {}
+        # "sharer" here means "plays the operator role for this fixture" --
+        # kept as the existing key name so every call site below (`*WEBHOOK`
+        # unpacked into it) did not need touching when this module moved
+        # off the removed share_trace/unshare_trace API.
         for name in ("asker", "sharer", "other"):
             o = Organization(name=name)
             session.add(o)
@@ -40,16 +49,28 @@ async def orgs(session_factory):
 
 
 async def _contribute_and_share(session_factory, config, org_id, title, context, solution, tags):
-    rate_limiter = make_rate_limiter(config)
+    """Despite the name (kept to avoid touching every call site), this puts
+    a Knowledge Base ENTRY directly into the corpus -- the only way that
+    ever happens in production is `hub/manage.py:commons_seed`, which this
+    mirrors at the row level rather than shelling out to load a JSONL file
+    for every test."""
     async with session_scope(session_factory) as session:
-        result = await crud.contribute_trace(
-            session, org_id, config, rate_limiter,
-            title=title, context_text=context, solution_text=solution,
-            tags=tags, agent_type="code", actor="test",
+        trace = Trace(
+            org_id=org_id,
+            title=title,
+            context_text=context,
+            solution_text=solution,
+            tags=tags,
+            agent_type="code",
+            shared_with_commons=True,
+            shared_at=datetime.now(timezone.utc),
+            shared_rationale="test fixture: operator-curated substrate knowledge",
+            commons_signature=commons.signature_for(title, context, tags),
+            commons_source="seed",
         )
-    async with session_scope(session_factory) as session:
-        await crud.share_trace(session, org_id, result["id"], rationale="substrate")
-    return result["id"]
+        session.add(trace)
+        await session.flush()
+        return trace.id
 
 
 def _sig(text: str) -> list[int]:
@@ -209,8 +230,8 @@ class TestItDoesNotCreditContributorValue:
 
 class TestMetering:
     async def test_a_search_consumes_a_commons_query(self, session_factory, config, orgs):
-        """It reads other orgs' contributions, so it is metered exactly like
-        commons_overlap."""
+        """It reads the operator-maintained Knowledge Base, so it is
+        metered exactly like commons_overlap."""
         await _contribute_and_share(session_factory, config, orgs["sharer"], *WEBHOOK)
         async with session_scope(session_factory) as session:
             before = (await crud.entitlements(session, orgs["asker"]))["commons_queries"]["used"]

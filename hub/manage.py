@@ -11,20 +11,18 @@
 
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
-    commons-stats                  -> cross-org commons health: corpus size, how many
-                                       distinct orgs contribute, concentration risk
-    commons-value                  -> the pricing denominator: per org, what it shared
-                                       and how much that DELIVERED to other fleets
+    kb-stats                       -> Knowledge Base content quality: corpus size, hits
+                                       delivered, top/dead entries, orgs that query it
     commons-seed <file.jsonl> <org_id>
-                                   -> break the cold start with public substrate
-                                       knowledge, marked commons_source='seed' so it
-                                       never counts as a network effect
+                                   -> load or update the operator-curated Knowledge Base
+                                       content, marked commons_source='seed' -- the ONLY
+                                       way content ever enters it (see hub/plans.py "why
+                                       there is no org-to-org sharing here")
     set-plan <org_id> <plan>       -> change an org's entitlements (hub/plans.py):
                                        free | team | scale | operator
     usage [org_id]                 -> what each org is entitled to and has used this
-                                       period, including allowance EARNED by contributing
-    revenue                        -> orgs on billable plans, and what the commons
-                                       delivered to each -- price against measured value
+                                       period
+    revenue                        -> orgs on billable plans and what they consumed
     list-quarantined [org_id]      -> traces held pending review (id, org_id, title,
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
@@ -204,21 +202,22 @@ async def stats(session_factory=None) -> None:
 
 
 async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
-    """Seed the commons from a JSONL file of public substrate knowledge.
+    """Load or update the CommonTrace Knowledge Base from a JSONL file of
+    curated substrate knowledge.
 
-    THE COLD START, AND WHY THIS IS NOT CHEATING. An empty commons returns
-    0% coverage to every prospect -- by construction, not as a finding --
-    so the first customer sees nothing and never contributes, and the
-    network effect never starts. Seeding breaks that.
+    THIS IS THE ONLY WAY CONTENT EVER ENTERS THE KNOWLEDGE BASE. There is
+    no customer-facing tool that sets `commons_source='seed'` -- see
+    hub/plans.py "why there is no org-to-org sharing here" for why that is
+    a deliberate absence, not a gap: a customer's own trace should never be
+    able to become visible to another customer, and the surest way to
+    guarantee that is to have exactly one, operator-run code path capable
+    of writing this column at all.
 
-    What makes it honest rather than a rigged demo is that every seeded
-    row is marked `commons_source='seed'` and is reported SEPARATELY from
-    org contributions everywhere it matters (commons-stats, commons-value).
-    The metric that decides the company's direction is "how many distinct
-    ORGS contribute", and that number must never quietly count the
-    operator's own seeding. Seed content still delivers real value to a
-    querying fleet -- it just does not count as evidence of a network
-    effect, because it isn't any.
+    Re-runnable: run it again after editing the source file to add new
+    entries (existing ones are not deduplicated against by content, so
+    editing in place and re-running will create fresh rows for unchanged
+    lines too -- track what has already been loaded in the source file
+    itself, or purge and reload for now).
 
     Each JSONL line: {"title", "context_text", "solution_text", "tags"?,
     "agent_type"?, "source"?}. `source` should cite where the knowledge
@@ -226,8 +225,8 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     the trace's shared_rationale so provenance survives.
 
     Seeded traces are owned by `org_id` -- give this a dedicated operator
-    org, not a customer's, so no customer is credited with authorship they
-    do not have.
+    org, not a customer's, so nothing here is ever attributed to a customer
+    who did not write it.
     """
     import json as _json
 
@@ -291,185 +290,83 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
             summary=f"seeded={added} skipped={bad} from={path!r}",
         )
 
-    print(f"seeded {added} trace(s) into the commons as commons_source='seed'.")
+    print(f"loaded {added} entry(ies) into the Knowledge Base.")
     if bad:
         print(f"  {bad} line(s) skipped -- see errors above.", file=sys.stderr)
-    print("  These are reported separately from org contributions by "
-          "`commons-stats` and `commons-value`, so the network-effect")
-    print("  metric is not inflated by operator seeding.")
+    print("  Run `python -m hub.manage kb-stats` to see corpus size and hit coverage.")
     return True
 
 
-async def commons_value(session_factory=None) -> None:
-    """What each org puts into the commons, and what that delivered.
+async def kb_stats(session_factory=None) -> None:
+    """Is the CommonTrace Knowledge Base actually earning its query traffic?
 
-    This is the pricing denominator. Value-based pricing needs measured
-    value, and "traces contributed" is vanity -- the number that matters is
-    how many times a contributor's knowledge actually covered someone
-    else's recurring failure (Trace.commons_hits). That same number is what
-    makes contributing rational rather than altruistic, which is the
-    standard reason knowledge-commons plays fail (STRATEGY.md §3).
+    There is no customer contribution to measure here, on purpose (see
+    hub/plans.py "why there is no org-to-org sharing here") -- so this is
+    not a network-effect report, it is a CONTENT QUALITY report: how big is
+    the corpus, how often does it actually cover a real recurring failure
+    (Trace.commons_hits, incremented only by the conservative
+    commons_overlap threshold), which entries are pulling weight, and which
+    have never once matched anything and are candidates to revise or prune.
+    Distinct customer orgs that have ever queried it is the one adoption
+    number worth watching -- readership, not authorship.
     """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        rows = (
+        entries = (
             await session.execute(
-                select(
-                    Trace.org_id,
-                    Trace.commons_source,
-                    func.count(),
-                    func.coalesce(func.sum(Trace.commons_hits), 0),
-                )
-                .where(Trace.shared_with_commons.is_(True), Trace.quarantined.is_(False))
-                .group_by(Trace.org_id, Trace.commons_source)
-            )
-        ).all()
-        names = dict(
-            (await session.execute(select(Organization.id, Organization.name))).all()
-        )
-
-    if not rows:
-        print("nothing in the commons yet -- no value to attribute.")
-        return
-
-    by_org: dict[tuple[str, str], tuple[int, int]] = {}
-    for org_id, source, n_traces, hits in rows:
-        by_org[(org_id, source or "org")] = (int(n_traces), int(hits))
-
-    org_rows = sorted(
-        ((k, v) for k, v in by_org.items() if k[1] != "seed"),
-        key=lambda kv: -kv[1][1],
-    )
-    seed_rows = [(k, v) for k, v in by_org.items() if k[1] == "seed"]
-
-    print(f"{'organization':<38} {'shared':>7} {'delivered':>10}")
-    print("-" * 58)
-    for (org_id, _src), (n_traces, hits) in org_rows:
-        label = f"{(names.get(org_id) or '?')[:26]} {org_id[:8]}"
-        print(f"{label:<38} {n_traces:>7} {hits:>10}")
-
-    total_org_hits = sum(v[1] for k, v in by_org.items() if k[1] != "seed")
-    total_seed_hits = sum(v[1] for _k, v in seed_rows)
-    total_org_traces = sum(v[0] for k, v in by_org.items() if k[1] != "seed")
-    total_seed_traces = sum(v[0] for _k, v in seed_rows)
-
-    print("-" * 58)
-    print(f"{'org-contributed':<38} {total_org_traces:>7} {total_org_hits:>10}")
-    if seed_rows:
-        print(f"{'operator-seeded (not a network effect)':<38} {total_seed_traces:>7} {total_seed_hits:>10}")
-
-    print()
-    if total_org_hits == 0 and total_seed_hits == 0:
-        print("No commons trace has covered anyone's failure yet. Either nobody has run")
-        print("`commons_overlap`, or the corpus does not yet overlap what fleets are hitting.")
-        return
-
-    delivered_total = total_org_hits + total_seed_hits
-    if delivered_total and total_seed_hits / delivered_total > 0.5:
-        print(f"Most delivered value ({total_seed_hits}/{delivered_total}) comes from operator")
-        print("seeding, not from orgs. That is a working cold-start primer, not yet a")
-        print("network effect -- the metric to watch is org-contributed value overtaking it.")
-    elif org_rows:
-        top_org, (_n, top_hits) = org_rows[0]
-        if total_org_hits and top_hits / total_org_hits > 0.6:
-            print(f"One org delivers {top_hits}/{total_org_hits} of all org-contributed value.")
-            print("Concentration risk: their withdrawal would take most of the commons' worth")
-            print("with it. Broadening contribution matters more than growing the corpus.")
-
-
-async def commons_stats(session_factory=None) -> None:
-    """Is the cross-org commons actually working?
-
-    Corpus size alone is vanity. The number that matters is **how many
-    distinct orgs have contributed**, because the whole thesis is a network
-    effect: value to each participant grows with the number of *others*.
-    A commons of 10,000 traces from one org is a single fleet's memory with
-    extra steps; 500 traces from 40 orgs is the thing compounding.
-    """
-    session_factory = session_factory or _default_session_factory()
-    async with session_scope(session_factory) as session:
-        # Only org-contributed rows count toward the network-effect metric.
-        # Operator seeding exists to break the cold start and is real value
-        # to a querying fleet, but counting it here would mean "contributing
-        # orgs" silently included ourselves -- and that number is the one
-        # that decides whether (B) is working at all.
-        rows = (
-            await session.execute(
-                select(Trace.org_id, func.count())
+                select(Trace.id, Trace.title, Trace.commons_hits)
                 .where(
                     Trace.shared_with_commons.is_(True),
                     Trace.quarantined.is_(False),
-                    Trace.commons_source != "seed",
+                    Trace.commons_source == "seed",
                 )
-                .group_by(Trace.org_id)
+                .order_by(Trace.commons_hits.desc())
             )
         ).all()
-        n_seeded = (
+        n_queriers = (
             await session.execute(
-                select(func.count()).select_from(Trace).where(
-                    Trace.shared_with_commons.is_(True),
-                    Trace.quarantined.is_(False),
-                    Trace.commons_source == "seed",
+                select(func.count(func.distinct(UsageCounter.org_id))).where(
+                    UsageCounter.metric == crud.METRIC_COMMONS_QUERIES
                 )
             )
         ).scalar_one()
         n_orgs_total = (
             await session.execute(select(func.count()).select_from(Organization))
         ).scalar_one()
-        # Seeded rows are excluded from the share-rate denominator too: they
-        # were never a fleet's own captured experience, so counting them
-        # would make "what fraction of real traces get shared" drift as the
-        # operator seeds more.
-        n_traces_total = (
-            await session.execute(
-                select(func.count()).select_from(Trace).where(Trace.commons_source != "seed")
-            )
-        ).scalar_one()
 
-    n_contributors = len(rows)
-    n_shared = sum(c for _, c in rows)
-
-    print(f"commons traces (org):  {n_shared}")
-    if n_seeded:
-        print(f"commons traces (seed): {n_seeded}   <- operator-seeded, NOT a network effect")
-    print(f"contributing orgs:     {n_contributors} of {n_orgs_total}")
-    print(f"share rate:            {n_shared}/{n_traces_total} org trace(s) "
-          f"({(n_shared / n_traces_total * 100) if n_traces_total else 0:.1f}%)")
-
-    if n_contributors == 0:
-        if n_seeded:
-            # Distinguishing these matters: with a seeded corpus, queries do
-            # return real matches, so saying "the commons is empty" would be
-            # simply false. What is missing is not content -- it is evidence
-            # that anyone other than the operator finds it worth contributing to.
-            print(
-                f"\nNo ORG has contributed yet. Queries do return matches (from {n_seeded} seeded\n"
-                "trace(s)), so the commons is useful -- but a primer an operator loaded is\n"
-                "not a network effect. The number to watch is this line reaching 1, then many."
-            )
-        else:
-            print(
-                "\nThe commons is empty, so `commons_overlap` returns 0% for everyone by\n"
-                "construction -- not as a finding. Nothing compounds until orgs contribute."
-            )
+    if not entries:
+        print("The Knowledge Base has no entries yet. `commons-seed <file.jsonl> "
+              "<operator_org_id>` loads one.")
         return
-    if n_contributors == 1:
+
+    total_hits = sum(hits for _id, _title, hits in entries)
+    zero_hit = [e for e in entries if e[2] == 0]
+
+    print(f"knowledge base entries:  {len(entries)}")
+    print(f"total hits delivered:    {total_hits}   (times an entry covered a real "
+          "recurring failure, at the conservative threshold)")
+    print(f"queried by:              {n_queriers} of {n_orgs_total} org(s) (ever, any period)")
+    print(f"never matched anything:  {len(zero_hit)} of {len(entries)} entries")
+
+    if total_hits == 0:
         print(
-            "\nOnly ONE org has contributed. Every other org's coverage number is\n"
-            "measured against a single fleet's substrate, which is not yet a network\n"
-            "effect -- it is one generous customer. Concentration risk, too: if they\n"
-            "withdraw, the commons empties."
+            "\nNo entry has covered anyone's failure yet. Either nobody has queried the "
+            "Knowledge Base, or its content does not yet overlap what fleets are hitting."
         )
         return
 
-    largest = max(c for _, c in rows)
-    concentration = largest / n_shared
-    print(f"largest contributor:   {largest} traces ({concentration:.0%} of the corpus)")
-    if concentration > 0.6:
+    print("\ntop entries by hits:")
+    for _id, title, hits in entries[:10]:
+        if hits == 0:
+            break
+        print(f"  {hits:>4}  {title[:70]}")
+
+    if len(zero_hit) / len(entries) > 0.5:
         print(
-            "\nOver 60% of the commons comes from one org. The coverage numbers other\n"
-            "orgs see are mostly that one fleet's experience; treat the network effect\n"
-            "as unproven until contribution spreads."
+            f"\nOver half the corpus ({len(zero_hit)}/{len(entries)}) has never matched a "
+            "real query. Either these entries describe failures fleets are not actually "
+            "hitting, or they are worded differently from how fleets describe them -- see "
+            "commons/eval/RESULTS.md on lexical matching's recall limits."
         )
 
 
@@ -658,8 +555,7 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
     plan = plans.PLANS[key]
     print(f"{org_id}: {was} -> {key}")
     print(f"  traces:         {plans.describe(plan.max_traces)}")
-    print(f"  commons/month:  {plans.describe(plan.commons_queries_per_month)} "
-          f"(+{plans.QUERY_CREDIT_PER_HIT} per delivered hit)")
+    print(f"  commons/month:  {plans.describe(plan.commons_queries_per_month)}")
     print(f"  {plan.summary}")
     return True
 
@@ -667,10 +563,10 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
 async def usage(org_id: str | None = None, session_factory=None) -> bool:
     """Entitlements and consumption for the current period.
 
-    Shows granted and EARNED allowance separately, because the difference
-    is the entire argument for contributing: an org that can see it is
-    ahead on credit has a reason to keep sharing, and an org that cannot
-    see it is being asked for a favour.
+    A flat allowance per plan, with no earning mechanic: there is no
+    customer contribution in this model to earn credit for (hub/plans.py
+    "why there is no org-to-org sharing here"), so what an org has is
+    simply what its plan grants.
     """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -691,8 +587,8 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
     period = rows[0]["period"]
     print(f"billing period {period} (UTC)")
     print(f"{'organization':<26} {'plan':<9} {'agents':>12} {'traces':>14} "
-          f"{'commons q':>12} {'granted':>8} {'earned':>7} {'hits':>6}")
-    print("-" * 101)
+          f"{'kb queries':>14}")
+    print("-" * 86)
     any_floor = False
     total_agents = 0
     for org, r in zip(orgs, rows):
@@ -705,9 +601,7 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
         agents = f"{a['active']:,}{'+' if a['is_floor'] else ''}/{plans.describe(a['limit'])}"
         traces = f"{r['traces']['used']:,}/{plans.describe(r['traces']['limit'])}"
         used = f"{q['used']:,}/{plans.describe(q['allowance'])}"
-        print(f"{org.name[:25]:<26} {r['plan']:<9} {agents:>12} {traces:>14} "
-              f"{used:>12} {plans.describe(q['granted']):>8} "
-              f"{q['earned']:>7,} {r['delivered_hits']:>6,}")
+        print(f"{org.name[:25]:<26} {r['plan']:<9} {agents:>12} {traces:>14} {used:>14}")
     print()
     print(f"agents under management (all orgs): {total_agents:,}"
           f"{'+ -- see below' if any_floor else ''}")
@@ -717,23 +611,22 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
         print("A trailing '+' is a FLOOR, not a total: that org has traces whose client sent no")
         print("agent_id, and they collapse into one 'unattributed' agent however many really sent")
         print("them. Have those clients pass agent_id to make the number exact.")
-    print()
-    print(f"'earned' is allowance nobody paid for: {plans.QUERY_CREDIT_PER_HIT} commons queries "
-          "per time this org's")
-    print("shared knowledge covered another fleet's failure. Seeded rows are excluded.")
     return True
 
 
 async def revenue(session_factory=None) -> None:
-    """Who is on a billable plan, and what they measurably got for it.
+    """Who is on a billable plan, and how much of each resource they used.
 
     Deliberately prints no currency. This repository implements the
     entitlement, not the invoice -- there is no payment processing here,
     and printing a dollar figure computed from a hardcoded rate would read
     as revenue reporting while being arithmetic on a number nobody agreed
-    to. What it does show is the thing a price should be argued from: how
-    much of each paying org's consumption came from other orgs' knowledge,
-    and how much of their own knowledge went the other way.
+    to. What it does show is the thing a price should be argued from: real
+    consumption of the two metered resources, storage and Knowledge Base
+    queries. There is no "delivered" side to net against -- customers do
+    not contribute to what they consume in this model (hub/plans.py "why
+    there is no org-to-org sharing here"), so consumption is the whole
+    number, not one side of a ledger.
     """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -755,21 +648,14 @@ async def revenue(session_factory=None) -> None:
         return
 
     print(f"billing period {crud.billing_period()} (UTC)")
-    print(f"{'organization':<26} {'plan':<9} {'consumed':>10} {'delivered':>11} {'net':>7}")
-    print("-" * 68)
+    print(f"{'organization':<26} {'plan':<9} {'traces':>10} {'kb queries':>12}")
+    print("-" * 60)
     for org, r in rows:
-        consumed = r["commons_queries"]["used"]
-        delivered = r["delivered_hits"]
-        print(f"{org.name[:25]:<26} {org.plan:<9} {consumed:>10,} "
-              f"{delivered:>11,} {delivered - consumed:>+7,}")
-    print("-" * 68)
+        print(f"{org.name[:25]:<26} {org.plan:<9} {r['traces']['used']:>10,} "
+              f"{r['commons_queries']['used']:>12,}")
+    print("-" * 60)
     print(f"{len(billable)} billable org(s) of {len(orgs)}; "
-          f"{total_q:,} commons queries across all orgs this period.")
-    print()
-    print("'consumed' is commons queries run; 'delivered' is times this org's shared")
-    print("knowledge covered someone else's failure. A negative net is an org taking")
-    print("more than it gives -- which is exactly who a price should fall on hardest,")
-    print("and why the credit mechanism is the discount rather than a separate SKU.")
+          f"{total_q:,} Knowledge Base queries across all orgs this period.")
     print()
     print("No currency is printed here on purpose: this implements the entitlement,")
     print("not the invoice. Attaching a rate is a decision for whoever owns the P&L,")
@@ -784,8 +670,7 @@ _COMMANDS = {
     "list-orgs": (list_orgs, 0, 0),
     "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
-    "commons-stats": (commons_stats, 0, 0),
-    "commons-value": (commons_value, 0, 0),
+    "kb-stats": (kb_stats, 0, 0),
     "commons-seed": (commons_seed, 2, 2),
     "set-plan": (set_plan, 2, 2),
     "usage": (usage, 0, 1),

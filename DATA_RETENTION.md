@@ -52,8 +52,8 @@ apply to it and needs to be re-verified against that system.
 
 Every read path is scoped to the calling org's own `org_id` at the query
 layer (`hub/crud.py`); see `hub/README.md`'s "Tenant isolation vs. the
-cross-org commons pitch" for why cross-org visibility is not yet automatic
-even though the product's positioning describes cross-org learning.
+CommonTrace Knowledge Base" for the one deliberate exception (an
+optional, operator-curated corpus, never another customer's own data).
 
 ## 2. How long data is kept
 
@@ -67,7 +67,7 @@ even though the product's positioning describes cross-org learning.
   in `traces`/`votes`/`api_keys` persists until explicitly deleted. What
   "indefinitely" *should* mean for a real deployment holding paying
   customers' data (30 days after contract end? 1 year? never, until asked?)
-  is a business decision — see §4.
+  is a business decision this document does not make.
 
 ## 3. How an org requests deletion
 
@@ -96,59 +96,39 @@ even though the product's positioning describes cross-org learning.
   feature with its own authorization design questions this pass didn't
   make (see `hub/README.md`'s Operator CLI section).
 
-## 4. What happens to lessons already derived from an org's contributed traces
+## 4. Does deleting an org's trace ever have to reach into another org's data?
 
-This is the hardest question and is explicitly **not** answered here, because
-it is a business/legal decision, not an engineering one:
+**No, and that is by design rather than a gap left open.** An earlier
+design considered letting one org opt a trace into a shared corpus other
+orgs' queries could match against — which would have raised exactly the
+hard question this section used to pose (org A deletes a trace; org B
+already downloaded a lesson derived from it; now what?). That design is
+retired before ever shipping to a real deployment. See
+`hub/commons.py`'s module docstring and `hub/plans.py` "why there is no
+org-to-org sharing here" for the full reasoning: it does not make sense
+for orgs to share their IP and data with each other, and doing so has an
+adverse-selection problem with no fix.
 
-> If organization A contributes a trace to the Hub, and organization B's
-> agent later reads a lesson that was distilled (possibly by an automated
-> Curator, possibly by a human) from that trace, and organization A then
-> requests deletion — what happens to:
-> 1. The original trace (straightforward: delete it).
-> 2. The lesson text derived from it, now potentially embedded in B's
->    (and every other org's) local `memory/lessons/` files, already
->    downloaded and possibly acted on.
-> 3. Any lesson that merged information from multiple orgs' traces, where
->    "delete this org's contribution" isn't a clean subtraction.
+What exists instead is the **CommonTrace Knowledge Base**: a single corpus
+the *operator* authors and curates (`hub/manage.py commons-seed`). No
+customer-facing tool can write to it, and no customer's own trace is ever
+in it — `commons_overlap`/`commons_search` filter explicitly on
+`commons_source == "seed"`, which only that operator command ever sets.
+Consequently:
 
-**This needs a decision from whoever owns commercial/legal terms with
-Hub-contributing organizations before a customer's data is allowed to flow
-into a cross-org "commons."** Candidate positions (not a recommendation,
-just the shape of the choice) range from "traces are deletable, lessons
-already derived and distributed are not retroactively recalled" (like an
-open-source contribution model) to "lessons must be re-derivable/
-re-validatable without deleted source traces, with a grace/quarantine
-period." Flagging this, not deciding it, is the point of this section.
-
-Note on current scope: `hub/`'s six original read paths remain strictly
-org-scoped (see §1 and `hub/README.md`). The cross-org scenario above is
-now reachable in exactly one way, and only by explicit choice — the
-**opt-in commons**:
-
-- A trace becomes cross-org visible **only** when its owning org calls
-  `share_trace` on it. Default is private; nothing sets the flag
-  implicitly; quarantined traces are refused.
-- The org records a `shared_rationale` at share time. That text is stored
-  so a reviewer can later audit what an org believed it was sharing and
-  why.
-- `unshare_trace` withdraws it, and clears the stored MinHash signature so
-  it stops matching other orgs' queries immediately.
-- The only cross-org query, `commons_overlap`, filters on
-  `shared_with_commons AND NOT quarantined` and excludes the caller's own
-  rows.
-
-**What an org should understand before sharing.** A shared trace's full
-content — title, context, solution, tags — can be returned to another org
-whose recurring failure matches it. That is the point of contributing, but
-it is irreversible in the ordinary sense: withdrawal stops *future*
-matches, and cannot retract what another org already retrieved and may have
-copied into its own store. Share substrate, not business logic, and treat
-the decision as publication rather than as a revocable ACL.
-
-Deletion interacts with this correctly by construction: `purge-trace` and
-`purge-org` hard-delete the row, which removes it from the commons corpus
-along with everything else. There is no separate commons copy to miss.
+- Deleting an org's own trace (`purge-trace`/`purge-org`) is a clean, local
+  operation exactly as described in §1–3. There is no other org's
+  `memory/lessons/` file that could have derived anything from it, because
+  no other org's tooling — and no Knowledge Base query — ever saw it.
+- The only content any org's query can ever draw on beyond its own data is
+  what the operator wrote into the Knowledge Base. Correcting or removing
+  a Knowledge Base entry is an operator decision, not a customer
+  deletion request, and there is currently no CLI command for it beyond
+  `commons-seed`'s own file-driven load — flagged as an open item in §5.
+- `vote_trace` lets any org vote on a Knowledge Base entry (feedback on
+  the operator's content), and that vote is retained the same way any
+  other row is (§2). It is never a customer's own trace data crossing an
+  org boundary.
 
 ## 5. Related open questions for whoever operates a `hub/` deployment
 
@@ -162,5 +142,7 @@ along with everything else. There is no separate commons copy to miss.
   jurisdiction, and with what backup/retention configuration? Nothing in
   `hub/` prescribes this — it is deploy-target-specific and unset in
   `hub/.env.example`.
-- §4's cross-org deletion question needs an answer before (not after) the
-  "opt-in commons" milestone in `hub/README.md` ships.
+- There is no CLI command to correct or remove a single Knowledge Base
+  entry after `commons-seed` has loaded it, short of a direct database
+  operation — worth closing before an operator relies on the Knowledge
+  Base holding anything time-sensitive or ever needing retraction (§4).
