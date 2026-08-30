@@ -64,12 +64,14 @@ hub/audit.py       append-only audit-log writes (who did what, no secrets, no co
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (statistics imported from commontrace/experiment.py)
+hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
 hub/crud.py        every tool's actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
 hub/main.py        `python -m hub.main` -- run the server
 hub/manage.py       `python -m hub.manage <cmd>` -- org/API-key operator CLI
 hub/alembic/        migrations (see "Running locally" below)
 hub/DEPLOYMENT.md   running it for real: probes, scaling, backups, security checklist
+hub/SCALING.md      measured cost-to-serve vs. corpus size, per read path
 hub/tests/          pytest suite, including test_tenant_isolation.py
 ```
 

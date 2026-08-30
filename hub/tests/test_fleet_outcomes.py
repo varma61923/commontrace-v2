@@ -312,6 +312,68 @@ class TestAgainstPostgres:
         assert report["n_traces"] == 2
 
 
+class TestSqlAndPythonCountingAgree:
+    """`outcomes.tally` counts in Python; `crud.fleet_outcomes` counts in
+    SQL. They must produce identical numbers on identical data.
+
+    This is the test that makes the optimization safe. Moving the counting
+    into Postgres removed a superlinear cost (bench_scaling measured the
+    Python version at an exponent of 1.12), but it also created a second
+    implementation of rules that are easy to get subtly wrong -- strict
+    booleans, nulls excluded from the denominator, a bool not averaged as
+    a number. A divergence would not raise; it would change a number a
+    customer is about to quote.
+    """
+
+    async def test_identical_report_from_both_paths(self, session_factory, orgs):
+        mixed = [
+            {"resolved": True, "escalated": False, "repeated_error": True,
+             "frustration_signal": False, "tokens_used": 900, "llm_calls": 4, "baseline": True},
+            {"resolved": False, "escalated": True, "tokens_used": 1500, "baseline": True},
+            # null and absent fields: excluded from those denominators
+            {"resolved": None, "escalated": False, "baseline": True},
+            {},
+            # the traps: a stringified bool must not count as a success,
+            # and a bool in a numeric field must not be averaged as 1
+            {"resolved": "true", "tokens_used": True, "baseline": False},
+            {"resolved": True, "escalated": False, "repeated_error": False,
+             "frustration_signal": True, "tokens_used": 700, "llm_calls": 2, "baseline": False},
+            {"resolved": True, "tokens_used": 1100, "baseline": False},
+            {"resolved": False, "baseline": False},
+        ]
+        await _traces(session_factory, orgs["fleet-a"], mixed)
+
+        from_sql = await _report(session_factory, orgs["fleet-a"])
+        base, cur = outcomes.split_arms(mixed)
+        from_python = outcomes.compare(base, cur)
+
+        assert from_sql["n_baseline_traces"] == from_python["n_baseline_traces"]
+        assert from_sql["n_current_traces"] == from_python["n_current_traces"]
+        for a, b in zip(from_sql["metrics"], from_python["metrics"]):
+            assert a["metric"] == b["metric"]
+            assert a["baseline"] == b["baseline"], a["metric"]
+            assert a["current"] == b["current"], a["metric"]
+            assert a["verdict"] == b["verdict"], a["metric"]
+        for a, b in zip(from_sql["cost"], from_python["cost"]):
+            assert a["metric"] == b["metric"]
+            assert a["baseline"] == pytest.approx(b["baseline"]), a["metric"]
+            assert a["current"] == pytest.approx(b["current"]), a["metric"]
+
+    async def test_both_paths_agree_that_a_stringified_bool_is_not_a_success(
+        self, session_factory, orgs
+    ):
+        """Called out on its own because `::boolean` in SQL would happily
+        cast the string 'true', while Python's isinstance check would not --
+        the exact place the two implementations could diverge."""
+        rows = [{"resolved": "true", "baseline": True}, {"resolved": "true", "baseline": False}]
+        await _traces(session_factory, orgs["fleet-a"], rows)
+
+        report = await _report(session_factory, orgs["fleet-a"])
+        row = _row(report, "resolution_rate")
+        assert row["baseline"] == {"rate": None, "n": 0}
+        assert row["current"] == {"rate": None, "n": 0}
+
+
 # --- 4. The operator CLI ------------------------------------------------
 
 

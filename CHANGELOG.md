@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A measured answer to STRATEGY.md §13.2's weakest link**
+  (`hub/bench_scaling.py`, results in `hub/SCALING.md`). §13.2 lists five
+  links the business case rests on and marks exactly one "unmeasured, and
+  the weakest link nobody has looked at": *value compounds within a
+  customer faster than it costs to serve them*, with the falsifier "if
+  serving cost grows with corpus size faster than value does, this is a
+  services business wearing infrastructure clothes." Nobody had run it.
+
+  Measured across a 64x corpus range (1,000 -> 64,000 traces in one org,
+  median of 9 runs, fitted as `latency ~ size**alpha` by least squares on
+  log-log axes): **no read path grows linearly with a customer's own
+  corpus.** A selective `search_traces` is 0.19 -- 64x the history costs
+  2.2x the query -- tag search is flat, and the worst operator-facing
+  report is 0.74. The cost side of that falsifier does not fire.
+
+  Stated limits, because the table is the least important part: this is
+  the cost half only (value per query needs real customers, not synthetic
+  rows); every number is a single query against an idle database, so
+  concurrency is a separate unmade measurement; and only the exponents
+  transfer, never the milliseconds.
+
 - **Fleet outcome measurement in the Hub** (`fleet_outcomes` MCP tool,
   `python -m hub.manage outcomes [org_id]`, `hub/outcomes.py`).
   `Trace.outcome` has carried the five business-outcome fields --
@@ -232,6 +253,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there is no network effect to measure in this model.
 
 ### Fixed
+
+- **`fleet_outcomes` was superlinear in an org's corpus (exponent 1.12),
+  three commits after being added.** It selected every matching trace's
+  `outcome` JSONB and counted in Python -- tens of thousands of blobs
+  crossing the wire and a Python dict per row, to produce six integers.
+  That is exactly the failure mode STRATEGY.md §13.2 names as fatal for
+  the unit economics, shipped by the change that made §13.2's own
+  measurement possible. Counting now happens in one grouped SQL aggregate:
+  **572 ms -> 95 ms at 64,000 traces, exponent 1.12 -> 0.62.**
+
+  The scan remains proportional to the org's history and that is not
+  deferred work -- a question about all of history cannot be answered
+  without reading all of it. What was removed is the per-row transfer. The
+  next step if it ever matters is a materialized rollup, deliberately not
+  built (it trades correctness-by-construction for a cache that can go
+  stale).
+
+  `outcomes.Tally` splits counting from statistics so the SQL and Python
+  paths share one implementation of the significance logic, and
+  `hub/tests/test_fleet_outcomes.py:TestSqlAndPythonCountingAgree` pins
+  that they produce identical reports on identical data -- including the
+  two traps where `::boolean` in SQL and `isinstance` in Python would
+  diverge (a stringified `"true"`, a bool misfiled in a numeric field). A
+  divergence there would not raise; it would change a customer-facing
+  number silently.
+
+- **The benchmark's first run blamed the wrong thing, and the fixture was
+  the reason.** It reported `search_traces` as linear-or-worse (0.88).
+  Every synthetic row shared near-identical title text, so the probe query
+  matched 64,000 of 64,000 rows; `EXPLAIN` showed a sequential scan feeding
+  a top-N heapsort, correct behaviour for a query where `ORDER BY
+  ts_rank(...)` must score every match and no index can serve the ordering.
+  With realistic text diversity the same path measures 0.19. Both the
+  selective and the matches-everything cases are now reported, because the
+  worst case is real. `TestGeneratedCorpusIsSelective` keeps the artifact
+  from returning.
+
+- **`hub/DEPLOYMENT.md` §6's scaling claim rested on one data point.** The
+  existing "~113 ms sequential scan -> ~9 ms index scan at 50k traces"
+  shows the index works and says nothing about growth; it now points at
+  the measured exponents and carries the two caveats above.
+
 - **CI was red: two new test files crashed pytest collection with no
   numpy installed.** `tests/test_m2_empirical_challenger.py` and
   `tests/test_storage_remediations.py` did `import numpy as np` unconditionally

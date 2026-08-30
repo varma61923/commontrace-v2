@@ -26,7 +26,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, delete, distinct, func, or_, select, update
+from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1323,23 +1323,91 @@ async def fleet_outcomes(
     trace held pending abuse review should not move a number the customer
     is going to quote.
     """
+    # ONE grouped aggregate, not one row per trace.
+    #
+    # The first version of this selected `Trace.outcome` for every matching
+    # row and counted in Python. That is the shape STRATEGY.md §13.2 warns
+    # about: `python -m hub.bench_scaling` measured it growing with the
+    # customer's own corpus at an exponent of 1.12 -- superlinear, so every
+    # doubling of a successful customer's history more than doubled the
+    # cost of answering "is this working?". Most of that was not the scan;
+    # it was transferring tens of thousands of JSONB blobs over the wire and
+    # building a Python dict for each one, to compute six integers.
+    #
+    # Counting in the database removes the transfer entirely. The scan is
+    # still proportional to the org's history -- a question about all of
+    # history cannot be answered without reading all of it, short of a
+    # materialized rollup (see hub/DEPLOYMENT.md's note on when that
+    # becomes worth building) -- but the constant is smaller by orders of
+    # magnitude and nothing crosses the network per row.
+    #
+    # `jsonb_typeof(...) = 'boolean'` is not defensive noise: it is the SQL
+    # spelling of outcomes._is_bool. A client that sent the STRING "true"
+    # would otherwise be cast by `::boolean` into a success and silently
+    # invert the rate. Likewise 'number' for the cost means, which keeps a
+    # misfiled boolean from being averaged in as 1.
+    def _bool_field(field: str):
+        return and_(
+            func.jsonb_typeof(Trace.outcome[field]) == "boolean",
+            Trace.outcome[field].astext.cast(Boolean),
+        )
+
+    def _bool_recorded(field: str):
+        return func.jsonb_typeof(Trace.outcome[field]) == "boolean"
+
+    is_baseline = case(
+        (
+            and_(
+                func.jsonb_typeof(Trace.outcome["baseline"]) == "boolean",
+                Trace.outcome["baseline"].astext.cast(Boolean),
+            ),
+            True,
+        ),
+        else_=False,
+    ).label("is_baseline")
+
+    columns = [is_baseline, func.count().label("n")]
+    for _name, field, _direction in outcomes.PROPORTION_METRICS:
+        columns.append(func.count().filter(_bool_field(field)).label(f"{field}_true"))
+        columns.append(func.count().filter(_bool_recorded(field)).label(f"{field}_n"))
+    for _name, field in outcomes.MEAN_METRICS:
+        numeric = func.jsonb_typeof(Trace.outcome[field]) == "number"
+        columns.append(
+            func.avg(Trace.outcome[field].astext.cast(Float)).filter(numeric).label(f"{field}_avg")
+        )
+        columns.append(func.count().filter(numeric).label(f"{field}_n"))
+
     where = [Trace.org_id == org_id, Trace.quarantined.is_(False)]
     if agent_type:
         where.append(Trace.agent_type == agent_type)
 
-    # Only the outcome column, not whole Trace rows. This scans an org's
-    # entire history by design -- the question is "since baseline", which
-    # has no time bound -- so hydrating every trace's title, context,
-    # solution and tsvector to read one JSONB field would make the cost of
-    # asking grow with exactly the thing a successful customer accumulates.
-    rows = (await session.execute(select(Trace.outcome).where(*where))).scalars().all()
-    recorded = [o for o in rows if isinstance(o, dict)]
+    grouped = (
+        await session.execute(select(*columns).where(*where).group_by(is_baseline))
+    ).all()
 
-    baseline, current = outcomes.split_arms(recorded)
-    report = outcomes.compare(baseline, current, alpha=alpha)
+    arms = {True: outcomes.Tally(), False: outcomes.Tally()}
+    for row in grouped:
+        arms[bool(row.is_baseline)] = outcomes.Tally(
+            n=row.n,
+            props={
+                field: (getattr(row, f"{field}_true"), getattr(row, f"{field}_n"))
+                for _n, field, _d in outcomes.PROPORTION_METRICS
+            },
+            means={
+                field: (
+                    float(getattr(row, f"{field}_avg"))
+                    if getattr(row, f"{field}_avg") is not None
+                    else None,
+                    getattr(row, f"{field}_n"),
+                )
+                for _n, field in outcomes.MEAN_METRICS
+            },
+        )
+
+    report = outcomes.compare_tallies(arms[True], arms[False], alpha=alpha)
     report["org_id"] = org_id
     report["agent_type"] = agent_type
-    report["n_traces"] = len(recorded)
+    report["n_traces"] = arms[True].n + arms[False].n
     return report
 
 

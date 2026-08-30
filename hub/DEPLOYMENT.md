@@ -147,6 +147,21 @@ Search scales differently and is fine: matching goes through the
 (measured at 50k traces in one org: ~113 ms sequential scan → ~9 ms index
 scan on a selective query).
 
+That was one measurement at one corpus size, which shows the index works
+and says nothing about *growth*. [`SCALING.md`](SCALING.md) measures the
+growth: across a 64× corpus range, no read path grows linearly with a
+customer's own history — a selective `search_traces` costs 2.2× for 64×
+the data (exponent 0.19), and the worst operator-facing report is 0.74.
+Reproduce with `python -m hub.bench_scaling`.
+
+Two caveats that document carries and are worth repeating here. A
+deliberately broad query — one matching most of the corpus — does cost
+`O(matches)`, because `ORDER BY ts_rank(...)` has to score every match and
+no index can serve that ordering; a fleet searching for common words will
+find it. And every number is a single query against an otherwise idle
+database, so cost per customer under real concurrency is a separate
+measurement nobody has made.
+
 ## 7. Observability
 
 Logs are JSON on stdout, one object per line, ready for any aggregator.

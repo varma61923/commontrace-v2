@@ -1337,3 +1337,103 @@ from it, which is precisely when they are least motivated to. The
 randomized holdout has no such requirement and is the better answer for
 anyone starting today; this surface is what makes the year of data an
 existing customer already has worth something.
+
+---
+
+## 18. Update (2026-08-30): link 3 was the weakest link, and its cost half now has a number
+
+§13.2 lists five links the (A) case rests on and marks exactly one
+**"unmeasured, and the weakest link nobody has looked at"**:
+
+> **Link 3 — value compounds within a customer faster than it costs to
+> serve them.** *Falsifier:* per-org gross margin at 10× current scale. If
+> serving cost grows with corpus size faster than value does, this is a
+> services business wearing infrastructure clothes.
+
+That falsifier is the whole ballgame for which multiple this business
+gets, and §13.2 also noted the data to run it was already there ("cost to
+serve is knowable"). Nobody had run it. `hub/bench_scaling.py` now does,
+and `hub/SCALING.md` records the result.
+
+### 18.1 The measured answer: no path grows linearly with a customer's own corpus
+
+Across a 64× corpus range, fitted exponents in `latency ~ size**alpha`:
+
+| read path | alpha |
+|---|---:|
+| `search_traces`, selective query | **0.19** |
+| `search_traces`, by tag | **-0.00** |
+| `entitlements` | 0.58 |
+| `fleet_outcomes` | 0.62 |
+| `agents_under_management` | 0.68 |
+| `list_tags` | 0.74 |
+| `search_traces`, query matching every row (worst case) | 0.83 |
+
+A 64× increase in a customer's accumulated history costs **2.2×** on the
+read they issue most. On the cost side, link 3's falsifier does not fire,
+and the shape is the infrastructure one rather than the services one.
+
+### 18.2 What that does not entitle anyone to say
+
+Three limits, and they matter more than the table.
+
+**It is the cost half only.** The falsifier compares cost growth against
+*value* growth. Value per query needs real customers, not synthetic rows —
+that is what §17's `fleet_outcomes` and `commons_hits` are for. A clean
+cost result removes the cost-side objection to link 3; it does not
+establish link 3. Link 3's status moves from "unmeasured" to "half
+measured, and the measured half is good."
+
+**It says nothing about concurrency.** Every number is a single query
+against an idle database. Cost per customer at N simultaneous customers is
+a different measurement that nobody has made, and it is where the
+in-process rate limiter (§6 of `hub/DEPLOYMENT.md`) and the connection
+pool would actually bind.
+
+**It is one machine's Postgres.** Only the exponents transfer; the
+milliseconds are worth nothing to anyone else.
+
+### 18.3 The first run said something different, and the instrument was half the reason
+
+Worth recording, because it is the third time in this document that a
+measurement's first answer was about the instrument rather than the world
+(§11.1's 10.9% recall, §12.7's ranking correction, now this).
+
+The first run flagged **two** paths as linear-or-worse. They had opposite
+causes:
+
+1. **`fleet_outcomes` was genuinely superlinear (alpha 1.12)** — and it
+   was three commits old, added by §17. It pulled every matching trace's
+   `outcome` JSONB across the wire and counted in Python. Moving the
+   counting into one grouped aggregate took 64,000 traces from 572 ms to
+   95 ms and the exponent to 0.62. So §17 shipped a real instance of
+   precisely the failure mode §13.2 warns about, and §18 caught it — which
+   is an argument for running the measurement continuously rather than
+   once.
+
+2. **`search_traces` was the benchmark's fault.** Every synthetic row
+   shared near-identical title text, so the probe query matched 64,000 of
+   64,000 rows. `EXPLAIN` showed a sequential scan feeding a top-N
+   heapsort, which is correct for that query — `ORDER BY ts_rank(...)` must
+   score every match and no index can serve it. With realistic text
+   diversity the same path measures 0.19.
+
+Both numbers are published, not just the flattering one: the worst case is
+real, and a fleet that searches for common words will hit it.
+
+### 18.4 What this changes about the case
+
+Narrowly: §13.2's link 3 was the only link with no evidence of any kind,
+and the cost half of it now has some. Links 1 (measurable value, one
+customer) and 4 (survives platform bundling, argued) are unchanged and
+remain the two that need customers rather than code.
+
+That ordering is worth stating plainly, because it is the answer to "what
+would make this a large outcome" and it is not a feature list. **Every
+remaining question on the critical path needs customers, not
+engineering.** Link 1's falsifier is "run `--experiment` on the next two
+fleets", link 3's remaining half needs real query volume against real
+value, and link 4's is "a customer consolidates onto one platform and
+drops this." The instruments for all three now exist and are, as far as
+this repository can establish, correct. Nothing further can be learned
+about whether this is a billion-dollar business by writing more of it.

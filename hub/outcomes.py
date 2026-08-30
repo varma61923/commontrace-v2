@@ -142,6 +142,54 @@ def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+class Tally:
+    """Pre-aggregated counts for one arm: what `compare` actually needs.
+
+    Introduced because `compare` originally took two lists of raw outcome
+    dicts, which forced its only real caller (`crud.fleet_outcomes`) to
+    transfer every trace's JSONB blob out of Postgres and build a Python
+    object per row just to count booleans. Measured at
+    `python -m hub.bench_scaling`, that made the call grow with the
+    customer's own corpus at an exponent of 1.12 -- superlinear, and
+    exactly the shape STRATEGY.md §13.2 names as fatal for the unit
+    economics.
+
+    Splitting the counting from the statistics lets the database do the
+    counting (one grouped aggregate, no row transfer) while `compare` stays
+    pure and testable against hand-built lists.
+    """
+
+    __slots__ = ("n", "props", "means")
+
+    def __init__(
+        self,
+        n: int = 0,
+        props: dict[str, tuple[int, int]] | None = None,
+        means: dict[str, tuple[float | None, int]] | None = None,
+    ) -> None:
+        self.n = n
+        # {field: (successes, denominator)}
+        self.props = props or {}
+        # {field: (mean, denominator)}
+        self.means = means or {}
+
+
+def tally(outcomes: list[dict]) -> Tally:
+    """Build a Tally from raw outcome dicts, in Python.
+
+    The reference implementation of the counting rules, and what the tests
+    exercise. `crud.fleet_outcomes` computes the identical thing in SQL for
+    the reason in Tally's docstring; hub/tests/test_fleet_outcomes.py pins
+    that the two agree on the same data, because a divergence here would
+    change a customer-facing number silently.
+    """
+    return Tally(
+        n=len(outcomes),
+        props={field: proportion(outcomes, field) for _n, field, _d in PROPORTION_METRICS},
+        means={field: mean(outcomes, field) for _n, field in MEAN_METRICS},
+    )
+
+
 def split_arms(outcomes: list[dict]) -> tuple[list[dict], list[dict]]:
     """(baseline, current). `baseline` is opt-in and defaults false, so a
     fleet that never ran a baseline window has an empty first arm and every
@@ -184,6 +232,16 @@ def _verdict(delta: float, direction: str, significant: bool) -> str:
 
 
 def compare(baseline: list[dict], current: list[dict], alpha: float = DEFAULT_ALPHA) -> dict:
+    """The whole before/after report for one fleet, from raw outcome dicts.
+
+    Kept as the pure entry point: it counts in Python and delegates to
+    `compare_tallies`. `crud.fleet_outcomes` counts in SQL instead and calls
+    `compare_tallies` directly -- see Tally for why.
+    """
+    return compare_tallies(tally(baseline), tally(current), alpha=alpha)
+
+
+def compare_tallies(baseline: Tally, current: Tally, alpha: float = DEFAULT_ALPHA) -> dict:
     """The whole before/after report for one fleet.
 
     Three things here are the difference between a report and a sales
@@ -215,8 +273,8 @@ def compare(baseline: list[dict], current: list[dict], alpha: float = DEFAULT_AL
     p_values: list[float] = []
 
     for name, field, direction in PROPORTION_METRICS:
-        b_s, b_n = proportion(baseline, field)
-        c_s, c_n = proportion(current, field)
+        b_s, b_n = baseline.props.get(field, (0, 0))
+        c_s, c_n = current.props.get(field, (0, 0))
         row: dict = {
             "metric": name,
             "field": field,
@@ -295,8 +353,8 @@ def compare(baseline: list[dict], current: list[dict], alpha: float = DEFAULT_AL
 
     cost: list[dict] = []
     for name, field in MEAN_METRICS:
-        b_v, b_n = mean(baseline, field)
-        c_v, c_n = mean(current, field)
+        b_v, b_n = baseline.means.get(field, (None, 0))
+        c_v, c_n = current.means.get(field, (None, 0))
         cost.append(
             {
                 "metric": name,
@@ -308,12 +366,12 @@ def compare(baseline: list[dict], current: list[dict], alpha: float = DEFAULT_AL
         )
 
     return {
-        "n_baseline_traces": len(baseline),
-        "n_current_traces": len(current),
+        "n_baseline_traces": baseline.n,
+        "n_current_traces": current.n,
         "metrics": rows,
         "cost": cost,
         "alpha": alpha,
-        "headline": headline(rows, len(baseline)),
+        "headline": headline(rows, baseline.n),
         "caveat": OBSERVATIONAL_CAVEAT,
     }
 
