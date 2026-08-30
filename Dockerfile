@@ -46,16 +46,22 @@ WORKDIR /app
 # first contribute_trace.
 COPY --chown=hub:hub hub/ /app/hub/
 COPY --chown=hub:hub protocol/ /app/protocol/
-# hub/commons.py imports commontrace.overlap for MinHash. This is a
-# deliberate shared dependency, not a layering slip: signatures are only
-# comparable if client and server draw the SAME permutations, and a
-# near-copy that drifted by one constant would return confident, wrong
-# similarity numbers rather than failing. commontrace/overlap.py is pure
-# stdlib, so this adds no dependency to the image -- only the source.
+# hub/ imports two client modules, and both are deliberate shared
+# dependencies rather than layering slips: overlap.py (MinHash, in
+# hub/commons.py) because signatures are only comparable if client and
+# server draw the SAME permutations, and experiment.py (outcome
+# statistics, in hub/outcomes.py) because a drifted copy would make the
+# customer's own tooling and the operator's report disagree about the same
+# fleet. In both cases a near-copy would not fail loudly -- it would return
+# confident, wrong numbers. Both are pure stdlib, so this adds source to
+# the image and no dependency.
 #
-# .dockerignore narrows this to exactly two files (__init__.py and
-# overlap.py); the rest of the client package stays out of the server
-# image. hub/tests/test_commons.py pins that those two are sufficient.
+# .dockerignore narrows this COPY to those modules plus __init__.py; the
+# rest of the client package stays out of the server image.
+# hub/tests/test_image_contents.py asserts the allowlist covers every
+# commontrace module hub/ imports, and that each one is import-safe against
+# hub/requirements.txt alone -- an allowlist that falls behind the imports
+# does not fail the build, it fails container START.
 COPY --chown=hub:hub commontrace/ /app/commontrace/
 
 USER hub

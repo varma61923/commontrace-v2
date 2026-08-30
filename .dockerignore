@@ -15,17 +15,35 @@ benchmark/
 tests/
 assets/
 
-# The client package stays out of the server image -- with two exceptions.
-# hub/commons.py imports commontrace.overlap for MinHash, because client and
-# server signatures are only comparable if both draw the SAME permutations;
-# a near-copy that drifted by one constant would return confident, wrong
-# similarity numbers instead of failing. Excluding the contents rather than
-# the directory itself, so the negations below can re-include specific files
-# (an excluded *directory* is never traversed, so `!commontrace/x.py` under
-# a bare `commontrace/` rule would not match).
+# The client package stays out of the server image -- with named exceptions,
+# one per module hub/ actually imports. Both exist for the same reason: the
+# Hub and the client must produce the SAME numbers, and a near-copy that
+# drifted would not fail loudly, it would return confident and wrong ones.
+#
+#   overlap.py     hub/commons.py -- MinHash. Signatures are only comparable
+#                  if both sides draw the same permutations.
+#   experiment.py  hub/outcomes.py -- the outcome statistics. A drifted copy
+#                  would make the customer's own `commontrace experiment` and
+#                  the operator's `hub.manage outcomes` disagree about the
+#                  same fleet, which finishes the number as evidence.
+#
+# Both are pure stdlib, so they add source to the image and no dependency.
+#
+# KEEP THIS LIST IN SYNC WITH THE IMPORTS. A module missing here does not
+# break the build -- it breaks container START, with an ImportError on code
+# that imports fine in every test run and every editable install. That is
+# invisible until a deployment tries to boot, so
+# hub/tests/test_image_contents.py asserts the two lists match and runs in
+# every CI job, not only the Docker ones.
+#
+# Excluding the contents rather than the directory itself, so the negations
+# below can re-include specific files (an excluded *directory* is never
+# traversed, so `!commontrace/x.py` under a bare `commontrace/` rule would
+# not match).
 commontrace/**
 !commontrace/__init__.py
 !commontrace/overlap.py
+!commontrace/experiment.py
 
 # Secrets must come from the platform's secret store, never be baked in
 .env
