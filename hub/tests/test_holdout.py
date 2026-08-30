@@ -164,6 +164,84 @@ class TestAssignment:
                 )
 
 
+class TestSearchIntegration:
+    """The friction that decides whether the experiment ever runs.
+
+    The local tier makes a holdout one flag (`query --experiment`):
+    retrieval withholds and logs, so a fleet opts in without rewriting an
+    agent's loop. Requiring two extra explicit calls around every Hub
+    retrieval is a rewrite, and STRATEGY.md §13.2 calls running this the
+    cheapest falsifier available -- so friction here is not a UX detail.
+    """
+
+    async def test_no_occasion_id_leaves_search_completely_unchanged(
+        self, session_factory, org
+    ):
+        """Backward compatibility is the whole reason this is an optional
+        parameter: every existing caller must see identical behaviour."""
+        await _traces(session_factory, org, 3)
+        async with session_scope(session_factory) as session:
+            result = await crud.search_traces(session, org, query="lesson")
+        assert "holdout" not in result
+
+    async def test_an_occasion_id_adds_the_withhold_list(self, session_factory, org):
+        traces = await _traces(session_factory, org, 12)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            holdout = await crud.holdout_for_results(
+                session, org, found["traces"], "occ-search-1"
+            )
+        assert holdout["occasion_id"] == "occ-search-1"
+        assert set(holdout["withhold"]) <= set(traces)
+        assert "must NOT be used" in holdout["note"]
+
+    async def test_every_trace_is_still_returned(self, session_factory, org):
+        """A withheld trace is flagged, never omitted. Silently dropping
+        results would break search_traces' contract (PROTOCOL.md §5) and
+        make the experiment invisible to a caller who ignores the block."""
+        traces = await _traces(session_factory, org, 10)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            holdout = await crud.holdout_for_results(
+                session, org, found["traces"], "occ-search-2"
+            )
+        assert len(found["traces"]) == len(traces)
+        assert holdout["withhold"]
+
+    async def test_it_records_observations_the_analysis_can_use(self, session_factory, org):
+        await _traces(session_factory, org, 6)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            await crud.holdout_for_results(session, org, found["traces"], "occ-search-3")
+        await _resolve(session_factory, org, "occ-search-3", True)
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+        assert report["n_observations"] == 6
+
+    async def test_no_experiment_running_returns_empty_rather_than_raising(
+        self, session_factory
+    ):
+        """Quieter than holdout_assign on purpose: a caller of THAT tool
+        explicitly asked to run an experiment and should be told it is off.
+        A caller of search_traces only asked to search, so a passed-through
+        occasion_id must not turn an ordinary search into an error."""
+        async with session_scope(session_factory) as session:
+            o = Organization(name="no-experiment")
+            session.add(o)
+            await session.flush()
+            org_id = o.id
+        await _traces(session_factory, org_id, 2)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org_id, limit=50)
+            assert await crud.holdout_for_results(
+                session, org_id, found["traces"], "occ-1"
+            ) == {}
+
+    async def test_an_empty_result_set_records_nothing(self, session_factory, org):
+        async with session_scope(session_factory) as session:
+            assert await crud.holdout_for_results(session, org, [], "occ-1") == {}
+
+
 class TestRecordingOutcomes:
     async def test_an_outcome_resolves_both_arms_at_once(self, session_factory, org):
         """The outcome belongs to the TASK, not to any one memory."""

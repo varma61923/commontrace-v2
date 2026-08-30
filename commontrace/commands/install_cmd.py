@@ -9,8 +9,26 @@ from commontrace import paths
 
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
+# The Hub's full tool surface, advertised in the generated MCP config so a
+# reader knows what they are connecting to. Kept in sync with hub/smoke.py's
+# EXPECTED_TOOLS by hub/tests/test_install_template_surface.py -- this list
+# had drifted to the original six while the Hub grew to eighteen, so a
+# customer running `commontrace install` was told the Hub could do a third
+# of what it does. Restated here rather than imported because this is the
+# CLIENT package: it installs with PyYAML alone, and hub/ needs SQLAlchemy,
+# asyncpg and a database.
 _HUB_TOOLS = [
+    # the six protocol tools
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
+    # measurement: is this working, and did the memory cause it
+    "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
+    # entitlements
+    "account_usage",
+    # self-service deletion
+    "delete_trace", "request_account_deletion", "confirm_account_deletion",
+    "cancel_account_deletion",
+    # the optional Knowledge Base (absent when HUB_COMMONS_ENABLED=false)
+    "commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions",
 ]
 
 _GENERIC_POINTER_SKILL = """---
@@ -32,6 +50,42 @@ install. This agent should instead:
 3. After acting: capture what happened as a `Trace` (`commontrace capture`
    or `contribute_trace` on the Hub), and periodically distill repeated
    patterns into `Lesson`s (`commontrace lesson new`).
+
+## Measuring whether any of this helps
+
+The pipeline above is worth nothing if the memory does not improve
+outcomes, and only a randomized holdout can establish that it does --
+correlational signals (retrieval counts, votes) cannot distinguish a
+lesson that helps from one that merely fires on hard tasks.
+
+Both tiers support it, and in both the agent's job is the same: honour
+what is withheld, and report how the task went.
+
+**Hub tier.** Pass your own `occasion_id` to `search_traces`. If an
+operator has started an experiment, the response carries a `holdout`
+block:
+
+    search_traces(query="...", occasion_id="ticket-8821")
+      -> {"traces": [...],
+          "holdout": {"withhold": ["<trace-id>", ...]}}
+
+**Do not use any trace listed under `holdout.withhold` on that occasion.**
+Using one anyway does not raise an error -- it silently moves the occasion
+into the treated arm and biases the measured effect toward zero. Then,
+when the task finishes:
+
+    record_occasion_outcome(occasion_id="ticket-8821", succeeded=true)
+
+With no experiment running, no `holdout` block appears and nothing
+changes.
+
+**Local tier.** `commontrace query --experiment --occasion-id <id>` does
+the withholding and logging in one step; `commontrace capture
+--occasion-id <id>` joins the outcome back to it.
+
+Read the result with `commontrace prove outcomes` (Hub) or
+`commontrace experiment` (local). A lesson can come back as `HURTS`; that
+is the point.
 """
 
 

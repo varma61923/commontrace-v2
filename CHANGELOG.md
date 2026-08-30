@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The measurement loop is now reachable from where agents actually
+  are**: an optional `occasion_id` on `search_traces`, the Hub's full tool
+  surface in the generated MCP config, and holdout instructions in the
+  skill `commontrace install` writes.
+
+  Three layers of the same gap, found by checking rather than assuming.
+  The randomized holdout existed on the Hub (§19) and in the CLI, and an
+  agent wired up by `commontrace install` was told about none of it -- so
+  it would never be called and the experiment would never run. The
+  generated MCP config also still advertised the **original six** tools
+  while the Hub had grown to eighteen, so twelve tools (every measurement
+  tool among them) were simply never discovered by anyone reading it.
+  That drift is silent by construction: the file stays valid JSON, still
+  connects, and works fine for the six it names.
+
+  `search_traces(query, occasion_id=...)` now returns a `holdout` block
+  naming which results must not be used on that occasion, and records the
+  arms. This is friction reduction with a point: the local tier makes a
+  holdout one flag (`query --experiment`) because retrieval itself
+  withholds and logs, while the Hub needed two extra calls wrapped around
+  every retrieval -- a rewrite of an agent's loop rather than an opt-in.
+  Every trace is still returned, so `search_traces`' contract is unchanged
+  and a caller ignoring the block behaves exactly as before; omitting
+  `occasion_id`, or running with no experiment, changes nothing at all.
+
+  `hub/tests/test_install_template_surface.py` pins the advertised tool
+  list against `hub/smoke.py` and pins that the generated skill still
+  teaches the rule that fails silently -- using a withheld trace does not
+  raise, it just biases the effect toward zero, so an agent has to be told.
+
 - **`commontrace prove`**, the client path to the Hub's measurement tools
   (`prove outcomes` / `prove assign` / `prove record`, plus
   `hub_client.fleet_outcomes` / `holdout_assign` /

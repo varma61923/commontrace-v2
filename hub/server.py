@@ -211,18 +211,43 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         tags: list[str] | None = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
         offset: int = 0,
+        occasion_id: str = "",
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
         Returns {"traces": [...], "limit", "offset", "has_more"}. Page by
         re-calling with offset += limit while has_more is true.
+
+        Pass `occasion_id` -- your own identifier for the task you are
+        about to do -- and, IF an operator has started a randomized
+        holdout for your org, the response also carries a `holdout` block
+        naming which of the returned traces you must NOT use on this
+        occasion. Every trace is still returned either way, so this never
+        changes what search finds; it only tells you which results are in
+        the control arm. Report the result afterwards with
+        `record_occasion_outcome(occasion_id, succeeded)`.
+
+        Omit `occasion_id`, or run with no experiment configured, and the
+        behaviour is exactly as before -- no `holdout` block, nothing
+        recorded.
+
+        Honouring `holdout.withhold` is the whole experiment: using a
+        withheld trace anyway does not fail loudly, it moves that occasion
+        into the treated arm without the record saying so, which biases the
+        measured effect toward zero.
         """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
-                return await crud.search_traces(
+                result = await crud.search_traces(
                     session, org_id, query=query, tags=tags, limit=limit, offset=offset
                 )
+                if occasion_id:
+                    result["holdout"] = await crud.holdout_for_results(
+                        session, org_id, result["traces"], occasion_id,
+                        actor=auth.get_current_actor(),
+                    )
+                return result
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
             return _error_response(exc)
 

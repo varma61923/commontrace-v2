@@ -1424,6 +1424,45 @@ async def holdout_assign(
     }
 
 
+async def holdout_for_results(
+    session: AsyncSession,
+    org_id: str,
+    traces: list[dict],
+    occasion_id: str,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict:
+    """Assign holdout arms for whatever a search just returned.
+
+    The friction this removes is the reason it exists. The local tier makes
+    running an experiment a single flag (`commontrace query --experiment`):
+    retrieval itself withholds and logs, so a fleet opts in without
+    rewriting an agent's loop. On the Hub the same experiment needed two
+    extra explicit calls wrapped around every retrieval, which is a
+    rewrite -- and STRATEGY.md §13.2 calls running this the cheapest
+    falsifier available, so friction here is not a UX detail, it is the
+    thing that decides whether the falsifier ever gets run on a real fleet.
+
+    Returns {} when no experiment is configured, so a caller that always
+    passes `occasion_id` sees no change until an operator starts one. That
+    is deliberately quieter than `holdout_assign`, which raises
+    ExperimentNotRunning: a caller of THAT tool has explicitly asked to
+    run an experiment and should be told it is off, while a caller of
+    search_traces has only asked to search.
+    """
+    org = await session.get(Organization, org_id)
+    if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
+        return {}
+    ids = [t["id"] for t in traces if isinstance(t, dict) and t.get("id")]
+    if not ids:
+        return {}
+    assignment = await holdout_assign(session, org_id, ids, occasion_id, actor=actor)
+    return {
+        "occasion_id": assignment["occasion_id"],
+        "withhold": assignment["withhold"],
+        "note": assignment["note"],
+    }
+
+
 async def record_occasion_outcome(
     session: AsyncSession,
     org_id: str,
