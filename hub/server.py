@@ -348,6 +348,34 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
+    @mcp.tool()
+    async def fleet_outcomes(agent_type: str = "") -> dict:
+        """Has your fleet's agent performance changed since your baseline
+        window? Compares the outcomes recorded on your own traces
+        (resolution, repeated-error, escalation and frustration rates, plus
+        token/call cost) between traces marked `outcome.baseline: true` and
+        everything since, with confidence intervals, a Benjamini-Hochberg
+        correction across the metrics, and a minimum detectable effect on
+        every inconclusive result so a small sample cannot be misread as
+        "no effect".
+
+        Reads only your own traces. Not metered.
+
+        IMPORTANT, and returned with every response: this is an OBSERVED
+        change, not a causal effect. `baseline` marks a time window, so
+        anything else that changed between the windows is confounded with
+        this product's contribution. For a causal claim, run the randomized
+        holdout (`commontrace experiment`), which withholds lessons at
+        random so the arms differ only by the treatment.
+
+        Optionally narrow to one `agent_type`."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.fleet_outcomes(session, org_id, agent_type=agent_type)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
     # --- Self-service deletion --------------------------------------------
     #
     # delete_trace is immediate and org-scoped, same trust level as every

@@ -1198,3 +1198,142 @@ turning until there is real traffic.
 That is the same dependency §11.4's condition 3 already has, and it is
 still gated on the same thing: adoption of (A). Nothing here changes
 §11.3's recommendation.
+
+---
+
+## 17. Update (2026-08-30): the moat was a claim about a number the service could not compute
+
+§11.3 settled the strategic question and named the defence:
+
+> **The moat for (A) is switching cost, not network effect.** A fleet's
+> accumulated, validated, causally-measured memory lives here. §8's
+> randomized-holdout machinery is what makes that defensible rather than
+> sticky-by-inertia: nobody rips out the thing with a measured effect size
+> on their own data.
+
+§11.5 then named the only pricing denominator this product can defend:
+measured resolution-rate improvement per fleet, "because that is the only
+quantity this product can prove causally."
+
+Both sentences are about a number. Until this update, **the Hub could not
+compute it.**
+
+### 17.1 What was actually there
+
+`Trace.outcome` has carried the five business-outcome fields since the
+schema was written — `resolved`, `escalated`, `repeated_error`,
+`frustration_signal`, token and call cost — plus `baseline`, a flag
+marking traces captured before lessons were being injected. Every
+`contribute_trace` writes all of it. A deployment running for a year holds
+a complete before/after dataset per customer.
+
+The Hub read that column in exactly two places: it copied it onto the wire
+projection, and it carried it forward on amend. It computed nothing.
+
+So the moat argument reduced to: *a customer who thought to run a local
+CLI command, against files on their own disk, could see a version of the
+number.* The service holding the data could not. Neither could the person
+selling it, at renewal, about the customer in front of them.
+
+That is the third time this pattern has appeared in three consecutive
+passes over this codebase — `Trace.trust` computed and read only as a
+tie-break (§16), `Vote.feedback_tag` recorded and consulted nowhere
+(§16), and now `Trace.outcome` written on every call and never once
+aggregated. The recurring shape is worth naming, because it is not
+sloppiness: each of these was collected *correctly and early*, by someone
+who understood it would matter, and then nothing was built on top because
+the collecting felt like the hard part. It is not. Collecting a signal is
+the cheap half; the expensive half is being willing to publish what it
+says.
+
+### 17.2 Why it had to be built defensively rather than persuasively
+
+This is the number that ends up in a renewal conversation, a board deck,
+and eventually a diligence memo. The temptation in every design decision
+is toward the flattering reading, and every one of them was taken the
+other way:
+
+- **The correction is applied.** Four metrics at α=0.05 means roughly one
+  in five fleets shows a "significant" result by chance. Benjamini-Hochberg
+  across the four is what stops the lucky one being the one that gets
+  quoted. `hub/tests/test_fleet_outcomes.py` pins this with a fixture tuned
+  to sit inside the window where corrected and uncorrected disagree, so the
+  test fails if the correction is ever quietly dropped.
+- **`worsened` is a first-class verdict**, at equal prominence, never
+  sorted below the wins. A measurement instrument that can only return
+  good news is not one, and §11.3's argument depends on this being a
+  number a customer can trust *against the operator's interest*. If it
+  cannot say "you got worse", it cannot credibly say "you got better".
+- **Nulls report their own power.** "No significant improvement" from 60
+  traces and from 60,000 are the same string and opposite facts. Every
+  inconclusive row carries the minimum effect that sample could have
+  detected, so an early customer reads "cannot answer this yet" rather
+  than "the product does nothing".
+- **The report explains its own apparent contradiction.** A row can show a
+  95% CI excluding zero next to a `no change` verdict, because the
+  interval is uncorrected and describes one metric while significance is
+  judged across four. Both numbers are right. Left unexplained, a careful
+  reader concludes the instrument is broken — which is worse than either
+  number alone.
+
+### 17.3 The claim this does NOT support, stated as loudly as the code states it
+
+**It is a before/after comparison. It is not causal, and it must never be
+described as one.**
+
+`baseline` marks a time window. A model upgrade, a shift in task mix, a
+seasonal change in what customers ask, or a team simply getting better at
+its job all sit inside that window alongside anything this product did,
+and no amount of statistics applied to two buckets separates them.
+
+§11.3's own wording — "causally-measured memory" — refers to §8's
+randomized holdout, which withholds lessons at random so the arms differ
+only by the treatment. That is a different and stronger design, it is
+already implemented in `commontrace/experiment.py`, and this new surface
+deliberately borrows its statistics while refusing its language.
+`OBSERVATIONAL_CAVEAT` is returned on every response and printed on every
+operator run for exactly this reason.
+
+The distinction is not pedantry, it is the difference between a durable
+claim and one that dies in a single meeting. "Our customers improved 23%"
+is demolished by the first person who asks what else changed that quarter.
+"Our customers' recorded resolution rate rose 23% since their baseline
+window, observed not causal, and here is the randomized design that would
+settle it" survives that question, and is the only version worth building
+a company's evidence base on.
+
+### 17.4 What this changes, narrowly
+
+- **§11.3's moat argument becomes checkable** rather than aspirational. A
+  customer can ask the question themselves, over the same MCP surface
+  their agents already use, unmetered.
+- **§11.5's pricing hypothesis becomes testable.** You cannot price
+  against a number you cannot compute; now it can be computed per fleet,
+  per month. Whether the market accepts that pricing shape is still
+  unknown and still not answerable from this repository, and no currency
+  figure appears anywhere here.
+- **The operator gets a leading indicator.** `usage` and `revenue` report
+  consumption, which looks healthy right up to a renewal a customer
+  declines. `manage.py outcomes` reports whether each fleet's own numbers
+  are moving. It refuses to correct across orgs and says so, because
+  scanning fifty customers and quoting the three that came back
+  significant is a further multiple-comparisons problem no per-report
+  correction can fix.
+
+### 17.5 What it does not change
+
+The evidence base is still thin, and this does not thicken it — it builds
+the instrument that could. §11.2's field signal (one customer, internal
+B2B deployments, traction better there than for the commons) is unchanged.
+§11.4's gate on (B) is untouched; none of this bears on the commons
+question at all.
+
+And the honest limit on the instrument itself: it needs fleets to have
+recorded a baseline window, and a fleet that never ran one gets a report
+saying so rather than a number. That is the correct behaviour and it is
+also a real adoption cost — the most valuable measurement this product can
+make requires a customer to have instrumented *before* they saw any value
+from it, which is precisely when they are least motivated to. The
+randomized holdout has no such requirement and is the better answer for
+anyone starting today; this surface is what makes the year of data an
+existing customer already has worth something.

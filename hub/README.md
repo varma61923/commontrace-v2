@@ -17,7 +17,7 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Nine more are Hub-specific and outside the protocol. `delete_trace(id)`
+Ten more are Hub-specific and outside the protocol. `delete_trace(id)`
 permanently deletes one of your own traces (self-service, immediate,
 irreversible); `request_account_deletion()` / `confirm_account_deletion
 (confirmation_token)` / `cancel_account_deletion()` do the same for your
@@ -33,8 +33,11 @@ agent_type, rationale)` proposes a new entry for operator review and
 `list_my_kb_submissions()` checks its status; neither publishes anything
 by itself, so no customer's own trace is ever visible to any other org
 without an operator's own review-submission action deciding it should be.
-`account_usage()` reports the caller's own plan and meter, org-scoped like
-the six protocol tools. `hub/smoke.py` pins the tool surface, so a tool
+`account_usage()` reports the caller's own plan and meter, and
+`fleet_outcomes()` answers whether the fleet's own recorded outcomes have
+actually improved since its baseline window -- both org-scoped like the
+six protocol tools, both unmetered, and both reading nothing but the
+caller's own data. `hub/smoke.py` pins the tool surface, so a tool
 appearing or disappearing fails a post-deploy check rather than
 surprising a client.
 
@@ -60,6 +63,7 @@ hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quara
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
+hub/outcomes.py    before/after fleet outcome measurement (statistics imported from commontrace/experiment.py)
 hub/crud.py        every tool's actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
 hub/main.py        `python -m hub.main` -- run the server
@@ -229,6 +233,73 @@ whatever volume of "sharing" a credit formula alone would reward.
 `hub/manage.py list-submissions` is the review queue; `kb-stats` reports
 the pending/approved/rejected funnel alongside the corpus's own
 content-quality numbers.
+
+### Fleet outcomes: the number the moat argument depends on
+
+`Trace.outcome` has carried the five business-outcome fields since the
+schema was written — `resolved`, `escalated`, `repeated_error`,
+`frustration_signal`, token/call cost — plus `baseline`, a flag marking
+traces captured *before* lessons were being injected. Every
+`contribute_trace` writes all of it. Until `hub/outcomes.py`, the Hub read
+that column in exactly two places (copying it onto the wire projection,
+carrying it forward on amend) and computed nothing.
+
+That was not a missing report. `STRATEGY.md` §11.3 names measured effect
+on the customer's own data as the whole moat — "nobody rips out the thing
+with a measured effect size on their own data" — and §11.5 names measured
+resolution-rate improvement as the only pricing denominator this product
+can defend. Both were claims about a number the service could not compute.
+A customer who thought to run `commontrace impact` got a local version
+against files on their own disk; the operator had nothing.
+
+`fleet_outcomes` (MCP tool, org-scoped, unmetered) and
+`python -m hub.manage outcomes [org_id]` (operator, all fleets) compute it.
+
+**What it is not, stated before anything else.** This is a before/after
+comparison, **not a causal estimate**. `baseline` marks a time window, so
+a model upgrade, a shift in task mix, or a team simply getting better is
+confounded with this product's contribution and cannot be separated from
+it by any amount of statistics applied to two buckets.
+`commontrace/experiment.py` is the design that *can* support a causal
+claim — it withholds lessons at random, so the arms differ only by the
+treatment. This module borrows that module's statistics and deliberately
+not its language; `OBSERVATIONAL_CAVEAT` rides on every response and every
+rendering.
+
+Three properties keep the number quotable, and all three make the
+conclusion weaker:
+
+- **Benjamini-Hochberg across the four metrics.** Testing four things at
+  α=0.05 and quoting whichever came back significant is how a null result
+  becomes a win. One consequence is visible in the output and worth
+  knowing: a row can show a 95% CI excluding zero and still read `no
+  change`, because the interval is uncorrected and describes one metric
+  while significance is judged across all four. The row says so rather
+  than leaving a reader to conclude one of the numbers is broken.
+- **A minimum detectable effect on every inconclusive row.** "No
+  significant improvement" from 60 traces and from 60,000 are the same
+  string and opposite facts.
+- **`worsened` is a first-class verdict**, reported with the same
+  prominence as a win and never sorted below one. A measurement instrument
+  that can only return good news is not a measurement instrument, and the
+  moat argument depends on this being a number a customer can trust
+  against the operator's interest.
+
+The statistics are *imported* from `commontrace/experiment.py`, not
+reimplemented — the same reasoning `hub/commons.py` gives for importing
+the client's MinHash. Here the specific failure a near-copy would cause is
+worse than wrong, it is *disagreement*: the customer's own tooling and the
+operator's report producing different deltas for the same fleet finishes
+the number as evidence regardless of which was right.
+
+For the operator, `manage.py outcomes` with no org is the closest thing
+this system has to a **churn dashboard**, and a better one than
+`usage`/`revenue`: those report consumption, a lagging indicator that
+looks healthy right up to the renewal a customer declines. This reports
+whether the thing they pay for is moving their numbers. It does not
+correct across orgs, and says so — scanning fifty customers and quoting
+the three that came back significant is a further multiple-comparisons
+problem no per-report correction can fix.
 
 ### Entry standing: how a curated corpus stays true
 
@@ -433,6 +504,7 @@ python -m hub.manage revoke-key <key_id>
 python -m hub.manage list-orgs
 
 python -m hub.manage stats                       # orgs, active keys, traces, quarantined, votes, mean trust
+python -m hub.manage outcomes [org_id]            # is the product working, per fleet? (the churn view)
 python -m hub.manage kb-stats                     # corpus size, hits delivered, standing breakdown, submission funnel
 python -m hub.manage kb-review [limit]            # which entries need a human, worst first
 python -m hub.manage kb-retract <trace_id> [reason]  # withdraw an entry from the Knowledge Base (reversible)

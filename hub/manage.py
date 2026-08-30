@@ -47,6 +47,12 @@
     usage [org_id]                 -> what each org is entitled to and has used this
                                        period
     revenue                        -> orgs on billable plans and what they consumed
+    outcomes [org_id]              -> is the product working? before/after comparison of
+                                       each fleet's recorded outcomes (resolution,
+                                       repeated-error, escalation, frustration rates)
+                                       with CIs, a multiple-comparisons correction, and
+                                       a minimum detectable effect on every null result.
+                                       Observed change, never a causal claim
     list-quarantined [org_id]      -> traces held pending review (id, org_id, title,
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
@@ -87,7 +93,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from hub import audit, auth, commons, crud, plans
+from hub import audit, auth, commons, crud, outcomes, plans
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
 from hub.models import (
@@ -680,6 +686,126 @@ async def reject_submission(submission_id: str, reason: str = "", session_factor
     return True
 
 
+_VERDICT_MARK = {
+    outcomes.VERDICT_IMPROVED: "improved  ",
+    outcomes.VERDICT_WORSENED: "WORSENED  ",
+    outcomes.VERDICT_INCONCLUSIVE: "no change ",
+    outcomes.VERDICT_INSUFFICIENT: "no data   ",
+}
+
+
+def _print_outcome_report(report: dict, indent: str = "") -> None:
+    print(f"{indent}{report['headline']}")
+    print(
+        f"{indent}  {report['n_baseline_traces']} baseline trace(s), "
+        f"{report['n_current_traces']} since."
+    )
+    for row in report["metrics"]:
+        b, c = row["baseline"], row["current"]
+        line = f"{indent}  {_VERDICT_MARK[row['verdict']]} {row['metric']:<20}"
+        if b["rate"] is None or c["rate"] is None:
+            print(f"{line} (no recorded values)")
+            continue
+        line += f" {b['rate']:.1%} (n={b['n']}) -> {c['rate']:.1%} (n={c['n']})"
+        if row["delta"] is not None:
+            line += f"  {row['delta']:+.1%}"
+        if row["ci_95"]:
+            line += f"  CI [{row['ci_95'][0]:+.1%}, {row['ci_95'][1]:+.1%}]"
+        if row["p_value"] is not None:
+            line += f"  p={row['p_value']:.3f}"
+        print(line)
+        if row["note"]:
+            print(f"{indent}      {row['note']}")
+    for row in report["cost"]:
+        b, c = row["baseline"], row["current"]
+        if b["value"] is None and c["value"] is None:
+            continue
+        b_txt = f"{b['value']:,.0f}" if b["value"] is not None else "-"
+        c_txt = f"{c['value']:,.0f}" if c["value"] is not None else "-"
+        print(f"{indent}  (mean)     {row['metric']:<20} {b_txt} -> {c_txt}")
+
+
+async def fleet_outcomes(org_id: str | None = None, session_factory=None) -> bool:
+    """Is the product actually working, per customer?
+
+    With an org_id, the full before/after report for that fleet. Without
+    one, a roll-up across every org -- which is the closest thing this
+    system has to a churn dashboard, and a materially better one than
+    `usage`/`revenue`. Those report consumption, which is a lagging
+    indicator that looks healthy right up to the renewal a customer
+    declines; this reports whether the thing they are paying for is moving
+    their numbers, which is the leading one.
+
+    Three things this deliberately does NOT do, because each would make the
+    report more flattering and less true:
+
+    * It does not describe any of this as caused by CommonTrace. See
+      hub/outcomes.py's OBSERVATIONAL_CAVEAT, printed with every run.
+    * It does not hide fleets that got worse, or sort them below the ones
+      that improved. A `WORSENED` line is the most valuable line here.
+    * It does not correct for multiple comparisons ACROSS orgs, and says
+      so below rather than papering over it. Each org's report is
+      internally corrected across its own four metrics; scanning fifty
+      customers and quoting whichever three came back significant is a
+      further multiple-comparisons problem that no correction inside a
+      single report can fix for you.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        if org_id:
+            org = await session.get(Organization, org_id)
+            if org is None:
+                print(f"error: no such organization: {org_id}", file=sys.stderr)
+                return False
+            targets = [(org.id, org.name)]
+        else:
+            targets = [
+                (row.id, row.name)
+                for row in (
+                    await session.execute(select(Organization).order_by(Organization.name))
+                ).scalars().all()
+            ]
+        reports = [
+            (name, await crud.fleet_outcomes(session, oid)) for oid, name in targets
+        ]
+
+    if not reports:
+        print("No organizations yet.")
+        return True
+
+    print(f"{outcomes.OBSERVATIONAL_CAVEAT}\n")
+
+    measurable = [(n, r) for n, r in reports if r["n_baseline_traces"]]
+    for name, report in reports:
+        print(f"{name}  ({report['org_id']})")
+        _print_outcome_report(report, indent="  ")
+        print()
+
+    if not org_id:
+        worsened = [
+            n for n, r in measurable
+            if any(m["verdict"] == outcomes.VERDICT_WORSENED for m in r["metrics"])
+        ]
+        improved = [
+            n for n, r in measurable
+            if any(m["verdict"] == outcomes.VERDICT_IMPROVED for m in r["metrics"])
+            and n not in worsened
+        ]
+        print(f"{len(measurable)} of {len(reports)} org(s) have a baseline window to compare against.")
+        if worsened:
+            print(f"  moved backwards on something:  {', '.join(worsened)}")
+        if improved:
+            print(f"  improved on something:         {', '.join(improved)}")
+        if len(measurable) > 1:
+            print(
+                "\n  Reading several orgs at once is itself a multiple-comparisons\n"
+                "  problem: each report is corrected across its own four metrics, and\n"
+                "  nothing here corrects across orgs. At alpha=0.05, roughly one org in\n"
+                "  twenty will show a 'significant' metric by chance alone."
+            )
+    return True
+
+
 async def list_quarantined(org_id: str | None = None, session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
@@ -960,6 +1086,7 @@ _COMMANDS = {
     "set-plan": (set_plan, 2, 2),
     "usage": (usage, 0, 1),
     "revenue": (revenue, 0, 0),
+    "outcomes": (fleet_outcomes, 0, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()

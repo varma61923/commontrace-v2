@@ -13,8 +13,9 @@ This repo ships two things:
    store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
    also bridges to the **CommonTrace Hub** (a self-hostable, multi-tenant trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
-   `vote_trace`, `amend_trace`, `list_tags`, plus an optional Knowledge Base
-   — `commons_overlap`, `commons_search` to consult it, `submit_kb_entry`/
+   `vote_trace`, `amend_trace`, `list_tags`, `fleet_outcomes` to ask whether
+   your fleet's numbers have actually improved, plus an optional Knowledge
+   Base — `commons_overlap`, `commons_search` to consult it, `submit_kb_entry`/
    `list_my_kb_submissions` to propose an entry for operator review; server
    implementation and setup in [`hub/`](hub/README.md), not a hosted service
    run by this project). Every org's own traces stay private to that org; no
@@ -709,6 +710,39 @@ entries that have never matched anything after real query volume (the
 honest signal that they need rewriting or removal) and reports the
 submission funnel so an operator can tell whether the review queue itself
 needs attention, separately from whether its output is any good.
+
+### Is it actually working for you?
+
+Every trace you capture can carry an `outcome` — was the task resolved, did
+it escalate, was it a repeat of a failure you'd already hit, what did it
+cost — and `outcome.baseline: true` marks traces from a window *before*
+lessons were being injected. The Hub compares the two:
+
+```bash
+# via the MCP tool your agents already have
+fleet_outcomes()                          # optionally: agent_type="support"
+```
+
+You get resolution, repeated-error, escalation and frustration rates for
+both windows with the delta, a 95% confidence interval, a p-value, and a
+Benjamini-Hochberg correction across the four metrics. Reads only your own
+traces, and is not metered.
+
+**It is an observed change, not a causal effect, and it says so on every
+response.** `baseline` is a time window, so a model upgrade or a shift in
+your task mix is mixed in with anything CommonTrace contributed. For a
+claim that survives "what else changed that quarter?", run the randomized
+holdout (`commontrace experiment`) — it withholds lessons at random, so
+the arms differ only by the treatment.
+
+Three things it deliberately will not do for you:
+
+- **Quote whichever of four metrics happened to look good.** The
+  correction is applied across all of them.
+- **Let a small sample read as "no effect".** Every inconclusive row
+  reports the minimum effect that many observations could have detected.
+- **Only return good news.** A significant move in the wrong direction is
+  reported as `worsened`, at the same prominence as a win.
 
 ### When an answer stops being right
 

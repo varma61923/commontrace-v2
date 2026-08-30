@@ -148,6 +148,9 @@ CORE_TOOLS = [
     # entitlements (hub/plans.py) -- unaffected by HUB_COMMONS_ENABLED,
     # since it reports an org's own plan and usage, never another org's data
     "account_usage",
+    # outcome measurement (hub/outcomes.py) -- reads the caller's own
+    # outcome history only, so it is org-scoped and unmetered like the six
+    "fleet_outcomes",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

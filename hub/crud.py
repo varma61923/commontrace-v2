@@ -32,7 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from hub import audit, commons, plans
+from hub import audit, commons, outcomes, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
 from hub.models import (
@@ -1285,6 +1285,62 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
     )
     tags = (await session.execute(stmt)).scalars().all()
     return sorted(tags)
+
+
+# --- Fleet outcomes: is this actually working for this customer? --------
+#
+# `Trace.outcome` has carried the five business-outcome fields, and the
+# `baseline` before/after flag, since the schema was written. Every
+# contribute_trace writes them. Until this function the Hub read that
+# column in exactly two places -- copying it onto the wire projection and
+# carrying it forward on amend -- and computed nothing from it, so a
+# deployment holding a year of a fleet's outcome history could not answer
+# whether the product was working.
+#
+# See hub/outcomes.py for the statistics, and for the caveat that governs
+# every use of this number: it is a before/after comparison, not a causal
+# estimate, and the module refuses to let a caller forget that.
+
+
+async def fleet_outcomes(
+    session: AsyncSession, org_id: str, agent_type: str = "", alpha: float = outcomes.DEFAULT_ALPHA
+) -> dict:
+    """Has this fleet's agent performance changed since its baseline window?
+
+    Org-scoped like every other read in this module: the comparison is a
+    fleet against its own earlier self, never against another customer.
+    That is not only the isolation rule -- it is the only comparison that
+    means anything, since two fleets running different agents on different
+    task mixes have no shared denominator.
+
+    Deliberately not metered (hub/plans.py). This reads the caller's own
+    traces, the same as search_traces and list_tags, and the Knowledge Base
+    allowance exists for the one call that reads the operator's corpus. A
+    customer being charged to ask whether the product is working would also
+    be the single worst place in the system to put a meter.
+
+    Quarantined traces are excluded, matching every other read path: a
+    trace held pending abuse review should not move a number the customer
+    is going to quote.
+    """
+    where = [Trace.org_id == org_id, Trace.quarantined.is_(False)]
+    if agent_type:
+        where.append(Trace.agent_type == agent_type)
+
+    # Only the outcome column, not whole Trace rows. This scans an org's
+    # entire history by design -- the question is "since baseline", which
+    # has no time bound -- so hydrating every trace's title, context,
+    # solution and tsvector to read one JSONB field would make the cost of
+    # asking grow with exactly the thing a successful customer accumulates.
+    rows = (await session.execute(select(Trace.outcome).where(*where))).scalars().all()
+    recorded = [o for o in rows if isinstance(o, dict)]
+
+    baseline, current = outcomes.split_arms(recorded)
+    report = outcomes.compare(baseline, current, alpha=alpha)
+    report["org_id"] = org_id
+    report["agent_type"] = agent_type
+    report["n_traces"] = len(recorded)
+    return report
 
 
 # --- Knowledge Base community submissions -------------------------------

@@ -8,6 +8,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fleet outcome measurement in the Hub** (`fleet_outcomes` MCP tool,
+  `python -m hub.manage outcomes [org_id]`, `hub/outcomes.py`).
+  `Trace.outcome` has carried the five business-outcome fields --
+  `resolved`, `escalated`, `repeated_error`, `frustration_signal`,
+  token/call cost -- and the `baseline` before/after flag since the schema
+  was written, and every `contribute_trace` writes them. The Hub read that
+  column in exactly two places (copying it onto the wire projection,
+  carrying it forward on amend) and computed nothing from it, so a
+  deployment holding a year of a fleet's outcome history could not answer
+  whether the product was working. It can now: resolution, repeated-error,
+  escalation and frustration rates for the baseline window versus
+  everything since, with deltas, 95% confidence intervals, p-values, and
+  mean token/call cost.
+
+  This closes a gap under two load-bearing claims rather than adding a
+  report. STRATEGY.md §11.3 names measured effect on the customer's own
+  data as the entire moat, and §11.5 names measured resolution-rate
+  improvement as the only pricing denominator this product can defend.
+  Both were claims about a number nothing in the Hub could compute -- the
+  client CLI could compute a local version for a customer who thought to
+  run it; the service could not. For an operator, `manage.py outcomes`
+  with no org is a leading churn indicator where `usage`/`revenue` are
+  lagging ones.
+
+  **It is a before/after comparison, not a causal estimate, and nothing
+  in it is allowed to imply otherwise.** `baseline` marks a time window,
+  so a model upgrade or a shift in task mix is confounded with this
+  product's contribution; `outcomes.OBSERVATIONAL_CAVEAT` rides on every
+  response and every rendering, and points at
+  `commontrace/experiment.py`'s randomized holdout as the design that can
+  support a causal claim. Three further properties exist specifically to
+  keep the number quotable, and all three make the conclusion weaker: a
+  Benjamini-Hochberg correction across the four metrics (so a lucky one
+  out of four does not get quoted); a minimum detectable effect on every
+  inconclusive row (so a small sample cannot read as "no effect"); and
+  `worsened` as a first-class verdict reported at the same prominence as
+  a win, never sorted below one. Where a row's uncorrected 95% CI
+  excludes zero but its corrected verdict is `no change`, the row
+  explains the difference rather than leaving a reader to conclude one of
+  the numbers is broken.
+
+  The statistics are imported from `commontrace/experiment.py`
+  (`two_proportion_test`, `diff_confidence_interval`,
+  `benjamini_hochberg`, `minimum_detectable_effect` -- pure stdlib, so no
+  new Hub dependency), not reimplemented: the same reasoning
+  `hub/commons.py` gives for importing the client's MinHash, except that
+  here a drifted near-copy would cause *disagreement* between the
+  customer's own tooling and the operator's report about the same fleet,
+  which finishes the number as evidence regardless of which was right.
+
+  Org-scoped like every other read in `hub/crud.py`, unmetered (it reads
+  the caller's own traces, and charging a customer to ask whether the
+  product works would be the worst possible place for a meter), and
+  quarantined traces are excluded. Brings the MCP surface to 16 tools.
+  24 new tests (`hub/tests/test_fleet_outcomes.py`).
+
 - **Knowledge Base entry standing, and the operator queue that acts on
   it.** Seeding and community submissions both answer how content gets
   into the Knowledge Base; nothing answered what happens when an entry
