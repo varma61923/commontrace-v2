@@ -21,18 +21,27 @@ that could go wrong quietly.
 
 | read path | 1,000 | 4,000 | 16,000 | 64,000 | growth | alpha | |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `search_traces` (selective) | 5.27 ms | 6.69 | 8.71 | 11.67 | 2.2× | **0.19** | sublinear |
-| `search_traces` (matches all) | 6.17 | 11.57 | 25.79 | 214.36 | 34.8× | 0.83 | sublinear |
-| `search_traces` (by tag) | 4.76 | 4.95 | 4.80 | 4.79 | 1.0× | **-0.00** | flat |
-| `list_tags` | 1.52 | 4.01 | 14.26 | 31.20 | 20.5× | 0.74 | sublinear |
-| `entitlements` | 3.90 | 5.39 | 11.34 | 44.12 | 11.3× | 0.58 | sublinear |
-| `agents_under_management` | 1.68 | 2.96 | 7.51 | 28.82 | 17.1× | 0.68 | sublinear |
-| `fleet_outcomes` | 6.69 | 17.16 | 38.86 | 90.33 | 13.5× | **0.62** | sublinear |
+| `search_traces` (selective) | 11.00 ms | 19.30 | 58.03 | 59.35 | 5.4× | **0.44** | sublinear |
+| `search_traces` (natural lang) | 21.67 | 46.26 | 137.74 | 65.89 | 3.0× | **0.32** | sublinear |
+| `search_traces` (all-common terms) | 11.43 | 18.63 | 15.41 | 17.88 | 1.6× | **0.08** | flat |
+| `search_traces` (by tag) | 5.11 | 4.95 | 4.84 | 5.23 | 1.0× | **0.00** | flat |
+| `list_tags` | 1.71 | 4.17 | 16.25 | 32.65 | 19.1× | 0.74 | sublinear |
+| `entitlements` | 4.08 | 5.61 | 13.97 | 47.36 | 11.6× | 0.60 | sublinear |
+| `agents_under_management` | 1.71 | 3.03 | 9.25 | 33.12 | 19.4× | 0.72 | sublinear |
+| `fleet_outcomes` | 6.76 | 20.75 | 40.44 | 96.45 | 14.3× | **0.62** | sublinear |
 
 **No path grows linearly with the customer's own corpus.** A 64× increase
-in a customer's accumulated history costs 2.2× on the read they issue most
-(a specific failure lookup) and at worst ~20× on the operator-facing
-reports. On the cost side, link 3's falsifier does not fire.
+in a customer's accumulated history costs 3.0× on the read the product
+exists for (an agent describing its task in a sentence) and at worst ~20×
+on the operator-facing reports. On the cost side, link 3's falsifier does
+not fire.
+
+The three `search_traces` rows are three query shapes, and the first two
+now carry a `search_traces` cost the earlier runs of this document did not
+have: a document-frequency probe on every text search
+(`hub/search.py:term_frequency_stmt`), which is why *selective* moved from
+0.19/11.67 ms to 0.44/59.35 ms. That is the price of the third row and of
+the natural-language row existing at all — see **The term budget**, below.
 
 The absolute milliseconds are this machine's and transfer to nothing. Only
 the exponents transfer.
@@ -86,6 +95,47 @@ because the worst case is real: a deliberately broad query does cost
 `O(matches)`, and a fleet that searches for common words will find it.
 `hub/tests/test_bench_scaling.py:TestGeneratedCorpusIsSelective` pins the
 generator's diversity so the artifact cannot quietly return.
+
+## The term budget, and the finding that made it necessary
+
+The second finding below closed by saying the worst case is real: *"a
+deliberately broad query does cost `O(matches)`, and a fleet that searches
+for common words will find it."* That sentence was written about a
+conjunctive matcher, where a broad query was an unusual event. Once
+`hub/search.py` relaxed the operator so that natural-language retrieval
+works at all (`hub/RETRIEVAL.md`), a broad query stopped being unusual:
+**every** sentence-length query is broad, because OR-ing ten words matches
+anything containing any one of them.
+
+Measured immediately after that change, on this same 64,000-trace corpus:
+one query term present in every trace (`retri`) produced the entire
+64,000-row match set on its own — the other nine lexemes matched nothing at
+all — and `ts_rank` over those rows was 188 ms of a 233 ms query. The fitted
+exponent was **0.87, linear-or-worse**: §13.2's failure mode, introduced by
+a fix for something else.
+
+That term also could not rank anything, since it scores every document
+identically. So `hub/search.py:choose_terms` drops any term matching more
+than `RANK_BUDGET` (8,000) documents and takes the rest rarest first while
+their frequencies still sum to the budget — a union is never larger than the
+sum, so the ranker provably never scores more than `RANK_BUDGET` rows
+however large the corpus grows.
+
+| `search_traces` (natural language), 64,000 traces | before | after |
+|---|---:|---:|
+| latency | 754 ms | **66 ms** |
+| fitted alpha | **0.87** linear-or-worse | **0.32** sublinear |
+
+The **all-common terms** row measures what the bound does at its extreme:
+every lexeme in that query is above the budget, so nothing is left to match
+on, the search is not run, and the row measures the cost of establishing
+that (0.08, flat). It is the successor to the old *matches all* row, which
+measured the same query when it still returned 64,000 scored rows.
+
+The cost this adds is the probe, and it is paid on every text search
+including short keyword ones — the *selective* row's 0.19 → 0.44. Bounded,
+though: the probe caps each term's count at the budget, so its cost stops
+growing with the corpus while an unbounded ranking scan would not have.
 
 ## Why the Knowledge Base paths are absent
 

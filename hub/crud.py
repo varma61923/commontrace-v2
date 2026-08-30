@@ -34,11 +34,11 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from commontrace import experiment
 from hub import audit, commons, outcomes, plans
+from hub import search as hub_search
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
 from hub.models import (
     MAX_FEEDBACK_TEXT_CHARS,
-    TEXT_SEARCH_CONFIG,
     VALID_FEEDBACK_TAGS,
     VALID_VOTE_TYPES,
     HoldoutObservation,
@@ -275,6 +275,38 @@ async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
 # call site.
 
 METRIC_COMMONS_QUERIES = "commons_queries"
+
+# --- Retrieval health ---------------------------------------------------
+#
+# These three are NOT billing metrics. Nothing enforces a limit against
+# them and no plan mentions them; they ride on UsageCounter because it is
+# already an atomic (org, period, metric, n) counter that cascades on org
+# deletion, and a second table with those exact properties would be a copy.
+#
+# They exist because the defect `hub/search.py` documents was invisible for
+# the entire life of the deployment that had it. `Trace.retrievals` counts
+# rows RETURNED, so a search matching nothing incremented nothing; from the
+# operator's side a broken retrieval tier and a customer who simply has not
+# stored much yet produce identical telemetry. An operator can now read the
+# difference (`hub/crud.py:search_health`, `python -m hub.manage retrieval`)
+# on real fleets rather than on the synthetic corpus in
+# `hub/bench_retrieval.py`.
+#
+# WHAT IS DELIBERATELY NOT STORED: the query text, the lexemes, and which
+# traces came back. Three integers per org per month answer the question
+# "is retrieval finding anything", and a query log -- which is a log of what
+# a customer's agents were struggling with, in their own words -- answers it
+# no better while creating exactly the retention liability DATA_RETENTION.md
+# exists to avoid.
+METRIC_SEARCHES = "searches"
+# Zero results for a query that DID reduce to at least one searchable term.
+# The one that means retrieval found nothing.
+METRIC_SEARCHES_EMPTY = "searches_empty"
+# Zero results because the query reduced to no lexemes at all -- empty, or
+# nothing but stopwords. Counted separately because it is a malformed
+# request, not a retrieval miss, and folding the two together would let a
+# client that sends junk queries mask (or manufacture) a retrieval problem.
+METRIC_SEARCHES_NO_TERMS = "searches_no_terms"
 
 
 def billing_period(now: datetime | None = None) -> str:
@@ -531,10 +563,9 @@ async def search_traces(
     limit: int = DEFAULT_SEARCH_LIMIT,
     offset: int = 0,
 ) -> dict:
-    """Returns {"traces": [...], "limit", "offset", "has_more"}.
+    """Returns {"traces": [...], "limit", "offset", "has_more", "terms"}.
 
-    Two deliberate changes from the original implementation, both visible
-    to callers:
+    Three deliberate properties, all visible to callers:
 
     1. **Pagination.** This used to hard-cap at 50 results with no offset,
        so a client could never reach result 51 at all. `limit` is clamped
@@ -556,38 +587,95 @@ async def search_traces(
        substring hits are mostly noise -- but it IS a behavior change, not
        a transparent optimization.
 
-       Ranking follows from the same change: with a query, results come
-       back by relevance (ts_rank) and then recency; with no query, purely
-       by recency as before.
+    3. **Query terms are OR-ed, not AND-ed** (`hub/search.py`). This is the
+       correction of a defect that made the product's core loop return
+       nothing at all for the query shape it exists to serve.
+
+       `plainto_tsquery` ANDs: a natural-language task description became
+       `'custom' & 'charg' & 'twice' & 'one' & 'order' & ...`, and a trace
+       had to contain every one. `hub/bench_retrieval.py` measured the
+       consequence on the shipped substrate corpus against held-out
+       paraphrased probes: **0.0% recall@1, 100% zero-result**, where the
+       local file tier scored 84.8% recall@1 on the same 46 records.
+
+       That failure was invisible from inside the system. An unmatched
+       search returns `{"traces": []}` with HTTP 200; the agent correctly
+       concludes there is no relevant prior experience and proceeds; and
+       `retrievals` -- the only retrieval telemetry there was -- counts rows
+       RETURNED, so a query that matched nothing incremented nothing and
+       left no record of having been asked. `SearchStat` (below) exists so
+       that is no longer true of any deployment.
+
+       Ranking is what makes relaxation safe rather than a firehose:
+       `ts_rank` sums the weights of the query lexemes each row matched, so
+       a trace matching five of eight terms outranks one matching one, and
+       the ordering does a threshold's job without a threshold's failure
+       mode of discarding the answer at a cutoff (STRATEGY.md §12.7).
+
+    `terms` is the lexeme list the query reduced to. It is returned on
+    every text search, and it is the difference between "your corpus has no
+    answer" and "you asked for nothing searchable" -- a query of nothing but
+    stopwords produces `[]` and matches no rows, which without this field
+    is indistinguishable from an empty corpus.
     """
     limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
     offset = max(0, min(int(offset), MAX_SEARCH_OFFSET))
 
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    chosen = hub_search.ChosenTerms((), (), ())
     if query:
-        # plainto_tsquery (not to_tsquery) because the input is arbitrary
-        # user text: it tokenizes plain words and cannot raise a syntax
-        # error on stray operators like '&' or '!'.
-        tsquery = func.plainto_tsquery(TEXT_SEARCH_CONFIG, query)
-        stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
-        # id.desc() as a tiebreaker: created_at alone is not unique enough
-        # under concurrent inserts (or two rows sharing a timestamp) to
-        # make OFFSET/LIMIT paging deterministic -- without a total order,
-        # Postgres is free to break ties by physical row order, which is
-        # not guaranteed stable across two separate queries.
-        stmt = stmt.order_by(
-            func.ts_rank(Trace.search_vector, tsquery).desc(), Trace.created_at.desc(), Trace.id.desc()
-        )
+        frequencies = (
+            await session.execute(hub_search.term_frequency_stmt(org_id, query))
+        ).all()
+        chosen = hub_search.choose_terms([(row.lexeme, row.df) for row in frequencies])
+        if chosen.used:
+            tsquery = hub_search.tsquery_for(chosen.used)
+            stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
+            # id.desc() as a tiebreaker: created_at alone is not unique
+            # enough under concurrent inserts (or two rows sharing a
+            # timestamp) to make OFFSET/LIMIT paging deterministic --
+            # without a total order, Postgres is free to break ties by
+            # physical row order, which is not guaranteed stable across two
+            # separate queries.
+            stmt = stmt.order_by(
+                hub_search.relevance(Trace.search_vector, tsquery).desc(),
+                Trace.created_at.desc(),
+                Trace.id.desc(),
+            )
     else:
         stmt = stmt.order_by(Trace.created_at.desc(), Trace.id.desc())
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
-    # Fetch one more than asked so has_more is exact without a COUNT(*).
-    stmt = stmt.offset(offset).limit(limit + 1)
-    rows = (await session.execute(stmt)).scalars().all()
-    has_more = len(rows) > limit
+    if query and not chosen.used:
+        # A query was asked and nothing survived to match on -- either it
+        # reduced to no lexemes at all (stopwords), or every lexeme was too
+        # common to discriminate. The search is not run.
+        #
+        # Not running it is the point. With no `search_vector` predicate
+        # this statement is "every trace in the org", so falling through
+        # would answer a failed search with the whole corpus. And returning
+        # the rows that share one corpus-wide word would not be a weak
+        # answer either -- for an agent, which injects whatever it is
+        # given, it is context poisoning with this product's name on it.
+        # `terms` and `terms_ignored` say which of the two happened, so an
+        # empty result is never read as an empty corpus.
+        rows: list[Trace] = []
+        has_more = False
+    else:
+        # Fetch one more than asked so has_more is exact without a COUNT(*).
+        stmt = stmt.offset(offset).limit(limit + 1)
+        rows = list((await session.execute(stmt)).scalars().all())
+        has_more = len(rows) > limit
     traces = list(rows[:limit])
+
+    if query:
+        # Recorded on the FIRST page only. Paging through a result set is
+        # one act of retrieval by the agent, and counting each page as its
+        # own search would make an org that pages deeply look like it
+        # searches more successfully than one that does not.
+        if offset == 0:
+            await _record_search(session, org_id, terms=list(chosen.all_terms), results=len(traces))
 
     if traces:
         await session.execute(
@@ -600,6 +688,63 @@ async def search_traces(
         "limit": limit,
         "offset": offset,
         "has_more": has_more,
+        "terms": list(chosen.all_terms),
+        "terms_ignored": list(chosen.ignored),
+    }
+
+
+async def _record_search(session: AsyncSession, org_id: str, *, terms: list[str], results: int) -> None:
+    """One text search, aggregated into this month's counters.
+
+    Unmetered in the billing sense -- see the METRIC_SEARCHES comment. The
+    increments go through `_meter`'s atomic upsert for the same reason the
+    billing ones do: two concurrent searches from one fleet must not lose
+    an increment, and a fleet is many agents by definition.
+    """
+    await _meter(session, org_id, METRIC_SEARCHES)
+    if results:
+        return
+    await _meter(session, org_id, METRIC_SEARCHES_EMPTY if terms else METRIC_SEARCHES_NO_TERMS)
+
+
+async def search_health(
+    session: AsyncSession, org_id: str, period: str | None = None
+) -> dict:
+    """How often this org's searches come back with nothing, this month.
+
+    The live version of `hub/bench_retrieval.py`. The benchmark answers the
+    question on a 46-record synthetic corpus with probes the same author
+    wrote; this answers it on the fleet's own corpus with the fleet's own
+    queries, which is the only version that settles STRATEGY.md §13.2's
+    link 2 for a real customer.
+
+    `miss_rate` divides by searches that HAD searchable terms, not by all
+    searches: a client sending empty queries would otherwise drive the rate
+    up without anything being wrong with retrieval, and an operator chasing
+    that number would be chasing the wrong system.
+
+    A high miss rate is not by itself a defect -- an org three days into a
+    pilot has an almost empty corpus and should miss most of the time. It
+    is a defect when it stays high while the corpus grows, which is why
+    `traces` is reported alongside it rather than left to be looked up.
+    """
+    period = period or billing_period()
+    searches = await _usage(session, org_id, METRIC_SEARCHES, period)
+    empty = await _usage(session, org_id, METRIC_SEARCHES_EMPTY, period)
+    no_terms = await _usage(session, org_id, METRIC_SEARCHES_NO_TERMS, period)
+    searchable = searches - no_terms
+    stored = await session.scalar(
+        select(func.count(Trace.id)).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    )
+    return {
+        "org_id": org_id,
+        "period": period,
+        "searches": searches,
+        "searches_with_terms": searchable,
+        "empty": empty,
+        "no_terms": no_terms,
+        "miss_rate": (empty / searchable) if searchable else None,
+        "traces": int(stored or 0),
     }
 
 

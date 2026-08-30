@@ -105,6 +105,17 @@ def run(args: argparse.Namespace) -> int:
             )
             for path in pull_result.written_paths:
                 print(f"  wrote {path}")
+            if pull_result.ignored_terms:
+                # Printed whether or not anything was found: these terms did
+                # not participate in the search, so even a non-empty result
+                # was matched on less than was asked for.
+                print(
+                    "  Not searched on: "
+                    + ", ".join(pull_result.ignored_terms)
+                    + " -- too common in your corpus to tell traces apart."
+                )
+                if not pull_result.n_found:
+                    print("  Try a more specific word; nothing was matched on at all.")
             if pull_result.written_paths:
                 print("  Promote a candidate with `commontrace lesson new` once reviewed.")
 

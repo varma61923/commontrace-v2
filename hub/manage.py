@@ -46,6 +46,11 @@
                                        free | team | scale | operator
     usage [org_id]                 -> what each org is entitled to and has used this
                                        period
+    retrieval [org_id]             -> is retrieval finding anything? searches, how many
+                                       came back empty, and the miss rate, per org. A
+                                       miss rate that stays high while the corpus grows
+                                       is the churn about to happen. No query text is
+                                       stored -- three integers per org per month
     revenue                        -> orgs on billable plans and what they consumed
     start-experiment <org_id> [rate]
                                    -> begin a randomized holdout: withhold [rate] of
@@ -1172,6 +1177,64 @@ async def usage(org_id: str | None = None, session_factory=None) -> bool:
     return True
 
 
+async def retrieval(org_id: str | None = None, session_factory=None) -> bool:
+    """How often each org's searches come back with nothing, this period.
+
+    The live version of `hub/bench_retrieval.py`. The benchmark answers
+    "does retrieval work" on a 46-record synthetic corpus with probes the
+    same author wrote; this answers it on the fleet's own corpus with the
+    fleet's own queries, which is the only version that settles STRATEGY.md
+    §13.2's link 2 for a real customer.
+
+    This exists because the defect `hub/search.py` documents -- every
+    natural-language query returning nothing at all -- was invisible from
+    the operator's side for the entire life of a deployment that had it. A
+    search matching nothing returns HTTP 200 with an empty list, and
+    `Trace.retrievals` counts rows RETURNED, so it incremented nothing and
+    left no record of having been asked. A broken retrieval tier and a
+    customer who has not stored much yet produced identical telemetry.
+
+    Read it as a leading indicator, not a verdict. A high miss rate in an
+    org's first week is what an almost-empty corpus looks like and is fine;
+    a high miss rate that does not fall as `traces` grows is the shape that
+    means the customer is asking questions this product cannot answer --
+    which is the churn about to happen, visible while there is still time.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        q = select(Organization).order_by(Organization.created_at)
+        if org_id:
+            q = q.where(Organization.id == org_id)
+        orgs = (await session.execute(q)).scalars().all()
+        if not orgs:
+            print("no organizations." if not org_id else f"error: no such organization: {org_id}",
+                  file=sys.stderr if org_id else sys.stdout)
+            return not org_id
+        rows = [await crud.search_health(session, o.id) for o in orgs]
+
+    print(f"billing period {rows[0]['period']} (UTC)")
+    print(f"{'organization':<26} {'traces':>9} {'searches':>10} {'no match':>10} "
+          f"{'miss rate':>11} {'unsearchable':>13}")
+    print("-" * 84)
+    for org, r in zip(orgs, rows):
+        rate = "--" if r["miss_rate"] is None else f"{r['miss_rate']:.0%}"
+        print(f"{org.name[:25]:<26} {r['traces']:>9,} {r['searches_with_terms']:>10,} "
+              f"{r['empty']:>10,} {rate:>11} {r['no_terms']:>13,}")
+    print()
+    print("'searches' counts text searches that had at least one searchable term, first")
+    print("page only -- paging through one result set is one act of retrieval, not several.")
+    print("'no match' is how many of those returned nothing, and 'miss rate' is their ratio.")
+    print("'unsearchable' is queries that reduced to no terms at all (empty, or only")
+    print("stopwords); those are malformed requests, not retrieval misses, so they are")
+    print("counted apart rather than folded in where they could mask a real problem.")
+    print()
+    print("No query text is stored anywhere. These are three integers per org per month;")
+    print("a log of what a customer's agents were struggling with, in their own words,")
+    print("would answer this no better and create exactly the retention liability")
+    print("DATA_RETENTION.md exists to avoid.")
+    return True
+
+
 async def revenue(session_factory=None) -> None:
     """Who is on a billable plan, and how much of each resource they used.
 
@@ -1238,6 +1301,7 @@ _COMMANDS = {
     "reject-submission": (reject_submission, 1, 2),
     "set-plan": (set_plan, 2, 2),
     "usage": (usage, 0, 1),
+    "retrieval": (retrieval, 0, 1),
     "revenue": (revenue, 0, 0),
     "outcomes": (fleet_outcomes, 0, 1),
     "start-experiment": (start_experiment, 1, 2),

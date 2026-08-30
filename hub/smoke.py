@@ -197,6 +197,24 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
     report.check("search_traces finds it", trace_id in ids,
                  f"searched for {marker!r}, got {len(ids)} result(s)")
 
+    # The same trace, asked for the way an agent actually asks: a sentence,
+    # in words that only PARTLY overlap what was stored. The single-token
+    # search above passes under a conjunctive matcher and under a relaxed
+    # one alike, so it cannot tell them apart -- and a deployment whose
+    # query terms are ANDed returns nothing here while every other check on
+    # this page stays green (hub/RETRIEVAL.md: 0.0% recall@1, 100%
+    # zero-result, HTTP 200 throughout). This is the check that fails.
+    phrased = _content(await session.call_tool("search_traces", {
+        "query": f"automated deploy verification {marker} nothing needs doing here",
+    }))
+    phrased_ids = [t["id"] for t in phrased.get("traces", [])] if isinstance(phrased, dict) else []
+    report.check(
+        "search_traces finds it from a natural-language description", trace_id in phrased_ids,
+        "a sentence-length query returned "
+        f"{len(phrased_ids)} result(s) and not the trace just written -- if this is the only "
+        "failing check, query terms are being combined with AND rather than ranked",
+    )
+
     fetched = _content(await session.call_tool("get_trace", {"id": trace_id}))
     report.check("get_trace returns it", isinstance(fetched, dict) and fetched.get("id") == trace_id,
                  f"got {fetched!r}" if not isinstance(fetched, dict) else "")

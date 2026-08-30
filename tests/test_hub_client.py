@@ -356,3 +356,45 @@ class TestPullPaginatesAllResults:
             )
         )
         assert result.n_found == 120
+
+
+class TestPullSurfacesTermsTheHubDidNotSearchOn:
+    """`terms_ignored` is why an empty pull is readable.
+
+    The Hub drops query terms that appear in too much of the org's corpus
+    to distinguish one trace from another (hub/search.py:choose_terms). A
+    client that discards that field turns two different situations -- "your
+    corpus has no answer" and "the words you used are in nearly every trace
+    you have" -- into the same silent empty result, and only the second one
+    is fixed by rephrasing.
+    """
+
+    def test_ignored_terms_are_carried_up(self, store, monkeypatch):
+        import asyncio
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"traces": [], "limit": 50, "offset": 0, "has_more": False,
+                    "terms": ["retri", "timeout"], "terms_ignored": ["retri", "timeout"]}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        result = asyncio.run(
+            hub_client.pull_search_results("http://localhost:8420/mcp", "key", str(store), query="retry timeout")
+        )
+        assert result.n_found == 0
+        assert result.ignored_terms == ["retri", "timeout"]
+
+    def test_an_older_hub_without_the_field_is_not_an_error(self, store, monkeypatch):
+        """The client is versioned separately from the Hub it talks to, so a
+        missing key must read as 'nothing was ignored', never as a crash."""
+        import asyncio
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"traces": [{"id": "t1", "title": "trace one"}],
+                    "limit": 50, "offset": 0, "has_more": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        result = asyncio.run(
+            hub_client.pull_search_results("http://localhost:8420/mcp", "key", str(store))
+        )
+        assert result.ignored_terms == []
+        assert result.n_found == 1

@@ -228,6 +228,33 @@ async def run(sizes: list[int], as_json: bool) -> int:
             "search_traces (selective)": lambda: crud.search_traces(
                 session, org_id, query="hydration mismatch timestamps", limit=20
             ),
+            # The query shape the product exists to serve, and the one whose
+            # cost changed when hub/search.py replaced the conjunction with
+            # a disjunction. A ten-lexeme OR necessarily matches far more
+            # rows than the same ten ANDed, and every match must be scored
+            # by ts_rank before LIMIT can discard it -- so if relaxing the
+            # operator bought recall at the price of a cost curve that grows
+            # with the customer's corpus, it shows up HERE and nowhere else.
+            # Measuring the keyword query alone would have missed it
+            # entirely, which is why this row exists alongside that one
+            # rather than instead of it.
+            #
+            # The wording matters and is chosen against this corpus, not for
+            # it. Every content word here appears somewhere in the seeded
+            # rows, so the query does real work at every size -- several
+            # terms land on thousands of traces and one ('retry') is in all
+            # of them. A natural-language query whose words happened to miss
+            # the corpus would short-circuit in hub/search.py and this row would
+            # report a flat curve for a query that never ran.
+            "search_traces (natural lang)": lambda: crud.search_traces(
+                session,
+                org_id,
+                query=(
+                    "connection pool exhausted during a retry storm so every "
+                    "request timed out waiting to acquire a connection"
+                ),
+                limit=20,
+            ),
             # Matches every row. Not a realistic query -- included because
             # it bounds the worst case, and because reporting only the
             # selective number would hide that ORDER BY ts_rank has to

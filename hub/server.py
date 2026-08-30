@@ -215,8 +215,25 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
-        Returns {"traces": [...], "limit", "offset", "has_more"}. Page by
-        re-calling with offset += limit while has_more is true.
+        Describe the task you are about to attempt, in your own words and in
+        a full sentence -- that is the query shape this is built for. Terms
+        are OR-ed and the results are ranked, so a trace that matches part
+        of your description still comes back; you do not need to guess the
+        wording the trace was written in.
+
+        Returns {"traces": [...], "limit", "offset", "has_more", "terms",
+        "terms_ignored"}. Page by re-calling with offset += limit while
+        has_more is true.
+
+        `terms` is what your query reduced to after stemming and stopword
+        removal, and `terms_ignored` lists the terms that were NOT used
+        because they appear in too much of your corpus to distinguish one
+        trace from another. Between them, an empty result is readable
+        instead of ambiguous: no `terms` means nothing searchable was asked,
+        every term in `terms_ignored` means the words you used are ones
+        nearly all your traces contain (try a more specific one), and terms
+        present with neither condition means your corpus genuinely has no
+        match yet.
 
         Pass `occasion_id` -- your own identifier for the task you are
         about to do -- and, IF an operator has started a randomized

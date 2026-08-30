@@ -558,3 +558,50 @@ def test_main_dispatch_treats_only_false_as_failure():
     finally:
         manage._COMMANDS.clear()
         manage._COMMANDS.update(original)
+
+
+class TestRetrievalHealthReport:
+    """`manage retrieval` is the operator's view of whether search is
+    finding anything, on real fleets rather than on the synthetic corpus in
+    hub/bench_retrieval.py."""
+
+    async def test_reports_nothing_cleanly_on_an_empty_deployment(self, session_factory, capsys):
+        # Explicitly emptied rather than assumed empty: tests that drive
+        # manage.main() through HUB_DATABASE_URL create orgs on their own
+        # engine, outside this fixture's truncation, so "no orgs exist
+        # right now" is an ordering accident and not a property.
+        async with session_scope(session_factory) as session:
+            for org in (await session.execute(select(Organization))).scalars().all():
+                await session.delete(org)
+        assert await manage.retrieval(session_factory=session_factory) is True
+        assert "no organizations" in capsys.readouterr().out
+
+    async def test_a_miss_and_a_hit_are_both_visible(self, session_factory, config, two_orgs, capsys):
+        org_id = two_orgs["org_a"]
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            await crud.contribute_trace(
+                session, org_id, config, rate_limiter,
+                title="Cache stampede on expiry",
+                context_text="many workers recompute the same key at once",
+                solution_text="add jitter to the expiry",
+                tags=[], agent_type="code", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            await crud.search_traces(session, org_id, query="stampede")
+            await crud.search_traces(session, org_id, query="photosynthesis")
+
+        assert await manage.retrieval(session_factory=session_factory) is True
+        out = capsys.readouterr().out
+        assert "miss rate" in out
+        assert "50%" in out
+        # The privacy property is stated in the report itself, not only in a
+        # docstring an operator never reads.
+        assert "No query text is stored" in out
+
+    async def test_an_unknown_org_is_an_error_not_an_empty_table(self, session_factory, capsys):
+        ok = await manage.retrieval(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory
+        )
+        assert ok is False
+        assert "no such organization" in capsys.readouterr().err

@@ -59,6 +59,13 @@ class PushResult:
 class PullResult:
     written_paths: list[str] = field(default_factory=list)
     n_found: int = 0
+    #: Query terms the Hub did NOT search on, because they appear in too
+    #: much of this org's corpus to distinguish one trace from another
+    #: (hub/search.py:choose_terms). Carried up so that a pull returning
+    #: nothing can say WHY -- "your words are ones nearly every trace
+    #: contains" and "your corpus has no match" look identical otherwise,
+    #: and only the first one is fixed by rephrasing.
+    ignored_terms: list[str] = field(default_factory=list)
 
 
 def _lesson_sections(body: str) -> dict[str, str]:
@@ -632,6 +639,7 @@ async def pull_search_results(
     every result set is small enough to pull to disk in full.
     """
     traces: list[dict] = []
+    ignored_terms: list[str] = []
     offset = 0
     while True:
         response = await _call_tool(
@@ -639,6 +647,12 @@ async def pull_search_results(
         )
         if response.get("error"):
             raise HubConnectionError(f"search_traces failed: {response['error']}")
+        # Identical on every page (it describes the query, not the page), so
+        # the first response settles it; read from each anyway rather than
+        # special-casing the first iteration.
+        raw_ignored = response.get("terms_ignored")
+        if isinstance(raw_ignored, list):
+            ignored_terms = [str(t) for t in raw_ignored]
         page = response.get("traces", [])
         traces.extend(page)
         if not page or not response.get("has_more") or len(traces) >= max_results:
@@ -677,4 +691,4 @@ async def pull_search_results(
         frontmatter.write(out_path, fm, body)
         written.append(out_path)
 
-    return PullResult(written_paths=written, n_found=len(traces))
+    return PullResult(written_paths=written, n_found=len(traces), ignored_terms=ignored_terms)

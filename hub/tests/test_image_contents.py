@@ -65,33 +65,65 @@ def _is_submodule(name: str) -> bool:
     return (REPO_ROOT / "commontrace" / f"{name}.py").is_file()
 
 
-def _imported_modules() -> dict[str, str]:
-    """{module name: the hub file that imports it} for every `commontrace`
-    SUBMODULE imported anywhere under hub/, tests excluded.
+def _client_imports_in(path: pathlib.Path) -> set[str]:
+    """Every `commontrace` SUBMODULE one Python file imports.
 
     AST, not a regex: `from commontrace import overlap` and
     `import commontrace.overlap` are different nodes, and a regex over
     source would also match the many prose mentions of these module names
     in this codebase's comments.
     """
+    found: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "commontrace" and node.level == 0:
+                found |= {a.name for a in node.names if _is_submodule(a.name)}
+            elif node.module and node.module.startswith("commontrace.") and node.level == 0:
+                found.add(node.module.split(".", 1)[1].split(".")[0])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("commontrace."):
+                    found.add(alias.name.split(".", 1)[1].split(".")[0])
+    return found
+
+
+def _imported_modules() -> dict[str, str]:
+    """{module name: why it has to ship} for every `commontrace` submodule
+    the image needs, TRANSITIVELY.
+
+    The transitive part is not a refinement, it is the difference between
+    this file working and not working. A shipped client module that imports
+    a second client module (`retrieval.py` imports `_lexical.py`) breaks
+    container start exactly the way the docstring above describes -- and
+    under a direct-imports-only reading, the module that fixes it looks like
+    an unused negation, so `test_the_allowlist_is_not_wider_than_the_imports`
+    would demand its DELETION. A guard that instructs you to reintroduce the
+    bug it exists to prevent is worse than no guard.
+
+    Closed as a fixpoint over the client package rather than one level deep,
+    because two levels is not a principled stopping point either.
+    """
     found: dict[str, str] = {}
+    frontier: list[str] = []
     for path in sorted(HUB_DIR.rglob("*.py")):
         if "tests" in path.parts:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         rel = str(path.relative_to(REPO_ROOT))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                if node.module == "commontrace" and node.level == 0:
-                    for alias in node.names:
-                        if _is_submodule(alias.name):
-                            found.setdefault(alias.name, rel)
-                elif node.module and node.module.startswith("commontrace.") and node.level == 0:
-                    found.setdefault(node.module.split(".", 1)[1].split(".")[0], rel)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("commontrace."):
-                        found.setdefault(alias.name.split(".", 1)[1].split(".")[0], rel)
+        for module in sorted(_client_imports_in(path)):
+            if module not in found:
+                found[module] = f"imported by {rel}"
+                frontier.append(module)
+
+    while frontier:
+        module = frontier.pop()
+        path = REPO_ROOT / "commontrace" / f"{module}.py"
+        if not path.is_file():
+            continue
+        for dep in sorted(_client_imports_in(path)):
+            if dep not in found and _is_submodule(dep):
+                found[dep] = f"needed by commontrace/{module}.py"
+                frontier.append(dep)
     return found
 
 
@@ -109,7 +141,7 @@ class TestImageCarriesEveryImportedClientModule:
             "hub/ imports commontrace modules that .dockerignore keeps out of the "
             "server image, so the container will start and immediately die with an "
             "ImportError:\n"
-            + "\n".join(f"  commontrace.{m}  (imported by {src})" for m, src in sorted(missing.items()))
+            + "\n".join(f"  commontrace.{m}  ({why})" for m, why in sorted(missing.items()))
             + "\n\nAdd `!commontrace/<module>.py` to .dockerignore, and check the "
             "module is import-safe in the image: it must be pure stdlib, since the "
             "image installs only hub/requirements.txt."
