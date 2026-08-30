@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The randomized holdout, in the Hub** (`holdout_assign` /
+  `record_occasion_outcome` MCP tools, `hub/manage.py start-experiment` /
+  `experiment` / `stop-experiment`, `HoldoutObservation`). The only
+  structure here that supports a CAUSAL claim: two arms of the same fleet
+  in the same window, differing only by whether the memory was injected,
+  so "what else changed that quarter?" has an answer.
+
+  This closes the largest gap this repo has recorded. STRATEGY.md §11.3
+  names causally-measured memory as the entire moat and §13.2 calls
+  running it "the cheapest falsifier in the document" and says to run it
+  first -- and both were true only of `commontrace/experiment.py`, which
+  works against a **local file store**. The Hub had no notion of a holdout
+  at all: no assignment, no arms, no observations. So a Hub customer --
+  which is to say the product -- could obtain no causal number of any
+  kind, and §13.2's most gating falsifier could not be run on paying
+  customers without asking them to abandon the Hub for local files.
+
+  Validated against seeded ground truth over 700 occasions: a +30% lesson
+  recovered at +29.2% (CI [+21.7%, +36.7%], HELPS), a -25% lesson at
+  -24.5% (CI [-31.8%, -17.3%], HURTS), and a 0% lesson correctly reported
+  as no measurable effect with its minimum detectable effect (~13%) rather
+  than as evidence of absence. Every interval covers the true value.
+
+  `HURTS` is the verdict only this can produce: a lesson retrieved often
+  *because* it fires on the hardest tasks scores well on every
+  correlational signal here -- retrievals, trust, `commons_hits` -- and may
+  be making outcomes worse. No amount of observation separates those two
+  stories.
+
+  Four properties exist because their absence fails silently rather than
+  loudly: assignment is a deterministic hash of (salt, trace, occasion) so
+  a retry cannot move an occasion between arms; the salt is per-org and
+  never edited, so restarting starts a *new* experiment and two
+  randomizations are never pooled; eligibility is a row's existence rather
+  than a client-reported flag; and unresolved observations are excluded
+  rather than counted as failures, so the arm whose agents crash more is
+  not penalised for it. Analysis is `commontrace.experiment.analyze`
+  imported unchanged -- a drifted copy would randomize the same lesson two
+  ways across a fleet running both tiers and silently compare two
+  mixtures.
+
+  **The cost is real and stated:** the withheld fraction gets a worse
+  product on purpose. No migration or default turns it on (`holdout_rate`
+  defaults to 0); an operator decides per org and the decision is audited.
+  Migration `b7e4c91d2a08`. Brings the MCP surface to 18 tools. 26 new
+  tests (`hub/tests/test_holdout.py`).
+
 - **A measured answer to STRATEGY.md §13.2's weakest link**
   (`hub/bench_scaling.py`, results in `hub/SCALING.md`). §13.2 lists five
   links the business case rests on and marks exactly one "unmeasured, and

@@ -14,7 +14,8 @@ This repo ships two things:
    also bridges to the **CommonTrace Hub** (a self-hostable, multi-tenant trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
    `vote_trace`, `amend_trace`, `list_tags`, `fleet_outcomes` to ask whether
-   your fleet's numbers have actually improved, plus an optional Knowledge
+   your fleet's numbers have actually improved, `holdout_assign`/
+   `record_occasion_outcome` to prove it causally, plus an optional Knowledge
    Base — `commons_overlap`, `commons_search` to consult it, `submit_kb_entry`/
    `list_my_kb_submissions` to propose an entry for operator review; server
    implementation and setup in [`hub/`](hub/README.md), not a hosted service
@@ -743,6 +744,43 @@ Three things it deliberately will not do for you:
   reports the minimum effect that many observations could have detected.
 - **Only return good news.** A significant move in the wrong direction is
   reported as `worsened`, at the same prominence as a win.
+
+### Proving it, rather than observing it
+
+`fleet_outcomes` above compares your fleet to its own past. That is useful
+and it is *not causal* — a model upgrade or a shift in your task mix sits
+in the same window. The randomized holdout removes that objection by
+construction:
+
+```bash
+# an operator starts one for your org
+python -m hub.manage start-experiment <org_id> 0.2    # withhold 20%
+```
+
+Your agents then ask before injecting, and report afterwards:
+
+```
+holdout_assign(trace_ids=[...], occasion_id="ticket-8821")
+  -> {"inject": [...], "withhold": [...]}
+record_occasion_outcome(occasion_id="ticket-8821", succeeded=True)
+```
+
+Traces under `withhold` are deliberately kept back, so your fleet
+generates its own control arm. The comparison is then two arms of the same
+fleet in the same window, differing only by whether the memory was
+injected — which is what makes it survive "what else changed that
+quarter?".
+
+What comes back is per-lesson: effect size, 95% CI, p-value with a
+multiple-comparisons correction across lessons, and an explicit
+`UNDERPOWERED` verdict so "cannot answer yet" never reads as "no effect".
+`HURTS` is a first-class result — and it is the one correlational scoring
+structurally cannot produce, because a lesson retrieved often *because* it
+fires on hard tasks looks good by retrieval count and bad by outcome.
+
+**The cost is real and bounded:** the withheld fraction gets a worse
+product on purpose. That is the price of knowing whether the product works
+at all. Nothing turns it on by default.
 
 ### When an answer stops being right
 

@@ -89,6 +89,30 @@ class Organization(Base):
     # judged worth publishing.
     bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # --- Randomized holdout configuration ------------------------------
+    #
+    # The fraction of (trace, occasion) pairs whose retrieved memory is
+    # deliberately WITHHELD, so the fleet's own outcomes can be compared
+    # against a control arm the fleet itself generated. 0.0 -- the default
+    # -- means no experiment is running and nothing is ever withheld.
+    #
+    # Held here, per org, rather than passed per call, because a fleet is
+    # many agents and an experiment is only coherent if every one of them
+    # draws from the SAME randomization. An agent that computed its own
+    # assignment with its own rate would put the same lesson in both arms
+    # on different machines, which does not fail loudly -- it quietly
+    # produces a comparison of two mixtures and an effect estimate biased
+    # toward zero.
+    holdout_rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    # Names this experiment. commontrace.experiment.is_held_out hashes it
+    # with the trace id and occasion id, so changing it reshuffles every
+    # assignment -- which is why it is written once when an experiment
+    # starts and never edited. Rotating it mid-flight silently mixes two
+    # different randomizations into one comparison, and the result looks
+    # like ordinary noise rather than like a broken experiment.
+    holdout_salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+
     # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
     #
     # A two-call design, deliberately: `request_account_deletion` alone
@@ -506,6 +530,90 @@ class Vote(Base):
         # One org casts at most one standing vote per trace; a repeat vote
         # updates the existing row instead of accumulating duplicates.
         UniqueConstraint("trace_id", "org_id", name="uq_votes_trace_org"),
+    )
+
+
+class HoldoutObservation(Base):
+    """One occasion on which one trace was ELIGIBLE to be injected, which
+    arm it landed in, and whether the task succeeded.
+
+    This is the only structure in the Hub that supports a CAUSAL claim.
+    `hub/outcomes.py` compares a fleet against its own past, which cannot
+    separate this product's contribution from anything else that changed
+    in the same window. This compares two arms of the same fleet in the
+    same window, differing only by whether the memory was injected -- so
+    "what else changed that quarter?" has an answer, and the answer is
+    "nothing, by construction".
+
+    STRATEGY.md §11.3 names causally-measured memory as the entire moat
+    and §13.2 calls running it "the cheapest falsifier in the document",
+    to be run first. Both were true of `commontrace/experiment.py`, which
+    works against a local file store. Nothing in the Hub could do it --
+    so the falsifier could not be run on the surface where paying
+    customers actually are.
+
+    WHY `eligible` IS NOT A COLUMN
+    ------------------------------
+    commontrace/experiment.py:HoldoutObservation calls `eligible` "the
+    crucial field and the easiest thing to get wrong": the comparison is
+    only valid across occasions where the memory's activation condition
+    matched, and comparing "injected" against "every occasion it never
+    matched" reintroduces exactly the confound the holdout removes.
+
+    Here it cannot be gotten wrong, because a row only exists when the
+    Hub was asked to decide about that (trace, occasion) pair --
+    `hub/crud.py:holdout_assign` is called with traces that already
+    matched. Eligibility is the row's existence rather than a flag on it,
+    which is one fewer thing a client can report incorrectly.
+    """
+
+    __tablename__ = "holdout_observations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Not a ForeignKey, for the same reason Trace.supersedes_trace_id is
+    # not: a trace can be deleted (delete_trace, purge-trace) and a dangling
+    # FK would either block that deletion or silently erase the measurement
+    # it belongs to. An observation about a since-deleted trace is still a
+    # valid data point about the experiment that ran.
+    trace_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
+
+    # The task/attempt this decision was made for. Opaque to the Hub: the
+    # client's own identifier for one unit of work, and the key the outcome
+    # is later reported against.
+    occasion_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # Which arm. False means deliberately withheld -- the control.
+    injected: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    # NULL until the client reports how the occasion went. An observation
+    # with no outcome is excluded from the analysis rather than counted as
+    # a failure: an agent that crashed before reporting is missing data,
+    # and scoring it as a loss would bias the arm that crashed more.
+    succeeded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # Recorded so a salt change is detectable after the fact rather than
+    # silently mixing two randomizations (see Organization.holdout_salt).
+    salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # One decision per (trace, occasion) per experiment. Without this a
+        # client retrying an assign call would create a second row -- and
+        # since assignment is deterministic both rows land in the same arm,
+        # so the duplicate would not look wrong, it would just silently
+        # double that occasion's weight in the result.
+        UniqueConstraint(
+            "org_id", "salt", "trace_id", "occasion_id", name="uq_holdout_org_salt_trace_occasion"
+        ),
+        # record_occasion_outcome updates every row for one occasion.
+        Index("ix_holdout_org_occasion", "org_id", "occasion_id"),
+        # The analysis reads one org's resolved observations for one salt.
+        Index("ix_holdout_org_salt", "org_id", "salt"),
     )
 
 

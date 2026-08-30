@@ -47,6 +47,16 @@
     usage [org_id]                 -> what each org is entitled to and has used this
                                        period
     revenue                        -> orgs on billable plans and what they consumed
+    start-experiment <org_id> [rate]
+                                   -> begin a randomized holdout: withhold [rate] of
+                                       eligible memory injections (default 0.2) so the
+                                       fleet generates its own control arm. The only
+                                       design here that supports a CAUSAL claim
+    stop-experiment <org_id>       -> stop withholding. Observations are kept
+    experiment <org_id>            -> what the holdout established, per trace: effect,
+                                       95% CI, p-value, and an explicit UNDERPOWERED
+                                       verdict so "cannot answer yet" never reads as
+                                       "no effect"
     outcomes [org_id]              -> is the product working? before/after comparison of
                                        each fleet's recorded outcomes (resolution,
                                        repeated-error, escalation, frustration rates)
@@ -86,6 +96,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -513,6 +524,148 @@ async def kb_stats(session_factory=None) -> None:
             "hitting, or they are worded differently from how fleets describe them -- see "
             "commons/eval/RESULTS.md on lexical matching's recall limits."
         )
+
+
+DEFAULT_HOLDOUT_RATE = 0.2
+
+
+async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), session_factory=None) -> bool:
+    """Begin a randomized holdout for one org: withhold `rate` of eligible
+    memory injections so the fleet generates its own control arm.
+
+    This is the falsifier STRATEGY.md §13.2 calls "the cheapest in the
+    document" and says to run first, and until now it could only be run
+    against a local file store -- not against the Hub, which is the
+    surface paying customers are actually on.
+
+    A fresh salt is generated per experiment and never edited afterwards.
+    Changing a salt mid-flight reshuffles every assignment, which silently
+    mixes two randomizations into one comparison and produces a result
+    that looks like ordinary noise rather than like a broken experiment --
+    so restarting deliberately starts a NEW experiment rather than
+    extending the old one, and `experiment` reports only the current salt's
+    observations.
+
+    Rate is a real trade and worth stating: withholding memory from a
+    fraction of occasions means those occasions get a worse product on
+    purpose. That is the price of knowing whether the product works at
+    all, it is bounded by this number, and it should be a decision someone
+    makes rather than a default nobody chose.
+    """
+    session_factory = session_factory or _default_session_factory()
+    try:
+        value = float(rate)
+    except (TypeError, ValueError):
+        print(f"error: rate must be a number between 0 and 1, got {rate!r}", file=sys.stderr)
+        return False
+    if not 0 < value < 1:
+        print(
+            f"error: rate must be strictly between 0 and 1, got {value}. "
+            "0 withholds nothing (no control arm); 1 withholds everything (no treatment arm).",
+            file=sys.stderr,
+        )
+        return False
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        previous = org.holdout_salt
+        org.holdout_rate = value
+        org.holdout_salt = uuid.uuid4().hex[:16]
+        await session.flush()
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="start_experiment",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'}",
+        )
+        salt = org.holdout_salt
+
+    print(f"experiment started for {org_id}")
+    print(f"  holdout rate: {value:.0%} of eligible injections will be withheld")
+    print(f"  salt:         {salt}")
+    if previous:
+        print(f"  NOTE: this replaces experiment {previous}. Its observations are kept but")
+        print("        are no longer pooled -- they came from a different randomization.")
+    print("  The fleet's agents must call holdout_assign(...) before injecting, and")
+    print("  record_occasion_outcome(...) afterwards, or nothing is measured.")
+    print(f"  `python -m hub.manage experiment {org_id}` reads the result.")
+    return True
+
+
+async def stop_experiment(org_id: str, session_factory=None) -> bool:
+    """End the holdout. Observations are kept; nothing further is withheld.
+
+    Deliberately does not clear the salt: `experiment` still needs it to
+    scope the analysis to the observations that experiment produced.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        if org.holdout_rate <= 0:
+            print(f"No experiment is running for {org_id}.", file=sys.stderr)
+            return False
+        org.holdout_rate = 0.0
+        await session.flush()
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="stop_experiment",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"salt={org.holdout_salt}",
+        )
+    print(f"experiment stopped for {org_id}. Nothing further will be withheld.")
+    print(f"  Observations are kept. `python -m hub.manage experiment {org_id}` still reads them.")
+    return True
+
+
+_EFFECT_MARK = {
+    "HELPS": "HELPS      ",
+    "HURTS": "HURTS      ",
+    "NO_MEASURABLE_EFFECT": "no effect  ",
+    "UNDERPOWERED": "not yet    ",
+}
+
+
+async def experiment_results(org_id: str, session_factory=None) -> bool:
+    """What the randomized holdout has established, per trace.
+
+    The only causal report in this system. `outcomes` compares a fleet
+    against its own past and cannot rule out anything else that changed;
+    this compares two arms of the same fleet in the same window.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        report = await crud.causal_effects(session, org_id)
+
+    state = "running" if report["experiment_running"] else "stopped"
+    print(f"{org.name}  ({org_id})   experiment {state}, "
+          f"holdout rate {report['holdout_rate']:.0%}")
+    print(f"  {report['n_observations']} resolved observation(s) across "
+          f"{report['n_occasions']} occasion(s)")
+    if not report["effects"]:
+        print("\n  Nothing measured yet. Agents must call holdout_assign(...) before")
+        print("  injecting and record_occasion_outcome(...) afterwards.")
+        return True
+
+    print()
+    for e in report["effects"]:
+        print(f"  {_EFFECT_MARK.get(e['verdict'], e['verdict']):<12} {e['title'][:52]}")
+        print(f"      injected {e['rate_injected']:.0%} (n={e['n_injected']})  vs  "
+              f"withheld {e['rate_withheld']:.0%} (n={e['n_withheld']})   "
+              f"effect {e['effect']:+.1%}")
+        if e["verdict"] in ("HELPS", "HURTS"):
+            print(f"      95% CI [{e['ci_95'][0]:+.1%}, {e['ci_95'][1]:+.1%}]  p={e['p_value']:.4f}")
+        if e["note"]:
+            print(f"      {e['note']}")
+    print(f"\n  {report['note']}")
+    return True
 
 
 _REVIEW_BUCKET_HEADINGS = {
@@ -1087,6 +1240,9 @@ _COMMANDS = {
     "usage": (usage, 0, 1),
     "revenue": (revenue, 0, 0),
     "outcomes": (fleet_outcomes, 0, 1),
+    "start-experiment": (start_experiment, 1, 2),
+    "stop-experiment": (stop_experiment, 1, 1),
+    "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()

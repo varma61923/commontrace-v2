@@ -151,6 +151,8 @@ CORE_TOOLS = [
     # outcome measurement (hub/outcomes.py) -- reads the caller's own
     # outcome history only, so it is org-scoped and unmetered like the six
     "fleet_outcomes",
+    # randomized holdout (hub/crud.py) -- the causal instrument, org-scoped
+    "holdout_assign", "record_occasion_outcome",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

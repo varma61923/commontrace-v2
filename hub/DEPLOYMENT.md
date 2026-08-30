@@ -228,6 +228,13 @@ re-display a key anyone has lost — rotate instead
       surface is gone entirely rather than merely empty, set
       `HUB_COMMONS_ENABLED=false`. `commons_overlap` against an empty
       Knowledge Base returns 0% with a note saying why, not an error.
+- [ ] Decide whether to run a randomized holdout
+      (`python -m hub.manage start-experiment <org_id> <rate>`), and decide
+      it deliberately rather than by default — nothing turns it on, and the
+      withheld fraction gets a worse product on purpose. It is also the
+      only thing here that can answer "is this working?" causally rather
+      than observationally, and STRATEGY.md §13.2 calls it the cheapest
+      falsifier available. See `hub/README.md`, "The randomized holdout".
 - [ ] Put `python -m hub.manage outcomes` on a recurring schedule alongside
       `usage`/`revenue`. Those report consumption, which is a lagging
       indicator that looks healthy right until a renewal a customer
@@ -254,6 +261,7 @@ re-display a key anyone has lost — rotate instead
 | No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |
 | `fleet_outcomes` is observational (a before/after window), not a randomized experiment — it cannot separate this product's effect from anything else that changed | `hub/outcomes.py`, `commontrace/experiment.py` |
+| A holdout's assignments depend on the org's `holdout_salt`; restarting an experiment starts a new one and earlier observations are no longer pooled | `hub/models.py:Organization.holdout_salt` |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
 | No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |

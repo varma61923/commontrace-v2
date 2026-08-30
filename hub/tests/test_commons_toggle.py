@@ -12,9 +12,10 @@ tests that guarantee: with the flag off, all four Knowledge Base tools
 client that tries gets the framework's own "unknown tool" error rather
 than a per-call refusal that some future call site could forget to apply.
 
-account_usage, fleet_outcomes, and the self-service deletion tools
-(delete_trace, request/cancel/confirm_account_deletion) are checked as
-controls: they act on an org's own data only, never Knowledge Base
+account_usage, fleet_outcomes, the randomized-holdout tools
+(holdout_assign, record_occasion_outcome) and the self-service deletion
+tools (delete_trace, request/cancel/confirm_account_deletion) are checked
+as controls: they act on an org's own data only, never Knowledge Base
 content, so disabling the Knowledge Base must not disable any of them.
 """
 from __future__ import annotations
@@ -69,7 +70,7 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_sixteen_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_all_eighteen_tools_present_by_default(self, enabled_config, session_factory):
         """An exact set, not a subset: a tool appearing here that nobody
         meant to expose is exactly as much of a problem as one going
         missing, and only equality catches the first case."""
@@ -82,6 +83,7 @@ class TestCommonsEnabledByDefault:
             "commons_overlap", "commons_search",
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage", "fleet_outcomes",
+            "holdout_assign", "record_occasion_outcome",
         }
 
 
@@ -108,7 +110,7 @@ class TestCommonsDisabled:
             "vote_trace", "amend_trace", "list_tags",
             "delete_trace", "request_account_deletion",
             "cancel_account_deletion", "confirm_account_deletion",
-            "fleet_outcomes",
+            "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
         ):
             assert tool in names, tool
 

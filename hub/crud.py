@@ -32,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
+from commontrace import experiment
 from hub import audit, commons, outcomes, plans
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, suspicion_reason, validate_size
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
@@ -40,6 +41,7 @@ from hub.models import (
     TEXT_SEARCH_CONFIG,
     VALID_FEEDBACK_TAGS,
     VALID_VOTE_TYPES,
+    HoldoutObservation,
     KnowledgeBaseSubmission,
     Organization,
     Trace,
@@ -1285,6 +1287,252 @@ async def list_tags(session: AsyncSession, org_id: str) -> list[str]:
     )
     tags = (await session.execute(stmt)).scalars().all()
     return sorted(tags)
+
+
+# --- Randomized holdout: the only causal instrument here ----------------
+#
+# `fleet_outcomes` below compares a fleet against its own past, which
+# cannot separate this product's contribution from anything else that
+# changed in the same window. This compares two arms of the same fleet in
+# the SAME window, differing only by whether the memory was injected. That
+# is what makes "what else changed that quarter?" answerable, and the
+# answer "nothing, by construction".
+#
+# STRATEGY.md §11.3 names causally-measured memory as the entire moat, and
+# §13.2 calls running it "the cheapest falsifier in the document" and says
+# to run it first. Both were true of commontrace/experiment.py, which
+# works against a local file store -- and nothing in the Hub could do it,
+# so the falsifier could not be run on the surface where paying customers
+# actually are. These three functions are that surface.
+#
+# The assignment function itself is IMPORTED from commontrace.experiment,
+# for the third time in this codebase and the third variation on one
+# reason: a near-copy that drifted would not fail loudly. Here the
+# specific failure is that a fleet running both the local CLI and the Hub
+# would randomize the same lesson two different ways and silently compare
+# two mixtures, biasing every effect estimate toward zero.
+
+
+class ExperimentNotRunning(ValueError):
+    """holdout_assign was called for an org with no experiment configured.
+
+    A clean error rather than a silent "inject everything": a client that
+    believes it is running an experiment and is actually not would produce
+    an all-injected dataset that looks like an underpowered result instead
+    of like a misconfiguration.
+    """
+
+
+MAX_OCCASION_ID_CHARS = 128
+MAX_TRACES_PER_ASSIGN = 100
+
+
+async def holdout_assign(
+    session: AsyncSession,
+    org_id: str,
+    trace_ids: list[str],
+    occasion_id: str,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict:
+    """For each trace eligible on this occasion, decide inject or withhold,
+    record the decision, and return it.
+
+    Idempotent by construction, and it has to be: an agent that times out
+    and retries must get the SAME arms back, or the retry would move an
+    occasion between arms and corrupt the comparison. Assignment is a pure
+    hash of (salt, trace_id, occasion_id), so a retry recomputes the same
+    answer, and the unique constraint makes the recorded row a no-op rather
+    than a duplicate that would double that occasion's weight.
+
+    Traces are filtered to the caller's own org before anything is
+    recorded -- an id belonging to another org is silently absent from the
+    result rather than reported, matching get_trace's not-found behaviour.
+    """
+    if not isinstance(trace_ids, (list, tuple)):
+        raise ValueError("trace_ids must be a list")
+    if len(trace_ids) > MAX_TRACES_PER_ASSIGN:
+        raise ValueError(
+            f"too many traces in one assignment ({len(trace_ids)}); "
+            f"the maximum is {MAX_TRACES_PER_ASSIGN}"
+        )
+    occasion_id = str(occasion_id or "").strip()
+    if not occasion_id:
+        raise ValueError("occasion_id is required: it is the key the outcome is reported against")
+    if len(occasion_id) > MAX_OCCASION_ID_CHARS:
+        raise ValueError(f"occasion_id exceeds {MAX_OCCASION_ID_CHARS} chars")
+
+    org = await session.get(Organization, org_id)
+    if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
+        raise ExperimentNotRunning(
+            "No holdout experiment is running for this organization. An operator "
+            "starts one with `python -m hub.manage start-experiment <org_id> [rate]`."
+        )
+
+    valid = list(
+        (
+            await session.execute(
+                select(Trace.id).where(
+                    Trace.org_id == org_id,
+                    Trace.id.in_([t for t in trace_ids if _is_uuid(str(t))]),
+                )
+            )
+        ).scalars().all()
+    )
+
+    decisions = []
+    for trace_id in valid:
+        withheld = experiment.is_held_out(
+            trace_id, occasion_id, rate=org.holdout_rate, salt=org.holdout_salt
+        )
+        decisions.append({"trace_id": trace_id, "injected": not withheld})
+
+    if decisions:
+        # ON CONFLICT DO NOTHING, not DO UPDATE: the existing row is by
+        # definition the same arm (assignment is deterministic), and
+        # overwriting it would reset created_at and lose the original
+        # decision's timestamp for no gain.
+        await session.execute(
+            pg_insert(HoldoutObservation)
+            .values(
+                [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "org_id": org_id,
+                        "trace_id": d["trace_id"],
+                        "occasion_id": occasion_id,
+                        "injected": d["injected"],
+                        "salt": org.holdout_salt,
+                    }
+                    for d in decisions
+                ]
+            )
+            .on_conflict_do_nothing(constraint="uq_holdout_org_salt_trace_occasion")
+        )
+        await session.flush()
+
+    return {
+        "occasion_id": occasion_id,
+        "holdout_rate": org.holdout_rate,
+        "inject": [d["trace_id"] for d in decisions if d["injected"]],
+        "withhold": [d["trace_id"] for d in decisions if not d["injected"]],
+        "note": (
+            "Withheld traces must NOT be used on this occasion. Injecting one anyway "
+            "moves it into the treated arm without the record saying so, which does "
+            "not fail loudly -- it biases the measured effect toward zero. Report the "
+            "result with record_occasion_outcome(occasion_id, succeeded)."
+        ),
+    }
+
+
+async def record_occasion_outcome(
+    session: AsyncSession,
+    org_id: str,
+    occasion_id: str,
+    succeeded: bool,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict:
+    """Close the loop: how did this occasion go?
+
+    Updates every observation recorded for the occasion, in both arms at
+    once, which is the point -- an outcome belongs to the TASK, not to any
+    one memory that was or was not injected into it.
+    """
+    occasion_id = str(occasion_id or "").strip()
+    if not occasion_id:
+        raise ValueError("occasion_id is required")
+    if not isinstance(succeeded, bool):
+        raise ValueError("succeeded must be a boolean")
+
+    result = await session.execute(
+        update(HoldoutObservation)
+        .where(
+            HoldoutObservation.org_id == org_id,
+            HoldoutObservation.occasion_id == occasion_id,
+            # Only unresolved rows. A second report for the same occasion
+            # is ignored rather than allowed to flip an outcome already
+            # counted -- otherwise a retry loop could walk a result back
+            # and forth and the analysis would depend on which call landed
+            # last.
+            HoldoutObservation.succeeded.is_(None),
+        )
+        .values(succeeded=succeeded, resolved_at=datetime.now(timezone.utc))
+    )
+    await session.flush()
+    return {"occasion_id": occasion_id, "observations_resolved": result.rowcount or 0}
+
+
+async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
+    """Per-trace causal effect estimates from the running experiment.
+
+    Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
+    two-proportion tests, Benjamini-Hochberg across the lessons that are
+    adequately powered, a minimum detectable effect on the ones that are
+    not, and an explicit UNDERPOWERED verdict so "cannot answer yet" never
+    reads as "no effect".
+    """
+    org = await session.get(Organization, org_id)
+    rows = (
+        await session.execute(
+            select(HoldoutObservation).where(
+                HoldoutObservation.org_id == org_id,
+                HoldoutObservation.succeeded.isnot(None),
+                # Scoped to the CURRENT experiment. Observations from an
+                # earlier salt were drawn from a different randomization
+                # and pooling them would mix two experiments into one
+                # comparison -- the exact failure Organization.holdout_salt
+                # exists to make detectable.
+                HoldoutObservation.salt == (org.holdout_salt if org else ""),
+            )
+        )
+    ).scalars().all()
+
+    observations = [
+        experiment.HoldoutObservation(
+            lesson_slug=r.trace_id, occasion_id=r.occasion_id, injected=r.injected,
+            succeeded=bool(r.succeeded),
+        )
+        for r in rows
+    ]
+    effects = experiment.analyze(observations, alpha=alpha)
+
+    titles = dict(
+        (
+            await session.execute(
+                select(Trace.id, Trace.title).where(
+                    Trace.org_id == org_id, Trace.id.in_([e.lesson_slug for e in effects])
+                )
+            )
+        ).all()
+    )
+    return {
+        "experiment_running": bool(org and org.holdout_rate > 0 and org.holdout_salt),
+        "holdout_rate": org.holdout_rate if org else 0.0,
+        "n_observations": len(observations),
+        "n_occasions": len({o.occasion_id for o in observations}),
+        "effects": [
+            {
+                "trace_id": e.lesson_slug,
+                "title": titles.get(e.lesson_slug, "(deleted trace)"),
+                "n_injected": e.n_injected,
+                "n_withheld": e.n_withheld,
+                "rate_injected": e.rate_injected,
+                "rate_withheld": e.rate_withheld,
+                "effect": e.effect,
+                "ci_95": [e.ci_low, e.ci_high],
+                "p_value": e.p_value,
+                "significant": e.significant,
+                "min_detectable_effect": e.min_detectable_effect,
+                "verdict": e.verdict,
+                "note": e.note,
+            }
+            for e in effects
+        ],
+        "note": (
+            "CAUSAL, unlike the before/after comparison alongside it: the two arms "
+            "are the same fleet in the same window, differing only by whether the "
+            "memory was injected. That is what makes this survive 'what else changed?'."
+        ),
+    }
 
 
 # --- Fleet outcomes: is this actually working for this customer? --------

@@ -1437,3 +1437,110 @@ value, and link 4's is "a customer consolidates onto one platform and
 drops this." The instruments for all three now exist and are, as far as
 this repository can establish, correct. Nothing further can be learned
 about whether this is a billion-dollar business by writing more of it.
+
+---
+
+## 19. Correction to §18.4: the cheapest falsifier could not be run on the product
+
+§18.4 closed with a confident claim, and it was wrong:
+
+> **Every remaining question on the critical path needs customers, not
+> engineering.** … Nothing further can be learned about whether this is a
+> billion-dollar business by writing more of it.
+
+The first half is still broadly right. The second half was not, and the
+gap it hid is the largest one this document has recorded.
+
+### 19.1 What was missing
+
+§11.3 names the moat in one sentence — *"nobody rips out the thing with a
+measured effect size on their own data"* — and the measurement it means is
+§8's randomized holdout, not §17's before/after comparison. §13.2 goes
+further and calls running that holdout **"the cheapest falsifier in the
+document and it should be run first."**
+
+`commontrace/experiment.py` implements it correctly and completely. It
+works against a **local file store**. The Hub had no notion of a holdout
+at all — no assignment, no arms, no observations. Every mention of
+`experiment` in `hub/` was a comment or an import of its *statistics*.
+
+So the position was:
+
+- A **Hub customer** — which is to say, the product — could obtain no
+  causal number of any kind. `fleet_outcomes` (§17) was the ceiling, and
+  it is explicitly observational.
+- §11.3's moat sentence was true only of the local tier, which is not
+  what anyone is being sold.
+- §13.2's cheapest, most gating falsifier **could not be run on paying
+  customers** without asking them to abandon the Hub for local files.
+
+That is not "needs customers". That is a missing instrument on the surface
+the customers are on, and §18.4 asserted otherwise without checking.
+
+### 19.2 What now exists
+
+`holdout_assign(trace_ids, occasion_id)` and
+`record_occasion_outcome(occasion_id, succeeded)` on the MCP surface;
+`start-experiment` / `experiment` / `stop-experiment` on the operator CLI;
+`HoldoutObservation` as the only structure in the Hub that supports a
+causal claim. Analysis is `commontrace.experiment.analyze` unchanged —
+imported, for the third time and the third variation on one reason. Here
+a drifted copy would randomize the same lesson two ways across a fleet
+running both tiers and silently compare two mixtures, biasing every
+effect toward zero.
+
+Validated against seeded ground truth, 700 occasions, three lessons:
+
+| lesson | true effect | recovered | 95% CI | verdict |
+|---|---:|---:|---|---|
+| retry with jittered backoff | +30% | +29.2% | [+21.7%, +36.7%] | HELPS |
+| disable the circuit breaker | −25% | −24.5% | [−31.8%, −17.3%] | HURTS |
+| always set pool_timeout | 0% | −6.0% | — | no effect (MDE ~13%) |
+
+Every interval covers the true value, and the null case reports its own
+power rather than being read as evidence of absence. That validates the
+instrument. It says nothing about any real fleet, which is the point of
+running it on one.
+
+### 19.3 The one that only this can produce
+
+`HURTS` is not symmetry for its own sake. A lesson retrieved often
+*because* it fires on the hardest tasks scores well on every correlational
+signal this system has — retrievals, trust, `commons_hits` — and may be
+making outcomes worse. No amount of observation separates those two
+stories. Withholding it at random does, and nothing else does.
+
+A memory product that cannot detect its own harmful memories is a product
+whose corpus degrades silently as it grows, which is the same failure
+§16 addressed for the Knowledge Base and had not addressed for a fleet's
+own store.
+
+### 19.4 The cost, stated plainly
+
+The withheld fraction gets a worse product on purpose. That is the price
+of knowing whether the product works at all; it is bounded by the rate;
+and no migration or default ever turns it on. An operator decides, per
+org, and the decision is recorded in the audit log.
+
+This is also the honest answer to why a customer would agree: they are
+buying the claim in §11.3, and this is the only way anyone — including
+them — can check it. A vendor willing to run an experiment that can return
+`HURTS` about its own product is making a different kind of claim than one
+that reports retrieval counts.
+
+### 19.5 Revised status of §13.2's chain
+
+- **Link 1** (per-org memory delivers measurable value): falsifier was
+  *"run `--experiment` on the next two fleets"*, and until now that could
+  not be done on the Hub at all. The instrument now exists on the product
+  surface. Still needs two fleets.
+- **Link 3** (value compounds faster than cost): cost half measured (§18),
+  value half still needs real query volume.
+- **Links 2, 4, 5**: unchanged.
+
+§18.4's claim, corrected: every remaining question needs customers *and*
+the instruments to have been built where those customers are. The second
+half was not finished when §18 said it was. It is now, as far as this
+repository can establish — and that phrasing is doing real work, because
+§18.4 is the second time in two sections that a confident "nothing left to
+build" turned out to be a claim nobody had checked.

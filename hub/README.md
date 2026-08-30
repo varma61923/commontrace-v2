@@ -17,7 +17,7 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Ten more are Hub-specific and outside the protocol. `delete_trace(id)`
+Twelve more are Hub-specific and outside the protocol. `delete_trace(id)`
 permanently deletes one of your own traces (self-service, immediate,
 irreversible); `request_account_deletion()` / `confirm_account_deletion
 (confirmation_token)` / `cancel_account_deletion()` do the same for your
@@ -37,7 +37,11 @@ without an operator's own review-submission action deciding it should be.
 `fleet_outcomes()` answers whether the fleet's own recorded outcomes have
 actually improved since its baseline window -- both org-scoped like the
 six protocol tools, both unmetered, and both reading nothing but the
-caller's own data. `hub/smoke.py` pins the tool surface, so a tool
+caller's own data. `holdout_assign(trace_ids, occasion_id)` and
+`record_occasion_outcome(occasion_id, succeeded)` run a randomized
+holdout -- the only design here that supports a *causal* claim about
+whether your memory is helping; see "The randomized holdout" below.
+`hub/smoke.py` pins the tool surface, so a tool
 appearing or disappearing fails a post-deploy check rather than
 surprising a client.
 
@@ -63,7 +67,7 @@ hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quara
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
-hub/outcomes.py    before/after fleet outcome measurement (statistics imported from commontrace/experiment.py)
+hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
 hub/crud.py        every tool's actual query logic -- ALWAYS org_id-scoped in SQL
 hub/server.py      thin MCP wiring: auth middleware + tool handlers that call crud.py
@@ -235,6 +239,65 @@ whatever volume of "sharing" a credit formula alone would reward.
 `hub/manage.py list-submissions` is the review queue; `kb-stats` reports
 the pending/approved/rejected funnel alongside the corpus's own
 content-quality numbers.
+
+### The randomized holdout: the only causal instrument here
+
+"Fleet outcomes" below compares a fleet against its own past. That cannot
+separate this product's contribution from anything else that changed in
+the same window, and it says so on every response. This can.
+
+`holdout_assign(trace_ids, occasion_id)` decides, per (trace, occasion),
+whether to inject the memory or deliberately **withhold** it, and records
+the arm. `record_occasion_outcome(occasion_id, succeeded)` closes the
+loop. The comparison is then two arms of the same fleet in the same
+window, differing only by the treatment — so "what else changed that
+quarter?" has an answer, and the answer is "nothing, by construction".
+
+`STRATEGY.md` §11.3 names causally-measured memory as the **entire moat**,
+and §13.2 calls running this *"the cheapest falsifier in the document"* and
+says to run it first. Both were already true of
+`commontrace/experiment.py` — which works against a local file store.
+Nothing in the Hub could do it, so the most gating falsifier in the
+strategy could not be run on the surface paying customers are actually on.
+
+An operator starts one per org:
+
+```bash
+python -m hub.manage start-experiment <org_id> 0.2   # withhold 20%
+python -m hub.manage experiment <org_id>             # what it established
+python -m hub.manage stop-experiment <org_id>        # observations are kept
+```
+
+**The rate is a real trade, not a knob.** Withholding memory from a
+fraction of occasions means those occasions get a worse product on
+purpose. That is the price of knowing whether the product works at all,
+it is bounded by that number, and it should be a decision someone makes
+rather than a default nobody chose — which is why no migration ever turns
+it on and `holdout_rate` defaults to 0.
+
+Four properties do the real work, and each exists because its absence
+fails *silently* rather than loudly:
+
+- **Assignment is a deterministic hash** of (salt, trace, occasion), so a
+  client that times out and retries gets the same arms. An occasion that
+  moved between arms would not raise; it would quietly contaminate the
+  comparison.
+- **The salt is per-org and never edited.** Restarting starts a *new*
+  experiment, and the analysis is scoped to the current salt. Pooling two
+  randomizations compares two mixtures and biases every effect toward
+  zero — which looks like a null result, not like a bug.
+- **Eligibility is the row's existence**, not a flag on it.
+  `commontrace/experiment.py` calls `eligible` "the crucial field and the
+  easiest thing to get wrong"; here a row only exists because the Hub was
+  asked to decide, so there is one fewer thing a client can misreport.
+- **Unresolved observations are excluded, never counted as failures.** An
+  agent that crashed before reporting is missing data; scoring it as a
+  loss would penalise whichever arm crashed more.
+
+`HURTS` is a first-class verdict, and it is the one correlational scoring
+structurally cannot produce: a lesson that is retrieved often *because*
+it fires on hard tasks looks good by retrieval count and bad by outcome,
+and only the holdout can tell those apart.
 
 ### Fleet outcomes: the number the moat argument depends on
 
@@ -506,7 +569,10 @@ python -m hub.manage revoke-key <key_id>
 python -m hub.manage list-orgs
 
 python -m hub.manage stats                       # orgs, active keys, traces, quarantined, votes, mean trust
-python -m hub.manage outcomes [org_id]            # is the product working, per fleet? (the churn view)
+python -m hub.manage outcomes [org_id]            # is the product working, per fleet? (observational)
+python -m hub.manage start-experiment <org_id> [rate]   # begin a randomized holdout (causal)
+python -m hub.manage experiment <org_id>          # what the holdout established, per trace
+python -m hub.manage stop-experiment <org_id>     # stop withholding; observations are kept
 python -m hub.manage kb-stats                     # corpus size, hits delivered, standing breakdown, submission funnel
 python -m hub.manage kb-review [limit]            # which entries need a human, worst first
 python -m hub.manage kb-retract <trace_id> [reason]  # withdraw an entry from the Knowledge Base (reversible)

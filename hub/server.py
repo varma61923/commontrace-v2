@@ -372,7 +372,65 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
-                return await crud.fleet_outcomes(session, org_id, agent_type=agent_type)
+                report = await crud.fleet_outcomes(session, org_id, agent_type=agent_type)
+                # The causal instrument, returned alongside the
+                # observational one rather than in a separate tool: a
+                # reader who sees only the before/after number has no way
+                # to know a stronger answer was available, and the whole
+                # point of the distinction is that it be visible.
+                report["causal"] = await crud.causal_effects(session, org_id)
+                return report
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def holdout_assign(trace_ids: list, occasion_id: str) -> dict:
+        """Randomized holdout: for each trace eligible on this occasion,
+        decide whether to inject it or deliberately withhold it, and record
+        the decision so the two arms can later be compared.
+
+        This is the only way to get a CAUSAL answer about whether your
+        memory is helping. `fleet_outcomes` compares your fleet against its
+        own past, which cannot separate this product's effect from anything
+        else that changed. Here the two arms are the same fleet in the same
+        window, differing only by whether the memory was injected.
+
+        `occasion_id` is your own identifier for one unit of work, and it
+        is the key you later report the result against. Safe to retry: the
+        arms are a deterministic hash, so a repeat call returns the same
+        answer and records nothing new.
+
+        **Traces returned under `withhold` must not be used on this
+        occasion.** Using one anyway does not fail loudly -- it moves that
+        occasion into the treated arm without the record saying so, which
+        biases the measured effect toward zero.
+
+        Requires an operator to have started an experiment for your org."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.holdout_assign(
+                    session, org_id, list(trace_ids), occasion_id,
+                    actor=auth.get_current_actor(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def record_occasion_outcome(occasion_id: str, succeeded: bool) -> dict:
+        """Report how an occasion went, closing the loop on every holdout
+        decision made for it.
+
+        The outcome belongs to the TASK, not to any one memory, so this
+        resolves both arms at once. Only the first report for an occasion
+        counts -- a later one is ignored rather than allowed to flip a
+        result already counted."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.record_occasion_outcome(
+                    session, org_id, occasion_id, succeeded, actor=auth.get_current_actor(),
+                )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
