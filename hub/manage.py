@@ -19,6 +19,14 @@
                                    -> load or update the operator-curated Knowledge Base
                                        content, marked commons_source='seed' from a file
                                        the operator wrote
+    kb-review [limit]              -> which Knowledge Base entries need a human, worst
+                                       first: security-flagged, disputed by the fleets
+                                       that tried them, past their review date, or never
+                                       matched anything. Ordered by traffic affected
+    kb-retract <trace_id> [reason] -> withdraw one entry from the Knowledge Base. Stops
+                                       being served immediately; the row, its votes and
+                                       its hit history are kept. Reversible
+    kb-restore <trace_id>          -> put a retracted entry back into the Knowledge Base
     list-submissions [pending|approved|rejected]
                                    -> the community-submission review queue (or full
                                        history if no status given) -- see submit_kb_entry
@@ -72,6 +80,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
@@ -226,6 +235,29 @@ async def stats(session_factory=None) -> None:
     print(f"mean trust:          {mean_trust:.3f}" if mean_trust is not None else "mean trust:          n/a")
 
 
+def _parse_review_after(raw: object) -> datetime | None:
+    """A seed file's `review_after` as a tz-aware datetime, or None if it is
+    not an ISO 8601 date or timestamp.
+
+    `datetime.fromisoformat` only learned to accept a trailing "Z" in 3.11,
+    and this package supports 3.10 -- so the most natural way to write a UTC
+    timestamp would be rejected on exactly the older interpreter where the
+    failure is least expected. Normalized rather than documented around.
+    A value with no timezone is read as UTC, matching every other timestamp
+    in this schema.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     """Load or update the CommonTrace Knowledge Base from a JSONL file of
     curated substrate knowledge.
@@ -249,9 +281,21 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     itself, or purge and reload for now).
 
     Each JSONL line: {"title", "context_text", "solution_text", "tags"?,
-    "agent_type"?, "source"?}. `source` should cite where the knowledge
-    came from (a public postmortem, a vendor changelog) and is stored as
-    the trace's shared_rationale so provenance survives.
+    "agent_type"?, "source"?, "review_after"?}. `source` should cite where
+    the knowledge came from (a public postmortem, a vendor changelog) and
+    is stored as the trace's shared_rationale so provenance survives.
+
+    `review_after` is an ISO 8601 date or timestamp ("2027-06-01") after
+    which the entry needs re-confirming, and it is how version-pinned
+    substrate knowledge declares its own expiry at authoring time --
+    "React 19 hydrates Date differently than 18" is true until it is not,
+    and the moment to decide how long that is likely to hold is while
+    writing it. Omit it for knowledge that does not expire, which is most
+    of it. Past the date the entry shows up in `kb-review`; nothing is
+    hidden or unpublished automatically. An unparseable value is a skipped
+    line, not a silently ignored field -- a horizon that was meant to be
+    set and quietly was not is worse than no horizon at all, because the
+    operator believes the entry is being watched.
 
     Seeded traces are owned by `org_id` -- give this a dedicated operator
     org, not a customer's, so nothing here is ever attributed to a customer
@@ -279,6 +323,17 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
             bad += 1
             print(f"  line {i}: needs at least 'title' and 'solution_text', skipped", file=sys.stderr)
             continue
+        if rec.get("review_after"):
+            parsed = _parse_review_after(rec["review_after"])
+            if parsed is None:
+                bad += 1
+                print(
+                    f"  line {i}: review_after={rec['review_after']!r} is not an ISO 8601 "
+                    "date or timestamp, skipped",
+                    file=sys.stderr,
+                )
+                continue
+            rec["review_after"] = parsed
         records.append(rec)
 
     if not records:
@@ -309,6 +364,7 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
                 shared_rationale=str(rec.get("source") or "operator-seeded public substrate knowledge")[:500],
                 commons_signature=commons.signature_for(title, context_text, tags),
                 commons_source="seed",
+                commons_review_after=rec.get("review_after"),
             )
             session.add(trace)
             added += 1
@@ -348,15 +404,20 @@ async def kb_stats(session_factory=None) -> None:
     async with session_scope(session_factory) as session:
         entries = (
             await session.execute(
-                select(Trace.id, Trace.title, Trace.commons_hits)
+                select(Trace).where(*crud.commons_visible()).order_by(Trace.commons_hits.desc())
+            )
+        ).scalars().all()
+        n_retracted = (
+            await session.execute(
+                select(func.count())
+                .select_from(Trace)
                 .where(
                     Trace.shared_with_commons.is_(True),
-                    Trace.quarantined.is_(False),
                     Trace.commons_source == "seed",
+                    Trace.commons_retracted_at.isnot(None),
                 )
-                .order_by(Trace.commons_hits.desc())
             )
-        ).all()
+        ).scalar_one()
         n_queriers = (
             await session.execute(
                 select(func.count(func.distinct(UsageCounter.org_id))).where(
@@ -401,14 +462,30 @@ async def kb_stats(session_factory=None) -> None:
               "<operator_org_id>` loads one.")
         return
 
-    total_hits = sum(hits for _id, _title, hits in entries)
-    zero_hit = [e for e in entries if e[2] == 0]
+    total_hits = sum(t.commons_hits for t in entries)
+    zero_hit = [t for t in entries if t.commons_hits == 0]
+    now = datetime.now(timezone.utc)
+    standings = Counter(crud.standing_of(t, now) for t in entries)
 
     print(f"knowledge base entries:  {len(entries)}")
     print(f"total hits delivered:    {total_hits}   (times an entry covered a real "
           "recurring failure, at the conservative threshold)")
     print(f"queried by:              {n_queriers} of {n_orgs_total} org(s) (ever, any period)")
     print(f"never matched anything:  {len(zero_hit)} of {len(entries)} entries")
+
+    # The maintenance half of the same question. Corpus size says how much
+    # was written; this says how much of it the field still stands behind.
+    print("\nstanding (hub/commons.py:entry_standing):")
+    for name in commons.VALID_STANDINGS:
+        print(f"  {name + ':':<14} {standings.get(name, 0)}")
+    if n_retracted:
+        print(f"  {'retracted:':<14} {n_retracted}   (withdrawn by an operator, not served)")
+
+    needs_review = standings.get(commons.STANDING_DISPUTED, 0) + standings.get(
+        commons.STANDING_STALE, 0
+    )
+    if needs_review:
+        print(f"\n  `kb-review` lists the {needs_review} entry(ies) needing a decision.")
 
     if total_hits == 0:
         print(
@@ -418,10 +495,10 @@ async def kb_stats(session_factory=None) -> None:
         return
 
     print("\ntop entries by hits:")
-    for _id, title, hits in entries[:10]:
-        if hits == 0:
+    for trace in entries[:10]:
+        if trace.commons_hits == 0:
             break
-        print(f"  {hits:>4}  {title[:70]}")
+        print(f"  {trace.commons_hits:>4}  {trace.title[:70]}")
 
     if len(zero_hit) / len(entries) > 0.5:
         print(
@@ -430,6 +507,105 @@ async def kb_stats(session_factory=None) -> None:
             "hitting, or they are worded differently from how fleets describe them -- see "
             "commons/eval/RESULTS.md on lexical matching's recall limits."
         )
+
+
+_REVIEW_BUCKET_HEADINGS = {
+    "urgent": "SECURITY-FLAGGED -- read these first",
+    "disputed": "DISPUTED -- the fleets that tried these say they did not work",
+    "stale": "PAST REVIEW DATE -- nobody has confirmed these are still true",
+    "never_hit": "NEVER MATCHED -- content nobody needs, or worded so nobody finds it",
+}
+
+
+async def kb_review(limit: str = "50", session_factory=None) -> bool:
+    """The Knowledge Base maintenance queue: which entries need a human,
+    worst first (crud.kb_review_queue).
+
+    This is the command that makes operator curation scale. The obvious
+    objection to a corpus one party maintains is that reviewing it costs
+    O(entries), so the model dies somewhere past a few thousand. It only
+    dies if finding the bad entries is the expensive part -- and it is not,
+    because every query and every vote already localizes them. What this
+    prints is that exhaust, sorted by how much traffic each problem is
+    actually affecting, so review cost tracks the error rate instead of the
+    corpus size.
+
+    Nothing here is automatic. Every line is a suggestion to a human who
+    then runs `kb-retract`, edits the source file and re-seeds, or decides
+    the entry is fine after all -- see hub/commons.py's "votes inform, the
+    operator decides".
+    """
+    session_factory = session_factory or _default_session_factory()
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        print(f"error: limit must be an integer, got {limit!r}", file=sys.stderr)
+        return False
+
+    async with session_scope(session_factory) as session:
+        queue = await crud.kb_review_queue(session, limit=n)
+
+    if not queue:
+        print("Nothing in the Knowledge Base needs review.")
+        print("  (No entry is security-flagged, disputed, past its review date, or unmatched.)")
+        return True
+
+    current = None
+    for item in queue:
+        if item["bucket"] != current:
+            current = item["bucket"]
+            print(f"\n{_REVIEW_BUCKET_HEADINGS[current]}")
+        print(f"  {item['id']}  {item['title'][:60]}")
+        print(f"      {item['why']}  --  {item['commons_hits']} hit(s) delivered")
+
+    print(f"\n{len(queue)} entry(ies) listed.")
+    print("  `kb-retract <trace_id> \"<reason>\"` withdraws one. Reversible with `kb-restore`.")
+    return True
+
+
+async def kb_retract(trace_id: str, reason: str = "", session_factory=None) -> bool:
+    """Withdraw one entry from the Knowledge Base.
+
+    No confirmation prompt, unlike `purge-trace`/`purge-org`. That is not
+    an inconsistency: those destroy data irreversibly, this one sets a
+    timestamp and is undone by `kb-restore`. Putting a prompt in front of a
+    reversible action trains operators to type y without reading, which is
+    what makes the prompt in front of the irreversible one worthless.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        entry = await crud.retract_kb_entry(session, trace_id, reason=reason)
+
+    if entry is None:
+        print(
+            f"error: {trace_id} is not a live Knowledge Base entry "
+            "(already retracted, not seeded content, or no such trace).",
+            file=sys.stderr,
+        )
+        return False
+    print(f"retracted: {entry['title'][:70]}")
+    print(f"  It had collected {entry['vote_count']} vote(s) of feedback before withdrawal.")
+    print(f"  reason: {entry['retraction_reason'] or '(none given)'}")
+    print("  No longer returned by commons_overlap, commons_search, or vote_trace.")
+    print(f"  `kb-restore {entry['id']}` puts it back.")
+    return True
+
+
+async def kb_restore(trace_id: str, session_factory=None) -> bool:
+    """Put a retracted entry back into the Knowledge Base."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        entry = await crud.restore_kb_entry(session, trace_id)
+
+    if entry is None:
+        print(
+            f"error: {trace_id} is not a retracted Knowledge Base entry.",
+            file=sys.stderr,
+        )
+        return False
+    print(f"restored: {entry['title'][:70]}")
+    print(f"  standing: {entry['standing']}  ({entry['vote_count']} vote(s), trust {entry['trust']:.2f})")
+    return True
 
 
 async def list_submissions(status: str | None = None, session_factory=None) -> None:
@@ -775,6 +951,9 @@ _COMMANDS = {
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),
     "commons-seed": (commons_seed, 2, 2),
+    "kb-review": (kb_review, 0, 1),
+    "kb-retract": (kb_retract, 1, 2),
+    "kb-restore": (kb_restore, 1, 1),
     "list-submissions": (list_submissions, 0, 1),
     "approve-submission": (approve_submission, 2, 3),
     "reject-submission": (reject_submission, 1, 2),

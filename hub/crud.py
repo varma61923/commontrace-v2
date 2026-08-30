@@ -161,7 +161,52 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
     }
 
 
-def _to_commons_wire(trace: Trace) -> dict:
+def commons_visible() -> list:
+    """The four conditions a row must meet to be part of the CommonTrace
+    Knowledge Base, as SQLAlchemy filter clauses.
+
+    Expressed once, here, because there are three read paths that must
+    apply it identically -- `commons_overlap`, `commons_search`, and
+    `vote_trace`'s Knowledge Base branch -- and the cost of one of them
+    drifting is not a wrong number but a boundary violation: `commons_source
+    == "seed"` is the single line that makes "no customer's trace is ever
+    visible to another customer" a property of the queries rather than a
+    policy (see hub/commons.py's module docstring). Three hand-maintained
+    copies of a security filter is two too many; a fourth read path added
+    later gets this one by construction.
+
+    `commons_retracted_at IS NULL` is the newest of the four: an operator
+    who pulls an entry (`hub/manage.py kb-retract`) expects it to stop being
+    served, and "stop being served" has to mean all three paths, including
+    the one that would otherwise let orgs keep voting on withdrawn content.
+
+    Deliberately NOT included: `Trace.org_id != org_id` and
+    `Trace.commons_signature IS NOT NULL`. Neither is a visibility rule --
+    the first is the two matching tools declining to score a caller against
+    itself, the second is a matcher precondition -- and folding them in
+    here would silently break `vote_trace`, which correctly applies
+    neither.
+    """
+    return [
+        Trace.shared_with_commons.is_(True),
+        Trace.commons_source == "seed",
+        Trace.quarantined.is_(False),
+        Trace.commons_retracted_at.is_(None),
+    ]
+
+
+def standing_of(trace: Trace, now: datetime | None = None) -> str:
+    """This entry's standing (hub/commons.py:entry_standing) from the
+    denormalized columns, with no additional query."""
+    return commons.entry_standing(
+        trust=trace.trust,
+        votes=trace.commons_votes,
+        review_after=trace.commons_review_after,
+        now=now,
+    )
+
+
+def _to_commons_wire(trace: Trace, now: datetime | None = None) -> dict:
     """Projection for a Knowledge Base match (commons_overlap/
     commons_search) -- deliberately narrower than _to_wire, which is used
     everywhere a caller is looking at its OWN trace.
@@ -175,7 +220,21 @@ def _to_commons_wire(trace: Trace) -> dict:
     `retrievals`/`depth`/`supersedes_trace_id` are operational bookkeeping
     fields with no meaning on curated content. What answers "does this
     solve my failure" is title/context/solution/tags/agent_type, plus
-    `trust` so the requester can judge how reliable the match is."""
+    `trust` so the requester can judge how reliable the match is.
+
+    `standing` and `vote_count` join `trust` for a reason worth stating: a
+    bare trust score is uninterpretable to the agent receiving it. 0.0 from
+    one downvote and 0.0 from twelve are the same number and completely
+    different facts, and an autonomous caller deciding whether to apply a
+    suggested fix needs the difference. `standing` is that judgement made
+    once, in one place (hub/commons.py:entry_standing), rather than
+    re-derived by every client from a float and a hope.
+
+    `vote_count`, not `votes`: `_to_wire`'s `votes` is the list of vote
+    RECORDS -- who voted, with what free-text feedback -- and is one of the
+    fields this projection exists to withhold. Two keys named the same
+    thing on two projections of the same object, one an int and one a list
+    of dicts, is how a caller ends up shipping the wrong one."""
     return {
         "id": trace.id,
         "title": trace.title,
@@ -184,6 +243,8 @@ def _to_commons_wire(trace: Trace) -> dict:
         "tags": list(trace.tags or []),
         "agent_type": trace.agent_type,
         "trust": trace.trust,
+        "vote_count": trace.commons_votes,
+        "standing": standing_of(trace, now),
         "created_at": _iso(trace.created_at),
     }
 
@@ -777,21 +838,14 @@ async def vote_trace(
     # it matches for (commons_overlap/commons_search's projection,
     # hub/crud.py:_to_commons_wire). This is customer-to-operator-content
     # feedback -- rating a Stack-Overflow-style answer -- never
-    # customer-to-customer: gated on `shared_with_commons` AND
-    # `commons_source == "seed"` (not merely "any trace, any org" -- that
-    # would let an org vote on private traces it has no business seeing at
-    # all) and `not quarantined`, the same boundary the two Knowledge Base
-    # queries enforce.
+    # customer-to-customer: gated on the same `commons_visible()` boundary
+    # the two Knowledge Base queries enforce (shared AND seed-sourced AND
+    # not quarantined AND not retracted -- not merely "any trace, any org",
+    # which would let an org vote on private traces it has no business
+    # seeing at all).
     stmt = select(Trace).where(
         Trace.id == trace_id,
-        or_(
-            Trace.org_id == org_id,
-            and_(
-                Trace.shared_with_commons.is_(True),
-                Trace.commons_source == "seed",
-                Trace.quarantined.is_(False),
-            ),
-        ),
+        or_(Trace.org_id == org_id, and_(*commons_visible())),
     )
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
@@ -859,8 +913,19 @@ async def vote_trace(
     # `retrievals` below -- always writes the value this transaction just
     # computed from its own fresh, post-lock COUNT, regardless of what the
     # in-memory object happened to hold before.
-    await session.execute(update(Trace).where(Trace.id == trace_id).values(trust=new_trust))
+    #
+    # `commons_votes` rides along in the same statement, from the same
+    # tally, for the same reason: it is the denominator `trust` throws
+    # away, and hub/commons.py:entry_standing cannot tell a disputed entry
+    # from a single disgruntled voter without it. Written as an assignment
+    # rather than `commons_votes + 1` because this path UPSERTs -- an org
+    # changing its existing vote must leave the total where it was, and
+    # `total` above is already the authoritative post-write count.
+    await session.execute(
+        update(Trace).where(Trace.id == trace_id).values(trust=new_trust, commons_votes=total)
+    )
     set_committed_value(trace, "trust", new_trust)
+    set_committed_value(trace, "commons_votes", total)
 
     await session.flush()
     await audit.record(
@@ -1529,6 +1594,222 @@ async def review_kb_submission(
     return _submission_to_wire(submission)
 
 
+# --- Knowledge Base maintenance (operator-trust-level) ------------------
+#
+# Everything above grows the corpus: `commons_seed` in bulk,
+# `review_kb_submission` one accepted proposal at a time. Nothing above
+# maintains it, and a curated corpus that only grows is one that decays --
+# the entries stay, the world moves, and the product keeps serving answers
+# that used to be right. DATA_RETENTION.md flagged the missing half
+# plainly ("there is no CLI command to correct or remove a single
+# Knowledge Base entry after commons-seed has loaded it, short of a direct
+# database operation"); these three functions are it.
+#
+# WHY THIS SCALES, WHICH IS THE ACTUAL POINT. Operator curation has an
+# obvious objection: reviewing a corpus is O(corpus), so the model breaks
+# somewhere past a few thousand entries. It breaks only if the operator has
+# to FIND the bad entries. It does not, because using the corpus already
+# generates the signal that locates them -- every query credits
+# `commons_hits`, every fleet that tries an answer can vote on it, and
+# `feedback_tag` says what kind of wrong it was. `kb_review_queue` turns
+# that exhaust into a work list ordered by damage done, so review cost
+# tracks the ERROR RATE rather than the corpus size. That is the same
+# mechanism that lets Stack Overflow and Wikipedia stay usable at a scale
+# no editorial staff could read: readers find the errors, editors
+# adjudicate them.
+
+
+async def retract_kb_entry(
+    session: AsyncSession,
+    trace_id: str,
+    reason: str = "",
+    actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> dict | None:
+    """Withdraw one entry from the Knowledge Base. Returns its wire shape,
+    or None if `trace_id` is not a live Knowledge Base entry.
+
+    Deliberately not a delete. The row, its votes, and its accumulated
+    `commons_hits` all survive, because the question an operator asks after
+    a retraction -- "how many fleets did we serve this to before we pulled
+    it, and what did they say about it" -- is answerable only from exactly
+    the data a DELETE would destroy. `purge-trace` remains the path for
+    actually removing content (see DATA_RETENTION.md §3); this is the path
+    for un-publishing it, which is a different and far more common need.
+
+    Idempotent in the way that matters: retracting an already-retracted
+    entry returns None rather than overwriting the original timestamp and
+    reason with a second, less informative pair.
+    """
+    if not _is_uuid(trace_id):
+        return None
+    stmt = select(Trace).where(Trace.id == trace_id, *commons_visible())
+    trace = (await session.execute(stmt)).scalar_one_or_none()
+    if trace is None:
+        return None
+
+    trace.commons_retracted_at = datetime.now(timezone.utc)
+    trace.commons_retraction_reason = (reason or "")[:200]
+    await session.flush()
+    await audit.record(
+        session,
+        actor=actor,
+        action="retract_kb_entry",
+        org_id=trace.org_id,
+        target_type="trace",
+        target_id=trace.id,
+        summary=f"hits_at_retraction={trace.commons_hits} reason={trace.commons_retraction_reason or '-'}",
+    )
+    # Projected through the same narrow wire shape the Knowledge Base
+    # queries use, with the retraction stated explicitly -- the row no
+    # longer satisfies commons_visible(), so `standing` computed from it
+    # would describe an entry nobody can reach.
+    wire = _to_commons_wire(trace)
+    wire["standing"] = "retracted"
+    wire["retracted_at"] = _iso(trace.commons_retracted_at)
+    wire["retraction_reason"] = trace.commons_retraction_reason
+    return wire
+
+
+async def restore_kb_entry(
+    session: AsyncSession, trace_id: str, actor: str = audit.ACTOR_OPERATOR_CLI
+) -> dict | None:
+    """Undo a retraction. Returns the restored entry, or None if `trace_id`
+    is not a retracted Knowledge Base entry.
+
+    Exists because retraction is the right response to a *suspected*
+    problem and suspicion is sometimes wrong. Without a cheap undo, the
+    honest operator move on an ambiguous report is to leave a possibly-bad
+    entry serving traffic while investigating, which is the wrong default.
+    """
+    if not _is_uuid(trace_id):
+        return None
+    stmt = select(Trace).where(
+        Trace.id == trace_id,
+        Trace.shared_with_commons.is_(True),
+        Trace.commons_source == "seed",
+        Trace.commons_retracted_at.isnot(None),
+    )
+    trace = (await session.execute(stmt)).scalar_one_or_none()
+    if trace is None:
+        return None
+
+    trace.commons_retracted_at = None
+    trace.commons_retraction_reason = ""
+    await session.flush()
+    await audit.record(
+        session,
+        actor=actor,
+        action="restore_kb_entry",
+        org_id=trace.org_id,
+        target_type="trace",
+        target_id=trace.id,
+        summary="restored to the Knowledge Base",
+    )
+    return _to_commons_wire(trace)
+
+
+# A single vote tagged `security_concern` puts an entry at the top of the
+# review queue regardless of how the rest of the tally looks. This is the
+# one place the "votes inform, the operator decides" rule is applied at
+# n=1, and the asymmetry is the point: the cost of reading one spurious
+# report is a minute of an operator's time, and the cost of missing a real
+# one is bad security advice served from a corpus customers were told to
+# trust, to every fleet whose failure it matches, for as long as nobody
+# looks. Note what it still does NOT do -- it does not retract, hide, or
+# de-rank anything on its own.
+URGENT_FEEDBACK_TAGS = ("security_concern",)
+
+
+async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
+    """Which Knowledge Base entries need a human, worst first.
+
+    Four buckets, in priority order, each carrying why it is listed:
+
+    * `urgent`     -- somebody flagged a security concern on it.
+    * `disputed`   -- a majority of the fleets that tried it say it failed.
+    * `stale`      -- its declared freshness horizon has passed.
+    * `never_hit`  -- it has never matched anyone's failure. Not an error;
+                      it is either content nobody needs or content worded
+                      so differently from how fleets describe the failure
+                      that the matcher cannot find it, and both are worth
+                      an operator's attention eventually.
+
+    Within a bucket, ordered by `commons_hits` descending -- how much
+    traffic the entry is actually affecting. A wrong answer nobody reaches
+    is a smaller problem than a wrong answer served a thousand times, and
+    an operator working top-down should be spending attention in that
+    order.
+
+    Retracted entries are absent: they are already dealt with.
+    """
+    try:
+        limit = max(1, min(int(limit), 500))
+    except (TypeError, ValueError):
+        limit = 50
+
+    rows = (
+        await session.execute(
+            select(Trace).where(*commons_visible()).order_by(Trace.commons_hits.desc())
+        )
+    ).scalars().all()
+    if not rows:
+        return []
+
+    # One grouped query for the flag counts rather than a per-entry lookup:
+    # this is an operator report, but it still should not issue a query per
+    # corpus entry.
+    flagged = dict(
+        (
+            await session.execute(
+                select(Vote.trace_id, func.count())
+                .where(
+                    Vote.trace_id.in_([r.id for r in rows]),
+                    Vote.feedback_tag.in_(URGENT_FEEDBACK_TAGS),
+                )
+                .group_by(Vote.trace_id)
+            )
+        ).all()
+    )
+
+    now = datetime.now(timezone.utc)
+    order = {"urgent": 0, "disputed": 1, "stale": 2, "never_hit": 3}
+    queue: list[dict] = []
+    for trace in rows:
+        standing = standing_of(trace, now)
+        n_flags = flagged.get(trace.id, 0)
+        if n_flags:
+            bucket, why = "urgent", f"{n_flags} security concern report(s)"
+        elif standing == commons.STANDING_DISPUTED:
+            bucket, why = (
+                "disputed",
+                f"{trace.commons_votes} votes, trust {trace.trust:.2f}",
+            )
+        elif standing == commons.STANDING_STALE:
+            bucket, why = "stale", f"review due {_iso(trace.commons_review_after)}"
+        elif trace.commons_hits == 0:
+            bucket, why = "never_hit", "has never matched a real failure"
+        else:
+            continue
+        queue.append(
+            {
+                "id": trace.id,
+                "title": trace.title,
+                "bucket": bucket,
+                "why": why,
+                "standing": standing,
+                "commons_hits": trace.commons_hits,
+                "vote_count": trace.commons_votes,
+                "trust": trace.trust,
+                "security_flags": n_flags,
+            }
+        )
+
+    # `rows` is already hits-descending, and Python's sort is stable, so
+    # sorting on the bucket alone preserves that ordering within each one.
+    queue.sort(key=lambda item: order[item["bucket"]])
+    return queue[:limit]
+
+
 # --- The CommonTrace Knowledge Base (opt-in, operator-curated) ---------
 #
 # commons_overlap and commons_search are the only two places in this module
@@ -1618,16 +1899,16 @@ async def commons_overlap(
         # expensive call just before it returns.
         await _meter(session, org_id, METRIC_COMMONS_QUERIES)
 
+    # commons_visible() carries the line that makes "no org-to-org sharing"
+    # a guarantee rather than a policy: even if some future bug set
+    # shared_with_commons on a customer's own trace, it still could not
+    # surface here without ALSO being commons_source == "seed", which only
+    # commons_seed and review_kb_submission write. Retracted entries are
+    # excluded there too. hub/tests/test_commons_search.py and
+    # test_commons.py both assert a non-seed shared row is invisible to
+    # this scan.
     where = [
-        Trace.shared_with_commons.is_(True),
-        # The one line that makes "no org-to-org sharing" a guarantee rather
-        # than a policy: even if some future bug set shared_with_commons on
-        # a customer's own trace, it still could not surface here without
-        # ALSO being commons_source == "seed", which only commons_seed
-        # writes. hub/tests/test_commons_search.py and test_commons.py both
-        # assert a non-seed shared row is invisible to this scan.
-        Trace.commons_source == "seed",
-        Trace.quarantined.is_(False),
+        *commons_visible(),
         Trace.commons_signature.isnot(None),
         Trace.org_id != org_id,
     ]
@@ -1670,33 +1951,53 @@ async def commons_overlap(
     )
 
     matches: list[dict] = []
+    disputed_matches: list[dict] = []
     by_domain: dict[str, int] = {}
     n_covered = 0
+    now = datetime.now(timezone.utc)
 
     hit_ids: list[str] = []
     for (label, _sig), (idx, sim) in zip(submitted, best):
         if idx < 0 or sim < threshold:
             continue
         hit = rows[idx]
-        n_covered += 1
+        # Counted as matched regardless of standing: commons_hits answers
+        # "how often was this entry served", which is what makes
+        # `kb-review` able to rank a bad entry by how much traffic it is
+        # misdirecting. An entry that stopped counting as coverage but is
+        # still the top match for hundreds of failures is the single most
+        # urgent thing in an operator's queue, and suppressing its hit
+        # count would hide exactly that.
         hit_ids.append(hit.id)
+        entry = {
+            "failure_label": label,
+            "similarity": round(sim, 4),
+            "agent_type": hit.agent_type,
+            "tags": list(hit.tags or []),
+            # The payoff. Safe to return in full: `hit` is only in the
+            # corpus because the operator curated it as public substrate
+            # knowledge, never because another customer's trace leaked into
+            # it (the commons_source == "seed" filter above is what
+            # guarantees that).
+            "trace": _to_commons_wire(hit, now),
+        }
+        if not commons.counts_as_coverage(entry["trace"]["standing"]):
+            # A majority of the fleets that tried this entry reported it
+            # did not work (hub/commons.py's standing model). It is not a
+            # solved failure, so it does not enter the one figure this tool
+            # exists to produce -- but it is still returned, separately and
+            # labelled, because "the Knowledge Base has something about
+            # this and it is contested" is a materially different answer
+            # from "the Knowledge Base has nothing", and silently dropping
+            # it would make the two indistinguishable to the caller.
+            if include_matches:
+                disputed_matches.append(entry)
+            continue
+        n_covered += 1
         key = hit.agent_type or "(unspecified)"
         by_domain[key] = by_domain.get(key, 0) + 1
         if include_matches:
-            matches.append(
-                {
-                    "failure_label": label,
-                    "similarity": round(sim, 4),
-                    "agent_type": hit.agent_type,
-                    "tags": list(hit.tags or []),
-                    # The payoff. Safe to return in full: `hit` is only in
-                    # the corpus because the operator curated it as public
-                    # substrate knowledge, never because another customer's
-                    # trace leaked into it (the commons_source == "seed"
-                    # filter above is what guarantees that).
-                    "trace": _to_commons_wire(hit),
-                }
-            )
+            matches.append(entry)
 
     if hit_ids:
         # Atomic in-database increment, same pattern as the retrievals
@@ -1751,6 +2052,7 @@ async def commons_overlap(
         )
 
     matches.sort(key=lambda m: m["similarity"], reverse=True)
+    disputed_matches.sort(key=lambda m: m["similarity"], reverse=True)
     n_failures = len(submitted)
     return {
         "n_failures": n_failures,
@@ -1759,9 +2061,16 @@ async def commons_overlap(
         "corpus_truncated": corpus_truncated,
         "n_covered": n_covered,
         "covered_fraction": (n_covered / n_failures) if n_failures else 0.0,
+        # Matched at or above the threshold, then excluded from the count
+        # above because the entry is disputed. Reported so the coverage
+        # figure never moves without the caller being able to see why:
+        # a number that fell because the field found an answer wrong is a
+        # different event from one that fell because the corpus shrank.
+        "n_disputed": len(disputed_matches),
         "threshold": threshold,
         "by_agent_type": dict(sorted(by_domain.items(), key=lambda kv: -kv[1])),
         "matches": matches,
+        "disputed_matches": disputed_matches,
         "note": _commons_note(n_failures, len(rows), corpus_truncated, total_corpus),
     }
 
@@ -1773,7 +2082,9 @@ _SEARCH_NOTE = (
     "100% of the time, and the score distributions of true and absent "
     "matches overlap. Use `commons_overlap` -- thresholded, 0% false "
     "positives -- for any figure you intend to quote. See "
-    "commons/eval/RESULTS.md."
+    "commons/eval/RESULTS.md. Read each candidate's `standing` before "
+    "acting on it: `disputed` means a majority of the fleets that tried it "
+    "reported it did not work, and those candidates are ranked last."
 )
 
 
@@ -1852,13 +2163,11 @@ async def commons_search(
             )
     await _meter(session, org_id, METRIC_COMMONS_QUERIES)
 
+    # See commons_overlap's identical filter: commons_visible() is what
+    # guarantees the corpus can never contain another customer's trace, not
+    # just a policy that happens to hold today.
     where = [
-        Trace.shared_with_commons.is_(True),
-        # See commons_overlap's identical filter: this is what guarantees
-        # the corpus can never contain another customer's trace, not just a
-        # policy that happens to hold today.
-        Trace.commons_source == "seed",
-        Trace.quarantined.is_(False),
+        *commons_visible(),
         Trace.commons_signature.isnot(None),
         Trace.org_id != org_id,
     ]
@@ -1885,27 +2194,45 @@ async def commons_search(
         commons.rank_candidates, sig, [r.commons_signature or [] for r in rows], limit
     )
 
-    # Similarity decides the order; delivered value and trust only break
-    # ties. Folding popularity into the score itself would let a
-    # well-corroborated answer to a DIFFERENT question outrank the right
-    # one, which is the failure mode a naive "rank by votes" blend has.
+    now = datetime.now(timezone.utc)
     candidates = [
         {
             "rank": 0,
             "similarity": round(sim, 4),
             "commons_hits": rows[idx].commons_hits,
-            "trace": _to_commons_wire(rows[idx]),
+            "trace": _to_commons_wire(rows[idx], now),
         }
         for idx, sim in ranked
     ]
+    # Disputed entries sort behind everything else, however similar. Within
+    # each group similarity decides the order, and delivered value and trust
+    # only break ties -- folding popularity into the score itself would let
+    # a well-corroborated answer to a DIFFERENT question outrank the right
+    # one, which is the failure mode a naive "rank by votes" blend has.
+    #
+    # Sorted to the back rather than filtered out, and that is the whole
+    # difference between this tool and commons_overlap. Coverage is a claim,
+    # so a contested entry is excluded from it. Lookup is "here is what
+    # exists, judge it" -- and an entry the field disputes is still the most
+    # relevant thing the corpus holds about your failure, plus the warning
+    # that it did not work for the fleets who tried it. Dropping it would
+    # answer "nothing found", which is false and strictly less useful.
     candidates.sort(
-        key=lambda c: (-c["similarity"], -c["commons_hits"], -(c["trace"].get("trust") or 0.0))
+        key=lambda c: (
+            not commons.counts_as_coverage(c["trace"]["standing"]),
+            -c["similarity"],
+            -c["commons_hits"],
+            -(c["trace"].get("trust") or 0.0),
+        )
     )
     for position, c in enumerate(candidates, start=1):
         c["rank"] = position
 
     return {
         "n_candidates": len(candidates),
+        "n_disputed": sum(
+            1 for c in candidates if not commons.counts_as_coverage(c["trace"]["standing"])
+        ),
         "n_commons_traces": len(rows),
         "n_commons_traces_total": total_corpus,
         "corpus_truncated": total_corpus > len(rows),

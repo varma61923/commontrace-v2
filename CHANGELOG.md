@@ -8,6 +8,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Knowledge Base entry standing, and the operator queue that acts on
+  it.** Seeding and community submissions both answer how content gets
+  into the Knowledge Base; nothing answered what happens when an entry
+  stops being true, and a curated corpus that only grows is one that
+  decays. Two signals the system already collected and then discarded now
+  drive that: `Trace.trust` (computed from every vote on an entry, and
+  previously read by nothing but a tie-break) and `Vote.feedback_tag`
+  (`outdated`/`wrong`/`security_concern`, previously consulted nowhere).
+  `hub/commons.py:entry_standing` turns them into one label --
+  `disputed` / `stale` / `established` / `unproven` -- carried on every
+  Knowledge Base projection.
+
+  What acts on it: `commons_overlap` no longer counts a disputed entry as
+  coverage (a wrong answer is not a solved failure) and returns it
+  separately under `disputed_matches` instead, so the coverage figure
+  never moves without the caller being able to see why; `commons_search`
+  still returns disputed entries, ranked last and labelled, because for
+  lookup a contested answer beats no answer. **No vote count withdraws
+  anything.** The strongest automatic consequence is a smaller coverage
+  claim and a worse rank -- both of which make this product's own numbers
+  more conservative, never less -- and
+  `hub/tests/test_kb_standing.py:TestVotesNeverRetract` pins that as a
+  property rather than an intention.
+
+  `hub/manage.py kb-review` is the operator work list: security-flagged
+  entries first (a single `security_concern` vote is the one signal acted
+  on at n=1, and what it does is raise priority, not remove anything),
+  then disputed, then past their review date, then never-matched, each
+  bucket ordered by traffic affected -- so review cost tracks the error
+  rate rather than the corpus size, which is what makes operator curation
+  scale past what anyone could re-read. `kb-retract <trace_id> [reason]`
+  withdraws an entry from all three Knowledge Base read paths at once
+  (via the new shared `hub/crud.py:commons_visible()` filter) while
+  keeping its row, votes, and hit history; `kb-restore` reverses it. This
+  closes the gap DATA_RETENTION.md flagged as open ("there is no CLI
+  command to correct or remove a single Knowledge Base entry after
+  commons-seed has loaded it, short of a direct database operation");
+  correcting an entry *in place* remains unbuilt and is now the narrower
+  open item there.
+
+  New: `Trace.commons_votes` / `commons_review_after` /
+  `commons_retracted_at` / `commons_retraction_reason` (migration
+  `8f2b40c17ade`, which backfills `commons_votes` from the existing
+  `votes` table and narrows the partial commons index to match the new
+  filter), `commons.entry_standing` / `counts_as_coverage`,
+  `crud.retract_kb_entry` / `restore_kb_entry` / `kb_review_queue`, a
+  `review_after` field on `commons-seed`'s JSONL input so version-pinned
+  substrate knowledge can declare its own expiry at authoring time,
+  standing warnings in `commontrace commons ask` output and a
+  disputed-matches section in `commons report`, and 70+ new tests
+  (`hub/tests/test_kb_standing.py`, `tests/test_commons_cmd.py`).
+
+  No new MCP tools: the customer-facing input (`vote_trace`) and output
+  (`commons_overlap`/`commons_search`) already existed; what changed is
+  that the input is now read and the output now says what it means.
+
 - **Self-service deletion.** An org's own API key can now delete its own
   data without operator/DB-access trust: `delete_trace` removes one trace
   (and its full amendment chain) immediately, and

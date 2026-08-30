@@ -70,6 +70,8 @@ dependency.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from commontrace import overlap
 
 # Signature width. Must match what clients use, or estimate_jaccard is
@@ -152,6 +154,141 @@ MAX_COMMONS_CORPUS_NO_NUMPY = 2_000
 def max_corpus_scan() -> int:
     """The per-query corpus ceiling for the matcher this host will use."""
     return MAX_COMMONS_CORPUS if _np is not None else MAX_COMMONS_CORPUS_NO_NUMPY
+
+
+# --- Entry standing: the maintenance half of a curated corpus -----------
+#
+# Growing the Knowledge Base has two paths (operator seeding, reviewed
+# community submissions). Neither says anything about whether an entry that
+# was true when it was written is still true now, and a curated corpus that
+# only grows is a corpus that rots: "React 19 hydrates Date differently
+# than 18" is exactly the shape of substrate knowledge this product is
+# supposed to carry, and exactly the shape that expires.
+#
+# Two things were already being collected and then ignored. `Trace.trust`
+# is computed from every vote cast on an entry (hub/crud.py:vote_trace) and
+# was read by nothing but a tie-break. `Vote.feedback_tag` has carried
+# 'outdated' / 'wrong' / 'security_concern' since it was introduced and was
+# never consulted at all. So an entry every fleet that tried it voted down
+# was served, ranked, and counted as coverage exactly like one nobody had
+# ever disputed.
+#
+# `entry_standing` turns those signals into one label the query layer and
+# the operator's review queue both read. The design constraint that shapes
+# every constant below:
+#
+#   Votes inform. The operator decides.
+#
+# Nothing here ever removes an entry from the corpus on its own. The
+# strongest automatic consequence is that a disputed entry stops counting
+# toward the coverage figure and sorts last among search candidates -- both
+# of which make the product's claims smaller, never larger. Actually
+# pulling an entry is `hub/manage.py kb-retract`, a human action, recorded
+# in the audit log. That asymmetry is deliberate: a corpus where three
+# downvotes can silently delete the operator's content is a corpus a
+# competitor can edit.
+
+STANDING_DISPUTED = "disputed"
+STANDING_STALE = "stale"
+STANDING_ESTABLISHED = "established"
+STANDING_UNPROVEN = "unproven"
+
+VALID_STANDINGS = (
+    STANDING_DISPUTED,
+    STANDING_STALE,
+    STANDING_ESTABLISHED,
+    STANDING_UNPROVEN,
+)
+
+# How many votes an entry needs before its trust score is allowed to change
+# anything. Below this, standing stays `unproven` however lopsided the
+# tally is.
+#
+# The number is a floor on how much of a single org's opinion the corpus
+# will act on, not a statistical threshold -- with n=3 the confidence
+# interval on a proportion is still enormous, and pretending otherwise
+# would be false precision. What it buys is that no single fleet, and no
+# single pair of fleets, can move an operator-curated entry out of the
+# coverage figure on its own. That matters more than tightening the
+# interval, because the failure mode being defended against is not noise;
+# it is one participant with a reason to suppress an answer.
+MIN_VOTES_FOR_STANDING = 3
+
+# trust is up_votes / total_votes (hub/crud.py:vote_trace). Strictly below
+# 0.5 means a majority of the fleets that tried this entry reported it did
+# not work for them.
+DISPUTED_TRUST_CEILING = 0.5
+
+# Above this, and with enough votes, an entry has real corroboration rather
+# than the operator's own confidence. Set well clear of the disputed
+# ceiling on purpose: the band between them is "mixed results", which is
+# neither a promotion nor a problem, and collapsing it into one of the two
+# would make the label mean less than it says.
+ESTABLISHED_TRUST_FLOOR = 0.75
+
+
+def entry_standing(
+    *,
+    trust: float,
+    votes: int,
+    review_after: datetime | None,
+    now: datetime | None = None,
+) -> str:
+    """One label for how much weight a Knowledge Base entry currently earns.
+
+    Precedence, strongest signal first:
+
+    1. `disputed` -- enough fleets have voted, and a majority of them said
+       it did not work. This is evidence from the field about the content
+       itself, so it outranks everything below.
+    2. `stale` -- the entry declared a freshness horizon at authoring time
+       (`Trace.commons_review_after`, set from the seed file's
+       `review_after`) and that horizon has passed. Nobody has said it is
+       wrong; nobody has confirmed it is still right either. An entry with
+       no horizon is never stale -- "Stripe webhook handlers need
+       idempotency keys" does not expire, and forcing a horizon onto every
+       entry would make the label mean "old" instead of "due for review".
+    3. `established` -- corroborated by enough fleets to be more than the
+       operator's own confidence.
+    4. `unproven` -- in the corpus, not yet judged. The honest default, and
+       where every new entry starts.
+
+    `retracted` is deliberately NOT a value here: a retracted entry is
+    excluded from every Knowledge Base read path before standing is ever
+    computed (hub/crud.py's `commons_visible` filter), so a caller can
+    never receive one to label. Making it a fifth standing would invite a
+    reader to think it is something the query layer merely annotates.
+    """
+    if votes >= MIN_VOTES_FOR_STANDING and trust < DISPUTED_TRUST_CEILING:
+        return STANDING_DISPUTED
+    if review_after is not None:
+        now = now or datetime.now(timezone.utc)
+        # Rows read back from Postgres are tz-aware (DateTime(timezone=True)),
+        # but a caller constructing one by hand may not be, and comparing
+        # naive to aware raises TypeError rather than returning a wrong
+        # answer -- a 500 on the query path, from a field whose only job is
+        # to schedule a review.
+        if review_after.tzinfo is None:
+            review_after = review_after.replace(tzinfo=timezone.utc)
+        if review_after <= now:
+            return STANDING_STALE
+    if votes >= MIN_VOTES_FOR_STANDING and trust >= ESTABLISHED_TRUST_FLOOR:
+        return STANDING_ESTABLISHED
+    return STANDING_UNPROVEN
+
+
+def counts_as_coverage(standing: str) -> bool:
+    """Whether an entry with this standing may count toward the coverage
+    figure `commons_overlap` returns.
+
+    Only `disputed` is excluded, and the reason is narrow: that number is
+    the one figure this product tells customers to quote (hub/crud.py's
+    `_FLOOR_CAVEAT`), and an entry the fleets who tried it say does not
+    work is not a solved failure. `stale` still counts -- "due for review"
+    is not "known wrong", and dropping it would let the coverage figure
+    fall on a calendar date with no evidence behind the fall.
+    """
+    return standing != STANDING_DISPUTED
 
 
 class CommonsInputError(ValueError):

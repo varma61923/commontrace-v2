@@ -298,6 +298,102 @@ class TestRender:
         assert "Stripe webhook" in rendered
         assert "Use an idempotency key" in rendered
 
+    def test_disputed_matches_are_shown_and_marked_as_not_counted(self):
+        """A coverage figure that fell because the field found an answer
+        wrong is a different event from one that fell because the corpus
+        shrank. A report that shows only the number hides the difference."""
+        rendered = commons_cmd._render({
+            "n_failures": 1, "n_covered": 0, "covered_fraction": 0.0,
+            "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {},
+            "matches": [],
+            "disputed_matches": [{
+                "failure_label": "f1", "similarity": 0.62, "agent_type": "code",
+                "tags": ["react"],
+                "trace": {
+                    "title": "React 18 hydration workaround",
+                    "solution_text": "Suppress the warning",
+                    "vote_count": 6,
+                    "standing": "disputed",
+                },
+            }],
+            "note": "",
+        })
+        assert "disputed" in rendered.lower()
+        assert "React 18 hydration workaround" in rendered
+        assert "6 fleet(s)" in rendered
+        assert "not counted above" in rendered.lower()
+
+    def test_a_report_with_no_disputed_matches_says_nothing_about_them(self):
+        """The section is evidence of a problem, so an absent problem must
+        not print a heading suggesting there is one."""
+        rendered = commons_cmd._render({
+            "n_failures": 1, "n_covered": 1, "covered_fraction": 1.0,
+            "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {"code": 1},
+            "matches": [], "note": "",
+        })
+        assert "disputed" not in rendered.lower()
+
+
+class TestRenderCandidates:
+    """`commons ask` output. Unlike the coverage report, this one SHOWS
+    disputed entries in the ordinary results (ranked last) -- so the
+    warning has to travel with the entry, or a reader takes a contested
+    answer for a corroborated one."""
+
+    @staticmethod
+    def _result(standing, vote_count=6, trust=0.17):
+        return {
+            "n_candidates": 1, "n_commons_traces": 4, "n_commons_traces_total": 4,
+            "corpus_truncated": False, "note": "candidates, not coverage",
+            "candidates": [{
+                "rank": 1, "similarity": 0.42, "commons_hits": 3,
+                "trace": {
+                    "title": "React 18 hydration workaround",
+                    "context_text": "SSR mismatch",
+                    "solution_text": "Suppress the warning",
+                    "tags": ["react"], "agent_type": "code",
+                    "trust": trust, "vote_count": vote_count, "standing": standing,
+                },
+            }],
+        }
+
+    def test_a_disputed_candidate_carries_a_warning(self):
+        rendered = commons_cmd._render_candidates(self._result("disputed"), "hydration error")
+        assert "Disputed" in rendered
+        assert "did not work" in rendered
+        assert "Suppress the warning" in rendered
+
+    def test_a_stale_candidate_says_it_is_overdue_not_wrong(self):
+        rendered = commons_cmd._render_candidates(
+            self._result("stale", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "review date" in rendered
+        assert "Disputed" not in rendered
+
+    def test_an_ordinary_candidate_gets_no_warning(self):
+        rendered = commons_cmd._render_candidates(
+            self._result("unproven", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "Disputed" not in rendered
+        assert "review date" not in rendered
+
+    def test_trust_is_shown_with_its_denominator(self):
+        """0.00 from one downvote and 0.00 from twelve are the same number
+        and completely different facts."""
+        rendered = commons_cmd._render_candidates(
+            self._result("disputed", vote_count=12, trust=0.0), "hydration error"
+        )
+        assert "trust 0.00 from 12 fleet(s)" in rendered
+
+    def test_trust_is_hidden_entirely_when_nobody_has_voted(self):
+        """0.5 with no votes is a column default, not a measurement, and
+        printing it as one invites a reader to average it with real
+        scores."""
+        rendered = commons_cmd._render_candidates(
+            self._result("unproven", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "trust" not in rendered
+
 
 # --- Evaluating without adopting first ---------------------------------
 

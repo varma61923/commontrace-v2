@@ -46,7 +46,7 @@ apply to it and needs to be re-verified against that system.
 |---|---|
 | `organizations` | Org id + display name. Plus, while a self-service whole-account deletion is pending: a hashed confirmation token and its request/expiry timestamps (never the raw token -- see §3). |
 | `api_keys` | Argon2 hash of each org's API key (never the raw key), a non-secret lookup prefix, issuance/revocation/last-used timestamps. |
-| `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). |
+| `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). For Knowledge Base entries only: `commons_votes`/`commons_review_after` (standing inputs) and, once an operator withdraws one, `commons_retracted_at`/`commons_retraction_reason` — see §5 on why a retracted entry is retained rather than deleted. |
 | `votes` | Up/down votes + optional feedback, per (trace, org). |
 | `trace_relations` | AMENDS/SUPERSEDED_BY edges created by `amend_trace`. |
 | `kb_submissions` | An org's proposed Knowledge Base entries (title, context_text, solution_text, tags, agent_type, rationale) plus `org_id`, `status` (pending/approved/rejected), reviewer identity and timestamp, and -- once decided -- `resulting_trace_id`/`credit_awarded`. Never read by `commons_overlap`/`commons_search`; see `hub/models.py:KnowledgeBaseSubmission`. |
@@ -139,11 +139,14 @@ Consequently:
   from the moment it is created, not a promoted `Trace` — deleting an
   org's traces never touches its submissions, and vice versa.
 - The only content any org's query can ever draw on beyond its own data is
-  what the operator wrote or approved into the Knowledge Base. Correcting
-  or removing a Knowledge Base entry is an operator decision, not a
-  customer deletion request, and there is currently no CLI command for it
-  beyond `commons-seed`'s own file-driven load — flagged as an open item
-  in §5.
+  what the operator wrote or approved into the Knowledge Base. Withdrawing
+  a Knowledge Base entry is an operator decision, not a customer deletion
+  request, and `python -m hub.manage kb-retract` is how it is made
+  (`kb-restore` reverses it, `kb-review` lists what is worth looking at).
+  Because the content is the operator's own, withdrawing an entry raises
+  none of the questions §3 answers about customer data — nothing cascades
+  and no other org's store is affected. Correcting an entry *in place*
+  still has no command; see §5.
 - `vote_trace` lets any org vote on a Knowledge Base entry (feedback on
   the operator's content), and that vote is retained the same way any
   other row is (§2). It is never a customer's own trace data crossing an
@@ -171,7 +174,21 @@ Consequently:
   narrow, but a "you can always take back what you have not published
   yet" self-service path is a reasonable expectation nothing here
   currently meets.
-- There is no CLI command to correct or remove a single Knowledge Base
-  entry after `commons-seed` has loaded it, short of a direct database
-  operation — worth closing before an operator relies on the Knowledge
-  Base holding anything time-sensitive or ever needing retraction (§4).
+- ~~There is no CLI command to correct or remove a single Knowledge Base
+  entry after `commons-seed` has loaded it~~ **Resolved:**
+  `python -m hub.manage kb-retract <trace_id> [reason]` withdraws one
+  entry (and `kb-restore` reverses it), with `kb-review` listing which
+  entries an operator should be looking at. Note what retraction is and
+  is not, since this document is about retention: it sets
+  `Trace.commons_retracted_at`, which removes the entry from every
+  Knowledge Base read path, and **retains** the row, its votes, and its
+  hit history — deliberately, because "how many fleets did we serve this
+  to before we pulled it" is answerable only from that data. It is
+  un-publishing, not deletion. `purge-trace` remains the deletion path
+  (§3), and nothing about retraction changes §4's answer: a Knowledge
+  Base entry is the operator's own content, so withdrawing one never
+  reaches into any customer's data.
+  What remains open: there is still no command to *correct* an entry in
+  place. The workflow is retract-and-reseed, which changes the trace id
+  and resets `commons_hits`, so an entry's delivered-value history does
+  not survive an edit.

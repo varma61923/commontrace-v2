@@ -654,6 +654,7 @@ evidence, since false positives measured 0%.
 | Your own traces don't inflate your coverage number | The corpus excludes your rows: the question is what the Knowledge Base already knows, not what you told it |
 | Ordinary reads are unaffected | All six org-scoped tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
 | Consulting it is optional | `commons_access` (plan setting) per org, `HUB_COMMONS_ENABLED=false` for the whole deployment |
+| No number of downvotes can delete the operator's content | Voting changes an entry's `standing`, which shrinks this product's own claims (dropped from coverage, ranked last) and never removes anything. Withdrawal is an operator action — `hub/tests/test_kb_standing.py:TestVotesNeverRetract` |
 
 ### Propose an entry
 
@@ -699,7 +700,8 @@ recurring failure, that entry's `commons_hits` increments:
 
 ```bash
 python -m hub.manage kb-stats    # entry count, hits, adoption, dead entries,
-                                  # and the submission funnel: pending/approved/rejected
+                                  # standing breakdown, and the submission
+                                  # funnel: pending/approved/rejected
 ```
 
 `kb-stats` is a content-quality report, not a vanity metric: it flags
@@ -707,6 +709,41 @@ entries that have never matched anything after real query volume (the
 honest signal that they need rewriting or removal) and reports the
 submission funnel so an operator can tell whether the review queue itself
 needs attention, separately from whether its output is any good.
+
+### When an answer stops being right
+
+Seeding and submissions both answer "how does content get in". Neither
+answers what happens when the world moves and an entry stops being true —
+and a curated corpus that only grows is one that decays. Every Knowledge
+Base entry therefore carries a **standing**, computed from signals the
+system was already collecting:
+
+| Standing | Meaning |
+|---|---|
+| `disputed` | At least three fleets voted and a majority reported it did not work |
+| `stale` | The entry declared a review date when it was written, and it has passed |
+| `established` | Corroborated by enough fleets to be more than the author's confidence |
+| `unproven` | In the corpus, not yet judged — where every entry starts |
+
+You give that signal with `vote_trace` (`down` plus a `feedback_tag` of
+`outdated`, `wrong`, or `security_concern`). What it changes:
+`commons_overlap` stops counting a disputed entry as coverage — a wrong
+answer is not a solved failure — and reports it separately under
+`disputed_matches` instead, so a coverage number never moves without you
+being able to see why. `commons ask` still shows the entry, ranked last
+and labelled, because a contested answer plus the warning beats no answer.
+
+**Votes inform; the operator decides.** No vote count withdraws anything.
+The strongest automatic effect is a smaller coverage claim and a worse
+rank — both of which make this product's own numbers more conservative,
+never less. Withdrawing an entry is a human action
+(`python -m hub.manage kb-retract`, reversible with `kb-restore`).
+
+For an operator, that feedback is what makes curating a corpus scale past
+what anyone could re-read: `kb-review` lists the entries that need a
+decision — security flags first, then disputed, then past their review
+date, then never-matched — each ordered by how much traffic it affects. So
+review cost tracks the *error rate*, not the corpus size.
 
 ### Plans, and what they actually enforce
 

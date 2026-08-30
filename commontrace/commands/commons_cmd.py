@@ -338,6 +338,39 @@ def _render(report: dict) -> str:
                 f"**Solution:** {trace.get('solution_text', '')}",
                 "",
             ]
+
+    # Matched, then deliberately left out of the count above. Shown rather
+    # than dropped so the coverage figure never moves without the reader
+    # being able to see why: a number that fell because the field found an
+    # answer wrong is a different event from one that fell because the
+    # corpus shrank, and a report that hides the difference invites the
+    # wrong conclusion about both.
+    disputed = report.get("disputed_matches") or []
+    if disputed:
+        lines += [
+            "## Matched, but disputed — not counted above",
+            "",
+            f"{len(disputed)} of your failures matched a Knowledge Base entry that a "
+            "majority of the fleets who tried it reported did not work. Those entries "
+            "are excluded from the coverage figure, deliberately: a wrong answer is not "
+            "a solved failure. They are listed here because the Knowledge Base having "
+            "something contested about your failure is a different situation from it "
+            "having nothing at all.",
+            "",
+        ]
+        for m in disputed:
+            trace = m.get("trace") or {}
+            lines += [
+                f"### {trace.get('title', '(untitled)')}",
+                "",
+                f"- Matches your `{m['failure_label']}` at similarity **{m['similarity']}**",
+                f"- Reported as not working by a majority of "
+                f"{trace.get('vote_count', 0)} fleet(s)",
+                "",
+                f"**Proposed solution (verify before applying):** "
+                f"{trace.get('solution_text', '')}",
+                "",
+            ]
     return "\n".join(lines)
 
 
@@ -447,12 +480,30 @@ def _render_candidates(result: dict, question: str) -> str:
             # fleet or another customer -- not a vote, an actual match.
             bits.append(f"has covered {hits:,} recurring failure(s) before")
         trust = trace.get("trust")
-        if isinstance(trust, (int, float)) and trust:
-            bits.append(f"trust {trust:.2f}")
+        votes = trace.get("vote_count") or 0
+        if isinstance(trust, (int, float)) and votes:
+            # Trust without its denominator is not readable: 0.00 from one
+            # downvote and 0.00 from twelve are the same number and
+            # completely different facts. Suppressed entirely at zero votes,
+            # where 0.5 is a placeholder rather than a measurement.
+            bits.append(f"trust {trust:.2f} from {votes} fleet(s)")
         if trace.get("agent_type"):
             bits.append(str(trace["agent_type"]))
         lines.append("*" + " · ".join(bits) + "*")
         lines.append("")
+        if trace.get("standing") == "disputed":
+            lines.append(
+                "> **Disputed.** A majority of the fleets that tried this entry reported "
+                "it did not work. It is ranked last and shown anyway, because a contested "
+                "answer is still more than no answer — but verify it before applying it."
+            )
+            lines.append("")
+        elif trace.get("standing") == "stale":
+            lines.append(
+                "> **Past its review date.** Nobody has said this is wrong; nobody has "
+                "confirmed it is still right either. Version-pinned advice ages."
+            )
+            lines.append("")
         if trace.get("context_text"):
             lines.append(f"**When it happens:** {trace['context_text']}")
             lines.append("")

@@ -255,6 +255,58 @@ class Trace(Base):
     # same overflow reason as retrievals/depth above.
     commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
+    # --- Knowledge Base entry standing -------------------------------------
+    #
+    # See hub/commons.py's "Entry standing" section for the model these four
+    # columns serve and for why nothing here ever removes an entry
+    # automatically. In short: growing a curated corpus and maintaining one
+    # are different problems, and only the first was built.
+    #
+    # Total votes cast on this entry, denormalized alongside `trust` by the
+    # same atomic UPDATE in hub/crud.py:vote_trace. `trust` alone cannot
+    # distinguish "every fleet that tried this said it failed" (trust 0.0,
+    # 12 votes) from "one fleet downvoted it" (trust 0.0, 1 vote), and the
+    # whole standing model turns on that difference.
+    #
+    # A counter rather than a COUNT(*) join on `votes` because both
+    # Knowledge Base queries scan up to commons.max_corpus_scan() rows per
+    # call and neither can afford a per-row aggregate -- the same reason
+    # commons_hits above is a counter. Written as an assignment, not an
+    # increment: vote_trace UPSERTs, so an org changing its vote must not
+    # add to the total, and the tally it already computes is authoritative.
+    commons_votes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+
+    # When this entry stops being trustworthy on its own schedule. NULL --
+    # the default, and correct for most entries -- means "does not expire":
+    # substrate knowledge like idempotency keys on webhook handlers is not
+    # pinned to a version and never becomes stale. Set it for knowledge that
+    # IS pinned ("React 19 hydrates Date differently than 18"), from the
+    # seed file's `review_after` field, and the entry surfaces in
+    # `hub/manage.py kb-review` once the date passes.
+    #
+    # DateTime, unlike the free-text `review_after` column further up: that
+    # one is a protocol field carrying whatever the Trace author wrote
+    # ("after the next release"), which is fine for a human reading one
+    # trace and useless for a query that has to decide what is due.
+    commons_review_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Set by `hub/manage.py kb-retract` when an operator pulls an entry.
+    # NOT a delete: the row, its votes, and its hit history stay, because
+    # "this entry was published, served N failures, and was then withdrawn
+    # for reason R" is exactly what an operator needs to keep and exactly
+    # what a DELETE destroys. Restorable via `kb-restore`.
+    #
+    # A retracted entry is invisible to every Knowledge Base read path
+    # (commons_overlap, commons_search, and vote_trace's Knowledge Base
+    # branch) -- see hub/crud.py:commons_visible, which is the single
+    # place that filter is expressed so a fourth read path cannot forget it.
+    commons_retracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    commons_retraction_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+
     # Where this row came from. An empty Knowledge Base returns 0% coverage
     # for everyone, which is a cold start, not a finding -- so an operator
     # seeds it with authored substrate knowledge to make the first query
@@ -305,14 +357,22 @@ class Trace(Base):
         Index("ix_traces_org_created_agent", "org_id", "created_at", "agent_id"),
         UniqueConstraint("org_id", "idempotency_key", name="uq_traces_org_idempotency_key"),
         # commons_overlap scans the commons corpus -- traces shared, not
-        # quarantined -- across ALL orgs. Partial index: the commons is
-        # expected to be a small minority of rows for a long time, so
-        # indexing only the shared ones keeps it tiny and keeps the scan off
-        # the main table.
+        # quarantined, not retracted -- across ALL orgs. Partial index: the
+        # commons is expected to be a small minority of rows for a long
+        # time, so indexing only the shared ones keeps it tiny and keeps the
+        # scan off the main table.
+        #
+        # The predicate tracks hub/crud.py:commons_visible exactly. A
+        # partial index only serves a query whose WHERE clause implies the
+        # index's own, so letting the two drift does not produce wrong
+        # answers -- it silently stops using the index and turns every
+        # Knowledge Base query back into a full scan of `traces`.
         Index(
             "ix_traces_commons",
             "shared_with_commons",
-            postgresql_where=text("shared_with_commons AND NOT quarantined"),
+            postgresql_where=text(
+                "shared_with_commons AND NOT quarantined AND commons_retracted_at IS NULL"
+            ),
         ),
     )
 

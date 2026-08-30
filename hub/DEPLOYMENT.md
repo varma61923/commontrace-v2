@@ -213,6 +213,14 @@ re-display a key anyone has lost — rotate instead
       surface is gone entirely rather than merely empty, set
       `HUB_COMMONS_ENABLED=false`. `commons_overlap` against an empty
       Knowledge Base returns 0% with a note saying why, not an error.
+- [ ] If you *are* running the Knowledge Base, put
+      `python -m hub.manage kb-review` on a recurring schedule — weekly is
+      a reasonable start. It is the only thing that surfaces an entry a
+      customer has flagged as a security concern, and an entry the field
+      has voted down is served (ranked last, labelled `disputed`) until a
+      human withdraws it. Nothing about the standing model retracts
+      content on its own, deliberately; the queue is where that decision
+      gets made. See `hub/README.md`, "Entry standing".
 
 ## 11. Known limitations (deliberate, documented)
 
@@ -221,6 +229,8 @@ re-display a key anyone has lost — rotate instead
 | Rate limiting is per-process | §6, `hub/abuse.py` |
 | Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
 | No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
+| No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
+| Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
 | No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |

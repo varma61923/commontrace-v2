@@ -1087,3 +1087,114 @@ originally assumed. The gate's status is otherwise unchanged from §14.4:
 condition 1 (instrument works) is met for lookup, unmet for a trustworthy
 coverage percentage; condition 3 (corpus large enough) remains a funded
 commitment, now with a second, likely cheaper channel feeding it.
+
+---
+
+## 16. Update (2026-08-30): maintenance, and the objection §15 left standing
+
+§14 retired the org-to-org commons and put the operator in charge of the
+corpus. §15 added a second way for content to enter it (reviewed community
+submissions) and priced the honest claim carefully: a labor multiplier, not
+a network effect, because review throughput is still an operator-side
+constraint.
+
+Both of those are about **growth**. Neither addressed the objection that
+does the most damage to the operator-curated model, which is about
+**maintenance**:
+
+> Every entry ever published has to stay true forever, or the product
+> degrades in a way that is invisible from the inside. At 100 entries the
+> operator can re-read them. At 100,000 nobody can. So curation cost is
+> O(corpus), and the model has a ceiling somewhere well below the corpus
+> size the §11.4 gate needs.
+
+That argument is correct as far as it goes, and it is the one a technical
+diligence would reach for. What makes it wrong is a step it assumes
+without stating: that *finding* the bad entries is the expensive part.
+
+### 16.1 Usage already generates the maintenance signal
+
+It was being collected and thrown away. Every `commons_overlap` match
+credits `Trace.commons_hits` — the operator's own record of which entries
+are actually reaching real failures. Every fleet that tries an answer can
+`vote_trace` on it, with a `feedback_tag` that says what kind of wrong it
+was (`outdated`, `wrong`, `security_concern`). `trust` was computed from
+those votes on every cast and then read by nothing but a tie-break;
+`feedback_tag` was consulted nowhere at all.
+
+So the corpus already knew which entries were failing and roughly how
+badly, and nothing looked. `hub/commons.py:entry_standing` and
+`hub/manage.py kb-review` are the read side of data that was already
+there.
+
+The consequence is the part that answers the objection: an operator does
+not review the corpus, they review a **queue ordered by damage done** —
+security flags, then disputed entries, then expired ones, then dead
+weight, each ranked by how much traffic it is affecting. Review cost
+therefore tracks the **error rate**, not the corpus size. A 100,000-entry
+corpus with a 0.5% error rate is 500 decisions, arriving continuously,
+pre-sorted by urgency. That is a staffed function, not an impossible one.
+
+This is the same mechanism that lets Stack Overflow and Wikipedia stay
+usable at a scale no editorial staff could read: readers find the errors,
+editors adjudicate them. §15 drew the Stack Overflow analogy for the
+*contribution* half and was careful to under-claim it. This is the half of
+the analogy that actually transfers, and it transfers for a reason the
+contribution half does not — flagging a wrong answer costs a fleet
+nothing and helps it directly, so the incentive problem §3 identified for
+contribution simply does not arise for maintenance.
+
+### 16.2 What it deliberately does not do, and why that is the point
+
+The obvious next step from "the crowd flags errors" is "so let the crowd
+remove them." That step is not taken, at any vote count.
+
+Disputed content stops counting toward the coverage figure and sorts last
+in lookup. Both of those make this product's own claims *smaller*. Neither
+removes anything, and `hub/tests/test_kb_standing.py:TestVotesNeverRetract`
+pins it. A corpus where three downvotes silently delete the operator's
+content is a corpus a competitor can edit, and the asymmetry between "make
+our claims more conservative" (automatic, safe in every direction) and
+"remove our content" (a human, audited) is the whole design.
+
+The one place a single vote is acted on is `security_concern`, and what it
+does is raise queue priority. Reading a spurious report costs a minute;
+missing a real one means bad security advice served from a corpus
+customers were told to trust, to every fleet whose failure matches it, for
+as long as nobody looks.
+
+### 16.3 What this changes about the gate, stated narrowly
+
+Less than §16.1 might suggest, and saying so is the point of this section
+being short.
+
+- **Condition 1** (the instrument works) is untouched. Standing does not
+  affect matching at all.
+- **Condition 3** (corpus large enough, and the overlap number that
+  decides (B)) is affected only indirectly. Corpus growth is still
+  operator-labor-bound, exactly as §15 concluded. What changes is that the
+  corpus's *carrying cost* no longer grows linearly with its size, which
+  removes a ceiling on how large a corpus one operator can responsibly
+  hold — a precondition for condition 3, not progress toward it.
+
+The coverage figure will now read slightly lower wherever a disputed entry
+was previously counted. That is a real, deliberate reduction in a number
+this document has repeatedly said is the one thing customers may quote,
+and it is the right direction: §11.1's whole finding was that the
+instrument under-reports, and every correction since has moved the number
+toward honesty rather than away from it.
+
+### 16.4 The remaining objection this does not answer
+
+Standing depends on fleets voting. Nothing in the product makes them, and
+nothing measures whether they do. `kb-stats` will report a corpus almost
+entirely `unproven` for as long as query volume is low, which is a truthful
+reading and a useless one — an `unproven` corpus is indistinguishable from
+an un-consulted one. Both of the automatic consequences degrade gracefully
+in that state (an unproven entry counts as coverage and ranks normally, as
+it should), so nothing breaks; the maintenance loop simply does not start
+turning until there is real traffic.
+
+That is the same dependency §11.4's condition 3 already has, and it is
+still gated on the same thing: adoption of (A). Nothing here changes
+§11.3's recommendation.

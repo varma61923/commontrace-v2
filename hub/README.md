@@ -230,6 +230,79 @@ whatever volume of "sharing" a credit formula alone would reward.
 the pending/approved/rejected funnel alongside the corpus's own
 content-quality numbers.
 
+### Entry standing: how a curated corpus stays true
+
+Seeding and submissions both answer "how does content get in". Neither
+answers "what happens when it stops being right", and a curated corpus
+that only grows is one that decays — the entries stay, the world moves,
+and the Knowledge Base keeps confidently serving answers that used to
+work. The corpus was already collecting the signal needed to catch that
+and then discarding it: `Trace.trust` is computed from every vote cast on
+an entry and was read by nothing but a tie-break, and `Vote.feedback_tag`
+has carried `outdated`/`wrong`/`security_concern` since it was introduced
+and was consulted nowhere at all.
+
+`hub/commons.py:entry_standing` turns those into one label, computed in
+one place and carried on every Knowledge Base projection:
+
+| Standing | Meaning |
+|---|---|
+| `disputed` | At least `MIN_VOTES_FOR_STANDING` (3) fleets have voted and a majority reported it did not work. |
+| `stale` | The entry declared a freshness horizon at authoring time (the seed file's `review_after`) and it has passed. |
+| `established` | Corroborated by enough fleets to be more than the operator's own confidence. |
+| `unproven` | In the corpus, not yet judged. Where every new entry starts. |
+
+**The design constraint that shapes every threshold: votes inform, the
+operator decides.** Nothing here removes an entry on its own, at any vote
+count. The strongest automatic consequences are that a disputed entry
+stops counting toward the coverage figure `commons_overlap` produces and
+sorts last among `commons_search` candidates — both of which make this
+product's own claims *smaller*, never larger. A corpus where three
+downvotes silently delete the operator's content is a corpus a competitor
+can edit; `hub/tests/test_kb_standing.py:TestVotesNeverRetract` pins that
+as a property rather than an intention.
+
+The two query surfaces diverge here, for the same reason they diverge on
+thresholding. `commons_overlap` produces a number customers quote, so a
+contested entry is excluded from it — a wrong answer is not a solved
+failure — and returned separately under `disputed_matches`, because "the
+Knowledge Base has something about this and it is contested" is a
+materially different answer from "the Knowledge Base has nothing".
+`commons_search` is lookup, so the same entry is still returned, ranked
+last and labelled: a contested answer plus the warning beats no answer.
+Note that a disputed entry keeps accruing `commons_hits` — how much
+traffic a bad answer is misdirecting is precisely what makes it urgent.
+
+**Why operator curation scales, which is the actual point.** The obvious
+objection to a corpus one party maintains is that review costs
+O(entries), so the model dies past a few thousand. It dies only if
+*finding* the bad entries is the expensive part, and it is not: every
+query credits `commons_hits`, every fleet that tries an answer can vote
+on it, and `feedback_tag` says what kind of wrong it was.
+`hub/manage.py kb-review` turns that exhaust into a work list — security
+flags first, then disputed, then past-review-date, then never-matched,
+each bucket ordered by traffic affected — so review cost tracks the
+**error rate** rather than the corpus size. That is the mechanism that
+lets Stack Overflow and Wikipedia stay usable at a scale no editorial
+staff could read: readers find the errors, editors adjudicate them.
+
+A single vote tagged `security_concern` puts an entry at the top of that
+queue regardless of the rest of the tally — the one place the rule above
+is applied at n=1. The asymmetry is deliberate: reading one spurious
+report costs a minute, and missing a real one means bad security advice
+served from a corpus customers were told to trust. It still does not
+retract, hide, or de-rank anything by itself.
+
+`kb-retract <trace_id> [reason]` withdraws an entry — invisible to
+`commons_overlap`, `commons_search`, and `vote_trace` from that moment,
+via the single `hub/crud.py:commons_visible()` filter all three share.
+It is deliberately **not** a delete: the row, its votes, and its hit
+history survive, because "how many fleets did we serve this to before we
+pulled it, and what did they say" is answerable only from exactly the
+data a `DELETE` would destroy. `kb-restore` undoes it. For actually
+removing content, `purge-trace` is still the path (see
+`DATA_RETENTION.md` §3).
+
 ### Self-service deletion: one call for a trace, two for an organization
 
 `delete_trace` is immediate, org-scoped, and irreversible -- and that is
@@ -322,7 +395,12 @@ surface together in the same `search_traces` call) is not computed — it
 needs session-level co-retrieval tracking that wasn't in scope for this MVP.
 `trust` (in `_to_wire`/`hub/crud.py:vote_trace`) is a simple
 `up / (up + down)` ratio with a neutral `0.5` prior when there are no votes
-yet; treat it as a starting point, not a calibrated reputation model.
+yet; treat it as a starting point, not a calibrated reputation model. It is
+no longer read only as a tie-break — "Entry standing" above is what
+consumes it — but the standing thresholds are deliberately coarse for
+exactly this reason: a ratio over three votes does not support a finer
+judgement than "a majority said it failed", and a model that pretended
+otherwise would be false precision on top of an uncalibrated number.
 
 ### Container image: built and smoke-tested in CI
 
@@ -355,6 +433,10 @@ python -m hub.manage revoke-key <key_id>
 python -m hub.manage list-orgs
 
 python -m hub.manage stats                       # orgs, active keys, traces, quarantined, votes, mean trust
+python -m hub.manage kb-stats                     # corpus size, hits delivered, standing breakdown, submission funnel
+python -m hub.manage kb-review [limit]            # which entries need a human, worst first
+python -m hub.manage kb-retract <trace_id> [reason]  # withdraw an entry from the Knowledge Base (reversible)
+python -m hub.manage kb-restore <trace_id>        # put a retracted entry back
 python -m hub.manage list-quarantined [org_id]    # the abuse-control review queue (hub/abuse.py)
 python -m hub.manage release-quarantine <trace_id>  # reviewed, it's fine -> becomes search_traces-eligible
 python -m hub.manage purge-trace <trace_id>       # permanent delete, irreversible
@@ -365,6 +447,14 @@ The raw API key is only ever printed at issuance/rotation time — it is
 hashed with argon2 before the row is written and never logged or returned by
 any tool/endpoint afterward. There is no "show me the key again" path by
 design; rotate if it's lost.
+
+`kb-retract` is un-publishing, not deleting: the entry stops being served
+but its row, votes, and hit history survive, and `kb-restore` reverses it.
+It takes no confirmation prompt precisely because it is reversible —
+putting a prompt in front of a reversible action trains operators to type
+`y` without reading, which is what makes the prompt in front of the
+irreversible one worthless. `purge-trace` is the path when the content
+must actually be gone.
 
 `purge-trace`/`purge-org` are the operator/DB-access-trust-level data-
 deletion path — for when an org has lost its own API keys, or an operator
