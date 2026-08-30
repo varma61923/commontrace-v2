@@ -497,6 +497,67 @@ async def account_usage(hub_url: str, api_key: str) -> dict:
     return response
 
 
+async def fleet_outcomes(hub_url: str, api_key: str, agent_type: str = "") -> dict:
+    """Has this fleet's recorded performance changed since its baseline
+    window, and does the randomized holdout say the memory caused it?
+
+    Returns both instruments in one response: the before/after comparison
+    (observational, and it says so) plus a `causal` section from the
+    holdout. Free to call -- it reads this org's own traces only.
+    """
+    arguments: dict = {}
+    if agent_type:
+        arguments["agent_type"] = agent_type
+    response = await _call_tool(hub_url, api_key, "fleet_outcomes", arguments)
+    if response.get("error"):
+        raise HubConnectionError(
+            f"fleet_outcomes failed: {response['error']}: {response.get('detail', '')}"
+        )
+    return response
+
+
+async def holdout_assign(
+    hub_url: str, api_key: str, trace_ids: list[str], occasion_id: str
+) -> dict:
+    """Ask which of these traces to inject on this occasion, and which to
+    deliberately withhold.
+
+    Returns {"inject": [...], "withhold": [...]}. **Traces under
+    `withhold` must not be used on this occasion** -- using one anyway does
+    not fail loudly, it moves that occasion into the treated arm without
+    the record saying so, which biases the measured effect toward zero.
+
+    Safe to retry: assignment is a deterministic hash, so a repeat call
+    returns the same arms and records nothing new.
+    """
+    response = await _call_tool(
+        hub_url, api_key, "holdout_assign",
+        {"trace_ids": list(trace_ids), "occasion_id": occasion_id},
+    )
+    if response.get("error"):
+        raise HubConnectionError(
+            f"holdout_assign failed: {response['error']}: {response.get('detail', '')}"
+        )
+    return response
+
+
+async def record_occasion_outcome(
+    hub_url: str, api_key: str, occasion_id: str, succeeded: bool
+) -> dict:
+    """Report how an occasion went, resolving every holdout decision made
+    for it. Only the first report for an occasion counts."""
+    response = await _call_tool(
+        hub_url, api_key, "record_occasion_outcome",
+        {"occasion_id": occasion_id, "succeeded": bool(succeeded)},
+    )
+    if response.get("error"):
+        raise HubConnectionError(
+            f"record_occasion_outcome failed: {response['error']}: "
+            f"{response.get('detail', '')}"
+        )
+    return response
+
+
 async def delete_trace(hub_url: str, api_key: str, trace_id: str) -> bool:
     """Permanently delete one of this org's own traces, and every trace in
     its amendment chain. Irreversible. Returns False if no such trace

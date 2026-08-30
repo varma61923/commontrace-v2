@@ -757,12 +757,18 @@ construction:
 python -m hub.manage start-experiment <org_id> 0.2    # withhold 20%
 ```
 
-Your agents then ask before injecting, and report afterwards:
+Your agents then ask before injecting, and report afterwards — over MCP
+(`holdout_assign` / `record_occasion_outcome`), or from a shell:
 
+```bash
+commontrace prove assign ticket-8821 <trace-id> <trace-id> ...
+#   INJECT   a1b2...        <- use these
+#   WITHHOLD c3d4...        <- deliberately keep these back
+commontrace prove record ticket-8821 --succeeded
 ```
-holdout_assign(trace_ids=[...], occasion_id="ticket-8821")
-  -> {"inject": [...], "withhold": [...]}
-record_occasion_outcome(occasion_id="ticket-8821", succeeded=True)
+
+```bash
+commontrace prove outcomes        # what the experiment has established
 ```
 
 Traces under `withhold` are deliberately kept back, so your fleet

@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`commontrace prove`**, the client path to the Hub's measurement tools
+  (`prove outcomes` / `prove assign` / `prove record`, plus
+  `hub_client.fleet_outcomes` / `holdout_assign` /
+  `record_occasion_outcome`).
+
+  The three tools below were added to the Hub and wired to nothing a
+  customer could reach: no `hub_client` function, no CLI command. A fleet
+  would have had to hand-write MCP calls to run the experiment STRATEGY.md
+  §13.2 calls the cheapest falsifier available. Building an instrument and
+  leaving it where the users are not is the same failure §19 corrected for
+  the Hub, committed again at the client boundary in the same session.
+
+  `prove outcomes` prints the causal result FIRST when there is one, and
+  the ordering is the claim: a reader who meets the before/after table
+  first will quote it, and that is the number that dies to "what else
+  changed that quarter?". When no experiment is running it says so
+  explicitly, so the observational table below can never be mistaken for a
+  causal one. `prove record` requires an explicit `--succeeded` or
+  `--failed` -- defaulting either way would quietly bias every hurried
+  report.
+
 - **The randomized holdout, in the Hub** (`holdout_assign` /
   `record_occasion_outcome` MCP tools, `hub/manage.py start-experiment` /
   `experiment` / `stop-experiment`, `HoldoutObservation`). The only

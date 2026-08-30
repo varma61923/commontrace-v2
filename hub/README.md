@@ -268,6 +268,11 @@ python -m hub.manage experiment <org_id>             # what it established
 python -m hub.manage stop-experiment <org_id>        # observations are kept
 ```
 
+The customer drives the loop over MCP, or from a shell with
+`commontrace prove assign` / `prove record` / `prove outcomes` — so the
+experiment can be exercised once by a human, or wired into a fleet from a
+script, without hand-writing MCP calls.
+
 **The rate is a real trade, not a knob.** Withholding memory from a
 fraction of occasions means those occasions get a worse product on
 purpose. That is the price of knowing whether the product works at all,
