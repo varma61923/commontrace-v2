@@ -428,6 +428,12 @@ class TestVoteInputValidation:
             result = await crud.vote_trace(session, org, trace["id"], "down", feedback_tag="outdated")
         assert result["votes"][0]["feedback_tag"] == "outdated"
 
+    async def test_invalid_vote_type_is_a_clean_value_error(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError, match="vote_type"):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(session, org, trace["id"], "sideways")
+
 
 class TestCrossOrgVoting:
     """vote_trace used to scope its trace lookup to `Trace.org_id ==
@@ -551,5 +557,25 @@ class TestOversizedIdempotencyKeyIsRejectedCleanly:
                     session, org, config, rate_limiter,
                     title="t", context_text="c", solution_text="s",
                     tags=[], agent_type="code", actor="test",
+                    idempotency_key="x" * 129,
+                )
+
+    async def test_amend_trace_oversized_idempotency_key_is_rejected(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.amend_trace(
+                    session, org, trace["id"], config, rate_limiter,
+                    title="new", actor="test", idempotency_key="x" * 129,
+                )
+
+    async def test_submit_kb_entry_oversized_idempotency_key_is_rejected(self, session_factory, config, org):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.submit_kb_entry(
+                    session, org, config, rate_limiter,
+                    title="t", context_text="c", solution_text="s",
                     idempotency_key="x" * 129,
                 )

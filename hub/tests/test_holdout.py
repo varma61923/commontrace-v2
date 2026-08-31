@@ -163,6 +163,17 @@ class TestAssignment:
                     session, org, ["x"] * (crud.MAX_TRACES_PER_ASSIGN + 1), "occ-1"
                 )
 
+    async def test_a_non_list_trace_ids_is_refused(self, session_factory, org):
+        async with session_scope(session_factory) as session:
+            with pytest.raises(ValueError, match="trace_ids must be a list"):
+                await crud.holdout_assign(session, org, "not-a-list", "occ-1")
+
+    async def test_an_oversized_occasion_id_is_refused(self, session_factory, org):
+        trace = (await _traces(session_factory, org, 1))[0]
+        async with session_scope(session_factory) as session:
+            with pytest.raises(ValueError, match="occasion_id exceeds"):
+                await crud.holdout_assign(session, org, [trace], "x" * (crud.MAX_OCCASION_ID_CHARS + 1))
+
 
 class TestSearchIntegration:
     """The friction that decides whether the experiment ever runs.
@@ -291,6 +302,11 @@ class TestRecordingOutcomes:
         async with session_scope(session_factory) as session:
             with pytest.raises(ValueError, match="must be a boolean"):
                 await crud.record_occasion_outcome(session, org, "occ-1", "yes")
+
+    async def test_a_missing_occasion_id_is_refused(self, session_factory, org):
+        async with session_scope(session_factory) as session:
+            with pytest.raises(ValueError, match="occasion_id is required"):
+                await crud.record_occasion_outcome(session, org, "  ", True)
 
 
 class TestAnalysis:

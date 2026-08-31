@@ -330,6 +330,16 @@ class TestSubmissionReviewCommands:
         assert "must be one of" in capsys.readouterr().err
         assert result is False
 
+    async def test_list_submissions_with_a_valid_status_filter(self, session_factory, config, two_orgs, capsys):
+        """A valid status ("pending", not the default None) exercises
+        crud.py:list_kb_submissions's own WHERE-clause filter, distinct
+        from the unfiltered full-history listing the test above covers."""
+        await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        await manage.list_submissions("pending", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "'Stripe retries'" in out
+
     async def test_approve_submission_publishes_and_credits(self, session_factory, config, two_orgs, capsys):
         s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
         result = await manage.approve_submission(s["id"], two_orgs["org_b"], session_factory=session_factory)

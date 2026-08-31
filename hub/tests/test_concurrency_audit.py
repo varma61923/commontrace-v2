@@ -596,3 +596,57 @@ class TestSubmitKbEntryPendingQuotaRace:
         assert pending <= cap, f"pending {pending} submissions exceeds cap {cap} -- quota race not closed"
         assert len(succeeded) == pending
         assert len(succeeded) + len(rejected) == n
+
+
+# --- 8. submit_kb_entry idempotency-key race ------------------------------
+#
+# contribute_trace and amend_trace both have a dedicated 20-way concurrent
+# test exercising their IntegrityError/rollback/refetch fallback path
+# (TestContributeTraceIdempotency / TestAmendTraceIdempotency above) --
+# submit_kb_entry's identical idempotency_key mechanism (same UNIQUE
+# constraint pattern, same up-front-SELECT-then-INSERT-with-fallback
+# shape, hub/crud.py:submit_kb_entry) had no concurrency test of its own,
+# a coverage gap surfaced by running `pytest --cov` over hub/crud.py and
+# checking every uncovered line for a bug hiding behind a missing test --
+# none were found, but this specific fallback path (hub/crud.py's own
+# `except IntegrityError: ... return _submission_idempotent_replay_or_conflict(...)`)
+# was one of the ones that stayed uncovered, and it is exactly the kind of
+# path this session's own earlier audits (TestContributeTraceIdempotency's
+# docstring) treat as worth pinning under real concurrency rather than
+# trusting by inspection alone.
+
+
+class TestSubmitKbEntryIdempotency:
+    async def test_20_concurrent_identical_submissions_create_exactly_one(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        args = dict(
+            title="concurrent kb idempotency probe", context_text="c", solution_text="s",
+            idempotency_key="concurrent-kb-key",
+        )
+
+        async def _call():
+            async with session_scope(session_factory) as session:
+                return await crud.submit_kb_entry(session, org, config, rate_limiter, **args)
+
+        results = await asyncio.gather(*[_call() for _ in range(20)], return_exceptions=True)
+        exceptions = [r for r in results if isinstance(r, BaseException)]
+        ids = {r["id"] for r in results if not isinstance(r, BaseException)}
+
+        async with session_scope(session_factory) as session:
+            rows = (
+                await session.execute(
+                    select(crud.KnowledgeBaseSubmission).where(
+                        crud.KnowledgeBaseSubmission.org_id == org,
+                        crud.KnowledgeBaseSubmission.idempotency_key == "concurrent-kb-key",
+                    )
+                )
+            ).scalars().all()
+
+        print(
+            f"[kb idempotency race] n_exceptions={len(exceptions)} distinct_ids={ids} n_rows={len(rows)}"
+        )
+        assert not exceptions, f"unexpected exceptions: {exceptions}"
+        assert ids == {rows[0].id}, "every concurrent retry must resolve to the same single submission id"
+        assert len(rows) == 1

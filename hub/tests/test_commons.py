@@ -32,7 +32,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from hub import commons, crud
+from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import Organization, Trace
@@ -860,6 +860,61 @@ class TestSubmittedInputIsValidated:
         with pytest.raises(commons.CommonsInputError):
             async with session_scope(session_factory) as session:
                 await crud.commons_overlap(session, orgs["customer-a"], probe, threshold=float("nan"))
+
+    async def test_rejects_a_non_numeric_threshold_with_a_clean_error_not_a_crash(
+        self, session_factory, orgs
+    ):
+        """float(threshold) alone raises an uncaught TypeError for None/
+        list/dict -- not a CommonsInputError -- so this must be caught
+        before the isfinite check the NaN test above exercises ever gets a
+        chance to run."""
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+        with pytest.raises(commons.CommonsInputError):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(session, orgs["customer-a"], probe, threshold=None)
+
+
+class TestCommonsAccessEntitlement:
+    """commons_overlap/commons_search both read the operator-maintained
+    Knowledge Base rather than the caller's own data, and are gated on
+    plan.commons_access -- every one of the four built-in plans
+    (hub/plans.py) happens to set this True, so this constructs a plan
+    that does not, the only way to exercise the EntitlementExceeded branch
+    at all."""
+
+    @pytest_asyncio.fixture
+    async def no_commons_org(self, session_factory, monkeypatch):
+        no_commons_plan = plans.Plan(
+            "no-commons-test-plan", max_traces=100, commons_queries_per_month=10,
+            commons_access=False, summary="test",
+        )
+        monkeypatch.setitem(plans.PLANS, no_commons_plan.name, no_commons_plan)
+        async with session_scope(session_factory) as session:
+            o = Organization(name="no-commons-org", plan=no_commons_plan.name)
+            session.add(o)
+            await session.flush()
+            return o.id
+
+    async def test_commons_overlap_refuses_a_plan_without_commons_access(
+        self, session_factory, no_commons_org
+    ):
+        # A non-empty submission: an empty one is deliberately not metered
+        # or entitlement-checked at all (commons_overlap's own docstring --
+        # "it compares nothing, so billing it would be charging for a
+        # no-op"), so [] would skip the very branch this test exists to
+        # exercise.
+        probe = [_failure("f", "Stripe webhook retries", "duplicate delivery on 500")]
+        with pytest.raises(plans.EntitlementExceeded, match="commons_access"):
+            async with session_scope(session_factory) as session:
+                await crud.commons_overlap(session, no_commons_org, probe)
+
+    async def test_commons_search_refuses_a_plan_without_commons_access(
+        self, session_factory, no_commons_org
+    ):
+        signature = _sign("x", "y")
+        with pytest.raises(plans.EntitlementExceeded, match="commons_access"):
+            async with session_scope(session_factory) as session:
+                await crud.commons_search(session, no_commons_org, signature)
 
 
 # --- 7. The shipped seed corpus -------------------------------------------
