@@ -338,7 +338,24 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
     """
     results: list[PushResult] = []
     for path in _iter_active_lesson_paths(root):
-        fm, body = frontmatter.read(path)
+        try:
+            fm, body = frontmatter.read(path)
+        except Exception as exc:  # noqa: BLE001 - one malformed local file (hand-edited YAML
+            # broken, a partial write that somehow survived frontmatter.write's atomic
+            # rename) must not abort every OTHER lesson's push. Reproduced: without this,
+            # one bad file made the whole `sync --push` raise before pushing anything,
+            # including lessons already read and ready to go earlier in the iteration --
+            # a single corrupted file silently blocked an entire fleet's lessons from ever
+            # reaching the Hub. The slug falls back to the filename since a failed read
+            # never got as far as fm.get("name").
+            results.append(
+                PushResult(
+                    slug=os.path.splitext(os.path.basename(path))[0],
+                    hub_trace_id=None,
+                    error=f"could not read this file: {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
         if fm.get("status") != "active":
             continue
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
@@ -513,7 +530,23 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
     """
     results: list[PushResult] = []
     for path in _iter_captured_trace_paths(root):
-        instance, _body = trace_io.read(path)
+        try:
+            instance, _body = trace_io.read(path)
+        except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
+            # guard: one malformed local file must not abort every other trace's push.
+            # Reproduced live: a single corrupted trace file made this whole function
+            # raise before pushing anything, including traces already read earlier in
+            # the iteration -- for --push-traces specifically that means a corrupted
+            # file silently blocks EVERY OTHER trace's outcome data from ever reaching
+            # the Hub, not just its own.
+            results.append(
+                PushResult(
+                    slug=os.path.splitext(os.path.basename(path))[0],
+                    hub_trace_id=None,
+                    error=f"could not read this file: {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
         local_id = str(instance.get("id") or "")
         slug = local_id or os.path.splitext(os.path.basename(path))[0]
         title = str(instance.get("title") or "")

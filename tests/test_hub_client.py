@@ -365,6 +365,32 @@ class TestPushPropagatesEdits:
             "lesson_a", fp
         )
 
+    def test_a_malformed_lesson_file_does_not_abort_the_others(self, store, monkeypatch):
+        """Reproduced before this fix: frontmatter.read(path) raising on one
+        corrupted lesson file (broken YAML from a hand-edit, a partial
+        write) propagated straight out of push_active_lessons, aborting
+        the WHOLE run -- every other lesson in the same directory, valid
+        and ready to push, never got pushed either. One bad file silently
+        blocked an entire fleet's lessons."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        _write_active_lesson(ldir, "lesson_good", "desc", "when", "do the thing")
+        with open(os.path.join(ldir, "lesson_bad.md"), "w") as fh:
+            fh.write("---\nname: [unclosed list\n---\nbroken\n")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"id": "trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        by_slug = {r.slug: r for r in results}
+        assert by_slug["lesson_good"].hub_trace_id == "trace-1"
+        assert by_slug["lesson_good"].error is None
+        assert by_slug["lesson_bad"].hub_trace_id is None
+        assert by_slug["lesson_bad"].error is not None
+
 
 def _write_captured_trace(
     tdir, filename, trace_id, title, context, solution,
@@ -530,6 +556,33 @@ class TestPushCapturedTraces:
         assert results[0].hub_trace_id is None
         fm, _ = frontmatter.read(os.path.join(tdir, "t1.md"))
         assert fm.get("hub_trace_id") is None
+
+    def test_a_malformed_trace_file_does_not_abort_the_others(self, store, monkeypatch):
+        """Same guard as push_active_lessons's identical fix, and arguably
+        higher-stakes here: one corrupted trace file used to abort the
+        whole push before this fix, which for --push-traces specifically
+        means every other trace's outcome data -- the entire reason this
+        function exists -- silently never reaches the Hub either."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(
+            tdir, "good.md", "occasion-good", "good title", "ctx", "sol", outcome={"resolved": True},
+        )
+        with open(os.path.join(tdir, "bad.md"), "w") as fh:
+            fh.write("---\ntitle: [unclosed list\n---\nbroken\n")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        by_slug = {r.slug: r for r in results}
+        assert by_slug["occasion-good"].hub_trace_id == "hub-trace-1"
+        assert by_slug["occasion-good"].error is None
+        assert by_slug["bad"].hub_trace_id is None
+        assert by_slug["bad"].error is not None
 
 
 class TestPullPaginatesAllResults:
