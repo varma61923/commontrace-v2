@@ -541,7 +541,17 @@ def compute_transfer_gap(episodes, lessons):
             lesson = lessons.get(hit_slug)
             if not lesson:
                 continue
-            src_episodes = lesson.get("source_episodes") or []
+            # `source_traces` first: it is the CURRENT field name
+            # (lesson.schema.json), and templates.lesson_frontmatter --
+            # the only place any lesson's provenance is actually written,
+            # for every agent_type -- always populates it and always
+            # leaves the deprecated `source_episodes` alias at `[]`.
+            # Checking only `source_episodes` (the old name) meant every
+            # lesson written by the current `lesson new`/`distill`
+            # tooling read back as having NO source at all, so this
+            # metric silently reported ~100% untraceable regardless of
+            # how well-sourced the lessons actually were.
+            src_episodes = lesson.get("source_traces") or lesson.get("source_episodes") or []
             if not src_episodes:
                 untraceable += 1
                 continue
@@ -613,10 +623,20 @@ def compute_extras(episodes, lessons):
         i = ep.get("importance")
         imp_episodes[i] = imp_episodes.get(i, 0) + 1
 
-    # Coverage by domain
+    # Coverage by domain. `or "?"`, not `.get("domain", "?")`: the default
+    # only applies when the KEY is absent, so a hand-edited `domain:` (key
+    # present, value None) yielded a None key in this dict. `str(d)`, not
+    # the raw value: this file's own measure_performance.py-level parser
+    # (unlike commontrace/frontmatter.py's _StrictBoolLoader) applies plain
+    # YAML 1.1 rules, so `domain: NO`/`domain: on` parse as bool and
+    # `domain: 2026` parses as int -- any of which, mixed with the more
+    # common string domains, made render_markdown's
+    # `sorted(extras["domain_coverage"].keys())` raise TypeError comparing
+    # incompatible types, taking down `commontrace bench` for the whole
+    # store over one malformed lesson.
     domain_coverage = {}
     for lesson in lessons.values():
-        d = lesson.get("domain", "?")
+        d = str(lesson.get("domain") or "?")
         domain_coverage[d] = domain_coverage.get(d, 0) + 1
 
     return {
@@ -778,16 +798,31 @@ def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOL
         return {"available": False, "message": f"Failed to load {path}: {exc}"}
 
     n = len(slugs)
-    if n < 2 or embeddings.shape[0] != n:
+    # embeddings.ndim != 2, not just the row-count check: a 1D array (e.g.
+    # `n` embedding rows collapsed by a prior bug, or a hand-crafted
+    # index.npz) can still satisfy `embeddings.shape[0] == n` for n == its
+    # own length, and `embeddings @ embeddings.T` on a 1D array is a scalar
+    # dot product, not a similarity matrix -- `sim[i, j]` below then raises
+    # IndexError ("too many indices for array: array is 0-dimensional")
+    # instead of the clean "no data" this function's contract promises.
+    if n < 2 or embeddings.ndim != 2 or embeddings.shape[0] != n:
         return {"available": True, "pairs": [], "n_lessons": n, "threshold": threshold}
 
     sim = embeddings @ embeddings.T
-    pairs = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            score = float(sim[i, j])
-            if score > threshold:
-                pairs.append((slugs[i], slugs[j], score))
+    # Vectorized candidate extraction, not a pure-Python double loop: the
+    # matmul above is already one C/BLAS call, but the O(n^2)/2 pairwise
+    # scan that followed it was pure Python bytecode -- for a 10k-lesson
+    # corpus that is ~50M loop iterations, multiple seconds of wall time
+    # for what triu_indices + boolean masking does in a handful of
+    # vectorized numpy calls.
+    triu_i, triu_j = np.triu_indices(n, k=1)
+    scores = sim[triu_i, triu_j]
+    mask = scores > threshold
+    idx_i, idx_j, matched_scores = triu_i[mask], triu_j[mask], scores[mask]
+    pairs = [
+        (slugs[i], slugs[j], float(s))
+        for i, j, s in zip(idx_i.tolist(), idx_j.tolist(), matched_scores.tolist())
+    ]
     pairs.sort(key=lambda t: t[2], reverse=True)
     return {"available": True, "pairs": pairs, "n_lessons": n, "threshold": threshold}
 
@@ -1101,10 +1136,22 @@ def render_markdown(r, alerts=None):
             + "."
         )
         out.append("")
-        out.append(f"- latency p50 : {oc['latency_p50_ms']:.1f} ms")
-        out.append(f"- latency p95 : {oc['latency_p95_ms']:.1f} ms")
-        out.append(f"- tokens p50 : {oc['tokens_p50']:.0f}")
-        out.append(f"- tokens p95 : {oc['tokens_p95']:.0f}")
+        # compute_operational_cost independently tracks latency and token
+        # records (a telemetry file can have one without the other -- e.g.
+        # every line has latency_ms but none happen to carry
+        # estimated_tokens), so `available: True` does not guarantee EVERY
+        # one of these four percentiles is a number: any of them can be
+        # None. A raw f"{...:.1f}" on None raised TypeError (no __format__
+        # for NoneType), crashing `commontrace bench` on a telemetry file
+        # that was perfectly valid, just partial.
+        lat_p50 = f"{oc['latency_p50_ms']:.1f} ms" if oc.get("latency_p50_ms") is not None else "N/A"
+        lat_p95 = f"{oc['latency_p95_ms']:.1f} ms" if oc.get("latency_p95_ms") is not None else "N/A"
+        tok_p50 = f"{oc['tokens_p50']:.0f}" if oc.get("tokens_p50") is not None else "N/A"
+        tok_p95 = f"{oc['tokens_p95']:.0f}" if oc.get("tokens_p95") is not None else "N/A"
+        out.append(f"- latency p50 : {lat_p50}")
+        out.append(f"- latency p95 : {lat_p95}")
+        out.append(f"- tokens p50 : {tok_p50}")
+        out.append(f"- tokens p95 : {tok_p95}")
     out.append("")
 
     out.append("## Semantic near-duplicates (merge candidates)")

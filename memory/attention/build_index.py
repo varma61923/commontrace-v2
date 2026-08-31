@@ -67,14 +67,21 @@ INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
 ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule"
 
 
+_RULE_RE = re.compile(r"^##[ \t]*Rule[ \t]*\r?\n(.*?)(?=\n##[ \t]|\Z)", re.DOTALL | re.MULTILINE | re.IGNORECASE)
+
+
 def extract_rule(body: str) -> str:
-    """Extract the ## Rule section content from a lesson body (between ## Rule and next ##)."""
-    if "## Rule" not in body:
-        return ""
-    after = body.split("## Rule", 1)[1]
-    # Next "## " (section break) — split on newline-then-##
-    next_section = after.split("\n##", 1)
-    return next_section[0].strip()
+    """Extract the ## Rule section content from a lesson body (between ## Rule and next ##).
+
+    IGNORECASE, and tolerant of trailing whitespace after "Rule": lesson
+    bodies are explicitly meant to be hand-edited (commontrace/frontmatter.py),
+    and a literal `"## Rule" not in body` / `body.split("## Rule", 1)` pair
+    silently extracted nothing for a hand-written `## rule` or `## Rule ` --
+    the exact class of case-sensitivity bug trace_io.py's own `_SECTION_RE`
+    already fixed for `## Context`/`## Solution` (see its docstring).
+    """
+    m = _RULE_RE.search(body)
+    return m.group(1).strip() if m else ""
 
 
 def _load_frontmatter(fm_text: str):
@@ -123,8 +130,19 @@ def iter_active_lessons(lessons_dir: str):
         fname = os.path.basename(path)
         if fname == "lesson_template.md":
             continue
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            content = fh.read()
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                content = fh.read()
+        except OSError as exc:
+            # A file glob matched but became unreadable by the time we get
+            # here (permissions, deleted between glob() and open() by a
+            # concurrent capture/lesson command, a broken symlink) -- one
+            # such lesson must not abort the whole index rebuild. Same
+            # guard memory/attention/query.py's load_importances() already
+            # has for the identical failure mode; this script predates it
+            # and had fallen out of sync.
+            print(f"[WARN] skipping unreadable lesson {fname}: {exc}", file=sys.stderr)
+            continue
         delims = list(_DELIM_RE.finditer(content))
         if len(delims) < 2:
             # Malformed: no closing frontmatter

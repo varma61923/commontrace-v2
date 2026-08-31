@@ -131,9 +131,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _find_skill_md(root: str, dest: str) -> str | None:
+    # cwd first, then `root` (paths.resolve_root(), which honors
+    # COMMONTRACE_ROOT/JUSTDOIT_ROOT): `install` is normally run from
+    # inside the commontrace checkout that actually has SKILL.md, but an
+    # operator with COMMONTRACE_ROOT exported to point at their OWN active
+    # store (e.g. a wrapper script that always sets it) and running
+    # `install --dest /some/other/project` from a plain shell got THAT
+    # unrelated store's SKILL.md silently, instead of the one next to the
+    # command actually being run.
     candidates = [
-        os.path.join(root, "SKILL.md"),
         os.path.join(os.getcwd(), "SKILL.md"),
+        os.path.join(root, "SKILL.md"),
         os.path.join(dest, "SKILL.md"),
     ]
     for c in candidates:

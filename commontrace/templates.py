@@ -67,7 +67,10 @@ def trace_frontmatter(
         "agent_id": agent_id,
         "tags": tags,
         "profile": profile,
-        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        # UTC, not naive local time: a fleet spans machines/regions, and a
+        # timestamp with no offset is ambiguous across them in a way that
+        # defeats any later cross-agent chronological comparison.
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "watch_condition": "",
         "review_after": "",
         "supersedes_trace_id": "",

@@ -65,6 +65,13 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      # A pure-stdlib AST check (no DB, no heavy deps -- see its own
+      # docstring), so it belongs in the fast job that runs on every push
+      # rather than waiting on test-hub's Postgres-backed job to give the
+      # same feedback minutes later.
+      - name: Hub server image allowlist stays in sync with hub/'s imports
+        run: python -m pytest hub/tests/test_image_contents.py -q
+
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
     # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI
@@ -163,14 +170,25 @@ jobs:
       # pinned-file pattern hub/requirements.txt already uses below.
       - name: pip-audit -- commontrace's own declared dependencies
         run: |
-          cat > /tmp/commontrace-audit-requirements.txt <<'REQS'
-          PyYAML>=6.0,<7.0
-          numpy>=1.24,<3.0
-          sentence-transformers>=6.0,<7.0
-          transformers>=5.5.0
-          mcp>=2.0,<3.0
-          httpx
-          REQS
+          # Read straight from pyproject.toml's own [project.dependencies]
+          # and [project.optional-dependencies], instead of a hand-typed
+          # copy of them: the copy had already drifted from the real
+          # bounds (e.g. an unconstrained `httpx`/`transformers` here vs.
+          # `httpx>=0.27.0`/`transformers>=5.5.0,<7.0` actually declared),
+          # so tightening or loosening a real dependency bound silently
+          # stopped being reflected in what this step audits. Reading the
+          # single source of truth at run time makes that drift structurally
+          # impossible instead of relying on someone remembering to update
+          # both places in lockstep.
+          python - <<'PY' > /tmp/commontrace-audit-requirements.txt
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]
+          deps = list(project.get("dependencies", []))
+          for extra_deps in project.get("optional-dependencies", {}).values():
+              deps.extend(extra_deps)
+          print("\n".join(deps))
+          PY
           pip-audit -r /tmp/commontrace-audit-requirements.txt
 
       - name: pip-audit -- the Hub server's pinned dependencies

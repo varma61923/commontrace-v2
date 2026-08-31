@@ -114,14 +114,70 @@ class TestValidatorMaxLength:
 
 
 class TestHubClientForwardsAgentId:
-    def test_sync_payload_includes_agent_id(self):
+    def test_sync_payload_includes_agent_id(self, store, monkeypatch):
         """A fleet whose traces carry agent_id must not have it dropped on the
         way to the Hub -- the Hub is where the agent limit is enforced, so a
         silently-dropped field would collapse the whole fleet into the single
-        'unattributed' agent."""
-        src = open(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                         "commontrace", "hub_client.py"),
-            encoding="utf-8",
-        ).read()
-        assert '"agent_id": fm.get("agent_id") or ""' in src
+        'unattributed' agent.
+
+        Previously asserted a literal string against hub_client.py's own
+        source text -- true only for one exact formatting of the line, and
+        blind to whether push_active_lessons' actual call to the Hub carries
+        the field at all. Rewritten to mock the Hub call and check the real
+        payload instead.
+        """
+        import asyncio
+
+        from commontrace import frontmatter, hub_client, paths
+
+        ldir = paths.lessons_dir(str(store))
+        fm = {
+            "name": "lesson_a", "description": "d", "tags": [], "agent_type": "support",
+            "domain": "testing", "importance": 3, "importance_rationale": "r",
+            "importance_history": [], "applies_when": "when", "do_not_apply_when": "never",
+            "uses": 0, "last_hit": "NEVER", "source_traces": [], "source_episodes": [],
+            "hub_trace_id": None, "status": "active", "agent_id": "support-worker-7",
+        }
+        frontmatter.write(os.path.join(ldir, "lesson_a.md"), fm, "## Rule\nx\n")
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append(arguments)
+            return {"id": "trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert calls[0]["agent_id"] == "support-worker-7"
+
+    def test_sync_payload_defaults_agent_id_to_empty_string(self, store, monkeypatch):
+        """A lesson with no agent_id at all must still send the field
+        (empty string), not omit it -- omission and "unattributed" should
+        look the same to the Hub, not undefined."""
+        import asyncio
+
+        from commontrace import frontmatter, hub_client, paths
+
+        ldir = paths.lessons_dir(str(store))
+        fm = {
+            "name": "lesson_b", "description": "d", "tags": [], "agent_type": "support",
+            "domain": "testing", "importance": 3, "importance_rationale": "r",
+            "importance_history": [], "applies_when": "when", "do_not_apply_when": "never",
+            "uses": 0, "last_hit": "NEVER", "source_traces": [], "source_episodes": [],
+            "hub_trace_id": None, "status": "active",
+        }
+        frontmatter.write(os.path.join(ldir, "lesson_b.md"), fm, "## Rule\nx\n")
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append(arguments)
+            return {"id": "trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert calls[0]["agent_id"] == ""

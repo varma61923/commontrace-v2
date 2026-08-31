@@ -153,21 +153,38 @@ def _append_telemetry(record, path=None):
     always append, never truncate existing history. A telemetry write failure (e.g.
     read-only filesystem) must never break the actual retrieval it's instrumenting, so
     failures are reported to stderr and swallowed rather than raised.
+
+    Rotation (getsize -> os.replace) and the append that follows are guarded by
+    commontrace.frontmatter.locked(): without it, two concurrent query.py invocations
+    (a multi-agent fleet, or several parallel Alpha calls) can race the check-then-act
+    rotation -- one process's os.replace() can swap the file out from under another
+    that already decided not to rotate, so that process's append lands in the freshly
+    rotated `.1` file instead of a fresh `path`, or raises FileNotFoundError against an
+    inode that no longer exists at that name. The lock is degrade-only (see
+    frontmatter.locked's own docstring): on a platform with neither fcntl nor msvcrt it
+    is a no-op, same as everywhere else this module is used, rather than a reason a
+    telemetry write -- or the retrieval it's instrumenting -- ever fails outright.
     """
     path = path or TELEMETRY_PATH
     try:
+        from commontrace.frontmatter import locked
+    except Exception:  # noqa: BLE001 - standalone use, any import problem
+        import contextlib
+        locked = lambda _p: contextlib.nullcontext()  # noqa: E731
+    try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
-            # Keep exactly one prior generation, the simplest form of
-            # logrotate's own default behavior -- overwrites any previous
-            # .1 rather than accumulating .1, .2, .3, ... forever, which
-            # would just move the unbounded-growth problem sideways.
-            try:
-                os.replace(path, path + ".1")
-            except OSError:
-                pass
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record) + "\n")
+        with locked(path):
+            if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
+                # Keep exactly one prior generation, the simplest form of
+                # logrotate's own default behavior -- overwrites any previous
+                # .1 rather than accumulating .1, .2, .3, ... forever, which
+                # would just move the unbounded-growth problem sideways.
+                try:
+                    os.replace(path, path + ".1")
+                except OSError:
+                    pass
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
     except OSError as exc:
         print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
 

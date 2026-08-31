@@ -96,9 +96,27 @@ def run(args: argparse.Namespace) -> int:
         resolution_baseline = resolution_current = None
         n_baseline_traces = n_current_traces = 0
 
+    # `is not None`, not `not in (None, 0)`: a literal 0.0 baseline
+    # resolution rate is real, computable data -- "nothing was resolved
+    # before CommonTrace" -- and treating it the same as "no baseline data
+    # at all" reported `resolution_delta = None` ("change: N/A") AND fed
+    # `None` into `pilot.determine_result`'s `resolution_delta is not
+    # None` gate, so the fleet with the most dramatic, most reportable
+    # improvement (0% -> 80%) fell all the way through to a "NOT YET"
+    # verdict -- "resolution rate has not improved" -- exactly backwards.
+    # A true RELATIVE change from a zero baseline is undefined (division
+    # by zero), but resolution_rate is always a bounded [0, 1] rate, not
+    # an unbounded quantity: any improvement off a genuine 0% baseline is
+    # unambiguously the maximal positive signal this bounded metric can
+    # report, so it is treated as a full +100% relative change (clearing
+    # determine_result's `> 0.05` "improved" threshold, same as it would
+    # for any other real improvement) rather than as "unknown."
     resolution_delta = None
-    if resolution_baseline not in (None, 0) and resolution_current is not None:
-        resolution_delta = (resolution_current - resolution_baseline) / resolution_baseline
+    if resolution_baseline is not None and resolution_current is not None:
+        if resolution_baseline == 0:
+            resolution_delta = 1.0 if resolution_current > 0 else 0.0
+        else:
+            resolution_delta = (resolution_current - resolution_baseline) / resolution_baseline
 
     report = pilot.PilotReport(
         taxonomy=tax,

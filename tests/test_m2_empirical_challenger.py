@@ -280,7 +280,12 @@ class TestAtomicWritingAndCleanup:
         """Verify build_index.py writes index atomically and cleans up tmp on failure."""
         build_index, _ = attention_modules
         index_path = tmp_path / "index.npz"
-        tmp_index_path = tmp_path / "index.npz.tmp.npz"
+        # build_index.py names its temp file via tempfile.mkstemp(prefix=...,
+        # suffix=".tmp.npz"), which inserts a random component between them
+        # (e.g. "index.npz.a1b2c3.tmp.npz") -- a hardcoded "index.npz.tmp.npz"
+        # guess never matches any file mkstemp actually creates, so asserting
+        # that exact path doesn't exist was vacuously true whether or not
+        # cleanup worked, or even ran at all. Matched by glob instead, below.
 
         # Create dummy initial index
         np.savez(str(index_path), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
@@ -303,8 +308,10 @@ class TestAtomicWritingAndCleanup:
                 with pytest.raises(PermissionError):
                     build_index.main()
 
-        # Temporary file should be unlinked
-        assert not tmp_index_path.exists(), "Tmp index file was not cleaned up!"
+        # Temporary file should be unlinked -- glob, not a hardcoded name,
+        # since mkstemp's actual filename has a random component in it.
+        leftover = list(tmp_path.glob("*.tmp.npz"))
+        assert leftover == [], f"Temporary index files were not cleaned up: {leftover}"
         # Original index preserved
         assert index_path.exists()
 

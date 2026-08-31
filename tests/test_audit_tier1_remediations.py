@@ -546,6 +546,63 @@ class TestCaptureOccasionIdMergesRatherThanOverwrites:
         assert inst["solution_text"] == "original solution"
         assert inst["outcome"]["resolved"] is True, "the outcome must still merge in"
 
+    def test_recapture_merges_outcome_and_preserves_tags_agent_id_and_created_at(self, tmp_path):
+        """The existing merge test above only ever sets ONE outcome field
+        across the two calls (the first call sets none at all), so
+        "the result has that field" passed whether or not the code
+        actually merged anything -- there was nothing to lose. This
+        reproduces the real failure: a first call that already recorded
+        tokens_used/tags/agent_id, followed by a second call that only
+        adds --resolved. Before the fix, tokens_used/tags/agent_id and the
+        original created_at were silently wiped by the second call's
+        (empty/default) values instead of merged."""
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "t", "--context", "c", "--solution", "s",
+            "--agent-type", "code", "--tags", "linux,gcc", "--tokens-used", "4200",
+            "--agent-id", "worker-9", "--occasion-id", "task-3", dest=tmp_path,
+        )
+        assert first.returncode == 0, first.stderr
+        out_path = first.stdout.strip()
+        original = trace_io_read(out_path)[0]
+
+        second = self._run(
+            "capture", "--title", "placeholder", "--context", "placeholder",
+            "--solution", "placeholder", "--agent-type", "code", "--resolved",
+            "--occasion-id", "task-3", dest=tmp_path,
+        )
+        assert second.returncode == 0, second.stderr
+        assert second.stdout.strip() == out_path
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["outcome"]["tokens_used"] == 4200, "tokens_used from the first call was dropped"
+        assert inst["outcome"]["resolved"] is True, "resolved from the second call did not merge in"
+        assert inst["tags"] == ["linux", "gcc"], "tags from the first call were dropped"
+        assert inst["agent_id"] == "worker-9", "agent_id from the first call was dropped"
+        assert inst["created_at"] == original["created_at"], "created_at must not change on re-capture"
+
+    def test_recapture_new_tags_and_agent_id_replace_rather_than_merge(self, tmp_path):
+        """When the second call DOES pass --tags/--agent-id, those values
+        win outright (they are not appended to/merged with the old ones --
+        only a call that OMITS them falls back to preserving the original)."""
+        self._run("init", "--agent-type", "code", dest=tmp_path)
+        first = self._run(
+            "capture", "--title", "t", "--context", "c", "--solution", "s",
+            "--agent-type", "code", "--tags", "linux,gcc", "--agent-id", "worker-9",
+            "--occasion-id", "task-4", dest=tmp_path,
+        )
+        out_path = first.stdout.strip()
+
+        self._run(
+            "capture", "--title", "t", "--context", "c", "--solution", "s",
+            "--agent-type", "code", "--tags", "billing", "--agent-id", "worker-10",
+            "--occasion-id", "task-4", dest=tmp_path,
+        )
+
+        inst, _ = trace_io_read(out_path)
+        assert inst["tags"] == ["billing"]
+        assert inst["agent_id"] == "worker-10"
+
     def test_overwrite_flag_replaces_the_narrative(self, tmp_path):
         self._run("init", "--agent-type", "code", dest=tmp_path)
         first = self._run(
@@ -957,7 +1014,13 @@ class TestSemanticQueryDetectsIndexMismatch:
         module = importlib.util.module_from_spec(spec)
         return module, spec
 
-    def test_dimension_mismatch_is_a_clear_error_not_a_numpy_traceback(self):
+    def test_dimension_mismatch_is_a_clear_error_not_a_numpy_traceback(self, tmp_path, monkeypatch, capsys):
+        """Previously only asserted the literal `384 != 768` -- true no
+        matter what query.py itself does with a mismatched index, so this
+        passed identically before query.py's guard existed and after.
+        Rewritten to actually run query.py's main() against a mismatched
+        index and check ITS behavior: a clean exit code 1 and an
+        actionable stderr message, not a raw numpy matmul traceback."""
         pytest.importorskip("numpy", reason="attention extra not installed in this env")
         pytest.importorskip("sentence_transformers", reason="attention extra not installed in this env")
         import numpy as np
@@ -965,17 +1028,69 @@ class TestSemanticQueryDetectsIndexMismatch:
         module, spec = self._module()
         spec.loader.exec_module(module)
 
-        embeddings = np.zeros((3, 384), dtype=np.float32)
-        q_emb = np.zeros(768, dtype=np.float32)  # a different model's width
-        assert embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]
+        index_path = tmp_path / "index.npz"
+        np.savez(
+            str(index_path),
+            slugs=np.array(["lesson_a"]),
+            embeddings=np.zeros((1, 384), dtype=np.float32),
+            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            n_lessons=np.array(1),
+        )
+        monkeypatch.setattr(module, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(module, "LESSONS_DIR", str(tmp_path))
 
-    def test_row_count_mismatch_is_detectable_before_indexing(self):
+        class FakeModel:
+            def encode(self, *a, **k):
+                return np.zeros(768, dtype=np.float32)  # a different model's width
+
+        monkeypatch.setattr(module, "SentenceTransformer", lambda name: FakeModel())
+        monkeypatch.setattr(sys, "argv", ["query.py", "task description"])
+
+        rc = module.main()
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "embedding dimension" in err
+        assert "build_index.py" in err
+
+    def test_row_count_mismatch_is_detectable_before_indexing(self, tmp_path, monkeypatch, capsys):
+        """Previously only asserted the literal `2 != 3`, exercising
+        nothing in query.py itself. Rewritten to run main() against a
+        truncated index (fewer embedding rows than slugs) and check it
+        reports a clean, actionable error instead of an IndexError out of
+        `slugs[idx]`."""
         pytest.importorskip("numpy", reason="attention extra not installed in this env")
+        pytest.importorskip("sentence_transformers", reason="attention extra not installed in this env")
         import numpy as np
 
-        embeddings = np.zeros((2, 384), dtype=np.float32)  # truncated: only 2 rows
-        slugs = ["a", "b", "c"]  # but 3 slugs on record
-        assert embeddings.shape[0] != len(slugs)
+        module, spec = self._module()
+        spec.loader.exec_module(module)
+
+        index_path = tmp_path / "index.npz"
+        # 3 slugs on record, but only 2 embedding rows -- a truncated write.
+        np.savez(
+            str(index_path),
+            slugs=np.array(["a", "b", "c"]),
+            embeddings=np.zeros((2, 384), dtype=np.float32),
+            model_name=np.array(module._TRUSTED_MODEL_NAME),
+            n_lessons=np.array(3),
+        )
+        monkeypatch.setattr(module, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(module, "LESSONS_DIR", str(tmp_path))
+
+        class FakeModel:
+            def encode(self, *a, **k):
+                return np.zeros(384, dtype=np.float32)  # matches the index's own width
+
+        monkeypatch.setattr(module, "SentenceTransformer", lambda name: FakeModel())
+        monkeypatch.setattr(sys, "argv", ["query.py", "task description"])
+
+        rc = module.main()
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "embedding row" in err
+        assert "truncated" in err
 
 
 class TestTemplateHeadingsMatchWhatIsGenerated:

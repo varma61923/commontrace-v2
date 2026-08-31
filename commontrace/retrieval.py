@@ -42,11 +42,17 @@ def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
     activation-condition signal, description is a secondary summary."""
     tags = fm.get("tags")
     tags_list = [str(t) for t in tags if t is not None] if isinstance(tags, (list, tuple)) else []
+    # `or ""`, not a bare `.get(..., "")`: the default only applies when the
+    # KEY is absent, so a hand-edited `description:` (key present, value
+    # None) returned None from .get, and str(None) == "None" -- so a query
+    # containing the word "none" spuriously matched every lesson with an
+    # empty description/applies_when/domain field, via a token that field
+    # never actually contained.
     return [
-        (str(fm.get("description", "")), 1.0),
-        (str(fm.get("applies_when", "")), 1.5),
+        (str(fm.get("description") or ""), 1.0),
+        (str(fm.get("applies_when") or ""), 1.5),
         (" ".join(tags_list), 2.0),
-        (str(fm.get("domain", "")), 1.0),
+        (str(fm.get("domain") or ""), 1.0),
     ]
 
 

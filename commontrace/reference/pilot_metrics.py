@@ -102,7 +102,13 @@ def compute_bucket(traces):
 
 
 def split_baseline(traces):
-    baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline")]
+    # `is True`, not truthiness: trace.schema.json's `baseline` is a bool
+    # field, but a hand-edited trace is free to write `baseline: "false"`
+    # (a non-empty string, which is truthy in Python) and truthiness alone
+    # would misclassify that trace as baseline data -- silently mixing a
+    # CURRENT trace into the pre-CommonTrace baseline bucket it explicitly
+    # says it is not.
+    baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline") is True]
     # Identity, not equality. `t not in baseline` is an O(n) dict comparison
     # per trace -- O(n^2) overall with a full field-by-field compare at each
     # step -- and it is correct today only because load_traces happens to set
