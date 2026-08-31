@@ -85,7 +85,26 @@ def reject_unstorable_text(value: str, field: str) -> None:
     `ValueError` subclass, so it would reach the same 4xx unwrapped) purely
     so the message names the field, matching every other check in this
     module rather than surfacing a raw Python encoding error to a caller.
+
+    The isinstance check below exists because at least one caller
+    (search_traces's `for tag in tags or []: reject_unstorable_text(tag,
+    "tag")`) has no schema validation ahead of it the way
+    contribute_trace/amend_trace/submit_kb_entry's `validate_trace` does --
+    those reject a non-string tag with a clean SchemaValidationError before
+    this function ever runs, but search_traces is a read path with no
+    schema to check against. Reproduced live: search_traces(tags=[123])
+    reached `"\\x00" in value` with `value=123` and crashed with an
+    uncaught `TypeError: argument of type 'int' is not iterable` -- not a
+    ValueError, so it fell through to the same generic 500 every other fix
+    in this function exists to prevent. This does not, on its own, catch a
+    caller passing a bare string instead of a list of strings
+    (search_traces(tags="abc") iterates the string's own characters, each
+    one individually a valid str) -- that is a different failure mode, an
+    array-vs-scalar mismatch at the SQL layer, guarded separately where the
+    container itself is accepted.
     """
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string, got {type(value).__name__}")
     if "\x00" in value:
         raise ValueError(f"{field} contains an embedded NUL byte, which Postgres cannot store")
     try:

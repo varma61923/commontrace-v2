@@ -717,6 +717,17 @@ async def search_traces(
     offset = _clamp_int(offset, 0, MAX_SEARCH_OFFSET, 0)
     if query:
         reject_unstorable_text(query, "query")
+    # search_traces has no schema validation ahead of it the way the
+    # write paths do (validate_trace), so this is the only place that
+    # ever checks tags is actually a LIST before it reaches the query
+    # below, which binds it as a VARCHAR[] array. Reproduced live:
+    # search_traces(tags="abc") passed a bare string straight through --
+    # `for tag in tags` iterates the string's own characters rather than
+    # raising, so nothing here caught it either -- and crashed at the SQL
+    # layer with an uncaught ProgrammingError ("operator does not exist:
+    # character varying[] && character varying"), not a ValueError.
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError(f"tags must be a list of strings, got {type(tags).__name__}")
     for tag in tags or []:
         reject_unstorable_text(tag, "tag")
 
