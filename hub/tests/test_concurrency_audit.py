@@ -23,6 +23,14 @@ real asyncio.gather() concurrency against a live Postgres:
   5. amend_trace / contribute_trace storage quota: concurrent writes
      against a plan's max_traces cap must never let the org's trace count
      exceed it (see TestContributeTraceStorageQuotaRace below).
+  6. submit_kb_entry: concurrent writes against MAX_PENDING_SUBMISSIONS_PER_ORG
+     must never let an org's pending-review queue exceed it (fixed via
+     SELECT ... FOR UPDATE on the org row, the same lock _reserve_trace_slot
+     already takes -- see TestSubmitKbEntryPendingQuotaRace below).
+  7. amend_trace: retrying an identical call with the SAME `idempotency_key`
+     now returns the original amendment rather than forking the
+     supersession chain (fixed the same way contribute_trace's #2 above is
+     -- see TestAmendTraceIdempotency below).
 
 Run with: HUB_TEST_DATABASE_URL=... pytest -s -v \
     hub/tests/test_concurrency_audit.py
@@ -242,6 +250,134 @@ class TestContributeTraceIdempotency:
         assert not exceptions, f"unexpected exceptions: {exceptions}"
         assert ids == {rows[0].id}, "every concurrent retry must resolve to the same single trace id"
         assert len(rows) == 1
+
+
+class TestAmendTraceIdempotency:
+    """Regression tests for a real bug found by extending the same audit
+    that motivated TestContributeTraceIdempotency to amend_trace: unlike
+    contribute_trace, amend_trace had NO idempotency_key parameter at all.
+    A retried call (a client that timed out waiting for the first
+    response) resolved the SAME still-unmutated original and inserted a
+    SECOND row superseding it -- forking the supersession chain rather than
+    duplicating a sibling trace. Reproduced against a live Postgres before
+    the fix: two "identical" amend_trace calls left 2 rows with the same
+    supersedes_trace_id, not 1. Fixed the same way contribute_trace already
+    is: an optional `idempotency_key` param backed by the same
+    UNIQUE(org_id, idempotency_key) constraint on the traces table (see
+    hub/crud.py:amend_trace).
+    """
+
+    async def test_identical_retry_with_same_key_returns_the_original_not_a_fork(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        original = await _contribute(session_factory, config, org, "before amendment", "c", "s")
+
+        args = dict(title="amended title", idempotency_key="amend-key-1")
+        async with session_scope(session_factory) as session:
+            r1 = await crud.amend_trace(session, org, original["id"], config, rate_limiter, **args)
+        async with session_scope(session_factory) as session:
+            r2 = await crud.amend_trace(session, org, original["id"], config, rate_limiter, **args)
+
+        print(f"[amend idempotency] first id={r1['id']} second id={r2['id']}")
+
+        async with session_scope(session_factory) as session:
+            forks = (
+                await session.execute(
+                    select(Trace).where(Trace.org_id == org, Trace.supersedes_trace_id == original["id"])
+                )
+            ).scalars().all()
+
+        assert r1["id"] == r2["id"], "retry with the same key must return the original amendment, not a fork"
+        assert len(forks) == 1, f"expected exactly 1 amendment after 2 identical-key retries, found {len(forks)}"
+
+    async def test_omitted_key_is_unaffected_and_still_forks(self, session_factory, config, org):
+        """No idempotency_key (the default) must behave exactly as before
+        this fix: NULL never conflicts with NULL under the unique
+        constraint, so every unkeyed call still creates its own row."""
+        rate_limiter = make_rate_limiter(config)
+        original = await _contribute(session_factory, config, org, "before amendment", "c", "s")
+
+        async with session_scope(session_factory) as session:
+            r1 = await crud.amend_trace(session, org, original["id"], config, rate_limiter, title="amended")
+        async with session_scope(session_factory) as session:
+            r2 = await crud.amend_trace(session, org, original["id"], config, rate_limiter, title="amended")
+        assert r1["id"] != r2["id"]
+
+    async def test_same_key_different_trace_id_raises_conflict(self, session_factory, config, org):
+        """Reusing a key against a DIFFERENT original is a different
+        request, not a retry -- _amend_request_hash includes trace_id
+        precisely so this cannot silently misattribute the reused key's
+        amendment to the wrong trace."""
+        rate_limiter = make_rate_limiter(config)
+        original_a = await _contribute(session_factory, config, org, "trace a", "c", "s")
+        original_b = await _contribute(session_factory, config, org, "trace b", "c", "s")
+
+        async with session_scope(session_factory) as session:
+            await crud.amend_trace(
+                session, org, original_a["id"], config, rate_limiter,
+                title="amended a", idempotency_key="shared-key",
+            )
+        with pytest.raises(crud.IdempotencyKeyConflict):
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, org, original_b["id"], config, rate_limiter,
+                    title="amended b", idempotency_key="shared-key",
+                )
+
+    async def test_same_key_different_fields_raises_conflict_not_stale_data(
+        self, session_factory, config, org
+    ):
+        rate_limiter = make_rate_limiter(config)
+        original = await _contribute(session_factory, config, org, "before amendment", "c", "s")
+
+        async with session_scope(session_factory) as session:
+            await crud.amend_trace(
+                session, org, original["id"], config, rate_limiter,
+                title="first version", idempotency_key="reused-amend-key",
+            )
+        with pytest.raises(crud.IdempotencyKeyConflict):
+            async with session_scope(session_factory) as session:
+                await crud.amend_trace(
+                    session, org, original["id"], config, rate_limiter,
+                    title="a genuinely different edit", idempotency_key="reused-amend-key",
+                )
+
+    async def test_20_concurrent_identical_retries_create_exactly_one_amendment(
+        self, session_factory, config, org
+    ):
+        """The realistic failure mode: N retries racing each other, not just
+        two sequential calls. Exercises the IntegrityError/rollback/refetch
+        path in amend_trace, not just the up-front SELECT -- the same path
+        TestContributeTraceIdempotency's concurrent test exercises for
+        contribute_trace."""
+        rate_limiter = make_rate_limiter(config)
+        original = await _contribute(session_factory, config, org, "before amendment", "c", "s")
+
+        async def _call():
+            async with session_scope(session_factory) as session:
+                return await crud.amend_trace(
+                    session, org, original["id"], config, rate_limiter,
+                    title="concurrently amended", idempotency_key="concurrent-amend-key",
+                )
+
+        results = await asyncio.gather(*[_call() for _ in range(20)], return_exceptions=True)
+        exceptions = [r for r in results if isinstance(r, BaseException)]
+        ids = {r["id"] for r in results if not isinstance(r, BaseException)}
+
+        async with session_scope(session_factory) as session:
+            forks = (
+                await session.execute(
+                    select(Trace).where(
+                        Trace.org_id == org, Trace.supersedes_trace_id == original["id"]
+                    )
+                )
+            ).scalars().all()
+
+        print(f"[concurrent amend idempotency] n_exceptions={len(exceptions)} distinct_ids={ids} n_forks={len(forks)}")
+        assert not exceptions, f"unexpected exceptions: {exceptions}"
+        assert ids == {forks[0].id}, "every concurrent retry must resolve to the same single amendment id"
+        assert len(forks) == 1
 
 
 # --- 3. search_traces pagination stability with tied created_at ---------

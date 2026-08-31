@@ -355,9 +355,18 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         context_text: str | None = None,
         solution_text: str | None = None,
         tags: list[str] | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         """Create a new trace that supersedes `id`, carrying forward any
-        field not explicitly overridden."""
+        field not explicitly overridden.
+
+        Pass a client-generated `idempotency_key` (e.g. a UUID minted once
+        per logical amendment) to make retries after a lost/timed-out
+        response safe: retrying with the same key returns the original
+        amendment instead of forking the supersession chain. Reusing a key
+        with a different `id` or different field overrides is rejected as a
+        conflict rather than silently returning the wrong trace.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
@@ -372,6 +381,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     solution_text=solution_text,
                     tags=tags,
                     actor=auth.get_current_actor(),
+                    idempotency_key=idempotency_key,
                 )
             if amended is None:
                 return {"error": "not_found", "detail": f"no trace with id {id}"}

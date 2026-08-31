@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import secrets
 import uuid
@@ -81,6 +82,30 @@ def _contribute_request_hash(
     # to be a general canonicalization.
     parts = [title, context_text, solution_text, agent_type, "\x1f".join(sorted(tags))]
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
+def _amend_request_hash(
+    trace_id: str,
+    title: str | None,
+    context_text: str | None,
+    solution_text: str | None,
+    tags: list[str] | None,
+) -> str:
+    """Distinguishes "the same amend_trace call, retried" from "a different
+    one that happens to reuse an idempotency_key" -- including `trace_id`
+    (reusing a key against a different original is a different request, not
+    a retry) and each field's None-ness (None means "carry the original
+    forward unchanged", which is not the same request as an explicit
+    override that happens to match the original's current value).
+
+    JSON, not hand-rolled delimiters like _contribute_request_hash's: this
+    hash must distinguish None from "" and from every other string a field
+    could contain, and a delimiter chosen to never collide with a caller's
+    title/context/solution text is not a bet worth taking when json.dumps
+    already escapes unambiguously for free.
+    """
+    payload = [trace_id, title, context_text, solution_text, sorted(tags) if tags is not None else None]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _iso(dt: datetime) -> str:
@@ -923,6 +948,30 @@ def _idempotent_replay_or_conflict(
     }
 
 
+async def _amend_idempotent_replay_or_conflict(
+    session: AsyncSession,
+    existing: Trace,
+    idempotency_key: str,
+    trace_id: str,
+    title: str | None,
+    context_text: str | None,
+    solution_text: str | None,
+    tags: list[str] | None,
+) -> dict:
+    incoming_hash = _amend_request_hash(trace_id, title, context_text, solution_text, tags)
+    if existing.request_hash != incoming_hash:
+        raise IdempotencyKeyConflict(
+            f"idempotency_key {idempotency_key!r} was already used for a different amend_trace "
+            "call; reuse a key only to retry the exact same request"
+        )
+    # Unlike contribute_trace's replay (a fixed {id, quarantined,
+    # quarantine_reason} shape), amend_trace's normal success return is the
+    # full hydrated trace -- a replay must match that shape too, or a
+    # retrying client sees a different response shape than the original
+    # call got.
+    return await _hydrate_one(session, existing)
+
+
 def _is_uuid(value: str) -> bool:
     """Whether `value` is acceptable to bind against a UUID column.
 
@@ -1318,16 +1367,51 @@ async def amend_trace(
     solution_text: str | None = None,
     tags: list[str] | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    idempotency_key: str | None = None,
 ) -> dict | None:
     """Creates a new Trace that supersedes `trace_id`, rather than mutating
     history in place -- consistent with Trace.supersedes_trace_id /
-    Trace.depth being an amendment *chain*, not an overwrite."""
+    Trace.depth being an amendment *chain*, not an overwrite.
+
+    `idempotency_key` makes retries safe, for the same reason and the same
+    way contribute_trace's does (see its docstring): an MCP client that
+    times out waiting for a response cannot tell "the amendment never
+    happened" from "it happened but the response was lost". Without a key,
+    a retry called amend_trace(trace_id=X, ...) again against the same,
+    still-unmutated original and created a SECOND trace superseding X --
+    forking the supersession chain instead of extending it, rather than
+    creating a duplicate sibling the way an unkeyed contribute_trace retry
+    does (reproduced against a live Postgres before this was added: two
+    "identical" retries left two rows both pointing at the same
+    supersedes_trace_id). Passing the same key on a retry returns the
+    original amendment instead of forking it; passing the same key with a
+    genuinely different request (a different trace_id, or different field
+    overrides) raises IdempotencyKeyConflict rather than silently returning
+    the wrong trace.
+    """
     if not _is_uuid(trace_id):
         return None
+
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
+    if idempotency_key is not None:
+        reject_embedded_nul(idempotency_key, "idempotency_key")
+
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     original = (await session.execute(stmt)).scalar_one_or_none()
     if original is None:
         return None
+
+    if idempotency_key is not None:
+        existing = (
+            await session.execute(
+                select(Trace).where(Trace.org_id == org_id, Trace.idempotency_key == idempotency_key)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return await _amend_idempotent_replay_or_conflict(
+                session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags
+            )
 
     # amend_trace is a WRITE path and carries caller-supplied content, so it
     # gets the same four guards contribute_trace does. Without them it was
@@ -1401,9 +1485,32 @@ async def amend_trace(
         depth=original.depth + 1,
         quarantined=quarantined,
         quarantine_reason=quarantine_reason,
+        idempotency_key=idempotency_key,
+        request_hash=(
+            _amend_request_hash(trace_id, title, context_text, solution_text, tags)
+            if idempotency_key is not None
+            else None
+        ),
     )
     session.add(amended)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # Lost the race: a concurrent retry with the same (org_id,
+        # idempotency_key) committed first. Roll back this attempt and
+        # treat it exactly like we'd found the row up front -- same
+        # handling as contribute_trace's identical race.
+        await session.rollback()
+        existing = (
+            await session.execute(
+                select(Trace).where(Trace.org_id == org_id, Trace.idempotency_key == idempotency_key)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise  # the constraint fired for some other reason; don't mask it
+        return await _amend_idempotent_replay_or_conflict(
+            session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags
+        )
 
     session.add(TraceRelation(trace_id=amended.id, related_trace_id=original.id, relationship_type="AMENDS"))
     session.add(
