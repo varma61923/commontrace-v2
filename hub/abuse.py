@@ -43,34 +43,58 @@ class RateLimited(Exception):
     """Hard rejection: the org is over its contribute_trace rate limit."""
 
 
-def reject_embedded_nul(value: str, field: str) -> None:
-    """Raise `ValueError` if `value` contains an embedded NUL byte (0x00).
+def reject_unstorable_text(value: str, field: str) -> None:
+    """Raise `ValueError` if `value` contains an embedded NUL byte (0x00) or
+    a lone UTF-16 surrogate (U+D800-U+DFFF unpaired) -- the two distinct
+    ways a Python `str` can be perfectly legal to hold in memory and still
+    be impossible for Postgres to store.
 
     Every free-text string this Hub accepts eventually becomes an asyncpg
-    bind parameter, and asyncpg refuses to encode a NUL byte into one at
-    all -- Postgres's text type is built on NUL-terminated C strings
-    on-disk, so this is not a driver quirk to work around but a real
-    limit of what the column can ever store. Left unchecked, the first
-    caller to pass one (a pasted binary log excerpt, a fuzzer, a client
-    bug) gets `asyncpg.exceptions.CharacterNotInRepertoireError` raised
-    from deep inside a query -- wrapped in a bare `DBAPIError` that
-    matches none of `hub/server.py:_error_response`'s specific branches,
-    so it falls through to a generic `internal_error` and a server-side
-    stack trace logged as "unexpected" -- for input that is exactly as
-    malformed, and exactly as foreseeable, as an over-length title.
+    bind parameter. The two failure modes have different root causes but
+    the same symptom, so one function checks for both:
 
-    Checked here, before the value reaches a query, a NUL byte gets the
-    same clean 4xx every other malformed-input case in this module
-    already gets, instead of the one path that still reaches Postgres
-    itself to fail. `ValueError` (not `TraceRejected`) is the return
-    type because this same check is reused for read-path filters and
-    non-trace fields that have no concept of "the trace was rejected";
-    `hub/server.py:_error_response` maps a bare `ValueError` to
-    `invalid_request` the same as it does `TraceRejected`, which is a
-    subclass of it.
+    - A NUL byte is valid Unicode and encodes to valid UTF-8 (`b"\\x00"`)
+      -- Postgres simply cannot store it, because its text type is built on
+      NUL-terminated C strings on-disk. asyncpg raises
+      `CharacterNotInRepertoireError` for this one.
+    - A lone surrogate is not valid Unicode *text* at all -- surrogate code
+      points exist only as UTF-16 encoding machinery and have no UTF-8
+      representation, so `value.encode("utf-8")` itself raises. A client
+      cannot send one deliberately as ordinary text, but `json.loads`
+      happily decodes a malformed `"\\ud800"` escape (an unpaired
+      surrogate half) into exactly this, so any JSON-speaking MCP client --
+      buggy or adversarial -- can produce one without trying hard. asyncpg
+      raises `DataError` for this one.
+
+    Both, left unchecked, get raised from deep inside a query -- wrapped in
+    a bare `DBAPIError`/`ProgrammingError` that matches none of
+    `hub/server.py:_error_response`'s specific branches, so it falls
+    through to a generic `internal_error` and a server-side stack trace
+    logged as "unexpected" -- for input that is exactly as malformed, and
+    exactly as foreseeable, as an over-length title. Checked here, before
+    the value reaches a query, either one gets the same clean 4xx every
+    other malformed-input case in this module already gets, instead of the
+    one path that still reaches Postgres itself to fail.
+
+    `ValueError` (not `TraceRejected`) is the return type because this same
+    check is reused for read-path filters and non-trace fields that have no
+    concept of "the trace was rejected"; `hub/server.py:_error_response`
+    maps a bare `ValueError` to `invalid_request` the same as it does
+    `TraceRejected`, which is a subclass of it. The surrogate branch below
+    re-wraps `encode()`'s own `UnicodeEncodeError` (itself already a
+    `ValueError` subclass, so it would reach the same 4xx unwrapped) purely
+    so the message names the field, matching every other check in this
+    module rather than surfacing a raw Python encoding error to a caller.
     """
     if "\x00" in value:
         raise ValueError(f"{field} contains an embedded NUL byte, which Postgres cannot store")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"{field} contains a character that cannot be encoded as UTF-8 ({exc}); "
+            "this usually means an unpaired UTF-16 surrogate reached this field as text"
+        ) from exc
 
 
 def validate_size(fields: dict, config: HubConfig) -> None:
@@ -89,9 +113,9 @@ def validate_size(fields: dict, config: HubConfig) -> None:
         (solution_text, "solution_text"),
         (agent_type, "agent_type"),
     ):
-        reject_embedded_nul(value, name)
+        reject_unstorable_text(value, name)
     for tag in tags:
-        reject_embedded_nul(tag, "tag")
+        reject_unstorable_text(tag, "tag")
 
     if len(title) > config.max_title_chars:
         raise TraceRejected(f"title exceeds {config.max_title_chars} chars ({len(title)})")

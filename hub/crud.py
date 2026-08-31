@@ -40,7 +40,7 @@ from hub.abuse import (
     RateLimited,
     RateLimiter,
     TraceRejected,
-    reject_embedded_nul,
+    reject_unstorable_text,
     suspicion_reason,
     validate_size,
 )
@@ -653,9 +653,9 @@ async def search_traces(
     limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
     offset = max(0, min(int(offset), MAX_SEARCH_OFFSET))
     if query:
-        reject_embedded_nul(query, "query")
+        reject_unstorable_text(query, "query")
     for tag in tags or []:
-        reject_embedded_nul(tag, "tag")
+        reject_unstorable_text(tag, "tag")
 
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
     chosen = hub_search.ChosenTerms((), (), ())
@@ -825,7 +825,7 @@ async def contribute_trace(
     if idempotency_key is not None and len(idempotency_key) > 128:
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     if idempotency_key is not None:
-        reject_embedded_nul(idempotency_key, "idempotency_key")
+        reject_unstorable_text(idempotency_key, "idempotency_key")
 
     # Trace.agent_id is String(128). Checked here for the same reason
     # idempotency_key is above: left to the INSERT, an over-long value
@@ -834,6 +834,17 @@ async def contribute_trace(
     # request surfaces as an opaque HTTP 500 instead of a clean rejection.
     if len(agent_id) > 128:
         raise TraceRejected(f"agent_id exceeds 128 chars ({len(agent_id)})")
+    # Missed by the original reject_unstorable_text sweep: agent_id never
+    # passes through validate_size (it isn't in contribute_trace's wire
+    # dict, only agent_type is), and it is queried on directly by
+    # _reserve_agent_slot below -- BEFORE validate_size even runs on the
+    # other fields -- so an embedded NUL or lone surrogate here reached
+    # Postgres from inside that SELECT, not the final INSERT. Reproduced
+    # against a live Postgres: both raised uncaught DBAPIErrors
+    # (CharacterNotInRepertoireError / DataError) from _reserve_agent_slot's
+    # own query, the same 500-instead-of-400 failure mode this function's
+    # other fields already guard against.
+    reject_unstorable_text(agent_id, "agent_id")
 
     if idempotency_key is not None:
         existing = (
@@ -1035,7 +1046,7 @@ async def vote_trace(
         raise ValueError(
             f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
         )
-    reject_embedded_nul(feedback_text, "feedback_text")
+    reject_unstorable_text(feedback_text, "feedback_text")
     if not _is_uuid(trace_id):
         return None
 
@@ -1395,7 +1406,7 @@ async def amend_trace(
     if idempotency_key is not None and len(idempotency_key) > 128:
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     if idempotency_key is not None:
-        reject_embedded_nul(idempotency_key, "idempotency_key")
+        reject_unstorable_text(idempotency_key, "idempotency_key")
 
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     original = (await session.execute(stmt)).scalar_one_or_none()
@@ -1626,7 +1637,7 @@ async def holdout_assign(
         raise ValueError("occasion_id is required: it is the key the outcome is reported against")
     if len(occasion_id) > MAX_OCCASION_ID_CHARS:
         raise ValueError(f"occasion_id exceeds {MAX_OCCASION_ID_CHARS} chars")
-    reject_embedded_nul(occasion_id, "occasion_id")
+    reject_unstorable_text(occasion_id, "occasion_id")
 
     org = await session.get(Organization, org_id)
     if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
@@ -1746,7 +1757,7 @@ async def record_occasion_outcome(
     occasion_id = str(occasion_id or "").strip()
     if not occasion_id:
         raise ValueError("occasion_id is required")
-    reject_embedded_nul(occasion_id, "occasion_id")
+    reject_unstorable_text(occasion_id, "occasion_id")
     if not isinstance(succeeded, bool):
         raise ValueError("succeeded must be a boolean")
 
@@ -1934,7 +1945,7 @@ async def fleet_outcomes(
 
     where = [Trace.org_id == org_id, Trace.quarantined.is_(False)]
     if agent_type:
-        reject_embedded_nul(agent_type, "agent_type")
+        reject_unstorable_text(agent_type, "agent_type")
         where.append(Trace.agent_type == agent_type)
 
     grouped = (
@@ -2092,9 +2103,9 @@ async def submit_kb_entry(
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     if len(rationale) > 500:
         raise TraceRejected(f"rationale exceeds 500 chars ({len(rationale)})")
-    reject_embedded_nul(rationale, "rationale")
+    reject_unstorable_text(rationale, "rationale")
     if idempotency_key is not None:
-        reject_embedded_nul(idempotency_key, "idempotency_key")
+        reject_unstorable_text(idempotency_key, "idempotency_key")
 
     if idempotency_key is not None:
         existing = (
@@ -2230,8 +2241,8 @@ async def review_kb_submission(
     """
     if decision not in VALID_SUBMISSION_DECISIONS:
         raise ValueError(f"decision must be one of {VALID_SUBMISSION_DECISIONS}, got {decision!r}")
-    reject_embedded_nul(reviewer, "reviewer")
-    reject_embedded_nul(rejection_reason, "rejection_reason")
+    reject_unstorable_text(reviewer, "reviewer")
+    reject_unstorable_text(rejection_reason, "rejection_reason")
     if not _is_uuid(submission_id):
         return None
 
@@ -2354,7 +2365,7 @@ async def retract_kb_entry(
         return None
 
     reason = (reason or "")[:200]
-    reject_embedded_nul(reason, "reason")
+    reject_unstorable_text(reason, "reason")
     trace.commons_retracted_at = datetime.now(timezone.utc)
     trace.commons_retraction_reason = reason
     await session.flush()
@@ -2625,7 +2636,7 @@ async def commons_overlap(
     # also the cheapest way to keep the scan small as the corpus grows,
     # because it runs in Postgres instead of Python.
     if agent_type:
-        reject_embedded_nul(agent_type, "agent_type")
+        reject_unstorable_text(agent_type, "agent_type")
         where.append(Trace.agent_type == agent_type)
 
     total_corpus = (
@@ -2881,7 +2892,7 @@ async def commons_search(
         Trace.org_id != org_id,
     ]
     if agent_type:
-        reject_embedded_nul(agent_type, "agent_type")
+        reject_unstorable_text(agent_type, "agent_type")
         where.append(Trace.agent_type == agent_type)
 
     total_corpus = (
