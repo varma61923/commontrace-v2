@@ -277,6 +277,34 @@ def _push_fingerprint(title: str, context_text: str, solution_text: str, tags: l
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
+def _amend_idempotency_key(slug: str, fingerprint: str) -> str:
+    """Belt and braces alongside this same push's hub_pushed_fingerprint
+    guard, for the identical reason the contribute_trace call below passes
+    `idempotency_key=f"lesson:{slug}"`: _call_tool retries a transport-level
+    failure (timeout, 5xx, connection reset) up to DEFAULT_MAX_ATTEMPTS
+    times, and this client cannot distinguish "the amend never arrived"
+    from "it landed and the reply was lost" -- without a key, that retry
+    calls amend_trace again against the SAME still-unmutated trace_id and
+    forks the supersession chain instead of extending it
+    (hub/crud.py:amend_trace's own docstring; hub/tests/test_concurrency_audit.py
+    TestAmendTraceIdempotency reproduced exactly this).
+
+    Unlike contribute_trace's key, this can't be `f"lesson:{slug}"` alone:
+    a lesson can be legitimately amended many times over its life as its
+    content actually changes, and each of those is a genuinely different
+    logical write that must NOT collide -- reusing one fixed key across
+    them would make every edit after the first raise IdempotencyKeyConflict
+    against the previous one's hash. Keying on (slug, fingerprint) together
+    keeps retries of THIS push (same content, same fingerprint) idempotent
+    while still minting a fresh key the moment the content actually
+    changes. Hashed rather than concatenated so the result has a fixed,
+    small length regardless of how long `slug` is -- Trace.idempotency_key
+    is String(128), and a filename-derived slug is not size-bounded the way
+    this key needs to be.
+    """
+    return "lesson-amend:" + hashlib.sha256(f"{slug}\x1e{fingerprint}".encode("utf-8")).hexdigest()
+
+
 async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[PushResult]:
     """Push every `status: active` lesson to the Hub via contribute_trace,
     recording the returned id back into the lesson's `hub_trace_id`
@@ -328,6 +356,12 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                         "context_text": context_text,
                         "solution_text": solution_text,
                         "tags": tags,
+                        # See _amend_idempotency_key's docstring: without
+                        # this, _call_tool's own retry-on-timeout/5xx can
+                        # fork the supersession chain the same way an
+                        # unkeyed contribute_trace retry used to duplicate
+                        # a trace.
+                        "idempotency_key": _amend_idempotency_key(slug, fingerprint),
                     },
                 )
             except (HubClientUnavailable, HubConnectionError) as exc:

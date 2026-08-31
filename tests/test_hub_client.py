@@ -308,6 +308,63 @@ class TestPushPropagatesEdits:
         results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
         assert results[0].hub_trace_id == "trace-2"
 
+    def test_amend_carries_an_idempotency_key_so_a_retry_cannot_fork_the_chain(self, store, monkeypatch):
+        """_call_tool retries transport-level failures (timeout, 5xx,
+        connection reset) up to DEFAULT_MAX_ATTEMPTS times, and this client
+        cannot tell "never arrived" from "arrived, reply lost" -- exactly
+        the scenario contribute_trace's idempotency_key already exists to
+        make safe. amend_trace needed the same protection (found by
+        auditing this call site after adding idempotency_key support to
+        hub/crud.py:amend_trace itself) or the client's own retry loop
+        could still fork the supersession chain despite the server-side
+        fix, simply by never asking for it."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        stale_fingerprint = hub_client._push_fingerprint("old desc", "when", "old rule", [])
+        _write_active_lesson(
+            ldir, "lesson_a", "new desc", "when", "new rule",
+            extra={"hub_trace_id": "trace-1", "hub_pushed_fingerprint": stale_fingerprint},
+        )
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            return {"id": "trace-2", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        key = calls[0][1].get("idempotency_key")
+        assert key, "amend_trace call carried no idempotency_key at all"
+        assert len(key) <= 128, "must fit Trace.idempotency_key's String(128) column"
+
+        new_fingerprint = hub_client._push_fingerprint("new desc", "when", "new rule", [])
+        assert key == hub_client._amend_idempotency_key("lesson_a", new_fingerprint)
+
+    def test_two_genuinely_different_edits_get_different_idempotency_keys(self):
+        """The reason this can't reuse contribute_trace's f"lesson:{slug}"
+        pattern unmodified: a lesson can be legitimately amended many times
+        as its content actually changes, and each edit is a different
+        logical write that must NOT collide -- a fixed per-lesson key would
+        make every edit after the first raise IdempotencyKeyConflict
+        against the previous one's stored request_hash."""
+        fp1 = hub_client._push_fingerprint("desc v1", "when", "rule v1", [])
+        fp2 = hub_client._push_fingerprint("desc v2", "when", "rule v2", [])
+        assert hub_client._amend_idempotency_key("lesson_a", fp1) != hub_client._amend_idempotency_key(
+            "lesson_a", fp2
+        )
+
+    def test_the_same_edit_retried_gets_the_same_idempotency_key(self):
+        """The property that actually matters: _call_tool retrying the
+        SAME push attempt (same content, same fingerprint) must produce the
+        identical key both times, or the retry protection does nothing."""
+        fp = hub_client._push_fingerprint("desc", "when", "rule", ["a", "b"])
+        assert hub_client._amend_idempotency_key("lesson_a", fp) == hub_client._amend_idempotency_key(
+            "lesson_a", fp
+        )
+
 
 class TestPullPaginatesAllResults:
     """pull_search_results used to call search_traces exactly once --
