@@ -79,6 +79,22 @@ class TestPreflightDiagnosis:
         fake_post(status_code=200)
         assert smoke._preflight("http://up.example/mcp", "ct_live_x") is None
 
+    def test_a_429_is_reported_as_rate_limited_not_accepted(self, fake_post):
+        """The regression this guards: ApiKeyAuthMiddleware's auth-attempt
+        limiter runs BEFORE the key is parsed at all, so a 429 says nothing
+        about whether the key was accepted -- it fires identically for a
+        real key, a bogus one, or none. Falling through to `None` (this
+        function's "the key was accepted" contract) made a rate-limited
+        probe with a BOGUS key read as "the server accepted a bogus key",
+        a false and alarming security failure. A 429 must be its own
+        message, distinct from both None and a rejection."""
+        fake_post(status_code=429)
+        message = smoke._preflight("http://up.example/mcp", "ct_live_x")
+        assert message is not None
+        assert "429" in message
+        assert "rejected the API key" not in message  # not a rejection ...
+        assert "rate" in message.lower()  # ... an inconclusive rate limit
+
 
 class TestRejectsBadCredentials:
     """`_rejects_bad_credentials` used to open an MCP session with a bogus
@@ -141,6 +157,24 @@ class TestRejectsBadCredentials:
         report = smoke.Reporter()
         await smoke._rejects_bad_credentials("http://up.example/mcp", report)
         assert report.failures != []
+
+    async def test_a_429_probing_the_bogus_key_is_a_fail_but_not_misreported_as_accepted(
+        self, fake_post, capsys
+    ):
+        """The regression this guards: before _preflight had its own 429
+        branch, this exact case printed "the server ACCEPTED a bogus key"
+        -- a false, alarming claim about a check that never actually ran,
+        caused only by the smoke check's own request volume tripping the
+        Hub's auth-attempt limiter. Still correctly a [FAIL] (this check
+        could not confirm the property it exists to confirm), but the
+        printed detail must say why, accurately."""
+        fake_post(status_code=429)
+        report = smoke.Reporter()
+        await smoke._rejects_bad_credentials("http://up.example/mcp", report)
+        assert report.failures != []
+        detail = capsys.readouterr().err
+        assert "ACCEPTED a bogus key" not in detail
+        assert "429" in detail
 
 
 class TestArgumentHandling:
