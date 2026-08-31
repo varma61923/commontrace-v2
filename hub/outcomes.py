@@ -63,6 +63,8 @@ made importing commontrace.overlap free.
 
 from __future__ import annotations
 
+import math
+
 from commontrace import experiment
 
 # The four proportion metrics, with the direction that counts as better.
@@ -136,10 +138,31 @@ def _is_bool(value: object) -> bool:
 
 
 def _is_number(value: object) -> bool:
-    """A real number, excluding bool -- `isinstance(True, int)` is True in
-    Python, so a `resolved: true` misfiled under `tokens_used` would
-    otherwise be averaged in as the number 1."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A real, FINITE number, excluding bool -- `isinstance(True, int)` is
+    True in Python, so a `resolved: true` misfiled under `tokens_used`
+    would otherwise be averaged in as the number 1.
+
+    `math.isfinite` excludes NaN and +/-Infinity, none of which is a
+    number this module can safely use: NaN poisons a mean the instant it
+    is averaged in (`nan` propagates through arithmetic, including
+    Postgres's own `avg()`), a customer-facing report with a metric of
+    "nan" is a worse failure than a rejected request, and neither is a
+    real number Postgres's `jsonb` type accepts as a JSON value at all --
+    RFC 8259 restricts JSON numbers to finite values, and Postgres enforces
+    that on write. A NaN or Infinity here used to pass every other check
+    this function's caller ran (`value < 0` is False for NaN under IEEE 754
+    -- comparison, not rejection -- and False for +Infinity too), reach a
+    JSONB column, and crash uncaught with
+    `asyncpg.exceptions.InvalidTextRepresentationError: invalid input
+    syntax for type json ... Token "NaN" is invalid` -- the identical
+    500-instead-of-400 failure mode this whole module's `validate_outcome`
+    exists to prevent, reproduced live before this fix.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 KNOWN_OUTCOME_FIELDS: frozenset[str] = frozenset(
@@ -196,8 +219,14 @@ def validate_outcome(outcome: dict | None) -> dict:
         if field not in outcome:
             continue
         value = outcome[field]
-        if not _is_number(value):
+        # isinstance checked ahead of _is_number's finiteness check, purely
+        # so a genuinely non-numeric value ("800", say) and a NaN/Infinity
+        # get error messages that name what's actually wrong with each,
+        # rather than both landing on the same generic "must be a number".
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ValueError(f"outcome.{field} must be a number, got {value!r}")
+        if not _is_number(value):
+            raise ValueError(f"outcome.{field} must be a finite number, got {value!r}")
         if value < 0:
             raise ValueError(f"outcome.{field} must not be negative, got {value!r}")
     return dict(outcome)

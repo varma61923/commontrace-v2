@@ -99,6 +99,28 @@ class TestValidateOutcomeItself:
     def test_a_numeric_field_accepts_zero(self):
         assert outcomes.validate_outcome({"tokens_used": 0}) == {"tokens_used": 0}
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
+    def test_is_number_itself_rejects_nan_and_infinity(self, bad):
+        assert outcomes._is_number(bad) is False
+
+    def test_is_number_itself_accepts_ordinary_finite_values(self):
+        assert outcomes._is_number(0) is True
+        assert outcomes._is_number(3.5) is True
+        assert outcomes._is_number(-2) is True
+
+    @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
+    def test_a_numeric_field_rejects_nan_and_infinity(self, field, bad):
+        """`value < 0` is False for both NaN (any IEEE 754 comparison with
+        NaN is False) and +Infinity, so the negative-value check alone
+        cannot catch either -- reproduced against a live Postgres before
+        this fix: a NaN reached a JSONB column and crashed uncaught with
+        asyncpg.exceptions.InvalidTextRepresentationError (Postgres's json
+        parser rejects the literal token `NaN`, which is what Python's
+        json.dumps produces for a NaN float by default)."""
+        with pytest.raises(ValueError, match=field):
+            outcomes.validate_outcome({field: bad})
+
 
 class TestContributeTraceOutcome:
     async def test_a_valid_outcome_is_stored(self, session_factory, org, config):
@@ -139,6 +161,25 @@ class TestContributeTraceOutcome:
         async with session_scope(session_factory) as session:
             result = await crud.search_traces(session, org, query="t")
         assert result["traces"] == []
+
+    async def test_a_nan_token_count_is_rejected_rather_than_reaching_postgres(
+        self, session_factory, org, config
+    ):
+        """Reproduced against a live Postgres before this fix: `nan < 0` is
+        False (any IEEE 754 comparison with NaN is False), so the
+        negative-value check alone let a NaN through, and it crashed
+        uncaught at the INSERT with asyncpg's InvalidTextRepresentationError
+        -- the same 500-instead-of-400 failure mode this whole module
+        exists to prevent, in code added earlier in this same fix."""
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(ValueError, match="tokens_used"):
+                await crud.contribute_trace(
+                    session, org, config, rate_limiter,
+                    title="t", context_text="c", solution_text="s", tags=[],
+                    agent_type="code", actor="test",
+                    outcome={"tokens_used": float("nan")},
+                )
 
     async def test_idempotent_retry_with_the_same_outcome_returns_the_original(
         self, session_factory, org, config
