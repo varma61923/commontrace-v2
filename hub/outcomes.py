@@ -142,6 +142,67 @@ def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+KNOWN_OUTCOME_FIELDS: frozenset[str] = frozenset(
+    {field for _n, field, _d in PROPORTION_METRICS}
+    | {field for _n, field in MEAN_METRICS}
+    | {"baseline"}
+)
+
+
+def validate_outcome(outcome: dict | None) -> dict:
+    """Validate a caller-supplied `outcome` object before it is stored on a
+    Trace, and return the (possibly empty) dict to store.
+
+    This is the check `_is_bool`'s docstring above already assumed existed
+    -- "`contribute_trace` accepts the outcome object largely as given" --
+    but nothing in this module or hub/crud.py ever actually validated or
+    even ACCEPTED one: `contribute_trace` had no `outcome` parameter at
+    all, so `Trace.outcome` could only ever be the column's empty-dict
+    default or, for amend_trace, the original's own value carried forward
+    unchanged. `fleet_outcomes`/`causal_effects` were built, tested, and
+    documented ("every contribute_trace writes all of it", hub/README.md)
+    against an input path that did not exist -- so for any real customer,
+    `fleet_outcomes` could only ever report "not enough recorded outcomes
+    to test anything yet", forever, regardless of how their fleet actually
+    performed. This function is the missing acceptance check; the
+    `outcome` parameters on contribute_trace/amend_trace are the missing
+    acceptance points.
+
+    Rejects, rather than silently drops, anything that does not fit: an
+    unknown key is far more likely a client's typo or a schema
+    misunderstanding (`"success"` instead of `"resolved"`, say) than a
+    deliberate extension, and a schema this module trusts enough to
+    average and test statistically over is exactly the wrong place to be
+    lenient about what lands in it -- `_is_bool`/`_is_number` already
+    encode that same judgment for individual fields; this is that
+    judgment applied to the object's shape.
+    """
+    if outcome is None:
+        return {}
+    if not isinstance(outcome, dict):
+        raise ValueError(f"outcome must be an object, got {type(outcome).__name__}")
+    unknown = set(outcome) - KNOWN_OUTCOME_FIELDS
+    if unknown:
+        raise ValueError(
+            f"outcome has unknown field(s) {sorted(unknown)}; "
+            f"expected any of {sorted(KNOWN_OUTCOME_FIELDS)}"
+        )
+    for _n, field, _d in PROPORTION_METRICS:
+        if field in outcome and not _is_bool(outcome[field]):
+            raise ValueError(f"outcome.{field} must be a boolean, got {outcome[field]!r}")
+    if "baseline" in outcome and not _is_bool(outcome["baseline"]):
+        raise ValueError(f"outcome.baseline must be a boolean, got {outcome['baseline']!r}")
+    for _n, field in MEAN_METRICS:
+        if field not in outcome:
+            continue
+        value = outcome[field]
+        if not _is_number(value):
+            raise ValueError(f"outcome.{field} must be a number, got {value!r}")
+        if value < 0:
+            raise ValueError(f"outcome.{field} must not be negative, got {value!r}")
+    return dict(outcome)
+
+
 class Tally:
     """Pre-aggregated counts for one arm: what `compare` actually needs.
 

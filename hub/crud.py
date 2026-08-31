@@ -74,13 +74,29 @@ class IdempotencyKeyConflict(ValueError):
 
 
 def _contribute_request_hash(
-    title: str, context_text: str, solution_text: str, tags: list[str], agent_type: str
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+    outcome: dict | None = None,
 ) -> str:
     # Order-independent over tags (a client may reasonably reorder an
     # unordered set between retries) but otherwise exact -- this only needs
     # to distinguish "same logical request" from "different request", not
     # to be a general canonicalization.
+    #
+    # `outcome` is a new, optional last argument rather than inserted among
+    # the others: this function is also called by submit_kb_entry, which
+    # has no concept of outcome and never passes one, so its hash -- and
+    # every already-stored request_hash for an existing KB submission --
+    # stays byte-identical to before. Sorted-key JSON, not a delimiter
+    # join like the other fields: outcome is a dict, not a string, and
+    # json.dumps(..., sort_keys=True) is a canonical, order-independent
+    # serialization of it for free.
     parts = [title, context_text, solution_text, agent_type, "\x1f".join(sorted(tags))]
+    if outcome:
+        parts.append(json.dumps(outcome, sort_keys=True, ensure_ascii=False))
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -90,6 +106,7 @@ def _amend_request_hash(
     context_text: str | None,
     solution_text: str | None,
     tags: list[str] | None,
+    outcome: dict | None = None,
 ) -> str:
     """Distinguishes "the same amend_trace call, retried" from "a different
     one that happens to reuse an idempotency_key" -- including `trace_id`
@@ -98,14 +115,30 @@ def _amend_request_hash(
     forward unchanged", which is not the same request as an explicit
     override that happens to match the original's current value).
 
+    `outcome` is the caller's raw argument (validated, but before it is
+    merged into the original's outcome dict below) -- None here means "the
+    caller did not attempt to set an outcome," which is a different request
+    than one that explicitly attaches `{}`, exactly the same None-vs-value
+    distinction the other fields already make. Hashing the merged RESULT
+    instead would be wrong: two calls with different `outcome` arguments
+    could merge to the same final dict (the second's keys already matching
+    the first's committed values), and would then be wrongly treated as the
+    same request on retry.
+
     JSON, not hand-rolled delimiters like _contribute_request_hash's: this
     hash must distinguish None from "" and from every other string a field
     could contain, and a delimiter chosen to never collide with a caller's
     title/context/solution text is not a bet worth taking when json.dumps
     already escapes unambiguously for free.
     """
-    payload = [trace_id, title, context_text, solution_text, sorted(tags) if tags is not None else None]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+    payload = [
+        trace_id, title, context_text, solution_text,
+        sorted(tags) if tags is not None else None,
+        outcome,
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _iso(dt: datetime) -> str:
@@ -796,6 +829,7 @@ async def contribute_trace(
     tags: list[str] | None = None,
     agent_type: str = "",
     agent_id: str = "",
+    outcome: dict | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
 ) -> dict:
@@ -803,16 +837,34 @@ async def contribute_trace(
     Raises TraceRejected (bad schema/oversized) or RateLimited (429-shaped)
     without storing anything.
 
+    `outcome` is this incident's eventual disposition -- `resolved`,
+    `escalated`, `repeated_error`, `frustration_signal` (booleans),
+    `tokens_used`/`llm_calls` (non-negative numbers), and `baseline` (a
+    flag marking a trace captured before lessons were being injected) --
+    see hub/outcomes.py's `fleet_outcomes`, which is the entire reason this
+    parameter exists: before it, nothing in this Hub could ever accept
+    outcome data at all, so `fleet_outcomes` could only ever report "not
+    enough recorded outcomes" for every real customer regardless of how
+    their fleet performed. Optional, and validated the same way a
+    malformed title is: an unknown key or a wrong-typed value is rejected
+    rather than silently stored and silently skewing a number someone will
+    eventually quote. Often not known yet at contribution time -- a task's
+    resolution frequently isn't decided until after the incident is first
+    reported -- so `amend_trace` accepts the same parameter to attach or
+    update it once the outcome is known, without needing a second write
+    path.
+
     `idempotency_key` makes retries safe: an MCP client that times out
     waiting for a response cannot tell "the write never happened" from "it
     happened but the response was lost", so without a key every retry
     creates a second trace (reproduced in
     hub/tests/test_concurrency_audit.py before this was added). Passing the
     same key on a retry returns the original result instead of duplicating
-    it; passing the same key with a genuinely different payload raises
-    IdempotencyKeyConflict rather than silently returning stale content.
-    Omitting the key (the default) is unaffected -- NULL never conflicts
-    with anything under the backing UNIQUE(org_id, idempotency_key).
+    it; passing the same key with a genuinely different payload (this now
+    includes `outcome`) raises IdempotencyKeyConflict rather than silently
+    returning stale content. Omitting the key (the default) is unaffected
+    -- NULL never conflicts with anything under the backing
+    UNIQUE(org_id, idempotency_key).
     """
     tags = tags or []
 
@@ -846,6 +898,13 @@ async def contribute_trace(
     # other fields already guard against.
     reject_unstorable_text(agent_id, "agent_id")
 
+    # Validated (and canonicalized -- None becomes {}) before the
+    # idempotent-replay check below, so a retry's hash and the freshly
+    # stored trace's hash are computed from the exact same shape either
+    # way, and a malformed outcome is rejected up front rather than after
+    # paying for a rate-limit check and a slot reservation first.
+    outcome = outcomes.validate_outcome(outcome)
+
     if idempotency_key is not None:
         existing = (
             await session.execute(
@@ -854,7 +913,7 @@ async def contribute_trace(
         ).scalar_one_or_none()
         if existing is not None:
             return _idempotent_replay_or_conflict(
-                existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+                existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome
             )
 
     if not rate_limiter.allow(org_id):
@@ -892,11 +951,12 @@ async def contribute_trace(
         tags=tags,
         agent_type=agent_type,
         agent_id=agent_id,
+        outcome=outcome,
         quarantined=reason is not None,
         quarantine_reason=reason or "",
         idempotency_key=idempotency_key,
         request_hash=(
-            _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+            _contribute_request_hash(title, context_text, solution_text, tags, agent_type, outcome)
             if idempotency_key is not None
             else None
         ),
@@ -917,7 +977,7 @@ async def contribute_trace(
         if existing is None:
             raise  # the constraint fired for some other reason; don't mask it
         return _idempotent_replay_or_conflict(
-            existing, idempotency_key, title, context_text, solution_text, tags, agent_type
+            existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome
         )
 
     # Bounded, content-free summary -- audit rows outlive an org purge, so
@@ -945,8 +1005,9 @@ def _idempotent_replay_or_conflict(
     solution_text: str,
     tags: list[str],
     agent_type: str,
+    outcome: dict | None = None,
 ) -> dict:
-    incoming_hash = _contribute_request_hash(title, context_text, solution_text, tags, agent_type)
+    incoming_hash = _contribute_request_hash(title, context_text, solution_text, tags, agent_type, outcome)
     if existing.request_hash != incoming_hash:
         raise IdempotencyKeyConflict(
             f"idempotency_key {idempotency_key!r} was already used for a different contribute_trace "
@@ -968,8 +1029,9 @@ async def _amend_idempotent_replay_or_conflict(
     context_text: str | None,
     solution_text: str | None,
     tags: list[str] | None,
+    outcome: dict | None = None,
 ) -> dict:
-    incoming_hash = _amend_request_hash(trace_id, title, context_text, solution_text, tags)
+    incoming_hash = _amend_request_hash(trace_id, title, context_text, solution_text, tags, outcome)
     if existing.request_hash != incoming_hash:
         raise IdempotencyKeyConflict(
             f"idempotency_key {idempotency_key!r} was already used for a different amend_trace "
@@ -1377,12 +1439,25 @@ async def amend_trace(
     context_text: str | None = None,
     solution_text: str | None = None,
     tags: list[str] | None = None,
+    outcome: dict | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
 ) -> dict | None:
     """Creates a new Trace that supersedes `trace_id`, rather than mutating
     history in place -- consistent with Trace.supersedes_trace_id /
     Trace.depth being an amendment *chain*, not an overwrite.
+
+    `outcome`, unlike title/context_text/solution_text/tags, is MERGED into
+    the original's outcome rather than replaced when provided: an
+    incident's resolution is frequently not known at contribution time (see
+    contribute_trace's docstring), so the normal shape of use is
+    contribute_trace with no outcome, then one or more amend_trace calls
+    each attaching whatever became known since -- `{"resolved": true}` now,
+    `{"tokens_used": 800}` from a later call, without one clobbering the
+    other. Replace-semantics would make that pattern actively hostile: a
+    second amend_trace call attaching `tokens_used` would silently erase
+    the `resolved` flag the first one set. `None` (the default) leaves the
+    original's outcome untouched, exactly like every other field here.
 
     `idempotency_key` makes retries safe, for the same reason and the same
     way contribute_trace's does (see its docstring): an MCP client that
@@ -1397,8 +1472,8 @@ async def amend_trace(
     supersedes_trace_id). Passing the same key on a retry returns the
     original amendment instead of forking it; passing the same key with a
     genuinely different request (a different trace_id, or different field
-    overrides) raises IdempotencyKeyConflict rather than silently returning
-    the wrong trace.
+    overrides, including a different `outcome`) raises
+    IdempotencyKeyConflict rather than silently returning the wrong trace.
     """
     if not _is_uuid(trace_id):
         return None
@@ -1407,6 +1482,10 @@ async def amend_trace(
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     if idempotency_key is not None:
         reject_unstorable_text(idempotency_key, "idempotency_key")
+    # Validated (and canonicalized -- None becomes {}) up front, same as
+    # contribute_trace, so the idempotent-replay hash below and the
+    # eventually-stored hash are computed from the same shape either way.
+    outcome = outcomes.validate_outcome(outcome)
 
     stmt = select(Trace).where(Trace.id == trace_id, Trace.org_id == org_id)
     original = (await session.execute(stmt)).scalar_one_or_none()
@@ -1421,7 +1500,7 @@ async def amend_trace(
         ).scalar_one_or_none()
         if existing is not None:
             return await _amend_idempotent_replay_or_conflict(
-                session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags
+                session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags, outcome
             )
 
     # amend_trace is a WRITE path and carries caller-supplied content, so it
@@ -1443,6 +1522,13 @@ async def amend_trace(
     resolved_context = context_text if context_text is not None else original.context_text
     resolved_solution = solution_text if solution_text is not None else original.solution_text
     resolved_tags = tags if tags is not None else list(original.tags or [])
+    # MERGED, not replaced -- see amend_trace's docstring: `outcome` is
+    # `{}` (a no-op update()) when the caller did not attempt to set one,
+    # so this line is exactly "carry the original forward unchanged" in
+    # that case, and "carry forward, then layer in whatever this call
+    # newly knows" otherwise.
+    resolved_outcome = dict(original.outcome or {})
+    resolved_outcome.update(outcome)
 
     amended_id = str(uuid.uuid4())
     wire = {
@@ -1480,25 +1566,26 @@ async def amend_trace(
         agent_type=original.agent_type,
         profile=original.profile,
         extensions=dict(original.extensions or {}),
-        # These four have no override parameter (a caller amending title
+        # These three have no override parameter (a caller amending title
         # can't currently ask to change them), so -- like agent_type,
         # profile, and extensions above -- they must carry forward
         # unchanged. Without this they silently reset to their column
         # defaults ("" / {}) on every amendment: a trace's contributor
-        # attribution and structured outcome data would vanish the first
-        # time anyone tweaked its title, with no error and no audit trail
-        # of the loss.
+        # attribution would vanish the first time anyone tweaked its
+        # title, with no error and no audit trail of the loss. `outcome`
+        # DOES have an override parameter -- see resolved_outcome above --
+        # so it is merged rather than blindly carried forward.
         watch_condition=original.watch_condition,
         review_after=original.review_after,
         contributor=original.contributor,
-        outcome=dict(original.outcome or {}),
+        outcome=resolved_outcome,
         supersedes_trace_id=original.id,
         depth=original.depth + 1,
         quarantined=quarantined,
         quarantine_reason=quarantine_reason,
         idempotency_key=idempotency_key,
         request_hash=(
-            _amend_request_hash(trace_id, title, context_text, solution_text, tags)
+            _amend_request_hash(trace_id, title, context_text, solution_text, tags, outcome)
             if idempotency_key is not None
             else None
         ),
@@ -1520,7 +1607,7 @@ async def amend_trace(
         if existing is None:
             raise  # the constraint fired for some other reason; don't mask it
         return await _amend_idempotent_replay_or_conflict(
-            session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags
+            session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags, outcome
         )
 
     session.add(TraceRelation(trace_id=amended.id, related_trace_id=original.id, relationship_type="AMENDS"))

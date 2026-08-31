@@ -276,6 +276,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         tags: list[str] | None = None,
         agent_type: str = "",
         agent_id: str = "",
+        outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
         """Contribute a new trace. Returns its id and quarantine status.
@@ -295,6 +296,17 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         omitting it attributes the trace to a single 'unattributed' agent
         for that org, which is never refused but also cannot be counted
         precisely, so the org's reported agent count becomes a floor.
+
+        `outcome` is this incident's eventual disposition, if already known
+        -- an object with any of: `resolved`, `escalated`, `repeated_error`,
+        `frustration_signal` (booleans), `tokens_used`/`llm_calls`
+        (non-negative numbers), `baseline` (boolean, marks a trace captured
+        before lessons were being injected). `fleet_outcomes` is the only
+        way this Hub can answer "is this working?", and it can only answer
+        it for outcomes actually reported here. Often not known yet at
+        contribution time -- amend_trace accepts the same parameter, MERGED
+        into whatever this call already set, to attach or update it once
+        the task concludes.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -310,6 +322,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     tags=tags,
                     agent_type=agent_type,
                     agent_id=agent_id,
+                    outcome=outcome,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,
                 )
@@ -355,17 +368,27 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         context_text: str | None = None,
         solution_text: str | None = None,
         tags: list[str] | None = None,
+        outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
         """Create a new trace that supersedes `id`, carrying forward any
         field not explicitly overridden.
 
+        `outcome` (same shape as contribute_trace's) is MERGED into the
+        original's outcome rather than replaced, since an incident's
+        resolution is often only known after the fact: contribute_trace
+        with none, then amend_trace with `{"resolved": true}` once the task
+        concludes, then perhaps another amend_trace with `{"tokens_used":
+        800}` -- each call layers in what it knows without erasing what an
+        earlier call already attached.
+
         Pass a client-generated `idempotency_key` (e.g. a UUID minted once
         per logical amendment) to make retries after a lost/timed-out
         response safe: retrying with the same key returns the original
         amendment instead of forking the supersession chain. Reusing a key
-        with a different `id` or different field overrides is rejected as a
-        conflict rather than silently returning the wrong trace.
+        with a different `id` or different field overrides (including a
+        different `outcome`) is rejected as a conflict rather than silently
+        returning the wrong trace.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -380,6 +403,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     context_text=context_text,
                     solution_text=solution_text,
                     tags=tags,
+                    outcome=outcome,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,
                 )
