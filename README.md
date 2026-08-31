@@ -137,6 +137,7 @@ commontrace trace validate       # checks against protocol/schemas/trace.schema.
 commontrace sync                 # push active lessons + pull search results, if a Hub is configured
 commontrace sync --push          # push only
 commontrace sync --pull --query "..." --tags a,b   # pull only
+commontrace sync --push-traces   # push captured traces + outcome data too (opt-in, off by default)
 ```
 
 `sync` needs `COMMONTRACE_HUB_URL` + `COMMONTRACE_HUB_API_KEY` (env vars or

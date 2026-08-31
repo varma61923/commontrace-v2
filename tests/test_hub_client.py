@@ -366,6 +366,172 @@ class TestPushPropagatesEdits:
         )
 
 
+def _write_captured_trace(
+    tdir, filename, trace_id, title, context, solution,
+    agent_type="code", agent_id="", tags=None, outcome=None, extra=None,
+):
+    from commontrace import templates
+
+    os.makedirs(tdir, exist_ok=True)
+    fm = templates.trace_frontmatter(trace_id, title, agent_type, tags or [], outcome=outcome, agent_id=agent_id)
+    if extra:
+        fm.update(extra)
+    body = templates.trace_body(context, solution)
+    frontmatter.write(os.path.join(tdir, filename), fm, body)
+
+
+class TestPushCapturedTraces:
+    """push_captured_traces is the bridge push_active_lessons does not
+    provide: lessons and traces are different local stores, and outcome
+    data (--resolved/--tokens-used/..., hub/outcomes.py) only ever lives on
+    a trace. Without this, the documented `commontrace capture` + `sync`
+    workflow had no way to ever get outcome data to the Hub, even after
+    hub/crud.py:contribute_trace grew an `outcome` parameter to accept it."""
+
+    def test_first_push_contributes_with_outcome_and_stamps_a_fingerprint(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(
+            tdir, "t1.md", "occasion-1", "title", "ctx", "sol",
+            outcome={"resolved": True, "tokens_used": 500},
+        )
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            assert name == "contribute_trace"
+            assert arguments["outcome"] == {"resolved": True, "tokens_used": 500}
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert results[0].hub_trace_id == "hub-trace-1"
+        assert results[0].skipped is False
+        fm, _ = frontmatter.read(os.path.join(tdir, "t1.md"))
+        assert fm["hub_trace_id"] == "hub-trace-1"
+        assert fm["hub_pushed_fingerprint"]
+
+    def test_a_trace_with_no_outcome_yet_pushes_an_empty_outcome(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(tdir, "t1.md", "occasion-1", "title", "ctx", "sol")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            assert arguments["outcome"] == {}
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+    def test_unchanged_trace_is_skipped_without_a_second_call(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        fingerprint = hub_client._trace_push_fingerprint("title", "ctx", "sol", [], {"resolved": True})
+        _write_captured_trace(
+            tdir, "t1.md", "occasion-1", "title", "ctx", "sol", outcome={"resolved": True},
+            extra={"hub_trace_id": "hub-trace-1", "hub_pushed_fingerprint": fingerprint},
+        )
+
+        async def explode(*a, **k):
+            raise AssertionError("must not call the Hub for an unchanged, already-pushed trace")
+
+        monkeypatch.setattr(hub_client, "_call_tool", explode)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert results[0].skipped is True
+        assert results[0].hub_trace_id == "hub-trace-1"
+
+    def test_a_recapture_that_only_attaches_an_outcome_is_propagated_via_amend(self, store, monkeypatch):
+        """The exact scenario capture_cmd.py documents: `--occasion-id`
+        pins the trace id, and a later recapture attaches --resolved/etc.
+        without changing title/context/solution at all. This must still be
+        detected as a change worth pushing."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        stale_fingerprint = hub_client._trace_push_fingerprint("title", "ctx", "sol", [], {})
+        _write_captured_trace(
+            tdir, "t1.md", "occasion-1", "title", "ctx", "sol", outcome={"resolved": True},
+            extra={"hub_trace_id": "hub-trace-1", "hub_pushed_fingerprint": stale_fingerprint},
+        )
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            assert name == "amend_trace"
+            assert arguments["id"] == "hub-trace-1"
+            assert arguments["outcome"] == {"resolved": True}
+            return {"id": "hub-trace-2", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1
+        assert results[0].hub_trace_id == "hub-trace-2"
+        fm, _ = frontmatter.read(os.path.join(tdir, "t1.md"))
+        assert fm["hub_trace_id"] == "hub-trace-2"
+        assert fm["hub_pushed_fingerprint"] != stale_fingerprint
+
+    def test_amend_carries_its_own_idempotency_key_distinct_from_lesson_amends(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        stale_fingerprint = hub_client._trace_push_fingerprint("title", "ctx", "sol", [], {})
+        _write_captured_trace(
+            tdir, "t1.md", "occasion-1", "title", "ctx", "sol", outcome={"resolved": True},
+            extra={"hub_trace_id": "hub-trace-1", "hub_pushed_fingerprint": stale_fingerprint},
+        )
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            return {"id": "hub-trace-2", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        key = calls[0][1].get("idempotency_key")
+        assert key, "amend_trace call carried no idempotency_key at all"
+        assert len(key) <= 128
+        assert key.startswith("trace-amend:")
+
+        new_fingerprint = hub_client._trace_push_fingerprint("title", "ctx", "sol", [], {"resolved": True})
+        assert key == hub_client._trace_amend_idempotency_key("occasion-1", new_fingerprint)
+
+    def test_two_pushes_with_different_outcomes_get_different_fingerprints(self):
+        """The property that makes the fingerprint comparison actually
+        catch an outcome-only edit: two otherwise-identical traces with
+        different outcome dicts must not fingerprint the same."""
+        fp1 = hub_client._trace_push_fingerprint("t", "c", "s", [], {"resolved": True})
+        fp2 = hub_client._trace_push_fingerprint("t", "c", "s", [], {"resolved": False})
+        assert fp1 != fp2
+
+    def test_an_error_from_the_hub_is_reported_without_updating_the_local_file(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(tdir, "t1.md", "occasion-1", "title", "ctx", "sol")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"error": "entitlement_exceeded", "detail": "over plan limit"}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert results[0].error == "entitlement_exceeded"
+        assert results[0].hub_trace_id is None
+        fm, _ = frontmatter.read(os.path.join(tdir, "t1.md"))
+        assert fm.get("hub_trace_id") is None
+
+
 class TestPullPaginatesAllResults:
     """pull_search_results used to call search_traces exactly once --
     search_traces caps a single response at 50 results, so a Hub with more

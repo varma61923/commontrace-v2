@@ -18,7 +18,7 @@ from commontrace.commands import sync_cmd
 
 def _args(**over):
     base = dict(
-        push=False, pull=False, query="", tags="",
+        push=False, pull=False, push_traces=False, query="", tags="",
         hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
         dest="/tmp/commontrace-sync-cmd-test-root",
     )
@@ -168,6 +168,100 @@ class TestPushReporting:
         # A plain success (not skipped, not quarantined, no error) carries no
         # extra suffix -- checked so the two conditional tags above are
         # proven conditional, not just present.
+        assert "a -> hub_trace_id=t1\n" in out.out
+
+
+class TestPushTraces:
+    """--push-traces is independent of --push/--pull and not run by
+    default -- a raw captured trace carries more specific, potentially
+    sensitive incident content than a curated lesson, so pushing it is
+    opt-in even though lessons already push by default."""
+
+    def test_not_run_by_default(self, monkeypatch):
+        async def fake_push(hub, key, root):
+            return []
+
+        async def fake_pull(hub, key, root, query, tags):
+            return hub_client.PullResult()
+
+        async def explode_push_traces(*a, **k):
+            raise AssertionError("must not push traces unless --push-traces was given")
+
+        monkeypatch.setattr(hub_client, "push_active_lessons", fake_push)
+        monkeypatch.setattr(hub_client, "pull_search_results", fake_pull)
+        monkeypatch.setattr(hub_client, "push_captured_traces", explode_push_traces)
+        assert sync_cmd.run(_args()) == 0
+
+    def test_runs_alongside_the_default_push_and_pull_when_given(self, monkeypatch):
+        calls = []
+
+        async def fake_push(hub, key, root):
+            calls.append("push")
+            return []
+
+        async def fake_pull(hub, key, root, query, tags):
+            calls.append("pull")
+            return hub_client.PullResult()
+
+        async def fake_push_traces(hub, key, root):
+            calls.append("push_traces")
+            return []
+
+        monkeypatch.setattr(hub_client, "push_active_lessons", fake_push)
+        monkeypatch.setattr(hub_client, "pull_search_results", fake_pull)
+        monkeypatch.setattr(hub_client, "push_captured_traces", fake_push_traces)
+        assert sync_cmd.run(_args(push_traces=True)) == 0
+        # Order matters for a human reading the output top to bottom, not
+        # for correctness -- but pinning it catches an accidental reorder
+        # that would otherwise pass unnoticed.
+        assert calls == ["push", "push_traces", "pull"]
+
+    def test_runs_with_push_only_no_pull(self, monkeypatch):
+        calls = []
+
+        async def fake_push(hub, key, root):
+            calls.append("push")
+            return []
+
+        async def explode_pull(*a, **k):
+            raise AssertionError("must not pull when --push --push-traces was given without --pull")
+
+        async def fake_push_traces(hub, key, root):
+            calls.append("push_traces")
+            return []
+
+        monkeypatch.setattr(hub_client, "push_active_lessons", fake_push)
+        monkeypatch.setattr(hub_client, "pull_search_results", explode_pull)
+        monkeypatch.setattr(hub_client, "push_captured_traces", fake_push_traces)
+        assert sync_cmd.run(_args(push=True, push_traces=True)) == 0
+        assert calls == ["push", "push_traces"]
+
+    def test_reports_ok_error_and_skipped_counts(self, monkeypatch, capsys):
+        results = [
+            hub_client.PushResult(slug="a", hub_trace_id="t1"),
+            hub_client.PushResult(slug="b", hub_trace_id=None, error="boom"),
+            hub_client.PushResult(slug="c", hub_trace_id="t3", skipped=True),
+            hub_client.PushResult(slug="d", hub_trace_id="t4", quarantined=True),
+        ]
+
+        async def fake_push(hub, key, root):
+            return []
+
+        async def fake_pull(hub, key, root, query, tags):
+            return hub_client.PullResult()
+
+        async def fake_push_traces(hub, key, root):
+            return results
+
+        monkeypatch.setattr(hub_client, "push_active_lessons", fake_push)
+        monkeypatch.setattr(hub_client, "pull_search_results", fake_pull)
+        monkeypatch.setattr(hub_client, "push_captured_traces", fake_push_traces)
+        assert sync_cmd.run(_args(push_traces=True)) == 0
+        out = capsys.readouterr()
+        assert "2 trace(s) pushed, 1 already on the Hub, 1 error(s), out of 4" in out.out
+        assert "[ERROR] b: boom" in out.err
+        assert "c -> already hub_trace_id=t3 (unchanged)" in out.out
+        assert "d -> hub_trace_id=t4 (quarantined pending review)" in out.out
         assert "a -> hub_trace_id=t1\n" in out.out
 
 

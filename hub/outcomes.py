@@ -445,8 +445,11 @@ def headline(rows: list[dict], n_baseline: int) -> str:
         return (
             "No baseline window recorded, so there is nothing to compare against. "
             "Capture traces with `outcome.baseline: true` during a period before "
-            "lessons are being injected (`commontrace capture --baseline`), or run "
-            "a randomized holdout instead, which needs no baseline window at all."
+            "lessons are being injected (`commontrace capture --baseline`) and push "
+            "them with `commontrace sync --push-traces` -- captured traces sit in "
+            "the local store until that push, and fleet_outcomes only ever reads "
+            "what has actually reached the Hub -- or run a randomized holdout "
+            "instead, which needs no baseline window at all."
         )
     improved = [r for r in rows if r["verdict"] == VERDICT_IMPROVED]
     worsened = [r for r in rows if r["verdict"] == VERDICT_WORSENED]

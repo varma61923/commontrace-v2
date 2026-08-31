@@ -20,6 +20,11 @@ To connect one:
   3. Install the client extra: `pip install commontrace[hub-sync]`.
   4. Re-run `commontrace sync` (pushes active lessons + pulls search
      results by default), or `--push`/`--pull` for just one direction.
+     `--push-traces` additionally pushes captured traces (including any
+     `commontrace capture --resolved/--tokens-used/...` outcome data) --
+     not run by default, since a raw trace is a specific incident record
+     rather than curated knowledge and pushing it should be a deliberate
+     choice.
 
 An MCP-capable agent (Claude Code, Cursor, Devin, ...) with the
 "commontrace" MCP server attached (see `commontrace install --target
@@ -37,6 +42,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--push", action="store_true", help="Push active lessons to the Hub only.")
     p.add_argument("--pull", action="store_true", help="Pull search_traces results into memory/traces/ only.")
+    p.add_argument(
+        "--push-traces", action="store_true",
+        help="Push captured traces (commontrace capture), including any recorded outcome "
+             "data, to the Hub via contribute_trace/amend_trace. Independent of --push/--pull "
+             "and NOT run by default -- a raw trace is a specific incident record, not curated "
+             "knowledge, so pushing it is opt-in.",
+    )
     p.add_argument("--query", default="", help="search_traces query text (--pull only).")
     p.add_argument("--tags", default="", help="Comma-separated search_traces tags filter (--pull only).")
     p.add_argument("--hub-url", default=None, help="Default: $COMMONTRACE_HUB_URL")
@@ -88,6 +100,24 @@ def run(args: argparse.Namespace) -> int:
                 f"{n_err} error(s), out of {len(results)}."
             )
             for r in results:
+                if r.error:
+                    print(f"  [ERROR] {r.slug}: {r.error}", file=sys.stderr)
+                elif r.skipped:
+                    print(f"  {r.slug} -> already hub_trace_id={r.hub_trace_id} (unchanged)")
+                else:
+                    tag = " (quarantined pending review)" if r.quarantined else ""
+                    print(f"  {r.slug} -> hub_trace_id={r.hub_trace_id}{tag}")
+
+        if args.push_traces:
+            trace_results = asyncio.run(hub_client.push_captured_traces(hub_url, hub_api_key, root))
+            n_ok = sum(1 for r in trace_results if r.hub_trace_id and not r.error and not r.skipped)
+            n_err = sum(1 for r in trace_results if r.error)
+            n_skip = sum(1 for r in trace_results if r.skipped)
+            print(
+                f"[commontrace] sync --push-traces: {n_ok} trace(s) pushed, {n_skip} already on the "
+                f"Hub, {n_err} error(s), out of {len(trace_results)}."
+            )
+            for r in trace_results:
                 if r.error:
                     print(f"  [ERROR] {r.slug}: {r.error}", file=sys.stderr)
                 elif r.skipped:

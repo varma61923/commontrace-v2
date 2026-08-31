@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from commontrace import frontmatter, paths, templates
+from commontrace import frontmatter, paths, templates, trace_io
 
 # Network defaults. Overridable per call; `commontrace sync` exposes them
 # as --timeout / --max-attempts.
@@ -85,6 +85,18 @@ def _iter_active_lesson_paths(root: str):
     for p in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
         if os.path.basename(p) == "lesson_template.md":
             continue
+        yield p
+
+
+def _iter_captured_trace_paths(root: str):
+    """Every file `commontrace capture` has ever written, in
+    paths.traces_dir -- a DIFFERENT directory from paths.lessons_dir above.
+    Traces and lessons are deliberately separate local stores (raw
+    incident record vs. curated, reusable knowledge distilled from one or
+    more traces), so push_active_lessons's iterator over lessons_dir never
+    sees these files at all, and vice versa."""
+    tdir = paths.traces_dir(root)
+    for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         yield p
 
 
@@ -436,6 +448,162 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             fm["hub_pushed_fingerprint"] = fingerprint
             frontmatter.write(path, fm, body)
         results.append(PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False)))
+    return results
+
+
+def _trace_push_fingerprint(
+    title: str, context_text: str, solution_text: str, tags: list[str], outcome: dict
+) -> str:
+    """Like `_push_fingerprint`, but for a captured trace rather than a
+    lesson -- and including `outcome`, which a lesson never has but a
+    trace's whole reason for existing here is to carry (see
+    push_captured_traces's docstring). Re-capturing an occasion to attach
+    `--resolved`/`--tokens-used`/etc. after the fact (capture_cmd.py's own
+    documented pattern) changes ONLY the outcome dict, and that must count
+    as a change worth re-pushing exactly as much as an edited title does --
+    omitting it here would make that specific, expected edit silently
+    never propagate."""
+    parts = [
+        title, context_text, solution_text, "\x1f".join(sorted(tags)),
+        json.dumps(outcome or {}, sort_keys=True, ensure_ascii=False),
+    ]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
+def _trace_amend_idempotency_key(local_id: str, fingerprint: str) -> str:
+    """Same construction and the same reasoning as `_amend_idempotency_key`
+    (keyed on (identifier, fingerprint), hashed for a bounded length), but
+    its own distinct prefix rather than a shared function: `local_id` here
+    is a captured trace's own id (trace_io/templates.trace_frontmatter),
+    drawn from a different namespace than a lesson's `name` slug, and nothing
+    guarantees the two could never coincide for two files that otherwise
+    fingerprint identically. `Trace.idempotency_key` is unique per org
+    across every trace regardless of which push path produced it, so a
+    shared prefix is a real (if unlikely) cross-push collision this avoids
+    for the cost of one extra function."""
+    return "trace-amend:" + hashlib.sha256(f"{local_id}\x1e{fingerprint}".encode("utf-8")).hexdigest()
+
+
+async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[PushResult]:
+    """Push every locally captured trace (`commontrace capture`) to the Hub
+    via contribute_trace/amend_trace, INCLUDING outcome data -- the bridge
+    push_active_lessons does not provide, because lessons and traces are
+    different local stores (paths.lessons_dir vs paths.traces_dir: curated,
+    reusable knowledge vs. a raw incident record) and outcome data
+    (--resolved/--escalated/--tokens-used/..., hub/outcomes.py) only ever
+    lives on a trace, never a lesson.
+
+    Without this function, hub/crud.py:contribute_trace's `outcome`
+    parameter -- added because fleet_outcomes could not otherwise ever
+    receive real data from any customer -- was reachable only by an
+    agent's own direct MCP tool call. The standard, documented workflow
+    (`commontrace capture --resolved ...` then `commontrace sync`) had no
+    way to reach it at all: capture_cmd.py writes outcome data to a local
+    file, and nothing ever read that file and sent it anywhere.
+
+    Mirrors push_active_lessons's design exactly, fingerprint-and-amend
+    included: a trace not yet on the Hub (`hub_trace_id` unset) is
+    contributed; one already there is fingerprinted (title/context/
+    solution/tags/outcome) and left alone if unchanged, or propagated via
+    amend_trace -- whose MERGE semantics for `outcome`
+    (hub/crud.py:amend_trace) are exactly what capture_cmd.py's own
+    documented "recapture under the same --occasion-id to attach an
+    outcome once a task concludes" pattern needs: the second push must add
+    `resolved` without erasing whatever the first push already attached.
+    """
+    results: list[PushResult] = []
+    for path in _iter_captured_trace_paths(root):
+        instance, _body = trace_io.read(path)
+        local_id = str(instance.get("id") or "")
+        slug = local_id or os.path.splitext(os.path.basename(path))[0]
+        title = str(instance.get("title") or "")
+        context_text = str(instance.get("context_text") or "")
+        solution_text = str(instance.get("solution_text") or "")
+        tags = list(instance.get("tags") or []) if isinstance(instance.get("tags"), list) else []
+        agent_type = str(instance.get("agent_type") or "")
+        agent_id = str(instance.get("agent_id") or "")
+        outcome = instance.get("outcome") if isinstance(instance.get("outcome"), dict) else {}
+        fingerprint = _trace_push_fingerprint(title, context_text, solution_text, tags, outcome)
+
+        existing_hub_id = instance.get("hub_trace_id")
+        if existing_hub_id:
+            if instance.get("hub_pushed_fingerprint") == fingerprint:
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
+                continue
+            try:
+                result = await _call_tool(
+                    hub_url,
+                    api_key,
+                    "amend_trace",
+                    {
+                        "id": str(existing_hub_id),
+                        "title": title,
+                        "context_text": context_text,
+                        "solution_text": solution_text,
+                        "tags": tags,
+                        "outcome": outcome,
+                        # See _trace_amend_idempotency_key's docstring:
+                        # without this, _call_tool's own retry-on-timeout/5xx
+                        # can fork the supersession chain exactly like an
+                        # unkeyed push_active_lessons amend used to.
+                        "idempotency_key": _trace_amend_idempotency_key(slug, fingerprint),
+                    },
+                )
+            except (HubClientUnavailable, HubConnectionError) as exc:
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc)))
+                continue
+            if result.get("error"):
+                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"]))
+                continue
+            amended_id = result.get("id")
+            # Re-read under the lock rather than reusing `instance`/`fm`
+            # captured before the (slow, awaited) Hub call -- see
+            # push_active_lessons's identical comment on this exact race.
+            with frontmatter.locked(path):
+                fm, body = frontmatter.read(path)
+                fm["hub_trace_id"] = amended_id
+                fm["hub_pushed_fingerprint"] = fingerprint
+                frontmatter.write(path, fm, body)
+            results.append(
+                PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
+            )
+            continue
+
+        try:
+            result = await _call_tool(
+                hub_url,
+                api_key,
+                "contribute_trace",
+                {
+                    "title": title,
+                    "context_text": context_text,
+                    "solution_text": solution_text,
+                    "tags": tags,
+                    "agent_type": agent_type,
+                    "agent_id": agent_id,
+                    "outcome": outcome,
+                    # Keyed on this trace's own local id, like
+                    # push_active_lessons's f"lesson:{slug}": a retry of
+                    # THIS push (never-yet-contributed, so at most one
+                    # logical write is possible per local id in steady
+                    # state) must collide deliberately with itself.
+                    "idempotency_key": f"trace:{slug}",
+                },
+            )
+        except (HubClientUnavailable, HubConnectionError) as exc:
+            results.append(PushResult(slug=slug, hub_trace_id=None, error=str(exc)))
+            continue
+        if result.get("error"):
+            results.append(PushResult(slug=slug, hub_trace_id=None, error=result["error"]))
+            continue
+
+        new_id = result.get("id")
+        with frontmatter.locked(path):
+            fm, body = frontmatter.read(path)
+            fm["hub_trace_id"] = new_id
+            fm["hub_pushed_fingerprint"] = fingerprint
+            frontmatter.write(path, fm, body)
+        results.append(PushResult(slug=slug, hub_trace_id=new_id, quarantined=result.get("quarantined", False)))
     return results
 
 
