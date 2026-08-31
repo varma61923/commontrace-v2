@@ -249,6 +249,25 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Bring up the documented stack
+        env:
+          # The smoke check a few steps down issues its own real traffic
+          # from one source address: the primary org's round trip (tool
+          # listing, contribute, search x2, get, vote, amend x2, list_tags,
+          # account_usage) plus the second org's tenant-isolation round
+          # (initialize, get/vote/amend, commons_overlap) -- close enough to
+          # the documented default HUB_AUTH_ATTEMPTS_BURST=20 that this job
+          # has hit it directly (reproduced: a live CI run returned 429 on
+          # commons_overlap and on session termination from exactly this
+          # traffic). Widened here ONLY, via docker-compose.yml's
+          # ${VAR:-default} overrides, so this job verifies the deployment
+          # path works rather than fighting its own smoke check's request
+          # volume -- a real deployment run with `docker compose up` and
+          # nothing set in its environment still gets the tighter documented
+          # defaults unchanged.
+          HUB_AUTH_ATTEMPTS_PER_MINUTE: "600"
+          HUB_AUTH_ATTEMPTS_BURST: "200"
+          HUB_READ_RATE_LIMIT_PER_MINUTE: "3000"
+          HUB_READ_RATE_LIMIT_BURST: "600"
         run: |
           docker compose up -d --build
           echo "--- services ---"
