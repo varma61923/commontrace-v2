@@ -909,6 +909,15 @@ async def contribute_trace(
     """
     tags = tags or []
 
+    # reject_unstorable_text BEFORE the len() check, not after: len() itself
+    # raises an uncaught TypeError for a non-string value (an int, a list,
+    # None passed explicitly), and reject_unstorable_text's own isinstance
+    # check is what turns that into a clean ValueError instead. Reproduced
+    # live: contribute_trace(idempotency_key=123) used to crash with
+    # "TypeError: object of type 'int' has no len()" from THIS len() call,
+    # never reaching the validator at all.
+    if idempotency_key is not None:
+        reject_unstorable_text(idempotency_key, "idempotency_key")
     # Trace.idempotency_key is String(128) -- checked here rather than left
     # to the INSERT below to enforce it: a too-long value raised
     # asyncpg.StringDataRightTruncation (a DataError), which is not an
@@ -917,16 +926,7 @@ async def contribute_trace(
     # clean rejection of a malformed request.
     if idempotency_key is not None and len(idempotency_key) > 128:
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
-    if idempotency_key is not None:
-        reject_unstorable_text(idempotency_key, "idempotency_key")
 
-    # Trace.agent_id is String(128). Checked here for the same reason
-    # idempotency_key is above: left to the INSERT, an over-long value
-    # raises asyncpg.StringDataRightTruncation (a DataError, not an
-    # IntegrityError), which no handler below catches, so a malformed
-    # request surfaces as an opaque HTTP 500 instead of a clean rejection.
-    if len(agent_id) > 128:
-        raise TraceRejected(f"agent_id exceeds 128 chars ({len(agent_id)})")
     # Missed by the original reject_unstorable_text sweep: agent_id never
     # passes through validate_size (it isn't in contribute_trace's wire
     # dict, only agent_type is), and it is queried on directly by
@@ -936,8 +936,16 @@ async def contribute_trace(
     # against a live Postgres: both raised uncaught DBAPIErrors
     # (CharacterNotInRepertoireError / DataError) from _reserve_agent_slot's
     # own query, the same 500-instead-of-400 failure mode this function's
-    # other fields already guard against.
+    # other fields already guard against. Ahead of the len() check below
+    # for the same reason as idempotency_key above.
     reject_unstorable_text(agent_id, "agent_id")
+    # Trace.agent_id is String(128). Checked here for the same reason
+    # idempotency_key is above: left to the INSERT, an over-long value
+    # raises asyncpg.StringDataRightTruncation (a DataError, not an
+    # IntegrityError), which no handler below catches, so a malformed
+    # request surfaces as an opaque HTTP 500 instead of a clean rejection.
+    if len(agent_id) > 128:
+        raise TraceRejected(f"agent_id exceeds 128 chars ({len(agent_id)})")
 
     # Validated (and canonicalized -- None becomes {}) before the
     # idempotent-replay check below, so a retry's hash and the freshly
@@ -1145,11 +1153,17 @@ async def vote_trace(
     # flooding vector.
     if feedback_tag not in VALID_FEEDBACK_TAGS:
         raise ValueError(f"feedback_tag must be one of {VALID_FEEDBACK_TAGS!r}, got {feedback_tag!r}")
+    # reject_unstorable_text before the len() check -- see contribute_trace's
+    # identical fix for why: len() itself raises an uncaught TypeError for a
+    # non-string value. Reproduced live: vote_trace(feedback_text=123) used
+    # to crash with "TypeError: object of type 'int' has no len()" from the
+    # len() call below, never reaching the isinstance check that would turn
+    # it into a clean ValueError.
+    reject_unstorable_text(feedback_text, "feedback_text")
     if len(feedback_text) > MAX_FEEDBACK_TEXT_CHARS:
         raise ValueError(
             f"feedback_text exceeds {MAX_FEEDBACK_TEXT_CHARS} chars ({len(feedback_text)})"
         )
-    reject_unstorable_text(feedback_text, "feedback_text")
     if not _is_uuid(trace_id):
         return None
 
@@ -1519,10 +1533,14 @@ async def amend_trace(
     if not _is_uuid(trace_id):
         return None
 
-    if idempotency_key is not None and len(idempotency_key) > 128:
-        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
+    # reject_unstorable_text before the len() check -- see contribute_trace's
+    # identical fix for why: len() itself raises an uncaught TypeError for a
+    # non-string value, never reaching the isinstance check that would turn
+    # it into a clean ValueError.
     if idempotency_key is not None:
         reject_unstorable_text(idempotency_key, "idempotency_key")
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     # Validated (and canonicalized -- None becomes {}) up front, same as
     # contribute_trace, so the idempotent-replay hash below and the
     # eventually-stored hash are computed from the same shape either way.
@@ -2227,13 +2245,19 @@ async def submit_kb_entry(
     """
     tags = tags or []
 
+    # reject_unstorable_text before every len() check -- see
+    # contribute_trace's identical fix for why: len() itself raises an
+    # uncaught TypeError for a non-string value (submit_kb_entry(rationale=123)
+    # used to crash with "TypeError: object of type 'int' has no len()"),
+    # never reaching the isinstance check that would turn it into a clean
+    # ValueError.
+    reject_unstorable_text(rationale, "rationale")
+    if idempotency_key is not None:
+        reject_unstorable_text(idempotency_key, "idempotency_key")
     if idempotency_key is not None and len(idempotency_key) > 128:
         raise TraceRejected(f"idempotency_key exceeds 128 chars ({len(idempotency_key)})")
     if len(rationale) > 500:
         raise TraceRejected(f"rationale exceeds 500 chars ({len(rationale)})")
-    reject_unstorable_text(rationale, "rationale")
-    if idempotency_key is not None:
-        reject_unstorable_text(idempotency_key, "idempotency_key")
 
     if idempotency_key is not None:
         existing = (
@@ -2703,7 +2727,15 @@ async def commons_overlap(
     """
     submitted = commons.validate_submitted_failures(failures)
 
-    threshold = float(threshold)
+    # float(threshold) alone raises an uncaught TypeError for None/list/dict
+    # -- not a ValueError, so isfinite's own guard below never got a chance
+    # to run for those. Reproduced live: commons_overlap(threshold=None)
+    # crashed with "TypeError: float() argument must be a string or a real
+    # number, not 'NoneType'".
+    try:
+        threshold = float(threshold)
+    except (TypeError, ValueError):
+        raise commons.CommonsInputError("threshold must be a number") from None
     if not math.isfinite(threshold):
         raise commons.CommonsInputError("threshold must be a finite number")
     threshold = max(0.0, min(threshold, 1.0))
