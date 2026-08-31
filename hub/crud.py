@@ -145,6 +145,36 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _clamp_int(value: object, lo: int, hi: int, default: int) -> int:
+    """Coerce a caller-supplied pagination-style parameter to an int and
+    clamp it to [lo, hi]; fall back to `default` if it cannot be
+    interpreted as one at all.
+
+    `int(x)` raises ValueError for a non-numeric string and TypeError for
+    None -- both already routine, expected input errors -- but also
+    OverflowError for a float infinity (`int(float("inf"))`), which is
+    easy to miss because it is not the exception either of the other two
+    cases trains you to expect. hub/commons.py's own
+    _coerce_signature has a standing comment naming exactly this failure
+    mode ("surfacing as an unhandled 500"); this function had the same gap
+    at a different call site, reproduced live before this fix:
+    search_traces(limit=float("inf")) crashed with an uncaught
+    OverflowError, which matches none of hub/server.py:_error_response's
+    branches.
+
+    Every caller of this function already treats an out-of-range but
+    well-formed limit/offset as something to silently clamp rather than
+    reject (e.g. search_traces's own docstring: "limit is clamped to [1,
+    MAX_SEARCH_LIMIT]") -- a malformed one gets the same tolerant
+    treatment here, rather than a new, stricter failure mode this function
+    did not previously have.
+    """
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 async def _votes_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict[str, list[dict]]:
     """Batch-load votes for many traces in ONE query.
 
@@ -683,8 +713,8 @@ async def search_traces(
     stopwords produces `[]` and matches no rows, which without this field
     is indistinguishable from an empty corpus.
     """
-    limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
-    offset = max(0, min(int(offset), MAX_SEARCH_OFFSET))
+    limit = _clamp_int(limit, 1, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
+    offset = _clamp_int(offset, 0, MAX_SEARCH_OFFSET, 0)
     if query:
         reject_unstorable_text(query, "query")
     for tag in tags or []:
@@ -2280,7 +2310,7 @@ async def list_my_kb_submissions(session: AsyncSession, org_id: str, limit: int 
         select(KnowledgeBaseSubmission)
         .where(KnowledgeBaseSubmission.org_id == org_id)
         .order_by(KnowledgeBaseSubmission.created_at.desc())
-        .limit(max(1, min(int(limit), 200)))
+        .limit(_clamp_int(limit, 1, 200, 50))
     )).scalars().all()
     return [_submission_to_wire(s) for s in rows]
 
@@ -2295,7 +2325,7 @@ async def list_kb_submissions(
     stmt = select(KnowledgeBaseSubmission)
     if status is not None:
         stmt = stmt.where(KnowledgeBaseSubmission.status == status)
-    stmt = stmt.order_by(KnowledgeBaseSubmission.created_at.asc()).limit(max(1, min(int(limit), 1000)))
+    stmt = stmt.order_by(KnowledgeBaseSubmission.created_at.asc()).limit(_clamp_int(limit, 1, 1000, 100))
     rows = (await session.execute(stmt)).scalars().all()
     return [_submission_to_wire(s) for s in rows]
 
@@ -2359,7 +2389,14 @@ async def review_kb_submission(
         )
         return _submission_to_wire(submission)
 
-    awarded = plans.SUBMISSION_ACCEPTANCE_CREDIT if credit is None else max(0, int(credit))
+    awarded = (
+        plans.SUBMISSION_ACCEPTANCE_CREDIT if credit is None
+        # No upper bound in the original (an operator's own call, not a
+        # customer-facing one), preserved here via 2**63-1 rather than
+        # introducing a new cap -- only the OverflowError/TypeError/
+        # ValueError-on-malformed-input gap is being closed.
+        else _clamp_int(credit, 0, 2**63 - 1, plans.SUBMISSION_ACCEPTANCE_CREDIT)
+    )
     trace = Trace(
         org_id=operator_org_id,
         title=submission.title,
@@ -2548,10 +2585,7 @@ async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
 
     Retracted entries are absent: they are already dealt with.
     """
-    try:
-        limit = max(1, min(int(limit), 500))
-    except (TypeError, ValueError):
-        limit = 50
+    limit = _clamp_int(limit, 1, 500, 50)
 
     rows = (
         await session.execute(
@@ -2943,7 +2977,12 @@ async def commons_search(
 
     try:
         limit = int(limit)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError alongside the other two: int(float("inf")) raises
+        # it specifically, not ValueError, and it used to reach a caller
+        # as an uncaught 500 (hub/commons.py:_coerce_signature's own
+        # standing comment names exactly this failure mode at a different
+        # call site).
         raise commons.CommonsInputError("limit must be an integer") from None
     limit = max(1, min(limit, commons.MAX_SEARCH_CANDIDATES))
 
