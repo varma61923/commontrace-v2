@@ -393,3 +393,70 @@ class TestContributeTraceStorageQuotaRace:
         assert stored <= cap, f"stored {stored} traces exceeds cap {cap} -- quota race not closed"
         assert len(succeeded) == stored
         assert len(succeeded) + len(exceeded) == n
+
+
+# --- 6. submit_kb_entry pending-submission cap ---------------------------
+
+
+async def _submit_kb(session_factory, config, org_id, title, context, solution, actor="test"):
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        return await crud.submit_kb_entry(
+            session, org_id, config, rate_limiter,
+            title=title, context_text=context, solution_text=solution,
+            tags=[], agent_type="code", actor=actor,
+        )
+
+
+class TestSubmitKbEntryPendingQuotaRace:
+    """Regression test for the same class of bug TestContributeTraceStorageQuotaRace
+    pins for contribute_trace, found in submit_kb_entry's sibling check:
+    MAX_PENDING_SUBMISSIONS_PER_ORG was enforced with a plain COUNT(*) of
+    status='pending' rows followed later by an INSERT, with nothing
+    serializing the two across concurrent callers for the same org. N
+    coroutines racing when the org is one submission away from the cap
+    could each COUNT before any of the others' INSERT was visible, so all N
+    pass a check only one of them should have -- the queue grows past
+    MAX_PENDING_SUBMISSIONS_PER_ORG with no error ever raised, defeating the
+    docstring's own stated purpose ("Bounds how large the operator's review
+    queue can be forced to grow by one org"). Fixed the same way: SELECT
+    ... FOR UPDATE on the org's own row before the count (see
+    hub/crud.py:submit_kb_entry), the identical lock _reserve_trace_slot
+    already takes for the same reason.
+    """
+
+    async def test_concurrent_submissions_never_exceed_the_pending_cap(
+        self, session_factory, config, org, monkeypatch
+    ):
+        cap = 5
+        monkeypatch.setattr(crud, "MAX_PENDING_SUBMISSIONS_PER_ORG", cap)
+        n = 20
+
+        results = await asyncio.gather(
+            *[_submit_kb(session_factory, config, org, f"kb race {i}", "c", "s") for i in range(n)],
+            return_exceptions=True,
+        )
+
+        succeeded = [r for r in results if not isinstance(r, BaseException)]
+        rejected = [r for r in results if isinstance(r, crud.TraceRejected)]
+        other_exceptions = [
+            r for r in results if isinstance(r, BaseException) and not isinstance(r, crud.TraceRejected)
+        ]
+
+        async with session_scope(session_factory) as session:
+            pending = int(await session.scalar(
+                select(func.count()).select_from(crud.KnowledgeBaseSubmission).where(
+                    crud.KnowledgeBaseSubmission.org_id == org,
+                    crud.KnowledgeBaseSubmission.status == "pending",
+                )
+            ) or 0)
+
+        print(
+            f"[kb pending quota race] cap={cap} n_attempted={n} n_succeeded={len(succeeded)} "
+            f"n_rejected={len(rejected)} n_other_exceptions={len(other_exceptions)} pending={pending}"
+        )
+
+        assert not other_exceptions, f"unexpected non-quota exceptions: {other_exceptions}"
+        assert pending <= cap, f"pending {pending} submissions exceeds cap {cap} -- quota race not closed"
+        assert len(succeeded) == pending
+        assert len(succeeded) + len(rejected) == n

@@ -1878,6 +1878,40 @@ MAX_PENDING_SUBMISSIONS_PER_ORG = 20
 VALID_SUBMISSION_DECISIONS = ("approve", "reject")
 
 
+async def _reserve_kb_submission_slot(session: AsyncSession, org_id: str) -> None:
+    """Enforce MAX_PENDING_SUBMISSIONS_PER_ORG for a caller about to insert a
+    new KnowledgeBaseSubmission row.
+
+    Bounds how large the operator's review queue can be forced to grow by
+    one org -- not a quality gate (review is), just an anti-griefing cap so
+    a queue is never buried under one org's backlog.
+
+    SELECT ... FOR UPDATE on the org's own row, for the same reason
+    _reserve_trace_slot takes it: count-then-insert is a TOCTOU race under
+    concurrent callers for the SAME org without it -- N coroutines racing
+    when the org is one submission away from the cap can each COUNT before
+    any of the others' INSERT is visible, so all N pass a check only one of
+    them should have (hub/tests/test_concurrency_audit.py
+    TestSubmitKbEntryPendingQuotaRace reproduced the queue growing to 15
+    against a cap of 5 before this lock was added). A different org's row
+    lock never blocks this one.
+    """
+    await session.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+    pending = int(await session.scalar(
+        select(func.count()).select_from(KnowledgeBaseSubmission).where(
+            KnowledgeBaseSubmission.org_id == org_id,
+            KnowledgeBaseSubmission.status == "pending",
+        )
+    ) or 0)
+    if pending >= MAX_PENDING_SUBMISSIONS_PER_ORG:
+        raise TraceRejected(
+            f"{pending} submission(s) already awaiting review; wait for those to be "
+            "reviewed before proposing more"
+        )
+
+
 def _submission_to_wire(s: KnowledgeBaseSubmission) -> dict:
     return {
         "id": s.id,
@@ -1977,20 +2011,7 @@ async def submit_kb_entry(
     if not rate_limiter.allow(f"kb_submit:{org_id}"):
         raise RateLimited(f"org {org_id} exceeded submit_kb_entry rate limit")
 
-    # Bounds how large the operator's review queue can be forced to grow
-    # by one org -- not a quality gate (review is), just an anti-griefing
-    # cap so a queue is never buried under one org's backlog.
-    pending = int(await session.scalar(
-        select(func.count()).select_from(KnowledgeBaseSubmission).where(
-            KnowledgeBaseSubmission.org_id == org_id,
-            KnowledgeBaseSubmission.status == "pending",
-        )
-    ) or 0)
-    if pending >= MAX_PENDING_SUBMISSIONS_PER_ORG:
-        raise TraceRejected(
-            f"{pending} submission(s) already awaiting review; wait for those to be "
-            "reviewed before proposing more"
-        )
+    await _reserve_kb_submission_slot(session, org_id)
 
     wire = {
         "id": str(uuid.uuid4()),
