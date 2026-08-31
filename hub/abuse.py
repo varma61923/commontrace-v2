@@ -43,11 +43,55 @@ class RateLimited(Exception):
     """Hard rejection: the org is over its contribute_trace rate limit."""
 
 
+def reject_embedded_nul(value: str, field: str) -> None:
+    """Raise `ValueError` if `value` contains an embedded NUL byte (0x00).
+
+    Every free-text string this Hub accepts eventually becomes an asyncpg
+    bind parameter, and asyncpg refuses to encode a NUL byte into one at
+    all -- Postgres's text type is built on NUL-terminated C strings
+    on-disk, so this is not a driver quirk to work around but a real
+    limit of what the column can ever store. Left unchecked, the first
+    caller to pass one (a pasted binary log excerpt, a fuzzer, a client
+    bug) gets `asyncpg.exceptions.CharacterNotInRepertoireError` raised
+    from deep inside a query -- wrapped in a bare `DBAPIError` that
+    matches none of `hub/server.py:_error_response`'s specific branches,
+    so it falls through to a generic `internal_error` and a server-side
+    stack trace logged as "unexpected" -- for input that is exactly as
+    malformed, and exactly as foreseeable, as an over-length title.
+
+    Checked here, before the value reaches a query, a NUL byte gets the
+    same clean 4xx every other malformed-input case in this module
+    already gets, instead of the one path that still reaches Postgres
+    itself to fail. `ValueError` (not `TraceRejected`) is the return
+    type because this same check is reused for read-path filters and
+    non-trace fields that have no concept of "the trace was rejected";
+    `hub/server.py:_error_response` maps a bare `ValueError` to
+    `invalid_request` the same as it does `TraceRejected`, which is a
+    subclass of it.
+    """
+    if "\x00" in value:
+        raise ValueError(f"{field} contains an embedded NUL byte, which Postgres cannot store")
+
+
 def validate_size(fields: dict, config: HubConfig) -> None:
     title = fields.get("title", "")
     context_text = fields.get("context_text", "")
     solution_text = fields.get("solution_text", "")
     tags = fields.get("tags") or []
+    # Not every caller's `fields` includes this -- amend_trace's wire dict
+    # never did and never sets a new agent_type -- so it is read the same
+    # defensive way as `tags` above rather than assumed present.
+    agent_type = fields.get("agent_type") or ""
+
+    for value, name in (
+        (title, "title"),
+        (context_text, "context_text"),
+        (solution_text, "solution_text"),
+        (agent_type, "agent_type"),
+    ):
+        reject_embedded_nul(value, name)
+    for tag in tags:
+        reject_embedded_nul(tag, "tag")
 
     if len(title) > config.max_title_chars:
         raise TraceRejected(f"title exceeds {config.max_title_chars} chars ({len(title)})")
