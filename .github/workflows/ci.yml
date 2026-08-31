@@ -68,9 +68,15 @@ jobs:
       # A pure-stdlib AST check (no DB, no heavy deps -- see its own
       # docstring), so it belongs in the fast job that runs on every push
       # rather than waiting on test-hub's Postgres-backed job to give the
-      # same feedback minutes later.
+      # same feedback minutes later. --noconftest: hub/tests/conftest.py
+      # (loaded automatically for anything under hub/tests/, regardless of
+      # which specific file is targeted) imports sqlalchemy at module
+      # level, which this job's core `.[dev]` install never pulls in --
+      # this test itself needs none of that conftest's fixtures, so skip
+      # loading it rather than installing hub/'s whole dependency stack
+      # just to satisfy an import this test doesn't use.
       - name: Hub server image allowlist stays in sync with hub/'s imports
-        run: python -m pytest hub/tests/test_image_contents.py -q
+        run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
