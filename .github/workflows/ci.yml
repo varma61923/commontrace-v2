@@ -133,6 +133,38 @@ jobs:
           # without `alembic revision --autogenerate`.
           python -m alembic -c hub/alembic.ini check
 
+      # 7c4a1d92e5b8 and 8f2b40c17ade each build a CONCURRENTLY index inside
+      # its own op.get_context().autocommit_block() -- which unconditionally
+      # commits whatever transaction precedes it, so that migration's
+      # add_column(s) (and, for 8f2b40c17ade, its backfill UPDATE) are
+      # committed for good the instant the block is entered, independent of
+      # whether the index build that follows ever finishes. A process killed
+      # mid-build (deploy timeout, OOM, an operator's Ctrl-C) then leaves
+      # alembic_version stuck one revision behind with those columns already
+      # present -- exactly the state simulated below by hand -- and a plain
+      # retry must self-heal rather than fail with a duplicate-column error.
+      - name: Verify an interrupted CONCURRENTLY-index migration can be retried
+        env:
+          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations_retry
+          PGPASSWORD: commontrace
+        run: |
+          createdb -h localhost -U commontrace commontrace_migrations_retry
+
+          python -m alembic -c hub/alembic.ini upgrade 40d3f29cbb24
+          psql -h localhost -U commontrace -d commontrace_migrations_retry \
+            -c "ALTER TABLE traces ADD COLUMN agent_id VARCHAR(128) NOT NULL DEFAULT '';"
+          python -m alembic -c hub/alembic.ini upgrade head
+
+          python -m alembic -c hub/alembic.ini downgrade 3c3adaa53a71
+          psql -h localhost -U commontrace -d commontrace_migrations_retry -c "
+            ALTER TABLE traces ADD COLUMN commons_votes BIGINT NOT NULL DEFAULT 0;
+            ALTER TABLE traces ADD COLUMN commons_review_after TIMESTAMPTZ;
+            ALTER TABLE traces ADD COLUMN commons_retracted_at TIMESTAMPTZ;
+            ALTER TABLE traces ADD COLUMN commons_retraction_reason VARCHAR(200) NOT NULL DEFAULT '';
+          "
+          python -m alembic -c hub/alembic.ini upgrade head
+          python -m alembic -c hub/alembic.ini check
+
       - name: Run Hub tests (including test_tenant_isolation.py)
         run: python -m pytest hub/tests/ -q
 

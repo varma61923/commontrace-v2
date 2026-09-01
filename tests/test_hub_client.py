@@ -391,6 +391,84 @@ class TestPushPropagatesEdits:
         assert by_slug["lesson_bad"].hub_trace_id is None
         assert by_slug["lesson_bad"].error is not None
 
+    def test_a_local_write_failure_does_not_abort_the_whole_batch(self, store, monkeypatch):
+        """Reproduced before this fix: push_active_lessons/push_captured_traces
+        awaited asyncio.gather() with the default return_exceptions=False, and
+        the frontmatter re-read/write that records hub_trace_id locally after
+        a successful Hub call had no try/except of its own. An unexpected
+        exception there (disk full, a permission error, the file vanishing
+        mid-run) propagated straight out of _push_one, out of gather(), and
+        out of push_active_lessons -- discarding every PushResult already
+        computed in the same concurrent batch, including lessons whose Hub
+        push had ALREADY succeeded, with no report of what (if anything) got
+        through. Now the write-back failure becomes that one file's own
+        PushResult.error instead."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        _write_active_lesson(ldir, "lesson_good", "desc", "when", "do the thing")
+        _write_active_lesson(ldir, "lesson_bad", "desc2", "when", "do the other thing")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"id": f"trace-{arguments['title']}", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+
+        real_write = hub_client._write_hub_push_fields
+
+        def flaky_write(path, hub_trace_id, fingerprint):
+            if "lesson_bad" in path:
+                raise OSError("disk full")
+            return real_write(path, hub_trace_id, fingerprint)
+
+        monkeypatch.setattr(hub_client, "_write_hub_push_fields", flaky_write)
+
+        # Must not raise -- that's the regression this test pins.
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        by_slug = {r.slug: r for r in results}
+        assert len(results) == 2, "the failing file's exception must not discard the other file's result"
+        assert by_slug["lesson_good"].hub_trace_id is not None
+        assert by_slug["lesson_good"].error is None
+        assert by_slug["lesson_bad"].error is not None
+        assert "disk full" in by_slug["lesson_bad"].error
+
+    def test_local_write_back_runs_off_the_event_loop(self, store, monkeypatch):
+        """frontmatter.locked() takes a blocking OS-level fcntl.flock -- if
+        the write-back that records hub_trace_id ran it directly on a
+        coroutine (as it did before this fix), lock contention on one file
+        (e.g. a concurrent `lesson approve` on that same file) would freeze
+        the WHOLE event loop for as long as the wait takes, stalling every
+        other push's already-in-flight Hub call in the same bounded-
+        concurrency batch, not just the one task waiting on the lock. Pin
+        that the write-back is dispatched via asyncio.to_thread, which runs
+        it on a worker thread instead."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        _write_active_lesson(ldir, "lesson_a", "desc", "when", "rule")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"id": "trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+
+        real_to_thread = asyncio.to_thread
+        dispatched = []
+
+        async def spying_to_thread(fn, *a, **kw):
+            dispatched.append(fn)
+            return await real_to_thread(fn, *a, **kw)
+
+        monkeypatch.setattr(asyncio, "to_thread", spying_to_thread)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert results[0].hub_trace_id == "trace-1"
+        assert hub_client._write_hub_push_fields in dispatched, (
+            "the frontmatter write-back must be dispatched via asyncio.to_thread, "
+            "not called directly on the event loop"
+        )
+
     def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
         """Same fix, same reasoning as push_captured_traces's identical
         test: N independent lessons used to mean N sequential round trips.
@@ -516,6 +594,42 @@ class TestPushCapturedTraces:
         assert len(calls) == 1, f"README.md must never reach _call_tool: {calls}"
         assert len(results) == 1
         assert results[0].hub_trace_id == "hub-trace-1"
+
+    def test_a_local_write_failure_does_not_abort_the_whole_batch(self, store, monkeypatch):
+        """Same regression, same fix as push_active_lessons's identical
+        test: an unexpected exception from the post-push frontmatter
+        write-back used to propagate out of asyncio.gather() (default
+        return_exceptions=False) and abort push_captured_traces entirely,
+        discarding every PushResult already computed in the same batch --
+        including traces whose Hub push had already succeeded."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(tdir, "t_good.md", "occasion-good", "title good", "ctx", "sol")
+        _write_captured_trace(tdir, "t_bad.md", "occasion-bad", "title bad", "ctx", "sol")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            return {"id": f"hub-{arguments['title']}", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+
+        real_write = hub_client._write_hub_push_fields
+
+        def flaky_write(path, hub_trace_id, fingerprint):
+            if "t_bad" in path:
+                raise OSError("disk full")
+            return real_write(path, hub_trace_id, fingerprint)
+
+        monkeypatch.setattr(hub_client, "_write_hub_push_fields", flaky_write)
+
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        by_slug = {r.slug: r for r in results}
+        assert len(results) == 2, "the failing file's exception must not discard the other file's result"
+        assert by_slug["occasion-good"].hub_trace_id is not None
+        assert by_slug["occasion-good"].error is None
+        assert by_slug["occasion-bad"].error is not None
+        assert "disk full" in by_slug["occasion-bad"].error
 
     def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
         """20 independent files used to mean 20 sequential network round

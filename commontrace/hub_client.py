@@ -18,9 +18,11 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 from commontrace import frontmatter, paths, templates, trace_io
+
+_T = TypeVar("_T")
 
 # Network defaults. Overridable per call; `commontrace sync` exposes them
 # as --timeout / --max-attempts.
@@ -343,6 +345,45 @@ def _amend_idempotency_key(slug: str, fingerprint: str) -> str:
     return "lesson-amend:" + hashlib.sha256(f"{slug}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
 
+def _write_hub_push_fields(path: str, hub_trace_id: str, fingerprint: str) -> None:
+    """Persist the Hub id/fingerprint a push just learned back onto the
+    local file. Re-reads under the lock rather than trusting a snapshot
+    captured before the (slow, awaited) Hub call that produced
+    `hub_trace_id`: another process could have changed a different field on
+    this same file (e.g. `lesson approve`/`reject` flipping `status`) while
+    that call was in flight, and writing back the pre-call snapshot would
+    silently discard that change -- the exact lost-update
+    frontmatter.locked() exists to prevent, see its docstring.
+
+    A plain function, not a coroutine: frontmatter.locked() takes a
+    blocking OS-level fcntl.flock, and every caller below runs this via
+    asyncio.to_thread specifically so that lock contention (e.g. a
+    concurrent `lesson approve` on the same file) blocks only the calling
+    task's thread, not the whole event loop -- and therefore not every
+    other push concurrently in flight in the same bounded-concurrency
+    batch (see _PUSH_CONCURRENCY).
+    """
+    with frontmatter.locked(path):
+        fm, body = frontmatter.read(path)
+        fm["hub_trace_id"] = hub_trace_id
+        fm["hub_pushed_fingerprint"] = fingerprint
+        frontmatter.write(path, fm, body)
+
+
+async def _gather_bounded(paths_iter: Iterable[str], fn: Callable[[str], Awaitable[_T]]) -> list[_T]:
+    """Run `fn(path)` for every `path` in `paths_iter`, at most
+    _PUSH_CONCURRENCY at once. Shared by push_active_lessons and
+    push_captured_traces (see _PUSH_CONCURRENCY's comment for why bounded
+    rather than unbounded concurrency)."""
+    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def _bounded(path: str) -> _T:
+        async with semaphore:
+            return await fn(path)
+
+    return await asyncio.gather(*(_bounded(p) for p in paths_iter))
+
+
 async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[PushResult]:
     """Push every `status: active` lesson to the Hub via contribute_trace,
     recording the returned id back into the lesson's `hub_trace_id`
@@ -423,11 +464,22 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             # trace and hub_trace_id must move forward to it -- the old id
             # is now the head of a chain, not the trace to amend next time.
             amended_id = result.get("id")
-            with frontmatter.locked(path):
-                fm, body = frontmatter.read(path)
-                fm["hub_trace_id"] = amended_id
-                fm["hub_pushed_fingerprint"] = fingerprint
-                frontmatter.write(path, fm, body)
+            try:
+                await asyncio.to_thread(_write_hub_push_fields, path, amended_id, fingerprint)
+            except Exception as exc:  # noqa: BLE001 - the Hub write already succeeded; a
+                # failure recording it locally (disk full, permission error, the file
+                # vanishing under us) must become THIS file's own result, not an
+                # exception that escapes _push_one. asyncio.gather in _gather_bounded
+                # has no return_exceptions=True: an uncaught exception here would abort
+                # every OTHER concurrently in-flight push in this same batch, discarding
+                # results already computed for files that already succeeded -- exactly
+                # the "one bad file blocks the whole run" failure mode the read-error
+                # guard above already exists to prevent, reintroduced on the write side.
+                return PushResult(
+                    slug=slug,
+                    hub_trace_id=amended_id,
+                    error=f"pushed to the Hub but failed to record locally: {type(exc).__name__}: {exc}",
+                )
             return PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
 
         try:
@@ -466,32 +518,23 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             return PushResult(slug=slug, hub_trace_id=None, error=result["error"])
 
         hub_trace_id = result.get("id")
-        # Re-read under the lock rather than reusing the `fm` captured
-        # before the (slow, awaited) Hub call above: another process could
-        # have changed a different field on this same file (e.g. `lesson
-        # approve`/`reject` flipping `status`) while this push was in
-        # flight, and writing back the pre-call snapshot would silently
-        # discard that change -- the exact lost-update frontmatter.locked()
-        # exists to prevent, see its docstring.
-        with frontmatter.locked(path):
-            fm, body = frontmatter.read(path)
-            fm["hub_trace_id"] = hub_trace_id
-            fm["hub_pushed_fingerprint"] = fingerprint
-            frontmatter.write(path, fm, body)
+        try:
+            await asyncio.to_thread(_write_hub_push_fields, path, hub_trace_id, fingerprint)
+        except Exception as exc:  # noqa: BLE001 - see the amend branch above for why this
+            # must return an error result rather than propagate.
+            return PushResult(
+                slug=slug,
+                hub_trace_id=hub_trace_id,
+                error=f"pushed to the Hub but failed to record locally: {type(exc).__name__}: {exc}",
+            )
         return PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False))
 
-    # Bounded concurrency (see _PUSH_CONCURRENCY): each file is pushed
-    # independently, so N files no longer means N sequential round trips.
-    # asyncio.gather preserves input order in its results regardless of
-    # completion order, so this is not just faster but observably
-    # identical in ordering to the old sequential loop.
-    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
-
-    async def _bounded(path: str) -> PushResult | None:
-        async with semaphore:
-            return await _push_one(path)
-
-    outcomes = await asyncio.gather(*(_bounded(p) for p in _iter_active_lesson_paths(root)))
+    # Bounded concurrency (see _PUSH_CONCURRENCY / _gather_bounded): each
+    # file is pushed independently, so N files no longer means N sequential
+    # round trips. asyncio.gather preserves input order in its results
+    # regardless of completion order, so this is not just faster but
+    # observably identical in ordering to the old sequential loop.
+    outcomes = await _gather_bounded(_iter_active_lesson_paths(root), _push_one)
     return [r for r in outcomes if r is not None]
 
 
@@ -609,14 +652,22 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
             if result.get("error"):
                 return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"])
             amended_id = result.get("id")
-            # Re-read under the lock rather than reusing `instance`/`fm`
-            # captured before the (slow, awaited) Hub call -- see
-            # push_active_lessons's identical comment on this exact race.
-            with frontmatter.locked(path):
-                fm, body = frontmatter.read(path)
-                fm["hub_trace_id"] = amended_id
-                fm["hub_pushed_fingerprint"] = fingerprint
-                frontmatter.write(path, fm, body)
+            # _write_hub_push_fields re-reads under the lock rather than
+            # reusing `instance`/`fm` captured before the (slow, awaited)
+            # Hub call -- see push_active_lessons's identical comment on
+            # this exact race.
+            try:
+                await asyncio.to_thread(_write_hub_push_fields, path, amended_id, fingerprint)
+            except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
+                # guard: the Hub write already succeeded, so a local recording failure
+                # must become this file's own result, not an exception that -- via
+                # asyncio.gather in _gather_bounded, which has no return_exceptions=True
+                # -- would abort every other concurrently in-flight push in this batch.
+                return PushResult(
+                    slug=slug,
+                    hub_trace_id=amended_id,
+                    error=f"pushed to the Hub but failed to record locally: {type(exc).__name__}: {exc}",
+                )
             return PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
 
         try:
@@ -646,22 +697,20 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
             return PushResult(slug=slug, hub_trace_id=None, error=result["error"])
 
         new_id = result.get("id")
-        with frontmatter.locked(path):
-            fm, body = frontmatter.read(path)
-            fm["hub_trace_id"] = new_id
-            fm["hub_pushed_fingerprint"] = fingerprint
-            frontmatter.write(path, fm, body)
+        try:
+            await asyncio.to_thread(_write_hub_push_fields, path, new_id, fingerprint)
+        except Exception as exc:  # noqa: BLE001 - see the amend branch above for why this
+            # must return an error result rather than propagate.
+            return PushResult(
+                slug=slug,
+                hub_trace_id=new_id,
+                error=f"pushed to the Hub but failed to record locally: {type(exc).__name__}: {exc}",
+            )
         return PushResult(slug=slug, hub_trace_id=new_id, quarantined=result.get("quarantined", False))
 
-    # Bounded concurrency (see _PUSH_CONCURRENCY): same reasoning and same
-    # pattern as push_active_lessons above.
-    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
-
-    async def _bounded(path: str) -> PushResult:
-        async with semaphore:
-            return await _push_one(path)
-
-    return list(await asyncio.gather(*(_bounded(p) for p in _iter_captured_trace_paths(root))))
+    # Bounded concurrency (see _PUSH_CONCURRENCY / _gather_bounded): same
+    # reasoning and same pattern as push_active_lessons above.
+    return await _gather_bounded(_iter_captured_trace_paths(root), _push_one)
 
 
 async def commons_overlap(

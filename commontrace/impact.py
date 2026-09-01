@@ -74,25 +74,27 @@ def compute_impact(
     value_per_error_avoided: float | None = None,
 ) -> ImpactReport:
     n_occasions_with_lesson = sum(1 for e in evidence if e.retrieved)
-    lessons_reused = sum(len(set(e.hit) & set(e.retrieved)) for e in evidence)
 
+    lessons_reused = 0
     errors_avoided = 0
     errors_avoided_basis = 0
     for e in evidence:
         # set(e.hit) & set(e.retrieved), not a bare `e.hit` truthiness
-        # check -- same reasoning as lessons_reused two lines above, and
+        # check, for both lessons_reused and errors_avoided/basis below --
         # the same rule reliability.py:score_lessons already documents and
         # enforces ("a hit only counts as evidence if the lesson was
         # actually retrieved on that occasion; otherwise a lesson credited
         # by a retro pass would get precision > 1"). Without the
         # intersection, an occasion whose `lessons_hit` was populated by
         # something other than this occasion's own retrieval call (a
-        # retro/backfill pass, hand-edited evidence) inflated
-        # errors_avoided/errors_avoided_basis with a success this
-        # product's own retrieval cannot actually take credit for --
-        # exactly the number a prospect would ask "how was that computed?"
-        # about.
-        if not (set(e.hit) & set(e.retrieved)) or e.succeeded is None:
+        # retro/backfill pass, hand-edited evidence) inflated both figures
+        # with a success this product's own retrieval cannot actually take
+        # credit for -- exactly the number a prospect would ask "how was
+        # that computed?" about. Computed once per occasion and shared by
+        # both rather than recomputed a second time for errors_avoided.
+        hit_and_retrieved = set(e.hit) & set(e.retrieved)
+        lessons_reused += len(hit_and_retrieved)
+        if not hit_and_retrieved or e.succeeded is None:
             continue
         errors_avoided_basis += 1
         if e.succeeded:
