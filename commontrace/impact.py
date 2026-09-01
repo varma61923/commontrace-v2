@@ -79,7 +79,20 @@ def compute_impact(
     errors_avoided = 0
     errors_avoided_basis = 0
     for e in evidence:
-        if not e.hit or e.succeeded is None:
+        # set(e.hit) & set(e.retrieved), not a bare `e.hit` truthiness
+        # check -- same reasoning as lessons_reused two lines above, and
+        # the same rule reliability.py:score_lessons already documents and
+        # enforces ("a hit only counts as evidence if the lesson was
+        # actually retrieved on that occasion; otherwise a lesson credited
+        # by a retro pass would get precision > 1"). Without the
+        # intersection, an occasion whose `lessons_hit` was populated by
+        # something other than this occasion's own retrieval call (a
+        # retro/backfill pass, hand-edited evidence) inflated
+        # errors_avoided/errors_avoided_basis with a success this
+        # product's own retrieval cannot actually take credit for --
+        # exactly the number a prospect would ask "how was that computed?"
+        # about.
+        if not (set(e.hit) & set(e.retrieved)) or e.succeeded is None:
             continue
         errors_avoided_basis += 1
         if e.succeeded:

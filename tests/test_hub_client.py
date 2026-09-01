@@ -391,6 +391,41 @@ class TestPushPropagatesEdits:
         assert by_slug["lesson_bad"].hub_trace_id is None
         assert by_slug["lesson_bad"].error is not None
 
+    def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
+        """Same fix, same reasoning as push_captured_traces's identical
+        test: N independent lessons used to mean N sequential round trips.
+        Tracking actual concurrent in-flight calls (not wall-clock time,
+        which is flaky under CI load) proves both that calls now overlap
+        and that the overlap stays bounded rather than firing every call
+        at once and risking the Hub's write rate limiter."""
+        import asyncio
+
+        ldir = paths.lessons_dir(str(store))
+        n = 20
+        for i in range(n):
+            _write_active_lesson(ldir, f"lesson_{i}", f"desc {i}", "when", "do the thing")
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return {"id": f"hub-{arguments['title']}", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_active_lessons("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(results) == n
+        assert max_in_flight > 1, "pushes ran strictly sequentially -- the concurrency fix regressed"
+        assert max_in_flight <= hub_client._PUSH_CONCURRENCY, (
+            f"unbounded concurrency: {max_in_flight} calls in flight at once, "
+            f"expected at most {hub_client._PUSH_CONCURRENCY}"
+        )
+
 
 def _write_captured_trace(
     tdir, filename, trace_id, title, context, solution,
@@ -453,6 +488,73 @@ class TestPushCapturedTraces:
 
         monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
         asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+    def test_the_traces_dir_readme_is_never_pushed(self, store, monkeypatch):
+        """init_cmd.py writes a README.md into every traces_dir. It has no
+        frontmatter delimiter, so trace_io.read() doesn't raise on it --
+        it silently returns a near-empty instance instead -- and without
+        excluding it explicitly, that reached _call_tool as a doomed
+        contribute_trace(title="", context_text="", ...) on every single
+        --push-traces run, alongside whatever real traces existed."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        os.makedirs(tdir, exist_ok=True)
+        with open(os.path.join(tdir, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Traces\n\nRaw captured incidents live here.\n")
+        _write_captured_trace(tdir, "t1.md", "occasion-1", "title", "ctx", "sol")
+
+        calls = []
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            calls.append((name, arguments))
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(calls) == 1, f"README.md must never reach _call_tool: {calls}"
+        assert len(results) == 1
+        assert results[0].hub_trace_id == "hub-trace-1"
+
+    def test_pushes_run_concurrently_but_bounded(self, store, monkeypatch):
+        """20 independent files used to mean 20 sequential network round
+        trips (~150ms each in practice -> ~3s for just this many, ~75s for
+        a real 500-file sync). Tracking the actual number of calls
+        in-flight at once -- rather than asserting on wall-clock time,
+        which is flaky under CI load -- proves both halves of the fix:
+        more than one call in flight at a time (not still sequential), and
+        never more than _PUSH_CONCURRENCY at once (bounded, not
+        `asyncio.gather` over everything unbounded -- see hub_client.py's
+        own comment on why: tripping the Hub's write rate limiter would
+        turn pushes that succeed serially into 429s)."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        n = 20
+        for i in range(n):
+            _write_captured_trace(tdir, f"t{i}.md", f"occasion-{i}", f"title {i}", "ctx", "sol")
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return {"id": f"hub-{arguments['title']}", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        results = asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+        assert len(results) == n
+        assert max_in_flight > 1, "pushes ran strictly sequentially -- the concurrency fix regressed"
+        assert max_in_flight <= hub_client._PUSH_CONCURRENCY, (
+            f"unbounded concurrency: {max_in_flight} calls in flight at once, "
+            f"expected at most {hub_client._PUSH_CONCURRENCY}"
+        )
 
     def test_unchanged_trace_is_skipped_without_a_second_call(self, store, monkeypatch):
         import asyncio

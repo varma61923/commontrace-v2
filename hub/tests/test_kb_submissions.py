@@ -391,3 +391,44 @@ class TestConcurrentSubmissionApproval:
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, orgs["submitter"])
         assert org.bonus_commons_queries == plans.SUBMISSION_ACCEPTANCE_CREDIT
+
+    async def test_ten_distinct_submissions_approved_concurrently_all_credit(
+        self, session_factory, config, orgs
+    ):
+        """Distinct from the test above: this is 10 DIFFERENT pending
+        submissions from the SAME org, approved concurrently -- not
+        repeated attempts on one submission. The `SELECT ... FOR UPDATE
+        ... WHERE status='pending'` lock is per-submission, so it does
+        nothing to serialize these against each other; each approval
+        independently read the submitting org's bonus_commons_queries and
+        wrote back `old + awarded` in plain Python, so whichever commit
+        landed last overwrote the column with its own stale total and
+        silently discarded every other concurrent approval's credit, even
+        though each one's own submission.credit_awarded and audit log
+        entry still say it was granted. Fixed via an atomic SQL-level
+        increment (see hub/crud.py:review_kb_submission). Reproduced
+        before that fix: bonus_commons_queries landed well under
+        10 * SUBMISSION_ACCEPTANCE_CREDIT within a handful of runs.
+        """
+        submissions = [
+            await _submit(session_factory, config, orgs["submitter"], title=f"failure {i}")
+            for i in range(10)
+        ]
+
+        async def _approve(submission_id):
+            async with session_scope(session_factory) as session:
+                return await crud.review_kb_submission(
+                    session, submission_id, "approve", orgs["operator"], reviewer="op",
+                )
+
+        results = await asyncio.gather(*[_approve(s["id"]) for s in submissions], return_exceptions=True)
+        exceptions = [r for r in results if isinstance(r, BaseException)]
+        assert not exceptions, f"unexpected exceptions approving 10 distinct submissions: {exceptions}"
+        assert all(r is not None for r in results), "every distinct submission's own approval must succeed"
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, orgs["submitter"])
+        assert org.bonus_commons_queries == 10 * plans.SUBMISSION_ACCEPTANCE_CREDIT, (
+            f"expected {10 * plans.SUBMISSION_ACCEPTANCE_CREDIT}, got {org.bonus_commons_queries} "
+            "-- a concurrent approval's credit was lost"
+        )

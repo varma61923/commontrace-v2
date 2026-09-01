@@ -86,6 +86,11 @@ class TestDetermineResultCorrelationalFallback:
         )
         assert v.level == pilot.RESULT_UNKNOWN
         assert "LIKELY" in v.label
+        # resolution_delta is a RELATIVE change, not a percentage-point
+        # difference -- the label must say so explicitly rather than
+        # showing the bare number, which reads as an absolute rate/point
+        # change out of context (see determine_result's own comment).
+        assert "relative" in v.label.lower()
         assert "causal" in v.explanation.lower()
 
     def test_flat_or_negative_resolution_rate_is_not_yet(self):

@@ -35,13 +35,31 @@ def upgrade() -> None:
         "traces",
         sa.Column("agent_id", sa.String(length=128), nullable=False, server_default=""),
     )
-    op.create_index(
-        "ix_traces_org_created_agent",
-        "traces",
-        ["org_id", "created_at", "agent_id"],
-    )
+    # CONCURRENTLY, in its own autocommit_block: a plain CREATE INDEX takes
+    # a SHARE lock on `traces` for as long as the build takes, which blocks
+    # every INSERT/UPDATE/DELETE against it fleet-wide for the duration --
+    # on a live table, that means contribute_trace/amend_trace/vote_trace
+    # all stall until this one index finishes. CONCURRENTLY avoids that
+    # lock at the cost of two table scans instead of one, which is the
+    # right trade for a migration applied to a table already taking
+    # traffic. It cannot run inside a transaction block at all (a hard
+    # Postgres restriction), and hub/alembic/env.py wraps every migration
+    # in one by default -- autocommit_block() is Alembic's own supported
+    # way to commit the surrounding transaction, run this one statement
+    # outside it, and resume, without restructuring env.py's transaction
+    # handling for every other (transaction-safe) migration.
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_traces_org_created_agent",
+            "traces",
+            ["org_id", "created_at", "agent_id"],
+            postgresql_concurrently=True,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_traces_org_created_agent", table_name="traces")
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "ix_traces_org_created_agent", table_name="traces", postgresql_concurrently=True
+        )
     op.drop_column("traces", "agent_id")

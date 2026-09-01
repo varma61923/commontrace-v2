@@ -16,6 +16,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "b7e4c91d2a08"
 down_revision: Union[str, None] = "8f2b40c17ade"
@@ -34,10 +35,10 @@ def upgrade() -> None:
     )
     op.create_table(
         "holdout_observations",
-        sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=False), primary_key=True),
+        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column(
             "org_id",
-            sa.dialects.postgresql.UUID(as_uuid=False),
+            postgresql.UUID(as_uuid=False),
             sa.ForeignKey("organizations.id", ondelete="CASCADE"),
             nullable=False,
         ),
@@ -45,7 +46,7 @@ def upgrade() -> None:
         # block that deletion or erase the measurement it belongs to. An
         # observation about a since-deleted trace is still a valid data
         # point about the experiment that ran.
-        sa.Column("trace_id", sa.dialects.postgresql.UUID(as_uuid=False), nullable=False),
+        sa.Column("trace_id", postgresql.UUID(as_uuid=False), nullable=False),
         sa.Column("occasion_id", sa.String(length=128), nullable=False),
         sa.Column("injected", sa.Boolean(), nullable=False),
         sa.Column("succeeded", sa.Boolean(), nullable=True),

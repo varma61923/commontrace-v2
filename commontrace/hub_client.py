@@ -43,6 +43,21 @@ class HubConnectionError(RuntimeError):
     """Raised when the Hub can't be reached or rejects the request."""
 
 
+# How many files push_active_lessons/push_captured_traces push at once.
+# Each push is one independent network round trip (~150ms typical) against
+# a DIFFERENT file with no shared mutable state between them (frontmatter.
+# locked() already serializes access to any one file against other local
+# processes), so pushing them one-at-a-time serially was pure wasted wall
+# time: a 500-file `sync --push`/`--push-traces` spent ~75s just waiting on
+# round trips that could run concurrently. Bounded rather than unbounded
+# (`asyncio.gather` over everything at once): the Hub's own per-org write
+# rate limiter (hub/abuse.py) has a burst ceiling, and firing hundreds of
+# requests in one instant risks tripping it and turning pushes that would
+# have succeeded serially into 429s -- a small, fixed concurrency keeps the
+# speedup without changing whether a sync run succeeds.
+_PUSH_CONCURRENCY = 8
+
+
 @dataclass
 class PushResult:
     slug: str
@@ -97,6 +112,17 @@ def _iter_captured_trace_paths(root: str):
     sees these files at all, and vice versa."""
     tdir = paths.traces_dir(root)
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
+        # init_cmd.py writes a README.md into every traces_dir. It has no
+        # frontmatter delimiter, so trace_io.read() doesn't raise on it
+        # (frontmatter.read() treats a file with no leading "---" as valid,
+        # empty frontmatter, by design -- see its own docstring) -- it
+        # silently returns a near-empty instance instead, which then
+        # reached _call_tool as a doomed contribute_trace(title="",
+        # context_text="", ...) on every single --push-traces run.
+        # commontrace/commands/_traces.py's own trace-directory iterator
+        # already excludes this same file for the same reason.
+        if os.path.basename(p) == "README.md":
+            continue
         yield p
 
 
@@ -336,8 +362,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
     it's propagated via amend_trace, so the Hub copy stops silently
     diverging from the local one the moment anyone edits it.
     """
-    results: list[PushResult] = []
-    for path in _iter_active_lesson_paths(root):
+    async def _push_one(path: str) -> PushResult | None:
         try:
             fm, body = frontmatter.read(path)
         except Exception as exc:  # noqa: BLE001 - one malformed local file (hand-edited YAML
@@ -348,16 +373,13 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             # a single corrupted file silently blocked an entire fleet's lessons from ever
             # reaching the Hub. The slug falls back to the filename since a failed read
             # never got as far as fm.get("name").
-            results.append(
-                PushResult(
-                    slug=os.path.splitext(os.path.basename(path))[0],
-                    hub_trace_id=None,
-                    error=f"could not read this file: {type(exc).__name__}: {exc}",
-                )
+            return PushResult(
+                slug=os.path.splitext(os.path.basename(path))[0],
+                hub_trace_id=None,
+                error=f"could not read this file: {type(exc).__name__}: {exc}",
             )
-            continue
         if fm.get("status") != "active":
-            continue
+            return None
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
 
         sections = _lesson_sections(body)
@@ -372,8 +394,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
         existing_hub_id = fm.get("hub_trace_id")
         if existing_hub_id:
             if fm.get("hub_pushed_fingerprint") == fingerprint:
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True)
             try:
                 result = await _call_tool(
                     hub_url,
@@ -394,11 +415,9 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                     },
                 )
             except (HubClientUnavailable, HubConnectionError) as exc:
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc)))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc))
             if result.get("error"):
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"]))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"])
             # amend_trace supersedes rather than mutating in place
             # (hub/crud.py:amend_trace), so the id returned here is a NEW
             # trace and hub_trace_id must move forward to it -- the old id
@@ -409,10 +428,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                 fm["hub_trace_id"] = amended_id
                 fm["hub_pushed_fingerprint"] = fingerprint
                 frontmatter.write(path, fm, body)
-            results.append(
-                PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
-            )
-            continue
+            return PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
 
         try:
             result = await _call_tool(
@@ -444,12 +460,10 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                 },
             )
         except (HubClientUnavailable, HubConnectionError) as exc:
-            results.append(PushResult(slug=slug, hub_trace_id=None, error=str(exc)))
-            continue
+            return PushResult(slug=slug, hub_trace_id=None, error=str(exc))
 
         if result.get("error"):
-            results.append(PushResult(slug=slug, hub_trace_id=None, error=result["error"]))
-            continue
+            return PushResult(slug=slug, hub_trace_id=None, error=result["error"])
 
         hub_trace_id = result.get("id")
         # Re-read under the lock rather than reusing the `fm` captured
@@ -464,8 +478,21 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
             fm["hub_trace_id"] = hub_trace_id
             fm["hub_pushed_fingerprint"] = fingerprint
             frontmatter.write(path, fm, body)
-        results.append(PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False)))
-    return results
+        return PushResult(slug=slug, hub_trace_id=hub_trace_id, quarantined=result.get("quarantined", False))
+
+    # Bounded concurrency (see _PUSH_CONCURRENCY): each file is pushed
+    # independently, so N files no longer means N sequential round trips.
+    # asyncio.gather preserves input order in its results regardless of
+    # completion order, so this is not just faster but observably
+    # identical in ordering to the old sequential loop.
+    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def _bounded(path: str) -> PushResult | None:
+        async with semaphore:
+            return await _push_one(path)
+
+    outcomes = await asyncio.gather(*(_bounded(p) for p in _iter_active_lesson_paths(root)))
+    return [r for r in outcomes if r is not None]
 
 
 def _trace_push_fingerprint(
@@ -528,8 +555,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
     outcome once a task concludes" pattern needs: the second push must add
     `resolved` without erasing whatever the first push already attached.
     """
-    results: list[PushResult] = []
-    for path in _iter_captured_trace_paths(root):
+    async def _push_one(path: str) -> PushResult:
         try:
             instance, _body = trace_io.read(path)
         except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
@@ -539,14 +565,11 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
             # the iteration -- for --push-traces specifically that means a corrupted
             # file silently blocks EVERY OTHER trace's outcome data from ever reaching
             # the Hub, not just its own.
-            results.append(
-                PushResult(
-                    slug=os.path.splitext(os.path.basename(path))[0],
-                    hub_trace_id=None,
-                    error=f"could not read this file: {type(exc).__name__}: {exc}",
-                )
+            return PushResult(
+                slug=os.path.splitext(os.path.basename(path))[0],
+                hub_trace_id=None,
+                error=f"could not read this file: {type(exc).__name__}: {exc}",
             )
-            continue
         local_id = str(instance.get("id") or "")
         slug = local_id or os.path.splitext(os.path.basename(path))[0]
         title = str(instance.get("title") or "")
@@ -561,8 +584,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
         existing_hub_id = instance.get("hub_trace_id")
         if existing_hub_id:
             if instance.get("hub_pushed_fingerprint") == fingerprint:
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), skipped=True)
             try:
                 result = await _call_tool(
                     hub_url,
@@ -583,11 +605,9 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
                     },
                 )
             except (HubClientUnavailable, HubConnectionError) as exc:
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc)))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc))
             if result.get("error"):
-                results.append(PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"]))
-                continue
+                return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=result["error"])
             amended_id = result.get("id")
             # Re-read under the lock rather than reusing `instance`/`fm`
             # captured before the (slow, awaited) Hub call -- see
@@ -597,10 +617,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
                 fm["hub_trace_id"] = amended_id
                 fm["hub_pushed_fingerprint"] = fingerprint
                 frontmatter.write(path, fm, body)
-            results.append(
-                PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
-            )
-            continue
+            return PushResult(slug=slug, hub_trace_id=amended_id, quarantined=result.get("quarantined", False))
 
         try:
             result = await _call_tool(
@@ -624,11 +641,9 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
                 },
             )
         except (HubClientUnavailable, HubConnectionError) as exc:
-            results.append(PushResult(slug=slug, hub_trace_id=None, error=str(exc)))
-            continue
+            return PushResult(slug=slug, hub_trace_id=None, error=str(exc))
         if result.get("error"):
-            results.append(PushResult(slug=slug, hub_trace_id=None, error=result["error"]))
-            continue
+            return PushResult(slug=slug, hub_trace_id=None, error=result["error"])
 
         new_id = result.get("id")
         with frontmatter.locked(path):
@@ -636,8 +651,17 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
             fm["hub_trace_id"] = new_id
             fm["hub_pushed_fingerprint"] = fingerprint
             frontmatter.write(path, fm, body)
-        results.append(PushResult(slug=slug, hub_trace_id=new_id, quarantined=result.get("quarantined", False)))
-    return results
+        return PushResult(slug=slug, hub_trace_id=new_id, quarantined=result.get("quarantined", False))
+
+    # Bounded concurrency (see _PUSH_CONCURRENCY): same reasoning and same
+    # pattern as push_active_lessons above.
+    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def _bounded(path: str) -> PushResult:
+        async with semaphore:
+            return await _push_one(path)
+
+    return list(await asyncio.gather(*(_bounded(p) for p in _iter_captured_trace_paths(root))))
 
 
 async def commons_overlap(

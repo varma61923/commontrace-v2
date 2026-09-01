@@ -93,8 +93,20 @@ def determine_result(
 
     if has_baseline and resolution_delta is not None:
         if resolution_delta > 0.05:
+            # resolution_delta is a RELATIVE change ((current - baseline) /
+            # baseline -- see pilot_cmd.py), not a percentage-point
+            # difference in the resolution rate itself. reference/
+            # pilot_metrics.py's own table shows this same relative number
+            # next to the actual baseline/current values, so "+53%" reads
+            # correctly there; this headline shows the delta ALONE, where
+            # the identical number is easy to misread as "resolution rate
+            # is now 53%" or "up 53 percentage points" -- either of which
+            # can be wildly different from the real, smaller (or larger)
+            # absolute change. Spelling out "relative" here costs nothing
+            # and removes that ambiguity without changing what is computed
+            # or gated on.
             return Verdict(
-                f"LIKELY (+{resolution_delta:.0%} resolution rate)",
+                f"LIKELY (resolution rate +{resolution_delta:.0%} relative to baseline)",
                 RESULT_UNKNOWN,
                 "Resolution rate improved baseline-to-current and no lesson scores "
                 "harmful, but this is correlational, not causal — the same "

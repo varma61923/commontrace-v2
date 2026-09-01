@@ -220,6 +220,7 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         "solution_text": trace.solution_text,
         "tags": list(trace.tags or []),
         "agent_type": trace.agent_type,
+        "agent_id": trace.agent_id,
         "profile": trace.profile,
         "extensions": dict(trace.extensions or {}),
         "watch_condition": trace.watch_condition,
@@ -1181,10 +1182,30 @@ async def vote_trace(
     # not quarantined AND not retracted -- not merely "any trace, any org",
     # which would let an org vote on private traces it has no business
     # seeing at all).
+    # SELECT ... FOR UPDATE on the trace's own row: the tally computed
+    # below (COUNT grouped by vote_type, several lines down) and the
+    # UPDATE that writes trust/commons_votes from it are NOT atomic with
+    # each other, so two orgs voting on the same trace at nearly the same
+    # time can each compute their tally from a snapshot that does not yet
+    # include the other's just-upserted vote -- both COUNTs run under
+    # READ COMMITTED before either has committed, so neither sees the
+    # other's row yet. Whichever UPDATE commits second then overwrites
+    # trust/commons_votes with ITS stale total, silently discarding the
+    # first vote's contribution to both numbers even though the Vote row
+    # itself is durably on record (hub/commons.py:entry_standing's
+    # disputed/established classification reads exactly this
+    # trust/commons_votes pair, so this was a real, silent scoring
+    # corruption, not just an internal accounting nit). Locking the trace
+    # row up front -- the same `SELECT ... FOR UPDATE` pattern
+    # _reserve_trace_slot/_reserve_agent_slot already use for other
+    # count-then-write races in this file -- serializes concurrent voters
+    # on the SAME trace so the second one's COUNT runs only after the
+    # first has committed, and therefore sees it. A different trace's row
+    # lock never blocks this one.
     stmt = select(Trace).where(
         Trace.id == trace_id,
         or_(Trace.org_id == org_id, and_(*commons_visible())),
-    )
+    ).with_for_update()
     trace = (await session.execute(stmt)).scalar_one_or_none()
     if trace is None:
         return None
@@ -1623,11 +1644,22 @@ async def amend_trace(
         solution_text=resolved_solution,
         tags=resolved_tags,
         agent_type=original.agent_type,
+        # No override parameter, so it must carry forward unchanged like
+        # agent_type/profile/extensions/watch_condition/review_after/
+        # contributor below -- without this, amend_trace (which INSERTs a
+        # new row rather than mutating the original) silently reset every
+        # amended trace's agent_id to "" the moment anyone amended it,
+        # collapsing that agent back into the 'unattributed' bucket
+        # capture_cmd.py's own agent_id docs warn about, and quietly
+        # undercounting agents_under_management/plan.max_agents for any
+        # org whose agents get amended traces (the common case: an
+        # amendment is how an outcome gets attached after the fact).
+        agent_id=original.agent_id,
         profile=original.profile,
         extensions=dict(original.extensions or {}),
         # These three have no override parameter (a caller amending title
         # can't currently ask to change them), so -- like agent_type,
-        # profile, and extensions above -- they must carry forward
+        # agent_id, and profile/extensions above -- they must carry forward
         # unchanged. Without this they silently reset to their column
         # defaults ("" / {}) on every amendment: a trace's contributor
         # attribution would vanish the first time anyone tweaked its
@@ -2458,9 +2490,27 @@ async def review_kb_submission(
     submission.resulting_trace_id = trace.id
     submission.credit_awarded = awarded
 
-    org = await session.get(Organization, submission.org_id)
-    if org is not None:
-        org.bonus_commons_queries = org.bonus_commons_queries + awarded
+    # An atomic SQL-level increment, not `org = await session.get(...);
+    # org.bonus_commons_queries = org.bonus_commons_queries + awarded`:
+    # the submission row locked above (with_for_update) only serializes
+    # concurrent reviews of THAT ONE submission -- two DIFFERENT pending
+    # submissions for the SAME org, approved concurrently, do not
+    # conflict on it at all, so both could read the same starting
+    # bonus_commons_queries and each independently compute their own
+    # `old + awarded`. Whichever commit lands second then overwrites the
+    # column with its own stale total, silently discarding the first
+    # approval's credit even though its audit log entry and
+    # submission.credit_awarded both still say it was granted (reproduced
+    # under 2-way concurrent approval of two distinct submissions for the
+    # same org). `Organization.bonus_commons_queries + awarded` computed
+    # by Postgres at UPDATE time, under that row's own lock, is the same
+    # atomic-increment pattern this file already uses for
+    # Trace.retrievals a few functions up.
+    await session.execute(
+        update(Organization)
+        .where(Organization.id == submission.org_id)
+        .values(bonus_commons_queries=Organization.bonus_commons_queries + awarded)
+    )
 
     await audit.record(
         session, actor=reviewer, action="review_kb_submission", org_id=submission.org_id,

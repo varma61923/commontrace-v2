@@ -45,7 +45,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import crud, plans
+from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import Organization, Trace, Vote
@@ -70,6 +70,35 @@ async def _contribute(session_factory, config, org_id, title, context, solution,
             title=title, context_text=context, solution_text=solution,
             tags=tags or [], agent_type="code", actor=actor,
         )
+
+
+async def _seed_kb(session_factory, operator_org_id, title):
+    """A Knowledge Base entry, seeded directly the way hub/manage.py:
+    commons_seed does it -- the only way vote_trace's cross-org path is
+    reachable at all (commons_source == "seed"), which is what lets N
+    genuinely DISTINCT orgs vote on the same trace below."""
+    async with session_scope(session_factory) as session:
+        trace = Trace(
+            org_id=operator_org_id,
+            title=title, context_text="c", solution_text="s",
+            tags=[], agent_type="code",
+            shared_with_commons=True,
+            shared_at=datetime.now(timezone.utc),
+            shared_rationale="test fixture",
+            commons_signature=commons.signature_for(title, "c", []),
+            commons_source="seed",
+        )
+        session.add(trace)
+        await session.flush()
+        return trace.id
+
+
+async def _make_orgs(session_factory, n, name_prefix):
+    async with session_scope(session_factory) as session:
+        orgs = [Organization(name=f"{name_prefix}-{i}") for i in range(n)]
+        session.add_all(orgs)
+        await session.flush()
+        return [o.id for o in orgs]
 
 
 # --- 1. vote_trace concurrency ------------------------------------------
@@ -130,6 +159,51 @@ class TestVoteTraceRace:
             # trust must be internally consistent with the single surviving vote
             expected_trust = 1.0 if votes[0].vote_type == "up" else 0.0
             assert t.trust == pytest.approx(expected_trust)
+
+    async def test_20_concurrent_votes_from_20_distinct_orgs_all_count(self, session_factory, config, org):
+        """Regression test for a real bug distinct from the one above: this
+        one is 20 DIFFERENT orgs each casting their own first vote on the
+        same Knowledge Base entry at the same time, not one org retrying.
+        Each org's Vote row is independent (no INSERT conflict to race), so
+        all 20 upserts succeed regardless -- but the trust/commons_votes
+        tally computed from a COUNT() and the UPDATE that writes it were
+        not atomic with each other: two concurrent voters could each COUNT
+        before either had committed, so whichever UPDATE landed second
+        overwrote trust/commons_votes with its own stale total, silently
+        losing track of the other's already-durable vote. Fixed by locking
+        the trace row (SELECT ... FOR UPDATE) before the tally, serializing
+        the count-then-write sequence across concurrent voters on the SAME
+        trace (see hub/crud.py:vote_trace). Without that lock this test
+        reliably found commons_votes < 20 (a real Vote row with no matching
+        contribution to the aggregate) within a handful of runs.
+        """
+        trace_id = await _seed_kb(session_factory, org, "vote race across orgs")
+        voter_orgs = await _make_orgs(session_factory, 20, "voter")
+
+        async def _vote(voter_org_id):
+            async with session_scope(session_factory) as session:
+                return await crud.vote_trace(session, voter_org_id, trace_id, "up", actor="concurrent")
+
+        for run in range(3):
+            results = await asyncio.gather(*[_vote(o) for o in voter_orgs], return_exceptions=True)
+            exceptions = [r for r in results if isinstance(r, BaseException)]
+
+            async with session_scope(session_factory) as session:
+                votes = (await session.execute(select(Vote).where(Vote.trace_id == trace_id))).scalars().all()
+                t = await session.get(Trace, trace_id)
+
+            print(
+                f"[cross-org vote race] run={run} n_exceptions={len(exceptions)} "
+                f"n_vote_rows={len(votes)} trust={t.trust} commons_votes={t.commons_votes}"
+            )
+
+            assert not exceptions, f"unexpected exceptions under concurrent cross-org voting: {exceptions}"
+            # 20 distinct orgs, no conflicting keys -- every vote must land
+            # as its own row, and the aggregate on `traces` must match that
+            # actual row count exactly, not merely be "close".
+            assert len(votes) == 20, f"expected 20 Vote rows (one per org), found {len(votes)}"
+            assert t.commons_votes == 20, f"commons_votes lost a concurrent voter's contribution: {t.commons_votes}"
+            assert t.trust == pytest.approx(1.0), "all 20 votes were 'up'; trust must reflect all of them"
 
     async def test_cross_org_cannot_vote_on_a_trace_it_does_not_own(self, session_factory, config, org):
         """Sanity-check the premise: vote_trace scopes the trace lookup to

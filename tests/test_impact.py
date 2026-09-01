@@ -57,6 +57,23 @@ class TestComputeImpact:
         assert r.errors_avoided_basis == 2
         assert r.errors_avoided_rate == pytest.approx(0.5)
 
+    def test_a_hit_not_in_retrieved_does_not_count_toward_errors_avoided(self):
+        """Same rule as test_a_hit_not_in_retrieved_does_not_count above,
+        applied to errors_avoided instead of lessons_reused -- both are
+        computed from the same `evidence` in the same function, and only
+        lessons_reused was applying reliability.score_lessons's documented
+        rule ('a hit only counts as evidence if the lesson was actually
+        retrieved on that occasion; otherwise a lesson credited by a retro
+        pass would get precision > 1'). Without the same intersection
+        here, an occasion whose lessons_hit was populated by something
+        other than this occasion's own retrieval call inflated
+        errors_avoided/errors_avoided_basis with a success this product's
+        own retrieval cannot take credit for."""
+        ev = [Evidence("e1", retrieved=["lesson_x"], hit=["lesson_never_retrieved"], succeeded=True)]
+        r = impact.compute_impact(ev, traces=[])
+        assert r.errors_avoided == 0
+        assert r.errors_avoided_basis == 0
+
     def test_errors_avoided_rate_is_none_with_no_basis(self):
         r = impact.compute_impact([], traces=[])
         assert r.errors_avoided_basis == 0

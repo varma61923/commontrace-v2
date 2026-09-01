@@ -795,7 +795,7 @@ async def list_submissions(status: str | None = None, session_factory=None) -> b
 
     if not rows:
         print("no submissions" + (f" with status={status}" if status else ""))
-        return
+        return None
 
     for s in rows:
         print(f"{s['id']}  status={s['status']}  submitted={s['created_at']}")
@@ -808,6 +808,7 @@ async def list_submissions(status: str | None = None, session_factory=None) -> b
                 print(f"    -> trace={s['resulting_trace_id']}  credit_awarded={s['credit_awarded']}")
             else:
                 print(f"    reason: {s['rejection_reason']!r}")
+    return None
 
 
 async def approve_submission(
