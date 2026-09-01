@@ -382,13 +382,20 @@ def test_a_missing_pyyaml_install_is_a_clean_error_not_a_traceback():
     for real, and so it can never leak a fake `yaml` blocker into any other
     test's import state.
     """
+    # find_spec, not the legacy find_module/load_module finder protocol:
+    # the latter was deprecated since Python 3.4 and its import-system
+    # fallback support was removed in 3.12, so a find_module-based blocker
+    # is silently never consulted there -- `import yaml` then succeeds
+    # normally and this whole scenario never triggers, which is exactly
+    # what happened the first time this test shipped (green on 3.10/3.11,
+    # red on 3.12 in CI).
     script = (
         "import sys\n"
         "class _Blocker:\n"
-        "    def find_module(self, name, path=None):\n"
-        "        return self if name == 'yaml' else None\n"
-        "    def load_module(self, name):\n"
-        "        raise ModuleNotFoundError(f\"No module named {name!r}\", name=name)\n"
+        "    def find_spec(self, name, path, target=None):\n"
+        "        if name == 'yaml':\n"
+        "            raise ModuleNotFoundError(f\"No module named {name!r}\", name=name)\n"
+        "        return None\n"
         "sys.meta_path.insert(0, _Blocker())\n"
         "from commontrace.cli import main\n"
         "sys.exit(main(['doctor']))\n"
