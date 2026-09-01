@@ -772,10 +772,20 @@ async def kb_restore(trace_id: str, session_factory=None) -> bool:
     return True
 
 
-async def list_submissions(status: str | None = None, session_factory=None) -> None:
+async def list_submissions(status: str | None = None, session_factory=None) -> bool | None:
     """The community-submission review queue, or full history if no status
     is given. `status`, when passed, must be 'pending', 'approved', or
-    'rejected' (crud.review_kb_submission's own vocabulary)."""
+    'rejected' (crud.review_kb_submission's own vocabulary).
+
+    Returns False (not just prints an error) on an unrecognized status --
+    main()'s `if result is False: return 2` is what turns that into a
+    nonzero exit code for `list-submissions <bad-status>`; the previous
+    `-> None` annotation didn't just under-describe this, it actively
+    misdescribed the function's real, load-bearing contract to anyone
+    reading the signature -- a future edit that "fixed" the return
+    statement to match the stated `-> None` would have silently turned a
+    real operator-facing error back into a reported exit code of 0.
+    """
     session_factory = session_factory or _default_session_factory()
     if status is not None and status not in ("pending", "approved", "rejected"):
         print(f"error: status must be one of pending/approved/rejected, got {status!r}", file=sys.stderr)
