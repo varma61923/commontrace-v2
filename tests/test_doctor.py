@@ -53,6 +53,12 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     # checkout still gets [OK] -- `commontrace bench --pilot` works for them.
     # Absence would mean a damaged install, which is a real problem, not info.
     assert "[OK  ] benchmark script found" in out
+    # [BUG-CLI-05]: doctor checked for measure_performance.py but not its
+    # sibling pilot_metrics.py -- `commontrace bench --pilot`/`commontrace
+    # pilot` import it directly, so a damaged install missing only this one
+    # file passed doctor cleanly and then failed at runtime with a raw
+    # ImportError instead of doctor's own clean diagnostic.
+    assert "[OK  ] pilot metrics script found" in out
 
 
 def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
@@ -60,6 +66,28 @@ def test_doctor_still_warns_on_genuine_problems(fresh_store, capsys):
     assert main(["doctor", "--dest", str(fresh_store)]) == 0
     out = capsys.readouterr().out
     assert "[WARN] lessons in store - 0 found" in out
+
+
+def test_doctor_warns_when_pilot_metrics_is_missing_from_a_damaged_install(
+    fresh_store, capsys, monkeypatch
+):
+    """[BUG-CLI-05]: a damaged install missing only pilot_metrics.py (but
+    still carrying measure_performance.py) must be caught here, not
+    silently pass doctor and fail later at runtime."""
+    from commontrace.commands import doctor_cmd
+
+    real_find = doctor_cmd.find_reference_script
+
+    def _find_missing_pilot_metrics(root, relative):
+        if relative == "benchmark/pilot_metrics.py":
+            return None
+        return real_find(root, relative)
+
+    monkeypatch.setattr(doctor_cmd, "find_reference_script", _find_missing_pilot_metrics)
+    assert main(["doctor", "--dest", str(fresh_store)]) == 0
+    out = capsys.readouterr().out
+    assert "[WARN] pilot metrics script found" in out
+    assert "[OK  ] benchmark script found" in out
 
 
 def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
@@ -70,4 +98,5 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     out = capsys.readouterr().out
     assert "[OK  ] reference attention/query.py found" in out
     assert "[OK  ] benchmark script found" in out
+    assert "[OK  ] pilot metrics script found" in out
     assert "[OK  ] protocol/ spec present" in out

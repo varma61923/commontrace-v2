@@ -7,7 +7,7 @@
   "required": [
     "name", "description", "tags", "agent_type", "domain", "importance",
     "importance_rationale", "applies_when", "do_not_apply_when",
-    "uses", "last_hit", "source_traces", "status"
+    "uses", "last_hit", "status"
   ],
   "properties": {
     "name": {

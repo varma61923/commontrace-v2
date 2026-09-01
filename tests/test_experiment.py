@@ -117,6 +117,27 @@ class TestTwoProportionTest:
         assert ex.two_proportion_test(10, 10, 10, 10) == (0.0, 1.0)
         assert ex.two_proportion_test(0, 10, 0, 10) == (0.0, 1.0)
 
+    def test_a_success_count_over_its_total_raises_a_clear_error(self):
+        """[BUG-CLI-04]: s1 > n1 (or a negative count) makes p_pool fall
+        outside [0, 1], which can make p_pool*(1-p_pool) negative --
+        math.sqrt on that used to crash with a raw, uninformative
+        `ValueError: math domain error` instead of a message naming which
+        arm's counts don't make sense. Every real caller counts s/n from a
+        COUNT(*)-style aggregate (0 <= s <= n always holds), so this is a
+        guard against a future caller or a hand-built test value, not a
+        path production traffic reaches -- but the failure mode when it IS
+        reached must still be a clear error, not an opaque math crash."""
+        # p_pool must land strictly outside [0, 1] (not exactly 0.0 or 1.0,
+        # which the existing "no variance" short-circuit above already
+        # catches without ever reaching the sqrt) to actually reproduce the
+        # math-domain-error this guards against.
+        with pytest.raises(ValueError, match="arm 1"):
+            ex.two_proportion_test(25, 10, 0, 10)
+
+    def test_a_negative_success_count_raises_a_clear_error(self):
+        with pytest.raises(ValueError, match="arm 2"):
+            ex.two_proportion_test(5, 10, -15, 10)
+
 
 class TestConfidenceInterval:
     def test_contains_the_point_estimate(self):
@@ -138,6 +159,10 @@ class TestConfidenceInterval:
 
     def test_empty_arm_does_not_raise(self):
         assert ex.diff_confidence_interval(0, 0, 0, 0) == (0.0, 0.0)
+
+    def test_a_success_count_over_its_total_raises_a_clear_error(self):
+        with pytest.raises(ValueError, match="arm 1"):
+            ex.diff_confidence_interval(15, 10, 5, 10)
 
 
 class TestBenjaminiHochberg:

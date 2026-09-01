@@ -47,6 +47,12 @@ _TRUSTED_MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
 # \r is allowed so CRLF content parses too.
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
+# Kept identical to build_index.py's own _SLUG_RE -- see that module's
+# comment. A `name` containing a `|` would otherwise corrupt this module's
+# own `|`-delimited retrieval brief (both the cosine-ranked lines and the
+# missing_from_index "importance floor override" lines below).
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 # ---------------------------------------------------------------------------
 # Path configuration — provider-agnostic
 #
@@ -130,7 +136,7 @@ def load_importances() -> "tuple[dict[str, int], int]":
         if frontmatter.get("status", "active") != "active":
             continue
         slug = frontmatter.get("name")
-        if not slug:
+        if not slug or not _SLUG_RE.match(str(slug)):
             continue
         try:
             out[str(slug)] = int(frontmatter.get("importance", 3))
@@ -309,9 +315,22 @@ def main() -> int:
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
 
-    # Top-K by cosine (descending)
+    # Loaded here, once, and reused below for the top-K filter as well as the
+    # importance-floor override -- load_importances() only walks currently
+    # ACTIVE lesson files on disk, so this is also the authoritative "is this
+    # index slug still active" set.
+    importances, n_frontmatters_parsed = load_importances()
+
+    # Top-K by cosine (descending), active lessons only. index.npz keeps a
+    # row for every lesson it was built from; a lesson archived (or deleted
+    # from disk) since the last build_index.py run still has a row and a
+    # cosine score, but it is not in `importances` (load_importances() skips
+    # non-active lessons) -- without this filter it could still take a
+    # top-K slot from a lesson that is actually active, surfacing as
+    # `lesson_x | cosine=0.9xx | importance=0` in the brief.
     order = np.argsort(scores)[::-1]
-    top_k_idx = list(order[: args.top_k])
+    active_order = [idx for idx in order if str(slugs[idx]) in importances]
+    top_k_idx = list(active_order[: args.top_k])
 
     # Safety override: include all active lessons with importance >= floor. This must
     # check every lesson currently on disk (`importances`, from load_importances()), not
@@ -319,10 +338,15 @@ def main() -> int:
     # last `build_index.py` run exists on disk but not in the index, so iterating only the
     # index's own slugs silently breaks this script's own documented safety guarantee for
     # exactly the lessons most likely to need it (freshly-authored critical rules).
-    importances, n_frontmatters_parsed = load_importances()
     floor = args.include_importance_floor
     missing_from_index = []
-    if floor is not None:
+    # importance is schema-bounded to [1, 5] (protocol/schemas/lesson.schema.json),
+    # so floor <= 0 can never exclude anything on its own merits -- every lesson's
+    # `importances.get(slug, 0) >= floor` is trivially true, which silently promoted
+    # the ENTIRE lesson store into the brief instead of the intended top-K. Treated
+    # as "override disabled" instead, since that is the only sentinel value below the
+    # valid range and there was previously no way to disable the override at all.
+    if floor is not None and floor > 0:
         existing = set(top_k_idx)
         indexed_slugs = {str(s) for s in slugs}
         for i, slug in enumerate(slugs):
@@ -335,8 +359,9 @@ def main() -> int:
             if imp >= floor and slug not in indexed_slugs:
                 missing_from_index.append((slug, imp))
 
+    override_desc = f"+ importance>={floor} override" if floor is not None and floor > 0 else "override disabled"
     brief_lines = [
-        f"# Top-{args.top_k} retrieval (+ importance>={floor} override)",
+        f"# Top-{args.top_k} retrieval ({override_desc})",
         f"# Index: {n_lessons} lessons, model={model_name}",
         f"# Query: {args.query!r}",
     ]
@@ -367,7 +392,10 @@ def main() -> int:
     estimated_tokens = len(brief_text.split()) * 1.3
     _append_telemetry(
         {
-            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            # UTC, not a naive local timestamp: PROTOCOL.md specifies ISO-8601 UTC
+            # everywhere, and a naive local time cannot be sorted or compared across
+            # multi-agent runners in different timezones.
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "latency_ms": elapsed_ms,
             "n_frontmatters_parsed": n_frontmatters_parsed,
             "n_candidates_surfaced": len(top_k_idx),

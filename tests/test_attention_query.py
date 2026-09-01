@@ -31,6 +31,19 @@ def _write_index(path, model_name, n=2):
     )
 
 
+def _write_active_lesson_files(lessons_dir, n):
+    """Write real, active lesson_<i>.md files backing the fake index slugs
+    _write_index() produces (lesson_0..lesson_{n-1}) -- load_importances()
+    reads these from disk directly, and query.py's active-lessons filter
+    (see the [BUG-MEM-02] fix) now excludes any index slug that is not
+    backed by one of these, so a test asserting on which/how many index
+    slugs make it into the retrieved set needs both, not the index alone."""
+    for i in range(n):
+        (lessons_dir / f"lesson_{i}.md").write_text(
+            f"---\nname: lesson_{i}\nimportance: 3\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+
+
 class TestTamperedModelName:
     def test_untrusted_model_name_is_rejected_without_loading(self, tmp_path, monkeypatch, capsys):
         index_path = tmp_path / "index.npz"
@@ -106,6 +119,7 @@ class TestAlphaTelemetry:
     def _run(self, tmp_path, monkeypatch, query="some task"):
         index_path = tmp_path / "index.npz"
         _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=3)
+        _write_active_lesson_files(tmp_path, 3)
         telemetry_path = tmp_path / "alpha_telemetry.jsonl"
         monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
         monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
@@ -243,6 +257,96 @@ class TestLoadImportancesSurvivesUnreadableFile:
             attn_query.LESSONS_DIR = old_dir
         assert importances == {"lesson_a": 4}
         assert n_parsed == 1
+
+
+class TestArchivedLessonsExcludedFromTopK:
+    """[BUG-MEM-02]: index.npz keeps one row per lesson as of the last
+    build_index.py run. A lesson archived (or deleted from disk) since then
+    still has a row and a cosine score -- query.py used to rank purely off
+    `scores`, so that stale row could still win a top-K slot from an
+    actually-active lesson, surfacing in the brief as
+    `lesson_x | cosine=0.9xx | importance=0`."""
+
+    def test_an_archived_lesson_in_the_index_never_appears_in_the_brief(
+        self, tmp_path, monkeypatch
+    ):
+        index_path = tmp_path / "index.npz"
+        np.savez(
+            str(index_path),
+            slugs=np.array(["active_one", "archived_one"]),
+            embeddings=np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+            model_name=np.array(attn_query._TRUSTED_MODEL_NAME),
+            encoded_field=np.array("x"),
+            timestamp=np.array("2026-01-01T00:00:00"),
+            n_lessons=np.array(2),
+        )
+        (tmp_path / "lesson_active_one.md").write_text(
+            "---\nname: active_one\nimportance: 3\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        # archived_one has NO corresponding active lesson file on disk --
+        # exactly the leaked-index state the fix targets. (Whether it's
+        # archived, deleted, or simply never re-indexed makes no difference
+        # to query.py: load_importances() only ever sees active lessons.)
+        monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
+        monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
+
+        class FakeModel:
+            def encode(self, *a, **k):
+                return np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        monkeypatch.setattr(attn_query, "SentenceTransformer", lambda name: FakeModel())
+        monkeypatch.setattr(sys, "argv", ["query.py", "query text", "--top-k=5", "--include-importance-floor=4"])
+
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = attn_query.main()
+        out = buf.getvalue()
+        assert rc == 0
+        assert "archived_one" not in out
+        assert "active_one" in out
+
+
+class TestImportanceFloorZeroDisablesOverride:
+    """[BUG-MEM-05]: importance is schema-bounded to [1, 5], so
+    `--include-importance-floor 0` made `importances.get(slug, 0) >= floor`
+    trivially true for every lesson, dumping the entire store into the
+    brief instead of respecting --top-k. There was also no other way to
+    disable the safety override at all, so floor<=0 is now treated as
+    that missing "disabled" sentinel instead."""
+
+    def test_floor_zero_does_not_dump_the_whole_store(self, tmp_path, monkeypatch):
+        n = 5
+        index_path = tmp_path / "index.npz"
+        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=n)
+        _write_active_lesson_files(tmp_path, n)
+        monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
+        monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
+
+        class FakeModel:
+            def encode(self, *a, **k):
+                return np.zeros(3, dtype=np.float32)
+
+        monkeypatch.setattr(attn_query, "SentenceTransformer", lambda name: FakeModel())
+        monkeypatch.setattr(
+            sys, "argv", ["query.py", "query text", "--top-k=2", "--include-importance-floor=0"]
+        )
+
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = attn_query.main()
+        out = buf.getvalue()
+        assert rc == 0
+        result_lines = [line for line in out.splitlines() if line and not line.startswith("#")]
+        assert len(result_lines) == 2, f"expected top-k=2 results, got {len(result_lines)}: {result_lines}"
+        assert "override disabled" in out
 
 
 class TestStrictBoolLoaderParity:

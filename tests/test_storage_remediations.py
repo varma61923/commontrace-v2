@@ -11,6 +11,7 @@ import codecs
 import importlib.machinery
 import os
 import sys
+import time
 import types
 from unittest.mock import MagicMock, patch
 
@@ -418,6 +419,297 @@ class TestAtomicIndexGeneration:
         # Temp file .tmp.npz must be cleaned up
         tmp_files = [f for f in os.listdir(attention_dir) if f.endswith(".tmp.npz")]
         assert len(tmp_files) == 0
+
+
+class _FakeEncoder:
+    """A SentenceTransformer stand-in whose .encode() returns real,
+    correctly-shaped float32 arrays -- unlike MagicMock(), which
+    build_index.py's staleness/dimension logic (below) needs to actually
+    exercise rather than just avoid crashing on. build_index.py always
+    calls .encode() with a list (one query embedding per lesson); query.py
+    calls it with a single string (one embedding for the incoming query) --
+    mirrored here the same way the real sentence-transformers API does."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def encode(self, texts, **kwargs):
+        if isinstance(texts, str):
+            return np.zeros(768, dtype=np.float32)
+        return np.zeros((len(texts), 768), dtype=np.float32)
+
+
+# ==============================================================================
+# [BUG-MEM-01] Cache Invalidation Ignoring Model/Field/Dimension
+# ==============================================================================
+class TestCacheInvalidationValidatesModelAndDimension:
+    """[BUG-MEM-01]: the staleness check only ever compared mtimes and the
+    indexed slug set. An index.npz built with a different embedding model
+    (or copied in from another environment/checkout) could carry the right
+    slugs and a fresh mtime and still be silently reported "up-to-date" --
+    query.py's own model_name/dimension guards then reject it on the very
+    next run ("rebuild the index: --force"), a loop build_index.py's own
+    staleness check should have caught up front."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import build_index
+
+        monkeypatch.setattr(build_index, "SentenceTransformer", _FakeEncoder)
+
+        lessons_dir = tmp_path / "memory" / "lessons"
+        attention_dir = tmp_path / "memory" / "attention"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        attention_dir.mkdir(parents=True, exist_ok=True)
+        (lessons_dir / "lesson_01.md").write_text(
+            "---\nname: lesson_01\ndescription: d\ndomain: t\nstatus: active\n---\n## Rule\nr\n",
+            encoding="utf-8",
+        )
+        index_file = attention_dir / "index.npz"
+        monkeypatch.setattr(build_index, "LESSONS_DIR", str(lessons_dir))
+        monkeypatch.setattr(build_index, "INDEX_PATH", str(index_file))
+        return build_index, index_file
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_a_mismatched_model_name_forces_a_rebuild(self, tmp_path, monkeypatch):
+        build_index, index_file = self._setup(tmp_path, monkeypatch)
+        np.savez(
+            str(index_file),
+            slugs=np.array(["lesson_01"]),
+            embeddings=np.zeros((1, 768), dtype=np.float32),
+            model_name=np.array("a-completely-different-model"),
+            encoded_field=np.array(build_index.ENCODED_FIELD),
+            timestamp=np.array("2026-01-01T00:00:00+00:00"),
+            n_lessons=np.array(1),
+        )
+        future = time.time() + 1000
+        os.utime(str(index_file), (future, future))  # newer than the lesson -- mtime check alone would pass
+
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+        rc = build_index.main()
+        assert rc == 0
+        with np.load(str(index_file), allow_pickle=False) as data:
+            assert str(data["model_name"]) == build_index.MODEL_NAME
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_a_mismatched_embedding_dimension_forces_a_rebuild(self, tmp_path, monkeypatch):
+        build_index, index_file = self._setup(tmp_path, monkeypatch)
+        np.savez(
+            str(index_file),
+            slugs=np.array(["lesson_01"]),
+            embeddings=np.zeros((1, 384), dtype=np.float32),  # wrong dimension
+            model_name=np.array(build_index.MODEL_NAME),
+            encoded_field=np.array(build_index.ENCODED_FIELD),
+            timestamp=np.array("2026-01-01T00:00:00+00:00"),
+            n_lessons=np.array(1),
+        )
+        future = time.time() + 1000
+        os.utime(str(index_file), (future, future))
+
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+        rc = build_index.main()
+        assert rc == 0
+        with np.load(str(index_file), allow_pickle=False) as data:
+            assert data["embeddings"].shape[1] == 768
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_a_matching_index_is_still_reported_up_to_date(self, tmp_path, monkeypatch, capsys):
+        """The added model/field/dimension check must not make an
+        otherwise-valid, still-fresh index look stale."""
+        build_index, index_file = self._setup(tmp_path, monkeypatch)
+        np.savez(
+            str(index_file),
+            slugs=np.array(["lesson_01"]),
+            embeddings=np.zeros((1, 768), dtype=np.float32),
+            model_name=np.array(build_index.MODEL_NAME),
+            encoded_field=np.array(build_index.ENCODED_FIELD),
+            timestamp=np.array("2026-01-01T00:00:00+00:00"),
+            n_lessons=np.array(1),
+        )
+        future = time.time() + 1000
+        os.utime(str(index_file), (future, future))
+
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+        rc = build_index.main()
+        assert rc == 0
+        assert "up-to-date" in capsys.readouterr().out
+
+
+# ==============================================================================
+# [SEC-MEM-01] Delimiter Injection in Lesson Slugs
+# ==============================================================================
+class TestSlugDelimiterInjectionIsRejected:
+    """[SEC-MEM-01]: query.py's retrieval brief is `|`-delimited
+    (f"{slug} | cosine=... | importance=..."), and neither build_index.py
+    nor query.py checked that a lesson's `name` field was actually a plain
+    slug before using it -- a hand-edited lesson (frontmatter is explicitly
+    meant to be hand-editable) with a `|` in its name corrupts every brief
+    line built from it. commontrace/commands/lesson_cmd.py already enforces
+    `^[A-Za-z0-9_-]+$` (_SLUG_RE) when a lesson is created or looked up
+    through the CLI; build_index.py/query.py are read paths that see
+    whatever is on disk regardless of how it got there, and now enforce
+    the identical charset before indexing/keying anything off `name`."""
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_build_index_skips_a_lesson_whose_name_contains_a_pipe(self, tmp_path, monkeypatch, capsys):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import build_index
+
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        (lessons_dir / "lesson_injected.md").write_text(
+            "---\n"
+            "name: 'lesson_ok | injected'\n"
+            "description: d\ndomain: t\nstatus: active\n"
+            "---\n## Rule\nr\n",
+            encoding="utf-8",
+        )
+        lessons = list(build_index.iter_active_lessons(str(lessons_dir)))
+        assert lessons == []
+        assert "not a plain slug" in capsys.readouterr().err
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_build_index_still_indexes_a_well_formed_slug(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import build_index
+
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        (lessons_dir / "lesson_ok.md").write_text(
+            "---\nname: lesson_ok\ndescription: d\ndomain: t\nstatus: active\n---\n## Rule\nr\n",
+            encoding="utf-8",
+        )
+        lessons = list(build_index.iter_active_lessons(str(lessons_dir)))
+        assert [slug for slug, _ in lessons] == ["lesson_ok"]
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_query_load_importances_excludes_a_pipe_delimited_name(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import query
+
+        (tmp_path / "lesson_injected.md").write_text(
+            "---\nname: 'lesson_ok | injected'\nimportance: 5\nstatus: active\n---\nbody\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(query, "LESSONS_DIR", str(tmp_path))
+        importances, n_parsed = query.load_importances()
+        assert importances == {}
+        assert n_parsed == 1  # still counted as "parsed" for telemetry -- just not retrieval-eligible
+
+
+# ==============================================================================
+# [BUG-MEM-03] Empty Active-Lesson Store Fatal Error Loop
+# ==============================================================================
+class TestEmptyActiveLessonStoreBuildsAnEmptyIndex:
+    """[BUG-MEM-03]: a freshly initialized repository with 0 active lessons
+    used to make build_index.py exit 1 without ever writing index.npz. Since
+    query.py refuses to run unless index.npz already exists ("run
+    build_index.py first"), that turned a normal starting state into an
+    unrecoverable crash loop. build_index.py must instead write an empty
+    (0-row) index, and query.py must load it and report 0 results rather
+    than erroring."""
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_build_index_writes_an_empty_index_instead_of_erroring(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import build_index
+
+        monkeypatch.setattr(build_index, "SentenceTransformer", _FakeEncoder)
+        lessons_dir = tmp_path / "memory" / "lessons"
+        attention_dir = tmp_path / "memory" / "attention"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        attention_dir.mkdir(parents=True, exist_ok=True)
+        index_file = attention_dir / "index.npz"
+        monkeypatch.setattr(build_index, "LESSONS_DIR", str(lessons_dir))
+        monkeypatch.setattr(build_index, "INDEX_PATH", str(index_file))
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+
+        rc = build_index.main()
+        assert rc == 0
+        assert index_file.exists()
+        with np.load(str(index_file), allow_pickle=False) as data:
+            assert data["embeddings"].shape == (0, 768)
+            assert len(data["slugs"]) == 0
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_query_against_an_empty_index_reports_no_results_not_an_error(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import query
+
+        attention_dir = tmp_path / "memory" / "attention"
+        attention_dir.mkdir(parents=True, exist_ok=True)
+        index_file = attention_dir / "index.npz"
+        np.savez(
+            str(index_file),
+            slugs=np.array([], dtype=str),
+            embeddings=np.zeros((0, 768), dtype=np.float32),
+            model_name=np.array(query._TRUSTED_MODEL_NAME),
+            encoded_field=np.array("x"),
+            timestamp=np.array("2026-01-01T00:00:00+00:00"),
+            n_lessons=np.array(0),
+        )
+        monkeypatch.setattr(query, "SentenceTransformer", _FakeEncoder)
+        monkeypatch.setattr(query, "INDEX_PATH", str(index_file))
+        monkeypatch.setattr(query, "LESSONS_DIR", str(tmp_path / "memory" / "lessons"))
+        monkeypatch.setattr(query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
+        monkeypatch.setattr(sys, "argv", ["query.py", "some task"])
+
+        rc = query.main()
+        assert rc == 0
+
+
+# ==============================================================================
+# [BUG-MEM-04] Naive Local Timestamps in Attention Index/Telemetry
+# ==============================================================================
+class TestTimestampsAreUtcAware:
+    """[BUG-MEM-04]: datetime.datetime.now() (no tz) cannot be sorted or
+    compared across multi-agent runners in different timezones, and
+    violates PROTOCOL.md's ISO-8601 UTC convention."""
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_index_npz_timestamp_carries_a_utc_offset(self, tmp_path, monkeypatch):
+        _ensure_mock_st(monkeypatch)
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention")
+        )
+        import build_index
+
+        monkeypatch.setattr(build_index, "SentenceTransformer", _FakeEncoder)
+        lessons_dir = tmp_path / "memory" / "lessons"
+        attention_dir = tmp_path / "memory" / "attention"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        attention_dir.mkdir(parents=True, exist_ok=True)
+        (lessons_dir / "lesson_01.md").write_text(
+            "---\nname: lesson_01\ndescription: d\ndomain: t\nstatus: active\n---\n## Rule\nr\n",
+            encoding="utf-8",
+        )
+        index_file = attention_dir / "index.npz"
+        monkeypatch.setattr(build_index, "LESSONS_DIR", str(lessons_dir))
+        monkeypatch.setattr(build_index, "INDEX_PATH", str(index_file))
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+
+        assert build_index.main() == 0
+        with np.load(str(index_file), allow_pickle=False) as data:
+            ts = str(data["timestamp"])
+        assert ts.endswith("+00:00"), f"expected a UTC-offset timestamp, got {ts!r}"
 
 
 # ==============================================================================

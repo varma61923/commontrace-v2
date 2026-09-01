@@ -118,6 +118,27 @@ def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
+def _check_success_count(s: int, n: int, label: str) -> None:
+    """Both callers below feed s/n straight into a square root of
+    (rate * (1 - rate)); a rate outside [0, 1] -- which s > n or a negative
+    s produces -- can make that argument negative, crashing with a raw
+    `ValueError: math domain error` from deep inside math.sqrt rather than
+    one that names what was actually wrong with the input. Every current
+    caller (hub/outcomes.py's Tally, commontrace/experiment.py's own
+    holdout aggregation) computes s/n from a COUNT(*)-style aggregate, so
+    0 <= s <= n always holds in practice -- this is a guard against a
+    future caller or a hand-built test value, not a reachable path today.
+    Raising rather than silently returning a "no effect" result is
+    deliberate: an s > n means the CALLER's counting is broken, and a
+    plausible-looking p-value from broken input is a worse failure mode
+    than a loud one.
+    """
+    if s < 0 or n < 0:
+        raise ValueError(f"{label} success/total counts must not be negative, got s={s}, n={n}")
+    if s > n:
+        raise ValueError(f"{label} success count ({s}) cannot exceed its total count ({n})")
+
+
 def two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> tuple[float, float]:
     """Two-tailed z-test for a difference in proportions.
 
@@ -129,6 +150,8 @@ def two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> tuple[float, floa
     """
     if n1 <= 0 or n2 <= 0:
         return 0.0, 1.0
+    _check_success_count(s1, n1, "arm 1")
+    _check_success_count(s2, n2, "arm 2")
     p1, p2 = s1 / n1, s2 / n2
     p_pool = (s1 + s2) / (n1 + n2)
     if p_pool in (0.0, 1.0):
@@ -144,6 +167,8 @@ def diff_confidence_interval(s1: int, n1: int, s2: int, n2: int, z: float = _Z_9
     """Unpooled 95% CI for (p1 - p2)."""
     if n1 <= 0 or n2 <= 0:
         return (0.0, 0.0)
+    _check_success_count(s1, n1, "arm 1")
+    _check_success_count(s2, n2, "arm 2")
     p1, p2 = s1 / n1, s2 / n2
     se = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
     delta = p1 - p2

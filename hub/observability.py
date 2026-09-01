@@ -42,7 +42,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from hub.abuse import RateLimiter
+from hub.abuse import RateLimiter, resolve_client_key
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
@@ -170,6 +170,7 @@ def add_health_routes(
     app,
     session_factory: async_sessionmaker,
     readyz_rate_limiter: RateLimiter | None = None,
+    trusted_proxy_hops: int = 0,
 ) -> None:
     """Wire /healthz (liveness) and /readyz (readiness). See module docstring
     for why these must answer different questions.
@@ -182,14 +183,16 @@ def add_health_routes(
     can exhaust connections the same way any other unbounded query would.
     `readyz_rate_limiter` is keyed by client address and defaults to a
     generous bucket that a real orchestrator's poll interval (typically
-    every few seconds) never comes close to."""
+    every few seconds) never comes close to. `trusted_proxy_hops` is
+    HubConfig.trusted_proxy_hops, passed straight through to
+    hub.abuse.resolve_client_key -- see that config field's docstring."""
     readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
-        client_key = request.client.host if request is not None and request.client else "unknown"
+        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
         if not readyz_rate_limiter.allow(client_key):
             return JSONResponse({"status": "rate_limited"}, status_code=429)
         try:

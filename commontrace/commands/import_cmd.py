@@ -169,9 +169,16 @@ def run(args: argparse.Namespace) -> int:
     if n_skipped > len(skip_samples):
         print(f"  ... and {n_skipped - len(skip_samples)} more skipped row(s)", file=sys.stderr)
 
+    # n_rejected > 0 (schema-invalid rows) already returns non-zero below.
+    # A file where every row was instead merely *skipped* (missing or
+    # unparseable columns, never even reaching schema validation) still
+    # wrote zero traces but returned 0 -- indistinguishable from success to
+    # a CI/CD ingestion pipeline checking $?.
+    all_rows_skipped = n_written == 0 and n_skipped > 0
+
     if args.dry_run:
         print(f"[commontrace] --dry-run: no files written. {n_written} trace(s) would be created.")
-        return 0
+        return 1 if all_rows_skipped else 0
 
     print(
         f"[commontrace] wrote {n_written} trace(s) to {tdir}. "
@@ -186,6 +193,7 @@ def run(args: argparse.Namespace) -> int:
             print(f"  [REJECT] {line}", file=sys.stderr)
         if n_rejected > _MAX_DETAILS:
             print(f"  ... and more (only the first {_MAX_DETAILS} are shown)", file=sys.stderr)
+    if n_rejected or all_rows_skipped:
         # Non-zero: a partial import that looks successful is how bad rows get
         # discovered a month later, in a report.
         return 1

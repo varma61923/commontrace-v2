@@ -109,6 +109,17 @@ def run(args: argparse.Namespace) -> int:
         _check("benchmark script found", False,
                "missing from the installed package - try `pip install --force-reinstall commontrace`")
 
+    # Same reasoning and same install as measure_performance.py above --
+    # `commontrace bench --pilot`/`commontrace pilot` import it directly and
+    # previously failed with a raw ImportError at runtime even when every
+    # check above reported clean, since nothing checked for it specifically.
+    pilot_script = find_reference_script(root, "benchmark/pilot_metrics.py")
+    if pilot_script is not None:
+        _check("pilot metrics script found", True, pilot_script)
+    else:
+        _check("pilot metrics script found", False,
+               "missing from the installed package - try `pip install --force-reinstall commontrace`")
+
     protocol_dir = os.path.join(root, "protocol")
     if os.path.isdir(protocol_dir):
         _check("protocol/ spec present", True, protocol_dir)

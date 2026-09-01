@@ -92,6 +92,17 @@ class TestValidateOutcomeItself:
             outcomes.validate_outcome({field: True})
 
     @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
+    def test_a_numeric_field_rejects_a_float(self, field):
+        """[BUG-PROT-02]: protocol/schemas/trace.schema.json declares both
+        fields "type": ["integer", "null"], not "number" -- a float used to
+        pass this check, land in Postgres JSONB, and only fail the first
+        time anything actually re-validated the trace against the real
+        schema (e.g. a synced local copy through `commontrace trace
+        validate`), far from where the bad value was written."""
+        with pytest.raises(ValueError, match=f"{field} must be an integer"):
+            outcomes.validate_outcome({field: 1500.5})
+
+    @pytest.mark.parametrize("field", ["tokens_used", "llm_calls"])
     def test_a_numeric_field_rejects_a_negative_value(self, field):
         with pytest.raises(ValueError, match=field):
             outcomes.validate_outcome({field: -1})

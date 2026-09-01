@@ -1370,12 +1370,27 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
         return False
 
     chain_ids = await amendment_chain(session, trace_id)
+    # amendment_chain itself is not org-scoped (it has no org_id to scope
+    # by -- see its own docstring), so re-verify ownership of every id in
+    # the chain here before deleting anything keyed by it. amend_trace can
+    # never actually produce a chain spanning two orgs, so this should
+    # never narrow chain_ids at all -- but without it, a TraceRelation
+    # delete below would have no equivalent guard to the org_id filter the
+    # original code already gave the Trace delete, and would remove
+    # another org's relation-graph edges even on the day that assumption
+    # stops holding.
+    own_chain_ids = {
+        row[0]
+        for row in (
+            await session.execute(select(Trace.id).where(Trace.id.in_(chain_ids), Trace.org_id == org_id))
+        ).all()
+    }
     await session.execute(
         delete(TraceRelation).where(
-            TraceRelation.related_trace_id.in_(chain_ids),
+            TraceRelation.related_trace_id.in_(own_chain_ids),
         )
     )
-    await session.execute(delete(Trace).where(Trace.id.in_(chain_ids), Trace.org_id == org_id))
+    await session.execute(delete(Trace).where(Trace.id.in_(own_chain_ids)))
     await audit.record(
         session, actor=actor, action="delete_trace", org_id=org_id,
         target_type="trace", target_id=trace_id,

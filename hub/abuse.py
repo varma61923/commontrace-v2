@@ -171,6 +171,37 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     return None
 
 
+def resolve_client_key(request, trusted_proxy_hops: int) -> str:
+    """Resolve the identity a client-address-keyed rate limiter should bucket
+    this request under. See HubConfig.trusted_proxy_hops's own docstring for
+    why this exists and why the default (0) never looks past
+    request.client.host.
+
+    trusted_proxy_hops > 0 reads X-Forwarded-For and takes the value
+    `trusted_proxy_hops` positions from the RIGHT, not the left. A proxy
+    chain is built by each hop APPENDING to the header as a request passes
+    through it, so the right-most `trusted_proxy_hops` entries are the ones
+    this deployment's own trusted proxies wrote; anything to their left
+    (including the left-most/first entry, which is what a naive
+    implementation reads) was supplied by -- and is fully controlled by --
+    the original client, and trusting it lets that client mint a fresh
+    identity per request just by sending a different value.
+
+    A header with fewer entries than `trusted_proxy_hops` means a proxy that
+    was supposed to append its hop did not -- log spoofing, a misconfigured
+    topology, or a request that bypassed the expected proxy chain entirely.
+    Falls back to request.client.host rather than trusting a value that
+    cannot be attributed to a trusted hop.
+    """
+    if trusted_proxy_hops <= 0:
+        return request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("x-forwarded-for", "")
+    hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+    if len(hops) >= trusted_proxy_hops:
+        return hops[-trusted_proxy_hops]
+    return request.client.host if request.client else "unknown"
+
+
 @dataclass
 class _Bucket:
     tokens: float

@@ -35,11 +35,13 @@ def tmp_memory(tmp_path):
 
 def write_lesson(mem_dir, name, description="A test lesson", domain="testing",
                  importance=3, uses=0, last_hit="NEVER", source_episodes=None,
+                 source_traces=None, agent_type="code",
                  status="active", rule="Apply this rule.", tags=None):
     fm = {
         "name": name,
         "description": description,
         "tags": tags or ["test"],
+        "agent_type": agent_type,
         "domain": domain,
         "importance": importance,
         "importance_rationale": "Test lesson rationale.",
@@ -48,6 +50,13 @@ def write_lesson(mem_dir, name, description="A test lesson", domain="testing",
         "do_not_apply_when": "When no test suite is present.",
         "uses": uses,
         "last_hit": last_hit,
+        # Both kept: source_traces is the current, schema-driven field name;
+        # source_episodes is the v1 alias several fixtures/tests still exercise
+        # on purpose (transfer-gap resolution, the code-review profile's
+        # episode files). Defaulting source_traces from source_episodes when
+        # only the latter is given keeps every existing call site's frontmatter
+        # schema-valid without having to touch each one.
+        "source_traces": source_traces if source_traces is not None else (source_episodes or []),
         "source_episodes": source_episodes or [],
         "status": status,
     }

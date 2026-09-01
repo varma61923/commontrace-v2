@@ -34,6 +34,23 @@ import csv
 import io
 import json
 import os
+import sys
+
+# The stdlib default (131072 bytes = 128 KiB) is a defense against a
+# pathological file, not a limit any real export is expected to respect --
+# a real incident postmortem or a large embedded stack trace routinely
+# exceeds it in one CSV field. Past that default, the C-level csv module
+# raises `_csv.Error: field larger than field limit`, which read_failures'
+# own except tuple below did not catch (csv.Error is not a ValueError
+# subclass), so a large-but-legitimate export crashed with a raw traceback
+# instead of failing cleanly or, better, just parsing. Raised as high as
+# this platform's C long allows: sys.maxsize overflows a 32-bit long on
+# some platforms/CPython builds, which raises OverflowError -- 2**31 - 1 is
+# the largest value guaranteed to fit everywhere.
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    csv.field_size_limit(2**31 - 1)
 
 # Fields we will accept for the two things we need. Real exports name these
 # differently and asking a prospect to rename columns before they can get a
@@ -259,7 +276,7 @@ def read_failures(path: str, fmt_override: str | None = None) -> tuple[list[dict
     parsers = {"jsonl": _parse_jsonl, "json": _parse_json, "csv": _parse_csv, "lines": _parse_lines}
     try:
         parsed = parsers[fmt](raw)
-    except (FailureImportError, ValueError) as exc:
+    except (FailureImportError, ValueError, csv.Error) as exc:
         # A bracket-prefixed log line ("[2026-08-23 12:00:00] ERROR: ...")
         # sniffs as JSON on its leading '[' and then fails to parse as JSON
         # at all -- content `_sniff` guessed wrong about, not a file that is

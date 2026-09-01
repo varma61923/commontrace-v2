@@ -128,6 +128,21 @@ class TestPctDelta:
     def test_none_when_before_zero(self):
         assert pm._pct_delta(0.0, 1.0) is None
 
+    def test_bounded_rate_zero_baseline_with_improvement_is_100_percent(self):
+        """[BUG-BENCH-04]: for the four [0, 1] rate metrics specifically, a
+        genuine 0% -> positive-% improvement is the maximal signal a
+        bounded rate can report -- matching pilot_cmd.py's identical
+        handling of the same metric family, so `commontrace bench --pilot`
+        and `commontrace pilot` agree on the same underlying numbers
+        instead of reporting "N/A" and "+100%" respectively."""
+        assert pm._pct_delta(0.0, 0.8, bounded_rate=True) == pytest.approx(1.0)
+
+    def test_bounded_rate_zero_baseline_with_no_improvement_is_zero(self):
+        assert pm._pct_delta(0.0, 0.0, bounded_rate=True) == pytest.approx(0.0)
+
+    def test_bounded_rate_has_no_effect_when_baseline_is_nonzero(self):
+        assert pm._pct_delta(0.3, 0.9, bounded_rate=True) == pytest.approx(2.0)
+
 
 class TestRenderMarkdown:
     def test_renders_baseline_vs_current_table(self):
@@ -146,6 +161,30 @@ class TestRenderMarkdown:
         md = pm.render_markdown(report)
         assert "Baseline vs. current" in md
         assert "Resolution rate" in md
+
+    def test_zero_baseline_resolution_rate_shows_a_delta_not_na(self):
+        """[BUG-BENCH-04] end to end: a 0% -> 100% resolution-rate
+        improvement across the baseline/current split must render as an
+        actual delta, not "N/A" -- and must NOT apply the same "0 -> X"
+        treatment to avg_tokens_used, an unbounded metric where "0 -> 500"
+        has no meaningful percentage (still correctly N/A)."""
+        traces = [
+            _trace("a", resolved=False, tokens_used=0, baseline=True),
+            _trace("b", resolved=True, tokens_used=500, baseline=False),
+        ]
+        baseline, current = pm.split_baseline(traces)
+        report = {
+            "schema_version": pm.SCHEMA_VERSION,
+            "timestamp": "2026-08-18T00:00:00",
+            "n_traces_total": 2,
+            "baseline": pm.compute_bucket(baseline),
+            "current": pm.compute_bucket(current),
+        }
+        assert report["baseline"]["resolution_rate"]["value"] == pytest.approx(0.0)
+        md = pm.render_markdown(report)
+        lines = {line.split("|")[1].strip(): line for line in md.splitlines() if line.startswith("| ")}
+        assert "+100.0%" in lines["Resolution rate"]
+        assert "N/A" in lines["Avg. tokens used"]
 
     def test_renders_no_baseline_notice(self):
         traces = [_trace("a", resolved=True)]

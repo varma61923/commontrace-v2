@@ -109,6 +109,35 @@ class HubConfig:
     readyz_rate_limit_per_minute: int = 120
     readyz_rate_limit_burst: int = 30
 
+    # Every client-address-keyed rate limiter above (auth_attempts,
+    # read_rate_limit, readyz) is keyed off request.client.host by default --
+    # the peer of the actual TCP connection reaching this process. Behind
+    # ANY reverse proxy or load balancer, that is the proxy's own address for
+    # every request, which silently collapses every one of those limiters
+    # into one shared bucket across every real client (a self-inflicted DoS:
+    # one noisy client can exhaust it for everyone) -- including the Hub's
+    # own documented "loopback + sidecar TLS-terminating proxy on the same
+    # host" deployment shape (validate_transport_safety's docstring above).
+    #
+    # 0 (default) trusts nothing but request.client.host, identical to
+    # today's behavior -- safe for a deployment with no proxy in front, and
+    # the only safe default: X-Forwarded-For is an ordinary client-settable
+    # HTTP header, and blindly trusting it (e.g. always taking its first,
+    # left-most entry, as a client-authored chain could) lets any client
+    # mint a fresh rate-limit bucket per request just by sending a different
+    # spoofed IP -- turning a DoS defense into a bypass, which is worse than
+    # the collapsed-bucket problem it would be fixing.
+    #
+    # Set to the exact number of trusted reverse proxies in front of this
+    # Hub (1 for a single TLS-terminating proxy or sidecar) to resolve the
+    # client address as the value `trusted_proxy_hops` positions from the
+    # RIGHT of X-Forwarded-For instead -- the one position in the chain a
+    # trusted proxy, not an upstream client, is responsible for appending.
+    # An operator must opt in explicitly because this module cannot verify
+    # its own network topology; setting it when no such proxy exists lets a
+    # client forge its own rate-limit identity via a spoofed header.
+    trusted_proxy_hops: int = 0
+
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
 
@@ -214,6 +243,7 @@ class HubConfig:
             auth_attempts_burst=_env_int("HUB_AUTH_ATTEMPTS_BURST", 20),
             readyz_rate_limit_per_minute=_env_int("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120),
             readyz_rate_limit_burst=_env_int("HUB_READYZ_RATE_LIMIT_BURST", 30),
+            trusted_proxy_hops=_env_int("HUB_TRUSTED_PROXY_HOPS", 0),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),

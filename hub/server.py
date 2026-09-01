@@ -34,6 +34,7 @@ from hub.abuse import (
     make_auth_rate_limiter,
     make_rate_limiter,
     make_read_rate_limiter,
+    resolve_client_key,
 )
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
@@ -83,12 +84,17 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         protected_path: str,
         auth_rate_limiter: RateLimiter,
         read_rate_limiter: RateLimiter,
+        trusted_proxy_hops: int = 0,
     ):
         super().__init__(app)
         self._session_factory = session_factory
         self._protected_path = protected_path
         self._auth_rate_limiter = auth_rate_limiter
         self._read_rate_limiter = read_rate_limiter
+        # See HubConfig.trusted_proxy_hops's docstring: 0 (default) means
+        # "trust only request.client.host", identical to this middleware's
+        # behavior before this parameter existed.
+        self._trusted_proxy_hops = trusted_proxy_hops
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -101,7 +107,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
-        client_key = request.client.host if request.client else "unknown"
+        client_key = resolve_client_key(request, self._trusted_proxy_hops)
         if not self._auth_rate_limiter.allow(client_key):
             return JSONResponse({"error": "rate_limited", "detail": "too many auth attempts"}, status_code=429)
 
@@ -768,6 +774,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         readyz_rate_limiter=RateLimiter(
             per_minute=config.readyz_rate_limit_per_minute, burst=config.readyz_rate_limit_burst
         ),
+        trusted_proxy_hops=config.trusted_proxy_hops,
     )
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
@@ -775,6 +782,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         protected_path=config.streamable_http_path,
         auth_rate_limiter=make_auth_rate_limiter(config),
         read_rate_limiter=make_read_rate_limiter(config),
+        trusted_proxy_hops=config.trusted_proxy_hops,
     )
     # Added last => outermost: a request id exists (and the request gets
     # logged) even for calls the auth middleware rejects with a 401.

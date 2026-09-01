@@ -219,14 +219,18 @@ def validate_outcome(outcome: dict | None) -> dict:
         if field not in outcome:
             continue
         value = outcome[field]
-        # isinstance checked ahead of _is_number's finiteness check, purely
-        # so a genuinely non-numeric value ("800", say) and a NaN/Infinity
-        # get error messages that name what's actually wrong with each,
-        # rather than both landing on the same generic "must be a number".
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise ValueError(f"outcome.{field} must be a number, got {value!r}")
-        if not _is_number(value):
-            raise ValueError(f"outcome.{field} must be a finite number, got {value!r}")
+        # protocol/schemas/trace.schema.json declares tokens_used/llm_calls
+        # as ["integer", "null"], not "number" -- a float here (1500.5, a
+        # client dividing a total across calls, say) would pass this
+        # function, land in Postgres JSONB, and only fail the FIRST time
+        # anything actually re-validates the trace against the real schema
+        # (e.g. a synced local copy through commontrace trace validate),
+        # far from where the bad value was actually written. No separate
+        # _is_number/math.isfinite check is needed once `value` is known to
+        # be a plain int: Python ints have no NaN/Infinity representation,
+        # unlike the float this function used to also accept.
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"outcome.{field} must be an integer, got {value!r}")
         if value < 0:
             raise ValueError(f"outcome.{field} must not be negative, got {value!r}")
     return dict(outcome)

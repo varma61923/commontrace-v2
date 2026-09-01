@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -86,6 +87,38 @@ def test_lesson_validate_catches_schema_violations(store):
         "body",
     )
     assert main(["lesson", "validate", str(bad_path), "--dest", str(store)]) == 1
+
+
+def test_lesson_validate_accepts_a_v1_lesson_with_only_source_episodes(store):
+    """[BUG-PROT-01]: PROTOCOL.md's versioning section promises "a Trace/
+    Lesson written under v1.x remains valid under 2.0.0", but a v1 lesson
+    uses `source_episodes` (the pre-2.0 field name) and has no
+    `source_traces` key at all -- lesson.schema.json's `required` list used
+    to demand `source_traces` unconditionally, which failed every such
+    lesson with "'source_traces' is a required property" the moment
+    `lesson validate` (or the Hub-side equivalent) touched it."""
+    main(["init", "--agent-type", "code", "--dest", str(store)])
+    v1_path = store / "memory" / "lessons" / "lesson_v1_legacy.md"
+    frontmatter.write(
+        str(v1_path),
+        {
+            "name": "v1_legacy",
+            "description": "A lesson written before source_traces existed",
+            "tags": ["legacy"],
+            "agent_type": "code",
+            "domain": "testing",
+            "importance": 3,
+            "importance_rationale": "x",
+            "applies_when": "x",
+            "do_not_apply_when": "x",
+            "uses": 0,
+            "last_hit": "NEVER",
+            "source_episodes": ["2025-01-01_example.md"],  # v1 field -- no source_traces at all
+            "status": "active",
+        },
+        "body",
+    )
+    assert main(["lesson", "validate", str(v1_path), "--dest", str(store)]) == 0
 
 
 def test_capture_writes_a_schema_valid_trace(store):
@@ -331,6 +364,42 @@ def test_install_warns_before_overwriting_existing_generated_file(store, capsys)
 def test_doctor_runs_without_crashing(store):
     main(["init", "--agent-type", "code", "--dest", str(store)])
     assert main(["doctor", "--dest", str(store)]) == 0
+
+
+def test_a_missing_pyyaml_install_is_a_clean_error_not_a_traceback():
+    """[BUG-CLI-01]: every subcommand module is imported at the top of
+    cli.py, and several transitively import commontrace.frontmatter, which
+    does a hard `import yaml`. PyYAML is a required dependency
+    (pyproject.toml), so this only bites a broken/incomplete install -- but
+    when it does, the ModuleNotFoundError fires at module-import time,
+    before main()'s own try/except is ever reached, so `commontrace doctor`
+    (whose whole job is diagnosing exactly this) could never even run: it
+    crashed with a raw traceback instead of doctor's own clean
+    "[WARN] PyYAML importable" line.
+
+    Run out-of-process (rather than juggling sys.modules/meta_path in this
+    test's own interpreter) so the module-import-time failure is exercised
+    for real, and so it can never leak a fake `yaml` blocker into any other
+    test's import state.
+    """
+    script = (
+        "import sys\n"
+        "class _Blocker:\n"
+        "    def find_module(self, name, path=None):\n"
+        "        return self if name == 'yaml' else None\n"
+        "    def load_module(self, name):\n"
+        "        raise ModuleNotFoundError(f\"No module named {name!r}\", name=name)\n"
+        "sys.meta_path.insert(0, _Blocker())\n"
+        "from commontrace.cli import main\n"
+        "sys.exit(main(['doctor']))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "Traceback" not in result.stderr
+    assert "yaml" in result.stderr
+    assert "not installed correctly" in result.stderr
 
 
 def test_paths_env_var_override(tmp_path, monkeypatch):

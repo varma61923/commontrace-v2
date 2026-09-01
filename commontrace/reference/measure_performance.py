@@ -429,8 +429,20 @@ def load_episodes(n=None):
     file that failed to parse (non-dict frontmatter, or empty) -- previously
     dropped by a bare `if fm:` with no warning and no count anywhere, so a
     quality-gated CI run (`bench --strict`) silently shrank its metric
-    denominators without anyone seeing the report change shape."""
-    paths = sorted(glob.glob(os.path.join(BASE_DIR, "episodes", "2*.md")))
+    denominators without anyone seeing the report change shape.
+
+    Matches every `*.md` under episodes/ except the two known non-episode
+    files, not just ones beginning with a year digit ("2*.md"): the
+    date-prefixed name (`f"{date}_{slug}_{id}.md"`) is what capture/trace
+    tooling writes, but an episode file is explicitly meant to be
+    hand-editable, and a "2*.md"-only glob made a custom-named or
+    hand-renamed episode invisible to this function entirely -- not even
+    reaching the skipped_paths accounting above, which exists specifically
+    so a shrinking denominator is never silent."""
+    paths = sorted(
+        p for p in glob.glob(os.path.join(BASE_DIR, "episodes", "*.md"))
+        if os.path.basename(p) not in ("episode_template.md", "README.md")
+    )
     if n is not None and n > 0:
         paths = paths[-n:]
     episodes = []
@@ -525,7 +537,13 @@ def compute_transfer_gap(episodes, lessons):
     def resolve_project(slug):
         if slug in episode_project:
             return episode_project[slug]
-        path = os.path.join(BASE_DIR, "episodes", f"{slug}.md")
+        # [BUG-BENCH-03]: source_episodes entries have historically been
+        # written both ways (a bare slug, or the ".md"-suffixed filename) --
+        # `f"{slug}.md"` on an already-suffixed value produced
+        # "name.md.md", which never exists on disk, so a well-sourced
+        # lesson still misresolved as untraceable.
+        clean_slug = slug[:-3] if slug.endswith(".md") else slug
+        path = os.path.join(BASE_DIR, "episodes", f"{clean_slug}.md")
         if os.path.exists(path):
             with open(path, encoding="utf-8-sig") as fh:
                 fm = parse_frontmatter(fh.read())

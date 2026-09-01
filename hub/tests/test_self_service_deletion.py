@@ -152,6 +152,51 @@ class TestDeleteTrace:
         assert rows[0].org_id == orgs["a"]
         assert rows[0].target_id == trace["id"]
 
+    async def test_a_chain_id_belonging_to_another_org_is_never_touched(
+        self, session_factory, config, orgs, monkeypatch
+    ):
+        """[BUG-HUB-03]: amendment_chain() itself has no org_id to scope by
+        (see its own docstring) -- delete_trace's org_id filter on the Trace
+        delete already made that safe for Trace rows, but the TraceRelation
+        delete had no equivalent guard. amend_trace can never actually
+        produce a chain spanning two orgs, so exercise the guard directly by
+        making amendment_chain report one anyway, standing in for a future
+        bug or a UUID collision -- the case delete_trace's own docstring
+        already calls out as the reason for the org_id filter it does have.
+        """
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            mine = await contribute_trace(
+                session, orgs["a"], config, rate_limiter,
+                title="mine", context_text="c", solution_text="s", tags=[], agent_type="code",
+            )
+            theirs = await contribute_trace(
+                session, orgs["b"], config, rate_limiter,
+                title="theirs", context_text="c", solution_text="s", tags=[], agent_type="code",
+            )
+            session.add(TraceRelation(
+                trace_id=theirs["id"], related_trace_id=theirs["id"], relationship_type="SUPERSEDED_BY",
+            ))
+
+        async def _fake_chain(session, trace_id):
+            return {mine["id"], theirs["id"]}
+
+        monkeypatch.setattr(crud, "amendment_chain", _fake_chain)
+
+        async with session_scope(session_factory) as session:
+            deleted = await crud.delete_trace(session, orgs["a"], mine["id"])
+        assert deleted is True
+
+        async with session_scope(session_factory) as session:
+            assert await session.get(Trace, mine["id"]) is None  # ours: gone
+            assert await session.get(Trace, theirs["id"]) is not None  # theirs: untouched
+            surviving = (
+                await session.execute(
+                    select(TraceRelation).where(TraceRelation.related_trace_id == theirs["id"])
+                )
+            ).scalars().all()
+            assert len(surviving) == 1, "another org's TraceRelation row must survive too"
+
 
 class TestRequestOrgDeletion:
     async def test_returns_a_token_and_timestamps(self, session_factory, orgs):
