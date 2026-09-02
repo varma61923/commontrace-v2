@@ -126,6 +126,20 @@ def test_tool_surface_matches_the_advertised_list(server):
     assert tool_names(server) == set(mcp_server.LOCAL_TOOLS)
 
 
+def test_the_names_live_in_a_dependency_free_module():
+    """`install_cmd` reads these to write its config, and must stay importable
+    where PyYAML is absent -- which is the Hub's own test environment.
+    Importing `mcp_server` for a tuple of strings pulled in the whole
+    retrieval stack and broke every hub-tests job at collection.
+
+    Same object, not an equal copy, so the split cannot let the two drift.
+    """
+    from commontrace import mcp_tools
+
+    assert mcp_server.LOCAL_TOOLS is mcp_tools.LOCAL_TOOLS
+    assert mcp_server.APPROVAL_TOOLS is mcp_tools.APPROVAL_TOOLS
+
+
 def test_no_approval_removes_the_tools_rather_than_refusing_them(store):
     names = tool_names(mcp_server.build_server(store, allow_approval=False))
     # Absent, not present-and-refusing: an agent plans against the tools it can

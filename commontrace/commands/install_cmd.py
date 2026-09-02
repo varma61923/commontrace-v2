@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 
-from commontrace import mcp_server, paths
+from commontrace import mcp_tools, paths
 
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
@@ -155,7 +155,7 @@ def _local_mcp_config(root: str) -> str:
     empty store, which fails by silently having no lessons rather than by
     erroring.
     """
-    tools = ", ".join(mcp_server.LOCAL_TOOLS)
+    tools = ", ".join(mcp_tools.LOCAL_TOOLS)
     doc = {
         "_comment": (
             "Merge the 'commontrace-local' entry into your agent platform's MCP config. "

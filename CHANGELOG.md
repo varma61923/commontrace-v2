@@ -553,6 +553,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every hub-tests CI job failed at collection, on all three Python
+  versions, and the local suite passed the whole time.** `install_cmd` grew a
+  module-level `from commontrace import mcp_server` to read a tuple of tool
+  NAMES; `mcp_server` pulls in the retrieval stack (`evidence_io` →
+  `frontmatter` → `yaml`). The hub-tests job installs `hub/requirements.txt`
+  only — **no PyYAML**, because the Hub server does not need it — and
+  `hub/tests/test_install_template_surface.py` imports `install_cmd`. Result:
+  `ModuleNotFoundError: No module named 'yaml'` for a package nothing in
+  `hub/` uses.
+
+  Invisible locally, because a development machine has PyYAML. The fix is the
+  coupling, not the symptom: `commontrace/mcp_tools.py` holds the names and
+  imports nothing, `install_cmd` reads it, and `mcp_server` re-exports the
+  same objects so no caller changes and the two cannot drift.
+
+  The guard that would have caught it now exists in the file that broke: a
+  subprocess with `yaml` blocked, asserting `install_cmd` still imports —
+  which is the only way to reproduce the Hub's environment from a machine
+  that has the package.
+
 - **The local causal report pooled every randomization the store had ever
   run.** The Hub has always scoped its analysis to the current salt, in SQL.
   The local report did not, so the first time anyone changed their holdout

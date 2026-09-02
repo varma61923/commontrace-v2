@@ -18,6 +18,9 @@ the client package must keep installing with PyYAML alone.
 from __future__ import annotations
 
 import json
+import pathlib
+import subprocess
+import sys
 
 from commontrace.commands import install_cmd
 from hub import smoke
@@ -114,3 +117,54 @@ class TestTheReferenceProfileAlsoTeachesIt:
         the holdout has no way to say so, and a reviewer cannot tell a
         withheld lesson from one that simply did not match."""
         assert "### Withheld by the holdout" in self._skill()
+
+
+class TestInstallCmdStaysImportableWithoutTheClientDependencies:
+    """This file imports `commontrace.commands.install_cmd`, and the job that
+    runs it installs `hub/requirements.txt` only -- **no PyYAML**, because the
+    Hub server does not need it.
+
+    That constraint was invisible until it broke. `install_cmd` grew a
+    module-level `from commontrace import mcp_server` to read a tuple of tool
+    NAMES, and `mcp_server` pulls in the retrieval stack
+    (`evidence_io` -> `frontmatter` -> `yaml`). Every hub-tests job failed at
+    collection, on all three Python versions at once, with a
+    `ModuleNotFoundError` about a package nothing in hub/ uses -- and the full
+    local suite passed the whole time, because a development machine has
+    PyYAML.
+
+    Asserted in a subprocess with `yaml` blocked, which is the only way to
+    reproduce it from an environment that has the package installed.
+    """
+
+    @staticmethod
+    def _import_with_yaml_blocked(module: str) -> subprocess.CompletedProcess:
+        blocker = (
+            "import sys\n"
+            "class B:\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name == 'yaml' or name.startswith('yaml.'):\n"
+            "            raise ModuleNotFoundError(\"No module named 'yaml'\")\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, B())\n"
+            f"import {module}\n"
+            "print('ok')\n"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", blocker],
+            capture_output=True, text=True,
+            cwd=str(pathlib.Path(__file__).resolve().parents[2]), check=False,
+        )
+
+    def test_install_cmd_imports_without_pyyaml(self):
+        result = self._import_with_yaml_blocked("commontrace.commands.install_cmd")
+        assert result.returncode == 0, (
+            "hub/tests/ imports install_cmd, and this job installs no PyYAML. "
+            "Something in install_cmd's import chain now needs it:\n" + result.stderr
+        )
+
+    def test_the_tool_names_come_from_a_dependency_free_module(self):
+        """`mcp_tools` exists so the names can be read without dragging in the
+        server that serves them."""
+        result = self._import_with_yaml_blocked("commontrace.mcp_tools")
+        assert result.returncode == 0, result.stderr

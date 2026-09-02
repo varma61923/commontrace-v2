@@ -66,6 +66,7 @@ from commontrace import (
     frontmatter,
     holdout_io,
     lesson_io,
+    mcp_tools,
     paths,
     retrieval,
     revision,
@@ -81,21 +82,13 @@ from commontrace.commands._traces import load_trace_candidates
 # rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
 # the tooling that owns them, and letting a caller set them would corrupt the
 # retrieval telemetry the measurement layer reads.
-# The local tool surface, named once. `commontrace install` writes it into the
-# generated MCP config so a reader knows what they are attaching to WITHOUT
-# needing the `mcp` package installed -- the client package ships with PyYAML
-# alone, and importing the SDK here to enumerate the real server would make
-# `commontrace install` fail on exactly the machines it is meant to set up.
-# tests/test_mcp_server.py asserts this list is what the built server registers,
-# so the two cannot drift.
-LOCAL_TOOLS = (
-    "retrieve", "capture", "propose_lessons", "list_lessons", "get_lesson",
-    "draft_lesson", "approve_lesson", "reject_lesson", "store_status",
-    "experiment_status",
-)
-
-# Removed by `serve --no-approval`.
-APPROVAL_TOOLS = ("approve_lesson", "reject_lesson")
+# Re-exported from commontrace.mcp_tools, which owns the one definition and
+# imports nothing. `commontrace install` needs these names and must stay
+# importable where PyYAML is absent -- importing this module to read a tuple
+# of strings pulled in the entire retrieval stack and broke the Hub's test
+# job, which installs no client dependencies at all.
+LOCAL_TOOLS = mcp_tools.LOCAL_TOOLS
+APPROVAL_TOOLS = mcp_tools.APPROVAL_TOOLS
 
 _AGENT_WRITABLE = (
     "description", "domain", "tags", "importance", "importance_rationale",
