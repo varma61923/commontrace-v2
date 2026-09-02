@@ -52,6 +52,11 @@
                                        is the churn about to happen. No query text is
                                        stored -- three integers per org per month
     revenue                        -> orgs on billable plans and what they consumed
+    plan-experiment <org_id> [detect] [occasions]
+                                   -> what holdout rate this org's OWN volume can answer
+                                       with. Run before start-experiment: at a 10% holdout
+                                       only one occasion in ten lands in the control arm,
+                                       so a run answers ~10x slower than it looks
     start-experiment <org_id> [rate]
                                    -> begin a randomized holdout: withhold [rate] of
                                        eligible memory injections (default 0.2) so the
@@ -109,6 +114,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from commontrace import experiment
 from hub import audit, auth, commons, crud, outcomes, plans
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -534,6 +540,96 @@ async def kb_stats(session_factory=None) -> None:
 DEFAULT_HOLDOUT_RATE = 0.2
 
 
+async def _observed_volume_and_baseline(session, org_id: str) -> tuple[int, float | None]:
+    """This org's own monthly retrieval volume and success rate.
+
+    Both read from org-scoped functions that already exist, because the whole
+    point of planning ON THE HUB rather than on paper is that the Hub knows
+    the numbers. A local `--plan` has to be told how many occasions to expect;
+    here the fleet's own search volume is the estimate.
+
+    Returns (searches this period, resolution rate or None). The rate is None
+    when the org has recorded too few outcomes to read one, and the caller
+    falls back to 0.5 -- where the variance peaks, so a plan built on no data
+    cannot understate the sample.
+    """
+    health = await crud.search_health(session, org_id)
+    searches = int(health.get("searches") or 0)
+
+    baseline = None
+    report = await crud.fleet_outcomes(session, org_id)
+    for metric in report.get("metrics") or []:
+        if metric.get("metric") == "resolution_rate":
+            current = metric.get("current") or {}
+            if current.get("rate") is not None and int(current.get("n") or 0) >= 20:
+                baseline = float(current["rate"])
+            break
+    return searches, baseline
+
+
+async def plan_experiment(
+    org_id: str, detect: str = "0.10", occasions: str = "", session_factory=None
+) -> bool:
+    """What holdout rate can this org's volume actually answer with?
+
+    Run BEFORE `start-experiment`. The failure it prevents is the expensive,
+    silent one: an operator picks a rate, the fleet runs for a month, and the
+    report says "not enough data yet". The occasions are spent, the window is
+    gone, and the only fix had to be applied at the start.
+
+    The arithmetic nobody does in their head: at a 10% holdout only one
+    occasion in ten lands in the control arm, so a run reaches an answer about
+    TEN TIMES slower than its occasion count suggests.
+    """
+    session_factory = session_factory or _default_session_factory()
+    try:
+        effect = float(detect)
+    except (TypeError, ValueError):
+        print(f"error: detect must be a number between 0 and 1, got {detect!r}", file=sys.stderr)
+        return False
+    if not 0 < effect < 1:
+        print(f"error: detect must be strictly between 0 and 1, got {effect}", file=sys.stderr)
+        return False
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        searches, observed = await _observed_volume_and_baseline(session, org_id)
+        current_rate = org.holdout_rate or DEFAULT_HOLDOUT_RATE
+
+    budget = None
+    if occasions:
+        try:
+            budget = int(occasions)
+        except (TypeError, ValueError):
+            print(f"error: occasions must be a whole number, got {occasions!r}", file=sys.stderr)
+            return False
+    elif searches:
+        budget = searches
+
+    baseline = observed if observed is not None else 0.5
+    design = experiment.plan(
+        effect=effect, baseline=baseline, rate=current_rate, occasions_budget=budget
+    )
+    print(experiment.render_plan(design))
+    print()
+    print(
+        f"_Baseline {baseline:.0%} "
+        + ("from this org's own recorded outcomes._" if observed is not None
+           else "assumed: too few recorded outcomes to read one. 50% is the most "
+                "pessimistic, so this will not understate the sample._")
+    )
+    if budget and not occasions:
+        print(f"_Budget {budget:,} from this org's searches this period. Pass an explicit "
+              "count to plan a different window._")
+    elif not budget:
+        print("_No occasion budget: this org has not searched yet this period. Pass a "
+              "count to size a window._")
+    return design.verdict != "infeasible"
+
+
 async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), session_factory=None) -> bool:
     """Begin a randomized holdout for one org: withhold `rate` of eligible
     memory injections so the fleet generates its own control arm.
@@ -593,6 +689,28 @@ async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), s
     if previous:
         print(f"  NOTE: this replaces experiment {previous}. Its observations are kept but")
         print("        are no longer pooled -- they came from a different randomization.")
+    async with session_scope(session_factory) as session:
+        searches, observed = await _observed_volume_and_baseline(session, org_id)
+    if searches:
+        design = experiment.plan(
+            effect=experiment.DEFAULT_PRACTICAL_EFFECT,
+            baseline=observed if observed is not None else 0.5,
+            rate=value, occasions_budget=searches,
+        )
+        # Said HERE, at the only moment the rate can still be changed for
+        # free. An operator who learns this from the report a month later has
+        # spent the window, and the fix was always a one-line decision taken
+        # now.
+        if design.verdict == "infeasible":
+            print(f"  WARNING: at this org's observed {searches:,} search(es) per period, NO")
+            print(f"           rate answers a {experiment.DEFAULT_PRACTICAL_EFFECT:.0%} effect"
+                  f" -- it needs {design.n_per_arm:,} per arm.")
+            print("           Run for longer, or accept a larger effect as the thing tested.")
+        elif design.verdict == "raise_rate":
+            print(f"  WARNING: {value:.0%} is too low for this org's observed {searches:,}")
+            print(f"           search(es) per period. A {experiment.DEFAULT_PRACTICAL_EFFECT:.0%}"
+                  f" effect needs a rate of {design.rate_for_budget:.0%}.")
+            print(f"           `python -m hub.manage plan-experiment {org_id}` shows the working.")
     print("  The fleet's agents must call holdout_assign(...) before injecting, and")
     print("  record_occasion_outcome(...) afterwards, or nothing is measured.")
     print(f"  `python -m hub.manage experiment {org_id}` reads the result.")
@@ -1315,6 +1433,7 @@ _COMMANDS = {
     "retrieval": (retrieval, 0, 1),
     "revenue": (revenue, 0, 0),
     "outcomes": (fleet_outcomes, 0, 1),
+    "plan-experiment": (plan_experiment, 1, 3),
     "start-experiment": (start_experiment, 1, 2),
     "stop-experiment": (stop_experiment, 1, 1),
     "experiment": (experiment_results, 1, 1),

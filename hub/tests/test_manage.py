@@ -615,3 +615,128 @@ class TestRetrievalHealthReport:
         )
         assert ok is False
         assert "no such organization" in capsys.readouterr().err
+
+
+class TestPlanningTheExperimentBeforeStartingIt:
+    """`start-experiment` used to take a rate and no guidance, so an operator
+    picked one blind. The failure that produces is expensive and silent: the
+    fleet runs for a month, the report says "not enough data yet", the window
+    is spent, and the only fix -- a wider holdout -- had to be applied at the
+    start.
+
+    Planning ON the Hub rather than on paper matters because the Hub already
+    knows the numbers: this org's own retrieval volume and its own success
+    rate.
+    """
+
+    @staticmethod
+    async def _with_volume(session_factory, org_id, *, searches, resolved_rate=0.75, n=40):
+        from hub.models import Trace
+
+        async with session_scope(session_factory) as session:
+            for i in range(n):
+                session.add(Trace(
+                    org_id=org_id, title=f"password reset problem {i}",
+                    context_text="the reset email never arrived for the customer",
+                    solution_text="removed the suppression and re-sent",
+                    tags=["email"], agent_type="support",
+                    outcome={"resolved": (i / n) < resolved_rate},
+                ))
+        for _ in range(searches):
+            async with session_scope(session_factory) as session:
+                await crud.search_traces(
+                    session, org_id, query="password reset email never arrived")
+
+    async def test_it_reads_the_orgs_own_volume_and_baseline(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=30)
+        capsys.readouterr()
+
+        await manage.plan_experiment(org_id, "0.10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "from this org's own recorded outcomes" in out
+        assert "from this org's searches this period" in out
+
+    async def test_an_org_with_no_volume_assumes_the_worst(
+        self, session_factory, two_orgs, capsys
+    ):
+        """A plan built on no data must not understate the sample: 50% is
+        where the variance peaks."""
+        org_id = two_orgs["org_a"]
+        capsys.readouterr()
+        await manage.plan_experiment(org_id, "0.10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "most pessimistic" in out
+        assert "has not searched yet" in out
+
+    async def test_a_budget_no_rate_can_answer_returns_false(
+        self, session_factory, two_orgs, capsys
+    ):
+        """So an operator script can act on it, and so the exit code says
+        what the prose says."""
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=10)
+        capsys.readouterr()
+
+        ok = await manage.plan_experiment(org_id, "0.02", session_factory=session_factory)
+        assert ok is False
+        assert "cannot answer this at any holdout rate" in capsys.readouterr().out
+
+    async def test_an_explicit_window_overrides_the_observed_one(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=5)
+        capsys.readouterr()
+
+        await manage.plan_experiment(org_id, "0.20", "100000",
+                                     session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "100,000" in out
+        assert "from this org's searches" not in out
+
+    @pytest.mark.parametrize("bad", ["0", "1", "1.5", "abc", "-0.2"])
+    async def test_an_impossible_target_is_refused(
+        self, session_factory, two_orgs, capsys, bad
+    ):
+        org_id = two_orgs["org_a"]
+        assert await manage.plan_experiment(
+            org_id, bad, session_factory=session_factory) is False
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert await manage.plan_experiment(
+            "00000000-0000-0000-0000-000000000000",
+            session_factory=session_factory) is False
+
+
+class TestStartExperimentWarnsAboutAnUnanswerableRate:
+    """Said at the only moment the rate can still be changed for free. An
+    operator who learns it from the report a month later has spent the
+    window, and the fix was always a one-line decision taken now.
+    """
+
+    async def test_a_rate_too_low_for_the_volume_warns(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await TestPlanningTheExperimentBeforeStartingIt._with_volume(
+            session_factory, org_id, searches=300)
+        capsys.readouterr()
+
+        assert await manage.start_experiment(org_id, "0.05", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        # It still starts: the operator's decision stands, they are told.
+        assert "experiment started" in out
+
+    async def test_an_org_with_no_volume_is_not_warned(
+        self, session_factory, two_orgs, capsys
+    ):
+        """Nothing to base a warning on, and inventing one would train
+        operators to ignore the real ones."""
+        org_id = two_orgs["org_a"]
+        capsys.readouterr()
+        assert await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
+        assert "WARNING" not in capsys.readouterr().out

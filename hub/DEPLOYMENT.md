@@ -101,6 +101,24 @@ the wrong probe causes real outages:
 All three are unauthenticated (a load balancer and a metrics scraper carry
 no tenant credentials).
 
+### Sizing an experiment before you start it
+
+`python -m hub.manage plan-experiment <org_id>` answers the question an
+operator otherwise has to guess at: **what holdout rate can this org's own
+volume actually answer with?** It reads that org's retrieval volume and its
+own resolution rate, and says what rate a 10-point effect needs — or says
+plainly that no rate can answer it in this window, which is the most useful
+thing it can tell you and is worth knowing before the month rather than
+after.
+
+The arithmetic nobody does in their head: at a 10% holdout only one occasion
+in ten lands in the control arm, so a run reaches an answer roughly **ten
+times slower** than its occasion count suggests.
+
+`start-experiment` also warns when the rate you chose cannot answer anything
+at that org's observed volume. It still starts — your decision stands — but
+it is said at the only moment the rate can be changed for free.
+
 ### The customer console
 
 Set `HUB_CONSOLE_SECRET` and the Hub serves a console at `/app` for your

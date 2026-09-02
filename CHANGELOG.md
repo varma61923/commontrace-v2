@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Hub can size an experiment before an operator starts one.**
+  `python -m hub.manage plan-experiment <org_id>` reads that org's own
+  retrieval volume and its own resolution rate and says what holdout rate a
+  10-point effect needs — or says plainly that no rate answers it in this
+  window. Planning on the Hub rather than on paper matters because the Hub
+  already knows the numbers; the local `--plan` has to be told them.
+
+  `start-experiment` now warns when the chosen rate cannot answer anything at
+  that org's observed volume. It still starts — the operator's decision
+  stands — but it is said at the only moment the rate can be changed for
+  free. An operator who learns it from the report a month later has spent the
+  window on a question that was never answerable, and the fix was always a
+  one-line decision taken at the start.
+
+  An org with no volume is deliberately *not* warned: there is nothing to
+  base it on, and inventing a warning would train operators to ignore the
+  real ones.
+
 - **A fleet can now set its own holdout rate, and both retrievers read it.**
   `commontrace experiment --configure --rate 0.5` writes the store's
   experiment settings; `commontrace query --experiment` and the MCP
