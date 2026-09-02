@@ -206,6 +206,75 @@ PLANS: dict[str, Plan] = {
     ),
 }
 
+# --- The pricing shape (STRATEGY.md §24) -------------------------------------
+#
+# §13.1 states the identity this business runs on -- revenue is AGENTS UNDER
+# MANAGEMENT x price per agent per year -- and says the shape it permits
+# (many agents cheap, or few agents expensive) is exactly what nobody in this
+# repository knows. §11.5 then declines to encode a price, on the correct
+# ground that a price is a claim about value and the only value this product
+# can defend is measured effect on the customer's own data.
+#
+# Both were right, and together they left the entitlement model gating on
+# `max_traces`, `max_agents` and `commons_queries_per_month`: SEATS AND
+# VOLUME, which is the denominator §11.5 itself identifies as wrong here.
+#
+# `commontrace/value.py` now computes the right denominator: occasions
+# improved, causally, from established effects only. So the shape can be
+# stated without inventing a number.
+#
+# THE SHAPE: a per-agent platform fee (predictable, covers cost-to-serve,
+# which §18 measured) PLUS a share of measured value delivered, capped.
+#
+# VALUE_CAPTURE_SHARE is the share. It is a ratio, not a currency, which is
+# the distinction §11.5's argument actually turns on: what a resolved
+# occasion is worth is the customer's number and is never stored here; what
+# fraction of proven improvement this product charges for is OURS, and
+# refusing to state it does not protect anyone -- it just leaves every
+# conversation to be had from scratch.
+#
+# 20% because it has to survive the customer doing the arithmetic. At a
+# fifth, the measured surplus is unambiguously theirs, which is the only
+# version of value-based pricing that renews; at a half it becomes a
+# negotiation about the measurement itself, and the measurement is the
+# product.
+VALUE_CAPTURE_SHARE = 0.20
+
+# The share is charged ONLY on effects the holdout established. A quarter
+# whose experiment came back COMPROMISED, or whose memories were all
+# underpowered, bills the platform fee and nothing else
+# (commontrace/value.py refuses to produce a figure in exactly those cases,
+# and billable_value below inherits that refusal rather than re-deciding it).
+#
+# That is a real commercial commitment and it is the point: it makes the
+# vendor's incentive to keep the instrument honest structural rather than
+# stated. A vendor paid on measured value has every reason to weaken the
+# validity checks; a vendor whose own revenue is gated by those checks
+# cannot weaken them without also being unable to bill.
+VALUE_BILLED_ONLY_ON_ESTABLISHED_EFFECTS = True
+
+
+def billable_value(value_report, share: float = VALUE_CAPTURE_SHARE) -> float | None:
+    """The value-linked component, or None when there is nothing to bill on.
+
+    Takes a `commontrace.value.ValueReport`. Returns None -- not zero -- when
+    the report is not readable, because "we could not measure this quarter"
+    and "we measured it and it was worth nothing" are different facts and
+    only one of them is an argument about the product.
+
+    Negative is possible and is returned as-is. If the memory measurably made
+    things worse, the value-linked component is negative, and a pricing model
+    that floors it at zero is one that cannot lose -- which is the same thing
+    as one that never proved anything.
+    """
+    if value_report is None or not getattr(value_report, "readable", False):
+        return None
+    money = value_report.money
+    if money is None:
+        return None
+    return money * share
+
+
 BILLABLE_PLANS = ("team", "scale")
 
 

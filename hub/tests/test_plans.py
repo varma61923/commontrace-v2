@@ -14,12 +14,14 @@ well the product is doing. It has its own test.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
+from commontrace import experiment, integrity, value
 from hub import commons, crud, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
@@ -413,3 +415,93 @@ class TestTheErrorIsActionable:
         blob = " ".join(str(v) for v in body.values()).lower()
         for leak in ("select ", "traceback", "sqlalchemy", "asyncpg", "/app/", "org_id="):
             assert leak not in blob, leak
+
+
+class TestTheValueLinkedPricingShape:
+    """STRATEGY.md §24.2 takes the pricing decision §11.6 had reserved: a
+    per-agent platform fee plus a share of MEASURED value.
+
+    The share is charged only on effects the holdout established, and that is
+    a commercial commitment rather than a nicety: a vendor paid on measured
+    value has every incentive to weaken its own validity checks, and a vendor
+    whose revenue is gated by those checks cannot weaken them without losing
+    the ability to bill. These tests are what make that structural.
+    """
+
+    @staticmethod
+    def _effect(verdict, n_injected, size, lo, hi):
+        return experiment.CausalEffect(
+            lesson_slug="m", n_injected=n_injected, n_withheld=200,
+            rate_injected=0.7, rate_withheld=0.7 - size, effect=size,
+            ci_low=lo, ci_high=hi, p_value=0.01,
+            significant=verdict in (experiment.VERDICT_HELPS, experiment.VERDICT_HURTS),
+            min_detectable_effect=0.05, verdict=verdict, note="",
+        )
+
+    @staticmethod
+    def _sound():
+        return integrity.audit([
+            integrity.Assignment("m", f"o{i}", i % 2 == 0, 0.5, "s",
+                                 i % 3 == 0, None, "rev")
+            for i in range(60)
+        ])
+
+    async def test_the_share_is_of_measured_value(self):
+        report = value.compute(
+            [self._effect(experiment.VERDICT_HELPS, 1000, 0.10, 0.05, 0.15)],
+            self._sound(), value_per_occasion=20.0,
+        )
+        # 1000 x 10% = 100 occasions x $20 = $2,000; a fifth of it.
+        assert plans.billable_value(report) == pytest.approx(400.0)
+
+    async def test_nothing_is_billable_when_the_experiment_is_not_readable(self):
+        """None, not zero. 'We could not measure this quarter' and 'we
+        measured it and it was worth nothing' are different facts, and only
+        one of them is an argument about the product."""
+        report = value.compute(
+            [self._effect(experiment.VERDICT_HELPS, 1000, 0.10, 0.05, 0.15)],
+            None, value_per_occasion=20.0,
+        )
+        assert plans.billable_value(report) is None
+
+    async def test_a_memory_that_hurt_produces_a_negative_charge(self):
+        """A pricing model floored at zero is one that cannot lose, which is
+        the same thing as one that never proved anything."""
+        report = value.compute(
+            [self._effect(experiment.VERDICT_HURTS, 1000, -0.10, -0.15, -0.05)],
+            self._sound(), value_per_occasion=20.0,
+        )
+        assert plans.billable_value(report) == pytest.approx(-400.0)
+
+    async def test_no_rate_means_no_charge_rather_than_a_guessed_one(self):
+        """What a resolved occasion is worth is the customer's number. With
+        none supplied there is a measured count and no invoice."""
+        report = value.compute(
+            [self._effect(experiment.VERDICT_HELPS, 1000, 0.10, 0.05, 0.15)],
+            self._sound(),
+        )
+        assert report.readable
+        assert plans.billable_value(report) is None
+
+    async def test_the_share_is_a_ratio_and_no_currency_is_stored(self):
+        """§11.5's argument turns on this distinction: the customer's
+        per-occasion value is theirs and is never stored; the fraction of
+        proven improvement we charge for is ours to state."""
+        assert 0 < plans.VALUE_CAPTURE_SHARE < 1
+        source = pathlib.Path(plans.__file__).read_text(encoding="utf-8")
+        for symbol in ("$", "USD", "EUR", "GBP"):
+            assert symbol not in source, f"a currency reached hub/plans.py: {symbol}"
+
+    async def test_the_share_is_overridable_without_editing_the_module(self):
+        report = value.compute(
+            [self._effect(experiment.VERDICT_HELPS, 1000, 0.10, 0.05, 0.15)],
+            self._sound(), value_per_occasion=20.0,
+        )
+        assert plans.billable_value(report, share=0.5) == pytest.approx(1000.0)
+
+    async def test_seats_alone_no_longer_describe_the_model(self):
+        """The entitlement caps still exist and still gate usage; what changed
+        is that they are no longer the only thing a price could attach to."""
+        assert plans.get("team").max_agents > 0            # caps remain
+        assert hasattr(plans, "VALUE_CAPTURE_SHARE")        # and are not the whole model
+        assert plans.VALUE_BILLED_ONLY_ON_ESTABLISHED_EFFECTS is True

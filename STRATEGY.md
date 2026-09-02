@@ -2019,3 +2019,179 @@ volume, and that is now a *visible* inconsistency rather than an invisible
 one. Whether to move pricing onto the measured denominator is exactly the
 call §11.6 says is not mine. What has changed is that the question can now be
 asked with a number in hand.
+
+---
+
+## 24. Update (2026-09-02): the decisions §11.6 reserved, taken
+
+§11.6 lists what is "not mine to decide": commons terms, open-source
+posture, and **the actual price**. That list was written when nobody had
+delegated those decisions. The owner has since delegated them explicitly and
+more than once, so this section takes them.
+
+They are stated as decisions, with the reasoning and the falsifier for each,
+because a decision you cannot see the reasoning behind is one nobody can
+overturn when it turns out to be wrong. Every one of them is reversible.
+
+### 24.1 Segment: high-volume service operations, first and specifically
+
+**The first customer runs a support or service agent fleet, not a coding
+fleet.**
+
+This is a positioning call and it cuts against where the repository came
+from — the reference profile is a code-review pipeline, and `SKILL.md` is
+about code. Two reasons override that:
+
+1. **An occasion has a legible dollar value there and nowhere else.** Every
+   support organisation already tracks cost-per-contact, escalation rate and
+   handle time. `value.py` needs exactly one number from the customer — what
+   one resolved occasion is worth — and in support that number already
+   exists, is already agreed internally, and is already in someone's budget.
+   In engineering it does not: nobody has a defended figure for what one
+   resolved code review is worth, so the value report has no denominator to
+   multiply and the strongest thing this product does goes dark.
+
+2. **There is a buyer with a P&L.** A VP of Support owns a cost line that
+   this moves. An engineering leader typically owns headcount, not a
+   per-incident cost, so the same evidence lands as "interesting" rather
+   than "budgeted".
+
+Code fleets are the second segment, not the first, and the reason to
+sequence them second is not that the product works less well — it is that
+the *proof* works less well, and the proof is the product.
+
+**Not for**, stated because a positioning that excludes nobody is not one:
+
+- Teams who want a vector store. They should buy pgvector and a weekend.
+  §12.7 measured this repository's own retrieval at 95.7% recall@1; the
+  retrieval is not the differentiator and pretending otherwise invites a
+  comparison this loses on features.
+- Teams with no outcome data. Without a recorded resolution the causal loop
+  cannot close, and everything that remains is a nicer file format.
+- Single-agent or hobby use. The thesis is that lessons compound ACROSS
+  agents; one agent cannot demonstrate it.
+
+*Falsifier:* two support pilots that fail to produce a per-occasion value
+their own finance function will sign off on. If the number is not already
+theirs, this segment is not the wedge it looks like.
+
+### 24.2 Price: a per-agent platform fee, plus 20% of measured value
+
+§13.1's identity is revenue = agents under management × price per agent-year,
+and §11.5 refused to state a price on the ground that a price is a claim
+about value. Both correct, and together they left the product priced on
+seats and volume — the denominator §11.5 itself calls wrong.
+
+`commontrace/value.py` now computes the right denominator, so the decision
+can be taken without inventing anything:
+
+- **Platform fee, per agent under management.** Predictable, covers
+  cost-to-serve (§18 measured it), and bills against the one term §13.1
+  identifies as the compounding one.
+- **Plus 20% of measured value delivered** — occasions improved × the
+  customer's own per-occasion value (`hub/plans.py:VALUE_CAPTURE_SHARE`).
+
+**20%, and the ratio is ours to state even though the currency is not.**
+That is the distinction §11.5's argument actually turns on: what a resolved
+occasion is worth is the customer's number and is never stored here; what
+fraction of proven improvement this product charges for is a decision only
+we can make, and declining to make it just means every conversation starts
+from zero. A fifth leaves the measured surplus unambiguously with the
+customer, which is the only version of value pricing that survives a
+renewal. A half turns every renewal into a negotiation about the
+measurement — and the measurement is the product.
+
+**Billed only on established effects.** A quarter whose experiment came back
+COMPROMISED, or whose memories were all underpowered, bills the platform fee
+and nothing else. `plans.billable_value` returns `None` in exactly the cases
+`value.py` refuses to produce a figure, inheriting the refusal rather than
+re-deciding it.
+
+This is the part worth being loud about. **A vendor paid on measured value
+has every incentive to weaken its own validity checks. A vendor whose
+revenue is gated by those checks cannot weaken them without losing the
+ability to bill.** The incentive alignment is structural, not promised — and
+it is not a position a competitor can adopt selectively, because it only
+means anything when it costs something.
+
+Negative is possible and is returned as such: if the memory measurably made
+outcomes worse, the value component is negative. A pricing model floored at
+zero is one that cannot lose, which is the same thing as one that never
+proved anything.
+
+*Falsifier:* a customer who accepts the platform fee and refuses the
+value-linked component. That is the market saying it does not believe the
+measurement — which is a far more useful thing to learn than a lost deal.
+
+### 24.3 What the identity permits, with the assumptions labelled
+
+Not a forecast. §13.1's identity worked in the direction that matters, with
+every input named so each can be argued with separately.
+
+Price per agent-year is *derived*, not listed: it is
+`occasions/agent/year × improvement rate × value/occasion × 20%`.
+
+| | conservative | central | high-volume |
+|---|---:|---:|---:|
+| occasions per agent per year | 2,000 | 6,000 | 12,000 |
+| improvement rate (measured) | 4% | 5% | 6% |
+| value per resolved occasion | $30 | $50 | $60 |
+| measured value per agent-year | $2,400 | $15,000 | $43,200 |
+| **price at 20% capture** | **$480** | **$3,000** | **$8,640** |
+| agents needed for $1B ARR | 2.1M | 333k | 116k |
+| customers at ~150 agents each | 13,900 | 2,200 | 770 |
+
+**The single number the business is levered on is occasions per agent per
+year.** Price scales linearly with it at a fixed capture ratio, so a
+high-volume service fleet is worth an order of magnitude more per agent than
+a low-volume one — while costing almost the same to serve. That is the whole
+argument for §24.1's segment choice, and it is also why seat pricing would
+be a mistake here rather than merely suboptimal: a per-seat price leaves
+every bit of the volume upside on the table.
+
+The central column is a business of roughly 2,200 customers at ~$450k ACV.
+That is a known, hard, reachable shape. It is not the shape of a company
+that needs a new market to exist — support operations already spend this
+money on people.
+
+*Falsifier, and it is the cheapest one in this document:* the improvement
+rate row. It is the only input this product measures rather than assumes,
+and two real pilots settle whether 4–6% is optimistic. If measured
+improvement lands at 1%, every column divides by four or five and the
+answer is a good business rather than this one.
+
+### 24.4 Motion: the pilot is the go-to-market
+
+There is no separate sales motion to design, because the product now
+executes one.
+
+1. `experiment --plan --occasions N` sizes the pilot **on day zero** and
+   says plainly when the window cannot answer the question at any holdout
+   rate. That conversation used to happen on day 30, after the window was
+   spent.
+2. The fleet runs. The console shows validity above effects, so the customer
+   watches the proof accrue rather than waiting for a report.
+3. The close is `value_delivered`, in their own currency, against a number
+   their finance function already owns.
+
+**Time-to-first-defensible-number is the metric to run the company on**, and
+it is now measurable rather than anecdotal. Every engineering decision this
+session either shortened it (the planner, the evidence in a proposed lesson,
+the MCP surface so agents curate without a human) or protected it (the
+validity audit, the revision pinning, the underpowered verdict).
+
+*Falsifier:* pilots that produce a sound, positive number and still do not
+convert. That would mean the causal proof is not what the buyer is buying,
+and everything above would need rebuilding around whatever is.
+
+### 24.5 What is still not decided, and now honestly so
+
+Commons terms and open-source posture, unchanged from §11.6 — neither is
+blocking and both are genuinely governance rather than product.
+
+And the list prices in §24.3 are **derived, not set**. The mechanism
+computes a customer's price from their own measured volume and value; what
+the floor is, what the cap is, and what the platform fee covers are
+commercial terms that need a first real contract to fix. The difference from
+§11.5 is that these are now the last mile of a decision rather than the
+whole of it.
