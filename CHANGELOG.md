@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A read-only operator console at `/admin`**, served by the Hub itself and
+  off unless `HUB_ADMIN_TOKEN` is set. Every organization against its plan,
+  per-key state and expiry, quarantined traces, retrieval miss rate, recent
+  audited actions, and the Knowledge Base review queue — on one page.
+
+  The reason it exists is not convenience. Every serious defect found in this
+  branch's audit was *invisible*: placeholder lessons counted as coverage, a
+  bulk sync failing silently, an acceptance check printing "returned our
+  trace" on a passing run. They were invisible because the only way to see
+  this system's state was to run a command and read text, and nobody runs a
+  command for a question they have not thought to ask yet.
+
+  **Read-only is a security decision, not a missing feature.** Before this,
+  the Hub had no browser-facing surface at all — no cookies, no sessions,
+  nothing for a CSRF to target, and `X-Frame-Options: DENY` set with a
+  comment saying there was nothing browser-rendered to protect. The operator
+  actions worth putting in a UI are also the worst ones to get wrong:
+  `purge-org` irreversibly destroys one customer's entire history, and
+  `issue-key` would render a raw credential into browser history and any
+  screenshot of it. So the console renders state and, for anything that
+  changes state, shows the exact `hub.manage` command — the operator still
+  sees everything in one place, but the last keystroke happens in a terminal
+  that already prompts for confirmation and writes an audit row. Making it
+  read-write is a deliberate second phase with its own security work, not a
+  flag flip.
+
+  Three properties are asserted rather than asserted-to:
+
+  - **Absent unless configured.** With no token, the routes are never
+    registered — an unauthenticated prober gets a 404 from the router, not a
+    401 from a handler. Same "absent, not merely refused" treatment
+    `HUB_COMMONS_ENABLED` gives the Knowledge Base tools.
+  - **Escaped.** The console renders content from every tenant into the one
+    browser session with cross-tenant visibility, so a trace title is stored
+    XSS waiting to happen. Every value goes through `h()`; a test asserts a
+    trace titled `<script>alert('pwn')</script>` renders inert.
+  - **Structurally read-only.** A test asserts no page contains a `<form>`,
+    a `<button>`, a POST target, or a `fetch(` — the guarantee is checked,
+    not just documented.
+
+  Authentication is HTTP Basic (username ignored, password compared with
+  `hmac.compare_digest`), rate limited by client address *before* the
+  credential is checked, and no unauthenticated request reaches the database.
+
 ### Fixed
 
 - **`commontrace sync --push-traces` could not complete against a

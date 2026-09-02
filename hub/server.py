@@ -37,6 +37,7 @@ from hub.abuse import (
     make_read_rate_limiter,
     resolve_client_key,
 )
+from hub.admin import add_admin_routes
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.db import session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
@@ -832,6 +833,18 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         host=config.host,
         max_request_body_size=config.max_request_body_bytes,
     )
+
+    # Registered only when an operator token is configured -- see
+    # HubConfig.admin_token. With none set there is no /admin route at all,
+    # so a deployment that has not opted in has no console to probe.
+    if config.admin_token:
+        add_admin_routes(
+            inner_app,
+            session_factory,
+            admin_token=config.admin_token,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            commons_enabled=config.commons_enabled,
+        )
 
     add_health_routes(
         inner_app,

@@ -183,6 +183,22 @@ class HubConfig:
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
 
+    # --- Operator console (hub/admin.py) ---
+    # Empty (the default) means the /admin routes are NEVER REGISTERED --
+    # an unauthenticated prober gets a 404 from the router, not a 401 from a
+    # handler, which is the same "absent, not merely refused" property
+    # commons_enabled gives the Knowledge Base tools. A deployment that has
+    # not opted in has no console to attack.
+    #
+    # When set, this is the password half of an HTTP Basic credential (the
+    # username is ignored) compared in constant time. It is a SHARED
+    # OPERATOR SECRET, not a per-user login: treat it like the database URL,
+    # keep it in a secret store, and rotate it by changing this value and
+    # restarting. The console is read-only by design (see hub/admin.py), so
+    # the worst a leaked token buys is visibility -- which is bad enough that
+    # it belongs behind the same TLS and network controls as everything else.
+    admin_token: str = ""
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -287,6 +303,7 @@ class HubConfig:
             readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
             trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
+            admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),

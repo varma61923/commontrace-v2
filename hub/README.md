@@ -65,7 +65,8 @@ hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates ag
 hub/auth.py        argon2 API-key hashing/verification/rotation/expiry + request-scoped org_id
 hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
-hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz
+hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
+hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
@@ -112,10 +113,17 @@ python -m hub.main   # serves streamable-HTTP MCP on HUB_HOST:HUB_PORT/mcp
 ```
 
 Point any MCP client at `http://<host>:<port>/mcp` with
-`Authorization: Bearer <api-key>`. `GET /healthz` (liveness) and `GET /readyz`
-(readiness, checks the database) are unauthenticated — see
-[DEPLOYMENT.md §4](DEPLOYMENT.md#4-health-probes) for why they are separate
-and which probe to attach to each.
+`Authorization: Bearer <api-key>`. `GET /healthz` (liveness), `GET /readyz`
+(readiness, checks the database) and `GET /metrics` (Prometheus) are
+unauthenticated — see [DEPLOYMENT.md §4](DEPLOYMENT.md#4-health-probes) for
+why the probes are separate and which to attach to each.
+
+Set `HUB_ADMIN_TOKEN` to also serve a **read-only** operator console at
+`/admin` (HTTP Basic; unset means the routes do not exist). It shows every
+org against its plan, key state and expiry, quarantined traces, retrieval
+miss rate, audit history and the Knowledge Base queue — and for anything
+that changes state it shows the `hub.manage` command rather than doing it.
+That is deliberate: see `hub/admin.py`.
 
 ### Running the tests
 

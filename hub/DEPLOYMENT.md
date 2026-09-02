@@ -101,6 +101,37 @@ the wrong probe causes real outages:
 All three are unauthenticated (a load balancer and a metrics scraper carry
 no tenant credentials).
 
+### The operator console
+
+Set `HUB_ADMIN_TOKEN` and the Hub also serves a **read-only** console at
+`/admin`: every organization and what it is using against its plan, per-org
+key state and expiry, quarantined traces, retrieval miss rate, recent
+audited actions, and the Knowledge Base review queue.
+
+Unset — the default — **the routes are not registered at all**, so a
+deployment that has not opted in returns 404 rather than 401. Authentication
+is HTTP Basic (the username is ignored; the password is the token, compared
+in constant time), rate limited by client address before the credential is
+even checked.
+
+It is read-only on purpose, and that is a security decision rather than a
+missing feature. Before it, the Hub had no browser-facing surface at all —
+no cookies, no sessions, nothing for a CSRF to target. The operator actions
+worth having in a UI are also the worst ones to get wrong: `purge-org`
+irreversibly destroys a customer's entire history, and `issue-key` would
+render a raw credential into browser history and any screenshot of it. So
+the console shows the exact `hub.manage` command for anything that changes
+state, and the last keystroke happens in a terminal that already prompts for
+confirmation and writes an audit row.
+
+Everything it renders is customer-supplied — trace titles, tags, quarantine
+reasons — and it is read by the one session with cross-tenant visibility, so
+every value is HTML-escaped on the way out (`hub/tests/test_admin.py` asserts
+a trace titled with a `<script>` tag renders inert).
+
+Put it behind the same TLS and network controls as `/metrics`; it is
+operator-facing, not public.
+
 `/healthz` must not check the database on purpose: a failing liveness probe
 means *restart me*, so making it DB-dependent turns a 30-second database
 blip into a simultaneous restart of every replica. `/readyz` returning 503
@@ -299,6 +330,8 @@ across a revocation, re-revoke those key ids immediately.
       than never expiring.
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
+- [ ] `HUB_ADMIN_TOKEN` either unset, or set to a real secret with `/admin`
+      reachable only from your operator network.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
