@@ -902,7 +902,8 @@ The expensive, silent failure is a pilot that reaches its last day and says
 only fix had to be applied on day one.
 
 ```bash
-commontrace experiment --plan --occasions 240 --detect 0.15
+commontrace experiment --plan --occasions 240 --detect 0.15   # size it
+commontrace experiment --configure --rate 0.5                 # then set it
 ```
 ```
 To detect an effect of 15% against a 78% baseline at 80% power:
@@ -922,6 +923,15 @@ and it is worth knowing before the window rather than after.
 It also states the cost rather than selling the upside alone: a wider holdout
 means that share of the work runs without its memory while the experiment is
 live.
+
+`--configure` writes the rate to the store, and **every retriever reads it** —
+`commontrace query --experiment` and the MCP `retrieve` tool alike, so the two
+cannot drift apart. Changing the rate **starts a fresh randomization**: since
+assignment is `hash(lesson, occasion, salt) < rate`, a new rate re-randomizes
+every occasion, and pooling the assignments from before and after would let
+one occasion sit in both arms. The salt rotates so that is explicit — the
+report scopes to the current run and names the earlier one rather than mixing
+them (`--salt <salt>` reads it).
 
 **"No measurable effect" is reserved for a sample that could have detected
 one.** Clearing the per-arm floor is a condition for running the test, not

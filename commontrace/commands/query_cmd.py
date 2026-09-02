@@ -5,7 +5,7 @@ import glob
 import os
 import sys
 
-from commontrace import experiment, frontmatter, holdout_io, paths, retrieval
+from commontrace import frontmatter, holdout_io, paths, retrieval
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
 
@@ -50,8 +50,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Identifier for this decision, used to join the holdout assignment to its "
         "outcome later. Must match the episode `name` or trace `id` you record afterwards.",
     )
-    p.add_argument("--holdout-rate", type=float, default=experiment.DEFAULT_HOLDOUT_RATE)
-    p.add_argument("--experiment-salt", default=holdout_io.DEFAULT_SALT)
+    # Default None, resolved against the STORE's configured experiment at run
+    # time (_apply_holdout). A flag defaulting to a module constant is how the
+    # two retrieval surfaces came to disagree: `query` used 10% while the same
+    # fleet's agents retrieved over MCP at 10% from a different constant, and
+    # any operator who set one and not the other pooled two randomizations
+    # into one comparison. Passing either flag explicitly still overrides,
+    # which is what a one-off experiment needs.
+    p.add_argument("--holdout-rate", type=float, default=None)
+    p.add_argument("--experiment-salt", default=None)
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -83,11 +90,26 @@ def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set
     chances to bias the causal number this whole experiment exists to
     produce, so there is now exactly one.
     """
+    rate, salt = _effective_holdout(args, root)
     return holdout_io.assign_and_log(
-        root, slugs,
-        occasion_id=args.occasion_id,
-        rate=args.holdout_rate,
-        salt=args.experiment_salt,
+        root, slugs, occasion_id=args.occasion_id, rate=rate, salt=salt,
+    )
+
+
+def _effective_holdout(args: argparse.Namespace, root: str) -> tuple[float, str]:
+    """The rate and salt this run assigns with.
+
+    One resolver, used by the assignment and by every line that reports what
+    it did. Two of those lines used to read `args.holdout_rate` directly,
+    which was fine while the flag defaulted to a constant and became a crash
+    the moment it defaulted to "whatever the store is configured for" -- and
+    would have been a quietly WRONG printed rate if the None had happened to
+    format.
+    """
+    config = holdout_io.load_config(root)
+    return (
+        config.rate if args.holdout_rate is None else args.holdout_rate,
+        config.salt if args.experiment_salt is None else args.experiment_salt,
     )
 
 
@@ -144,7 +166,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     if args.experiment:
         print(
             f"\n[commontrace] experiment: {len(ranked) - len(withheld)} injected, "
-            f"{len(withheld)} withheld at {args.holdout_rate:.0%} for occasion "
+            f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
             f"{args.occasion_id!r}. Record the outcome under that id, then run "
             "`commontrace experiment`."
         )
@@ -225,7 +247,7 @@ def run(args: argparse.Namespace) -> int:
             print(line)
     print(
         f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
-        f"{len(withheld)} withheld at {args.holdout_rate:.0%} for occasion "
+        f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
         f"{args.occasion_id!r}. Record the outcome under that id, then run "
         "`commontrace experiment`."
     )

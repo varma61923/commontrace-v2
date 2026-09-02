@@ -292,13 +292,20 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         slugs = [r.slug for r in ranked]
         withheld: set[str] = set()
-        if occasion_id and slugs:
+        # The STORE's settings, not this module's constants. Hardcoding them
+        # here meant an agent-driven fleet could not change its holdout rate
+        # at all -- the product could compute exactly what rate a pilot needed
+        # and then offer its AI-first half no way to set it -- and it let this
+        # surface silently disagree with `commontrace query`, which pools two
+        # randomizations into one comparison.
+        config = holdout_io.load_config(root)
+        if occasion_id and slugs and config.running:
             try:
                 withheld = holdout_io.assign_and_log(
                     root, slugs,
                     occasion_id=occasion_id,
-                    rate=experiment.DEFAULT_HOLDOUT_RATE,
-                    salt=holdout_io.DEFAULT_SALT,
+                    rate=config.rate,
+                    salt=config.salt,
                 )
             except Exception as exc:  # noqa: BLE001
                 # An assignment that could not be LOGGED must not be acted on:
@@ -332,9 +339,14 @@ def build_server(root: str, *, allow_approval: bool = True):
         }
         if occasion_id:
             result["withheld"] = held
+            result["holdout_rate"] = config.rate if config.running else 0.0
             result["holdout_note"] = (
                 "Lessons under `withheld` matched but are the control arm for this "
                 "occasion. Do not use them. Report the outcome with capture(occasion_id=...)."
+                if config.running else
+                "No holdout is configured for this store, so nothing is withheld and "
+                "nothing causal can be measured. An operator starts one with "
+                "`commontrace experiment --configure --rate <r>`."
             )
         if not injected and not held:
             result["note"] = (

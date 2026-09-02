@@ -20,7 +20,7 @@ UTC = datetime.timezone.utc
 
 
 def a(lesson="lesson_x", occasion="occ", injected=True, succeeded=None,
-      rate=0.5, salt="s", at=None, rev="rev-aaa") -> integrity.Assignment:
+      rate=0.5, salt="default", at=None, rev="rev-aaa") -> integrity.Assignment:
     """One assignment. `rev` defaults to a fixed revision, i.e. a lesson whose
     text did not move -- the ordinary case. Pass `rev=None` for an assignment
     written before revisions were recorded, which is unchecked rather than
@@ -622,3 +622,205 @@ class TestThePlanCommand:
                            "--detect", "0.15", "--json", "--dest", root)
         payload = _json.loads(result.stdout)
         assert payload["n_per_arm"] > 0 and payload["verdict"] in ("ok", "raise_rate")
+
+
+class TestTheStoreOwnsItsExperimentSettings:
+    """Before this, the holdout rate was a CLI flag default on `query` and a
+    hardcoded constant in the MCP server. Two consequences, both bad:
+
+    An agent-driven fleet could not change its holdout rate AT ALL. The
+    product could compute and print exactly what rate a pilot needed and then
+    offer the AI-first half of its own customers no way to set it.
+
+    And the two surfaces could silently disagree: a person running `query
+    --holdout-rate 0.5` while the fleet retrieved over MCP at 0.1 produced a
+    log with two randomizations pooled into one comparison. Corrupting an
+    experiment took nothing more than using both interfaces.
+    """
+
+    @staticmethod
+    def _store(tmp_path):
+        import os
+
+        from commontrace import paths
+
+        root = str(tmp_path / "fleet")
+        os.makedirs(paths.memory_dir(root), exist_ok=True)
+        return root
+
+    def test_an_unconfigured_store_reports_the_defaults(self, tmp_path):
+        from commontrace import experiment, holdout_io
+
+        config = holdout_io.load_config(self._store(tmp_path))
+        assert config.rate == experiment.DEFAULT_HOLDOUT_RATE
+        assert config.salt == holdout_io.DEFAULT_SALT
+        assert config.running
+
+    def test_configuring_rotates_the_salt(self, tmp_path):
+        """The whole point, not a side effect. Assignment is
+        hash(lesson, occasion, salt) < rate, so honouring a new rate under the
+        old salt re-randomizes every occasion while pretending it is the same
+        experiment -- exactly the corruption `check_assignment_drift` exists
+        to catch, which a product should not offer as a command."""
+        from commontrace import holdout_io
+
+        root = self._store(tmp_path)
+        first = holdout_io.configure(root, rate=0.2)
+        second = holdout_io.configure(root, rate=0.5)
+        assert first.salt != second.salt
+        assert holdout_io.load_config(root).salt == second.salt
+
+    def test_the_salt_records_when_the_run_began(self, tmp_path):
+        """Derived from the moment it was set rather than random, because the
+        first question when two salts appear in one log is which came first."""
+        from commontrace import holdout_io
+
+        config = holdout_io.configure(self._store(tmp_path), rate=0.5)
+        assert config.salt.startswith("20") and "0.5" in config.salt
+
+    def test_rate_zero_stops_the_experiment(self, tmp_path):
+        from commontrace import holdout_io
+
+        root = self._store(tmp_path)
+        holdout_io.configure(root, rate=0.5)
+        assert not holdout_io.configure(root, rate=0.0).running
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
+    def test_an_impossible_rate_is_refused(self, tmp_path, bad):
+        from commontrace import holdout_io
+
+        with pytest.raises(ValueError):
+            holdout_io.configure(self._store(tmp_path), rate=bad)
+
+    def test_a_corrupt_config_falls_back_rather_than_failing_retrieval(self, tmp_path):
+        """Refusing to serve a lesson because a settings file is malformed
+        trades a working fleet for a tidy error."""
+        from commontrace import holdout_io
+
+        root = self._store(tmp_path)
+        with open(holdout_io.config_path(root), "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        assert holdout_io.load_config(root).rate == \
+            integrity.experiment.DEFAULT_HOLDOUT_RATE
+
+    def test_both_retrievers_read_the_same_configured_rate(self, tmp_path):
+        """The property that makes the two surfaces unable to disagree."""
+        import argparse
+
+        from commontrace import holdout_io
+        from commontrace.commands import query_cmd
+
+        root = self._store(tmp_path)
+        config = holdout_io.configure(root, rate=0.42)
+
+        # The CLI, with no flags passed.
+        args = argparse.Namespace(holdout_rate=None, experiment_salt=None)
+        assert query_cmd._effective_holdout(args, root) == (0.42, config.salt)
+
+        # And an explicit flag still overrides, for a one-off run.
+        override = argparse.Namespace(holdout_rate=0.9, experiment_salt="other")
+        assert query_cmd._effective_holdout(override, root) == (0.9, "other")
+
+
+class TestAnalysisIsScopedToOneRandomization:
+    @staticmethod
+    def _cli(*argv):
+        import os
+        import subprocess
+        import sys
+
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+                              capture_output=True, text=True, cwd=repo, check=False)
+
+    def _seeded(self, tmp_path, salt):
+        rows = [a(occasion=f"{salt}-{i}", injected=i % 2 == 0, succeeded=i % 3 == 0,
+                  salt=salt) for i in range(40)]
+        outcomes = {r.occasion_id: bool(r.succeeded) for r in rows}
+        return TestTheExperimentCommand._store(tmp_path, rows, outcomes)
+
+    def test_an_earlier_run_is_not_pooled_into_the_current_one(self, tmp_path):
+        """Pooling two randomizations is not a bigger sample -- one occasion
+        can sit in opposite arms in each. Before this the local report
+        analysed every line in the log, so the first time anyone changed
+        their rate the report became permanently invalid."""
+        from commontrace import holdout_io
+
+        root, cli = self._seeded(tmp_path, "old-salt")
+        holdout_io.configure(root, rate=0.5)
+
+        result = cli("experiment", "--dest", root)
+        assert result.returncode == 0
+        assert "none under the current randomization" in result.stderr
+        assert "old-salt" in result.stderr
+
+    def test_an_earlier_run_is_still_readable_by_name(self, tmp_path):
+        from commontrace import holdout_io
+
+        root, cli = self._seeded(tmp_path, "old-salt")
+        holdout_io.configure(root, rate=0.5)
+
+        result = cli("experiment", "--salt", "old-salt", "--dest", root)
+        assert result.returncode == 0, result.stderr
+        assert "Causal Effect Report" in result.stdout
+
+    def test_an_unconfigured_store_is_unaffected(self, tmp_path):
+        """Every existing store has salt 'default' throughout, so scoping is
+        a no-op there and no report changed."""
+        root, cli = self._seeded(tmp_path, "default")
+        result = cli("experiment", "--dest", root)
+        assert result.returncode == 0, result.stderr
+        assert "Causal Effect Report" in result.stdout
+
+
+class TestAnOldLogStaysReadable:
+    """Scoping the analysis to a salt introduced a way to lose an entire
+    experiment history on upgrade: a line written before salts were recorded
+    parses with an empty salt, which matches no configured randomization, so
+    the report went from "here are your results" to "none under the current
+    randomization" with no code change on the customer's side.
+
+    Backward compatibility for a measurement is not a nicety. The alternative
+    is a fleet's whole causal history becoming unreadable because they
+    upgraded.
+    """
+
+    def test_a_line_with_no_salt_belongs_to_the_default_randomization(self, tmp_path):
+        import json
+        import os
+
+        from commontrace import holdout_io, paths
+
+        root = str(tmp_path / "fleet")
+        os.makedirs(paths.memory_dir(root), exist_ok=True)
+        with open(holdout_io.holdout_log_path(root), "w", encoding="utf-8") as fh:
+            # Exactly the shape written before the field existed.
+            fh.write(json.dumps({"occasion_id": "t1", "lesson": "l", "injected": True,
+                                 "rate": 0.5}) + "\n")
+        records, corrupt = holdout_io.read_log(root)
+        assert corrupt == 0
+        assert [r.salt for r in records] == [holdout_io.DEFAULT_SALT]
+
+    def test_such_a_log_still_produces_a_report(self, tmp_path):
+        import json
+        import os
+
+        from commontrace import holdout_io, paths
+
+        rows = [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0)
+                for i in range(40)]
+        outcomes = {r.occasion_id: bool(r.succeeded) for r in rows}
+        root, cli = TestTheExperimentCommand._store(tmp_path, rows, outcomes)
+
+        # Rewrite the log in the pre-salt shape.
+        with open(holdout_io.holdout_log_path(root), "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps({"occasion_id": r.occasion_id, "lesson": r.lesson,
+                                     "injected": r.injected, "rate": r.rate}) + "\n")
+        assert os.path.isfile(holdout_io.holdout_log_path(root))
+        assert paths.memory_dir(root)
+
+        result = cli("experiment", "--dest", root)
+        assert result.returncode == 0, result.stderr
+        assert "Causal Effect Report" in result.stdout
+        assert "none under the current randomization" not in result.stderr

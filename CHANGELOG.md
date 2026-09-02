@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A fleet can now set its own holdout rate, and both retrievers read it.**
+  `commontrace experiment --configure --rate 0.5` writes the store's
+  experiment settings; `commontrace query --experiment` and the MCP
+  `retrieve` tool both read them.
+
+  This closes a gap the previous entry created and did not fix: the product
+  could compute exactly what rate a pilot needed, print it, and then offer no
+  way to set it on the AI-first half of its own surface. The rate was a CLI
+  flag default on `query` and a **hardcoded constant** in the MCP server, so
+  an agent-driven fleet could not change it at all.
+
+  Worse, the two surfaces could silently disagree. A person running `query
+  --holdout-rate 0.5` while the same fleet's agents retrieved over MCP at 0.1
+  produced a log with two randomizations pooled into one comparison — which
+  `integrity.check_assignment_drift` correctly reports as INVALIDATES.
+  Corrupting an experiment took nothing more than using both of the product's
+  own interfaces.
+
+  **Changing the rate rotates the salt**, and that is the point rather than a
+  side effect. Assignment is `hash(lesson, occasion, salt) < rate`, so a new
+  rate re-randomizes every occasion: the assignments before and after are two
+  different experiments, and pooling them lets one occasion sit in opposite
+  arms. Rotating makes that explicit instead of silent — and the salt is
+  derived from the moment it was set, because the first question when two
+  appear in one log is which came first. Honouring a new rate under the old
+  salt is exactly the corruption the drift check exists to catch, and a
+  product should not offer it as a command.
+
 - **`commontrace experiment --plan` designs the experiment before you run
   it.** The failure it prevents is expensive and silent: a fleet runs a
   30-day pilot at the default rate and the report on the last day says "not
@@ -506,6 +534,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the one claim nobody should make.
 
 ### Fixed
+
+- **The local causal report pooled every randomization the store had ever
+  run.** The Hub has always scoped its analysis to the current salt, in SQL.
+  The local report did not, so the first time anyone changed their holdout
+  rate the report became permanently invalid — it said so, via a drift
+  finding, which is better than silence and worse than not doing it. It now
+  scopes to the current randomization, names how many assignments were
+  excluded and why, and `--salt <salt>` reads an earlier run.
+
+  Scoping introduced a way to lose an entire experiment history on upgrade,
+  caught by an existing test: a log line written before salts were recorded
+  parses with an empty salt, which matches no configured randomization, so a
+  store whose log predated the field would have gone from "here are your
+  results" to "none under the current randomization" with no change on the
+  customer's side. An absent salt is now read as the default randomization,
+  which is what it was — back then there was only one.
 
 - **A 240-occasion pilot with a real +25pp effect reported
   `NO_MEASURABLE_EFFECT`.** Found by running the customer journey to the end

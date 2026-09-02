@@ -30,6 +30,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "test, not evidence the test could see anything.",
     )
     p.add_argument(
+        "--configure", action="store_true",
+        help="Set this store's holdout rate, so EVERY retriever uses it -- `commontrace "
+             "query` and the MCP `retrieve` tool alike. Changing the rate starts a fresh "
+             "randomization (see below); it does not reinterpret the assignments already "
+             "made.",
+    )
+    p.add_argument(
+        "--rate", type=float, default=None,
+        help="With --configure: the fraction of eligible lessons to withhold. 0 stops the "
+             "experiment. Use `--plan` first to find out what rate your occasion budget "
+             "can actually answer with.",
+    )
+    p.add_argument(
+        "--note", default="",
+        help="With --configure: why this experiment was started, recorded alongside it.",
+    )
+    p.add_argument(
         "--plan", action="store_true",
         help="Design the experiment instead of analysing one: how many occasions and what "
              "holdout rate are needed to detect --detect. Run this BEFORE the pilot.",
@@ -54,6 +71,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--strict", action="store_true",
         help="Exit non-zero if any lesson significantly HURTS outcomes.",
+    )
+    p.add_argument(
+        "--salt", default=None,
+        help="Analyse a specific randomization instead of the current one. Every run the "
+             "store has ever done is in the log; the default is the one configured now, "
+             "because pooling two is not a bigger experiment, it is a broken one.",
     )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -177,6 +200,66 @@ def _observed_baseline(root: str) -> float | None:
     return sum(1 for ok in outcomes if ok) / len(outcomes)
 
 
+def _run_configure(args: argparse.Namespace, root: str) -> int:
+    """Start, change or stop this store's experiment."""
+    if args.rate is None:
+        current = holdout_io.load_config(root)
+        print(_render_config(current, root))
+        return 0
+    try:
+        config = holdout_io.configure(
+            root, rate=args.rate, detect=args.detect, note=args.note)
+    except ValueError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    if not config.running:
+        print("[commontrace] holdout stopped. Retrieval injects every matching lesson "
+              "from now on, and nothing further is measured.\n"
+              "  Assignments already recorded are untouched; `commontrace experiment` "
+              "still reports on them.")
+        return 0
+
+    print(f"[commontrace] holdout set to {config.rate:.0%} for this store.")
+    print(f"  Salt: {config.salt}")
+    print()
+    # The consequence people get wrong, stated at the moment they cause it.
+    print("  This starts a FRESH randomization. Assignment is a hash of (lesson, "
+          "occasion, salt)\n"
+          "  compared against the rate, so a new rate re-randomizes every occasion --\n"
+          "  the assignments before and after are two different experiments, and pooling\n"
+          "  them would let one occasion sit in both arms. Rotating the salt makes that\n"
+          "  explicit: `commontrace experiment` reports on this run, and names the\n"
+          "  earlier one as a prior experiment rather than mixing them.")
+    print()
+    print("  Every retriever now uses it -- `commontrace query --experiment` and the MCP\n"
+          "  `retrieve` tool alike. That share of your work runs without its memory while\n"
+          "  the experiment is live; that is the price of a causal answer.")
+    return 0
+
+
+def _render_config(config: holdout_io.ExperimentConfig, root: str) -> str:
+    if not config.running:
+        return (
+            "[commontrace] no holdout is configured for this store, so nothing here is "
+            "causal.\n"
+            "  Start one with:  commontrace experiment --configure --rate 0.5\n"
+            "  Size it first with:  commontrace experiment --plan --occasions <n>"
+        )
+    lines = [
+        f"[commontrace] holdout running at {config.rate:.0%} (salt {config.salt}).",
+        f"  Target effect: {config.detect:.0%}. Started: {config.started_at[:19] or 'unknown'}.",
+    ]
+    if config.note:
+        lines.append(f"  Note: {config.note}")
+    rows, _rate, _corrupt = _load(root)
+    current = [r for r in rows if r.salt == config.salt]
+    lines.append(f"  {len(current)} assignment(s) under this randomization"
+                 + (f", {len(rows) - len(current)} from earlier ones."
+                    if len(rows) != len(current) else "."))
+    return "\n".join(lines)
+
+
 def _run_plan(args: argparse.Namespace, root: str) -> int:
     observed = _observed_baseline(root)
     baseline = args.baseline if args.baseline is not None else (observed or 0.5)
@@ -210,9 +293,39 @@ def _run_plan(args: argparse.Namespace, root: str) -> int:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.configure:
+        return _run_configure(args, root)
     if args.plan:
         return _run_plan(args, root)
-    rows, rate, n_corrupt = _load(root)
+    all_rows, rate, n_corrupt = _load(root)
+    # SCOPED TO ONE RANDOMIZATION, matching what the Hub already does in SQL.
+    # Assignment is a hash of (lesson, occasion, salt) against a rate, so
+    # changing either re-randomizes every occasion -- and pooling assignments
+    # from two of them lets a single occasion sit in opposite arms. That is
+    # not a larger sample, it is a comparison of nothing against nothing, and
+    # `integrity.check_assignment_drift` exists precisely to catch it.
+    #
+    # Before this the local report analysed every line in the log, so the
+    # first time anyone changed their holdout rate the report became
+    # permanently invalid -- and said so, via a finding, which is better than
+    # silence but worse than not doing it.
+    config = holdout_io.load_config(root)
+    wanted_salt = args.salt if args.salt is not None else config.salt
+    rows = [r for r in all_rows if r.salt == wanted_salt]
+    other = len(all_rows) - len(rows)
+    if all_rows and not rows:
+        print(
+            f"[commontrace] {len(all_rows)} assignment(s) recorded, but none under the "
+            f"current randomization (salt {wanted_salt!r}).\n"
+            "  They belong to earlier experiments. Analysing them together would pool "
+            "two randomizations\n"
+            "  into one comparison, so they are not mixed in. To read an earlier run: "
+            "`commontrace experiment --salt <salt>`.\n"
+            "  Salts present: "
+            + ", ".join(sorted({r.salt for r in all_rows if r.salt})),
+            file=sys.stderr,
+        )
+        return 0
     n_lines = len(rows)
     report = integrity.audit(rows, min_arm=args.min_arm)
     obs = _observations(rows)
@@ -282,6 +395,13 @@ def run(args: argparse.Namespace) -> int:
         # nothing and the estimate reads HURTS at p=0.003 -- if that page opens
         # with "HURTS", someone retires a lesson that was fine.
         print(integrity.render(report))
+        if other:
+            print()
+            print(f"_Scoped to the current randomization (salt `{wanted_salt}`). "
+                  f"{other} assignment(s) from earlier experiments are excluded — "
+                  "pooling two randomizations is not a bigger sample, it lets one "
+                  "occasion sit in both arms. Read an earlier run with "
+                  "`--salt <salt>`._")
         print()
         print("---")
         print()

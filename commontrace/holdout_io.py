@@ -29,6 +29,126 @@ from commontrace import experiment, frontmatter, lesson_io, paths
 DEFAULT_SALT = "default"
 
 
+CONFIG_NAME = "experiment.json"
+
+
+def config_path(root: str) -> str:
+    return os.path.join(paths.memory_dir(root), CONFIG_NAME)
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    """One store's experiment settings, read by EVERY retriever.
+
+    Before this existed the holdout rate was a CLI flag default on `query`
+    and a hardcoded constant in the MCP server, which meant two things, both
+    bad:
+
+    An agent-driven fleet could not change its holdout rate AT ALL. The
+    product could compute, and print, exactly what rate a pilot needed
+    (`experiment --plan`) and then offer the AI-first half of its own
+    customers no way to set it.
+
+    And the two surfaces could silently disagree. A person running `query
+    --holdout-rate 0.5` while the fleet's agents retrieved over MCP at 0.1
+    produced a log with two rates in it -- two different randomizations
+    pooled into one comparison, which `integrity.check_assignment_drift`
+    correctly reports as INVALIDATES. The product made corrupting an
+    experiment as easy as using both of its own interfaces.
+    """
+
+    rate: float = experiment.DEFAULT_HOLDOUT_RATE
+    salt: str = DEFAULT_SALT
+    detect: float = experiment.DEFAULT_PRACTICAL_EFFECT
+    started_at: str = ""
+    note: str = ""
+
+    @property
+    def running(self) -> bool:
+        return self.rate > 0.0
+
+
+def load_config(root: str) -> ExperimentConfig:
+    """The store's experiment settings, or the defaults if none were set.
+
+    Never raises. An unreadable or malformed config falls back to the
+    defaults rather than failing the retrieval that asked for it: refusing to
+    serve a lesson because a settings file is corrupt trades a working fleet
+    for a tidy error.
+    """
+    path = config_path(root)
+    if not os.path.isfile(path):
+        return ExperimentConfig()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            return ExperimentConfig()
+        return ExperimentConfig(
+            rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
+            salt=str(raw.get("salt") or DEFAULT_SALT),
+            detect=_float_or(raw.get("detect"), experiment.DEFAULT_PRACTICAL_EFFECT),
+            started_at=str(raw.get("started_at") or ""),
+            note=str(raw.get("note") or ""),
+        )
+    except (OSError, ValueError):
+        return ExperimentConfig()
+
+
+def configure(
+    root: str,
+    *,
+    rate: float,
+    detect: float = experiment.DEFAULT_PRACTICAL_EFFECT,
+    note: str = "",
+) -> ExperimentConfig:
+    """Start (or restart) this store's experiment. Returns the new settings.
+
+    CHANGING THE RATE ROTATES THE SALT, and that is the whole point rather
+    than a side effect. Assignment is `hash(lesson, occasion, salt) < rate`,
+    so changing the rate re-randomizes every occasion -- the assignments
+    before and after are two different experiments, and pooling them into one
+    comparison lets a single occasion sit in opposite arms.
+
+    Rotating the salt makes that explicit instead of silent: the new
+    assignments are a new experiment, the analysis scopes to the current salt
+    and reports the earlier ones as a prior run, and
+    `integrity.check_assignment_drift` has nothing to flag because nothing
+    was pooled. The alternative -- honouring a new rate under the old salt --
+    is precisely the corruption that check exists to catch, and a product
+    should not offer it as a command.
+    """
+    if not 0.0 <= rate < 1.0:
+        raise ValueError(f"holdout rate must be in [0.0, 1.0), got {rate}")
+    if not 0.0 < detect < 1.0:
+        raise ValueError(f"detectable effect must be in (0.0, 1.0), got {detect}")
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    config = ExperimentConfig(
+        rate=rate,
+        # Derived from the moment it was set rather than random, so the salt
+        # itself records WHEN this randomization began -- which is the first
+        # thing anyone asks when two of them appear in one log.
+        salt=f"{now[:19].replace(':', '').replace('-', '')}-{rate:g}",
+        detect=detect,
+        started_at=now,
+        note=note,
+    )
+    path = config_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with frontmatter.locked(path):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"rate": config.rate, "salt": config.salt, "detect": config.detect,
+                 "started_at": config.started_at, "note": config.note},
+                fh, indent=2, sort_keys=True,
+            )
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    return config
+
+
 def holdout_log_path(root: str) -> str:
     """Append-only record of every holdout assignment a retriever made.
 
@@ -161,7 +281,16 @@ def read_log(root: str) -> tuple[list[LogRecord], int]:
                 occasion_id=occasion_id,
                 injected=injected,
                 rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
-                salt=str(raw.get("salt", "")),
+                # A line with no salt is a line written before salts were
+                # recorded, and back then there was exactly one randomization:
+                # the default. Normalizing here rather than at each reader is
+                # what keeps an old log analysable -- once the analysis began
+                # scoping to a salt, an empty one matched nothing and a store
+                # whose log predated the field silently stopped reporting at
+                # all. Backward compatibility for a measurement is not a
+                # nicety: the alternative is a fleet's entire experiment
+                # history becoming unreadable on upgrade.
+                salt=str(raw.get("salt") or DEFAULT_SALT),
                 at=at,
                 revision=(str(raw["revision"]) if raw.get("revision") else None),
             ))
