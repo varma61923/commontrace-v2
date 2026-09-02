@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace experiment --plan` designs the experiment before you run
+  it.** The failure it prevents is expensive and silent: a fleet runs a
+  30-day pilot at the default rate and the report on the last day says "not
+  enough data yet". The occasions are spent, the window is gone, and the only
+  fix — a wider holdout — had to be applied on day one.
+
+  ```
+  $ commontrace experiment --plan --occasions 240 --detect 0.15
+  To detect an effect of 15% against a 78% baseline at 80% power:
+  - 119 observations in EACH arm.
+  - At a 10% holdout that is 1,190 occasions.
+
+  240 occasions can answer this, but not at 10%. Set the holdout rate to 50%.
+  ```
+
+  It reads the store's own observed baseline where there is one and falls
+  back to 50% — where the variance peaks, so a plan built on no data cannot
+  understate the sample. It names the rate a given budget needs, says plainly
+  when **no rate can answer it** (the most useful answer, and the one worth
+  having before spending the window rather than after), exits non-zero in
+  that case so a script can act on it, and states the cost of a wider holdout
+  rather than selling the upside alone: that share of the work runs without
+  its memory for the length of the experiment.
+
+  `required_n_per_arm` is the exact algebraic inverse of
+  `minimum_detectable_effect`, not a search, so two functions describing one
+  design cannot disagree about it — asserted across a grid of effects and
+  baselines.
+
+  **The default holdout rate is deliberately unchanged at 10%.** Changing it
+  would re-randomize every experiment already running, which
+  `integrity.check_assignment_drift` correctly reports as INVALIDATES. The
+  guidance is loud instead of the default being silently different.
+
 - **Customers had no interface.** `hub/admin.py` is the *operator* console —
   one vendor employee, cross-tenant, moderating the Knowledge Base — and
   until now it was the only HTML the Hub served. A paying organisation had
@@ -472,6 +506,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the one claim nobody should make.
 
 ### Fixed
+
+- **A 240-occasion pilot with a real +25pp effect reported
+  `NO_MEASURABLE_EFFECT`.** Found by running the customer journey to the end
+  — import 36 tickets, curate three lessons through the MCP tools, run 240
+  occasions with the holdout, read the report.
+
+  The gate separating "not enough data yet" from a reported result was
+  `min_arm = 10`, which is a floor on *running* the test, not a power
+  criterion. At 10 observations per arm against a 60% baseline the minimum
+  detectable effect is **61 percentage points**. Any run clearing that floor
+  and finding nothing was labelled `NO_MEASURABLE_EFFECT` — which a customer
+  reads as "the memory does not work" — when the honest statement is "this
+  design could not have seen anything short of a 61-point swing." Even at
+  1,000 occasions at the default 10% holdout the MDE is 19%, larger than
+  almost any real product effect.
+
+  The report did print the MDE beside the verdict. That is not enough: the
+  verdict is the thing that travels.
+
+  A null is now reported as `UNDERPOWERED` unless the design could actually
+  have detected an effect worth acting on (`DEFAULT_PRACTICAL_EFFECT`, 10
+  points, configurable with `--detect`). The asymmetry is deliberate and is
+  what makes this correct rather than merely cautious: **a significant result
+  at small n is still a detection** and keeps its `HELPS`/`HURTS` verdict —
+  power governs how to read a null, not a finding. Benjamini-Hochberg still
+  runs over every comparison that met the floor, because *m* must be the
+  number of tests actually run and must not depend on their results.
+
+  Same defect class as the last three rounds — a confident verdict where the
+  honest answer is "cannot tell" — and this one was in the single number the
+  entire business case rests on.
 
 - **Hub integrity findings used the local tier's vocabulary.** The two tiers
   randomize different objects — the local tier withholds *lessons*, the Hub

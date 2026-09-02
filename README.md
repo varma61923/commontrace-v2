@@ -267,6 +267,7 @@ commontrace query "..." --experiment --occasion-id task-4711   # withhold at ran
 # ...do the task...
 commontrace capture --title "..." --context "..." --solution "..." \
     --agent-type code --occasion-id task-4711 --resolved        # same id: this is the join
+commontrace experiment --plan --occasions 500   # design it FIRST: what rate answers this?
 commontrace experiment                  # causal effect per lesson, validity checked first
 commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if the run is not valid
 ```
@@ -893,6 +894,42 @@ fires on hard tasks looks good by retrieval count and bad by outcome.
 **The cost is real and bounded:** the withheld fraction gets a worse
 product on purpose. That is the price of knowing whether the product works
 at all. Nothing turns it on by default.
+
+### Design the pilot before you run it
+
+The expensive, silent failure is a pilot that reaches its last day and says
+*not enough data yet*. The occasions are spent, the window is gone, and the
+only fix had to be applied on day one.
+
+```bash
+commontrace experiment --plan --occasions 240 --detect 0.15
+```
+```
+To detect an effect of 15% against a 78% baseline at 80% power:
+- 119 observations in EACH arm.
+- At a 10% holdout that is 1,190 occasions.
+
+240 occasions can answer this, but not at 10%. Set the holdout rate to 50%.
+```
+
+The arithmetic nobody does in their head: **at a 10% holdout only one
+occasion in ten lands in the control arm, so a run reaches an answer about
+ten times slower than its occasion count suggests.** The plan reads your own
+observed baseline, names the rate your budget needs, and says plainly when no
+rate can answer it at all — which is the most useful thing it can tell you,
+and it is worth knowing before the window rather than after.
+
+It also states the cost rather than selling the upside alone: a wider holdout
+means that share of the work runs without its memory while the experiment is
+live.
+
+**"No measurable effect" is reserved for a sample that could have detected
+one.** Clearing the per-arm floor is a condition for running the test, not
+evidence the test could see anything — at 10 observations per arm the minimum
+detectable effect is 61 percentage points. A null from a design that could not
+have seen a 10-point change is reported as `UNDERPOWERED`, because that is
+what it is. A *significant* result at small n keeps its verdict: power governs
+how to read a null, not a finding.
 
 ### Auditing the instrument
 

@@ -252,17 +252,52 @@ class TestAnalyze:
         assert effect.verdict == ex.VERDICT_HURTS
         assert effect.effect < 0 and effect.ci_high < 0
 
-    def test_no_real_difference_is_reported_as_no_measurable_effect(self):
-        obs = _obs("l", 100, True, 0.60) + _obs("l", 100, False, 0.60)
-        (effect,) = ex.analyze(obs)
-        assert effect.verdict == ex.VERDICT_NO_EFFECT
+    def test_no_real_difference_is_no_measurable_effect_ONLY_when_powered(self):
+        """These two assertions used to be one, and the first was wrong.
 
-    def test_no_effect_carries_the_detectable_size_so_it_is_not_read_as_absence(self):
-        obs = _obs("l", 30, True, 0.60) + _obs("l", 30, False, 0.60)
-        (effect,) = ex.analyze(obs)
+        100 per arm against a 60% baseline has a minimum detectable effect of
+        ~19 points, so a null there cannot mean "no effect worth acting on" --
+        it means the design could not have seen one. NO_MEASURABLE_EFFECT is
+        reserved for a sample that could actually have detected the target.
+        """
+        thin = _obs("l", 100, True, 0.60) + _obs("l", 100, False, 0.60)
+        (effect,) = ex.analyze(thin)
+        assert effect.verdict == ex.VERDICT_UNDERPOWERED
+        assert effect.min_detectable_effect > ex.DEFAULT_PRACTICAL_EFFECT
+
+        powered = _obs("l", 600, True, 0.60) + _obs("l", 600, False, 0.60)
+        (effect,) = ex.analyze(powered)
         assert effect.verdict == ex.VERDICT_NO_EFFECT
+        assert effect.min_detectable_effect <= ex.DEFAULT_PRACTICAL_EFFECT
+
+    def test_a_real_null_says_it_is_evidence_of_absence(self):
+        """The distinction the whole verdict turns on, stated in the note so
+        a reader does not have to know it."""
+        (effect,) = ex.analyze(_obs("l", 600, True, 0.60) + _obs("l", 600, False, 0.60))
+        assert "evidence of absence rather than absence of evidence" in effect.note
+
+    def test_an_underpowered_null_says_what_it_could_have_seen(self):
+        (effect,) = ex.analyze(_obs("l", 30, True, 0.60) + _obs("l", 30, False, 0.60))
+        assert effect.verdict == ex.VERDICT_UNDERPOWERED
         assert effect.min_detectable_effect is not None
         assert "could only have detected" in effect.note
+        assert "not 'no effect'" in effect.note
+
+    def test_a_significant_result_survives_a_small_sample(self):
+        """The asymmetry that makes the power gate correct rather than merely
+        cautious: an underpowered design that DOES find something has found
+        it. Power governs how to read a null, not a detection."""
+        obs = _obs("l", 40, True, 0.95) + _obs("l", 40, False, 0.20)
+        (effect,) = ex.analyze(obs)
+        assert effect.verdict == ex.VERDICT_HELPS
+        assert effect.min_detectable_effect > ex.DEFAULT_PRACTICAL_EFFECT
+
+    def test_the_target_effect_is_configurable(self):
+        """10 points is a product judgement, not a statistical constant, so a
+        fleet that only cares about large effects can say so."""
+        obs = _obs("l", 100, True, 0.60) + _obs("l", 100, False, 0.60)
+        assert ex.analyze(obs)[0].verdict == ex.VERDICT_UNDERPOWERED
+        assert ex.analyze(obs, detectable=0.30)[0].verdict == ex.VERDICT_NO_EFFECT
 
     def test_a_thin_arm_is_underpowered_not_no_effect(self):
         """A 5-vs-5 comparison is not evidence of anything. Reporting it as
@@ -699,3 +734,76 @@ class TestSemanticPathRunsTheExperiment:
         capsys.readouterr()
         main(["query", "q", "--agent-type", "support", "--dest", str(store)])
         assert "not supported by the semantic retriever" in capsys.readouterr().err
+
+
+
+class TestDesigningTheExperimentBeforeRunningIt:
+    """`plan` exists because the failure it prevents is expensive and silent:
+    a fleet runs a 30-day pilot at the default holdout rate and the report on
+    the last day says "not enough data yet". The occasions are spent, the
+    window is gone, and the only fix had to be applied on day one.
+
+    Measured on a real 240-occasion run with a +25pp effect seeded in: two of
+    three lessons never reached the floor, and the third was reported as
+    NO_MEASURABLE_EFFECT.
+    """
+
+    def test_required_n_is_the_exact_inverse_of_the_detectable_effect(self):
+        """Two functions describing one design must not be able to disagree
+        about it."""
+        for effect in (0.05, 0.10, 0.20, 0.35):
+            for baseline in (0.2, 0.5, 0.8):
+                n = ex.required_n_per_arm(effect, baseline)
+                assert ex.minimum_detectable_effect(n, baseline) <= effect + 1e-9
+                assert ex.minimum_detectable_effect(n - 1, baseline) > effect
+
+    def test_a_smaller_effect_needs_a_bigger_sample(self):
+        big = ex.required_n_per_arm(0.20, 0.5)
+        small = ex.required_n_per_arm(0.05, 0.5)
+        assert small > big * 4  # quadratic in 1/effect
+
+    def test_the_control_arm_is_what_makes_a_low_rate_slow(self):
+        """The arithmetic nobody does in their head, and the reason a 10%
+        holdout answers roughly ten times slower than its occasion count
+        suggests."""
+        at_ten = ex.plan(effect=0.10, baseline=0.6, rate=0.10)
+        at_half = ex.plan(effect=0.10, baseline=0.6, rate=0.50)
+        assert at_ten.n_per_arm == at_half.n_per_arm
+        assert at_ten.occasions_needed == at_half.occasions_needed * 5
+
+    def test_it_names_the_rate_a_budget_needs(self):
+        design = ex.plan(effect=0.15, baseline=0.6, rate=0.10, occasions_budget=400)
+        assert design.verdict == "raise_rate"
+        assert design.rate_for_budget > 0.10
+        assert "Set the holdout rate to" in ex.render_plan(design)
+
+    def test_a_budget_that_no_rate_can_answer_says_so(self):
+        """The most useful answer this gives, and the one a customer most
+        needs before spending the window rather than after."""
+        design = ex.plan(effect=0.05, baseline=0.6, rate=0.10, occasions_budget=100)
+        assert design.verdict == "infeasible"
+        assert design.rate_for_budget is None
+        rendered = ex.render_plan(design)
+        assert "cannot answer this at any holdout rate" in rendered
+        assert "no rate recovers this" in rendered
+
+    def test_an_adequate_budget_is_reported_as_adequate(self):
+        design = ex.plan(effect=0.20, baseline=0.6, rate=0.50, occasions_budget=5000)
+        assert design.verdict == "ok"
+        assert "is enough at" in ex.render_plan(design)
+
+    def test_the_rendered_plan_states_the_cost_of_a_wider_holdout(self):
+        """A wider holdout means more work running without its memory. A tool
+        that recommends one without saying so is selling the upside only."""
+        rendered = ex.render_plan(
+            ex.plan(effect=0.15, baseline=0.6, rate=0.10, occasions_budget=400))
+        assert "runs without its memory" in rendered
+
+    @pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5])
+    def test_an_impossible_baseline_is_refused(self, bad):
+        with pytest.raises(ValueError):
+            ex.required_n_per_arm(0.1, bad)
+
+    def test_a_non_positive_effect_is_refused(self):
+        with pytest.raises(ValueError):
+            ex.required_n_per_arm(0.0, 0.5)

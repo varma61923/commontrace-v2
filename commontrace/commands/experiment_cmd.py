@@ -22,6 +22,33 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Measure whether injecting lessons CAUSES better outcomes, via randomized holdout.",
     )
     p.add_argument("--min-arm", type=int, default=experiment.DEFAULT_MIN_ARM)
+    p.add_argument(
+        "--detect", type=float, default=experiment.DEFAULT_PRACTICAL_EFFECT,
+        help="The smallest effect worth calling a result (default 0.10). A null from a "
+             "design that could not have detected this is reported as UNDERPOWERED, not "
+             "as 'no measurable effect' -- clearing --min-arm is a floor on running the "
+             "test, not evidence the test could see anything.",
+    )
+    p.add_argument(
+        "--plan", action="store_true",
+        help="Design the experiment instead of analysing one: how many occasions and what "
+             "holdout rate are needed to detect --detect. Run this BEFORE the pilot.",
+    )
+    p.add_argument(
+        "--occasions", type=int, default=None,
+        help="With --plan: how many occasions you expect in the window. Answers 'what "
+             "rate do I need', which is the question a pilot actually has.",
+    )
+    p.add_argument(
+        "--baseline", type=float, default=None,
+        help="With --plan: the success rate you expect without the memory. Defaults to "
+             "this store's own observed rate when there is one, else 0.5 (the most "
+             "pessimistic, so a plan built on no data does not understate the sample).",
+    )
+    p.add_argument(
+        "--holdout-rate", type=float, default=experiment.DEFAULT_HOLDOUT_RATE,
+        help="With --plan: the rate you intend to run at.",
+    )
     p.add_argument("--alpha", type=float, default=0.05, help="False discovery rate.")
     p.add_argument("--json", action="store_true")
     p.add_argument(
@@ -135,8 +162,56 @@ def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[st
     return dict(sorted(out.items()))
 
 
+def _observed_baseline(root: str) -> float | None:
+    """This store's own success rate, for planning against reality.
+
+    A plan is only as good as the baseline it assumes, and the rate a fleet
+    actually resolves at is sitting in its own traces. Falls back to 0.5 when
+    there is nothing to read, which is the most pessimistic assumption
+    (variance peaks there) and therefore the one that will not understate the
+    sample a real experiment needs.
+    """
+    outcomes = list(_outcomes_by_occasion(root).values())
+    if len(outcomes) < 20:
+        return None
+    return sum(1 for ok in outcomes if ok) / len(outcomes)
+
+
+def _run_plan(args: argparse.Namespace, root: str) -> int:
+    observed = _observed_baseline(root)
+    baseline = args.baseline if args.baseline is not None else (observed or 0.5)
+    if not 0 < baseline < 1 or not 0 < args.detect < 1:
+        print("[commontrace] --baseline and --detect must be strictly between 0 and 1.",
+              file=sys.stderr)
+        return 1
+    design = experiment.plan(
+        effect=args.detect, baseline=baseline, rate=args.holdout_rate,
+        occasions_budget=args.occasions,
+    )
+    if args.json:
+        import dataclasses
+
+        print(json.dumps(dataclasses.asdict(design), indent=2))
+        return 0
+    print(experiment.render_plan(design))
+    if args.baseline is None:
+        print()
+        print(
+            f"_Baseline {baseline:.0%} "
+            + (f"from this store's own {len(_outcomes_by_occasion(root))} recorded outcome(s)._"
+               if observed is not None else
+               "assumed: fewer than 20 recorded outcomes here to read one from. 50% is the "
+               "most pessimistic assumption, so this will not understate the sample._")
+        )
+    # A design that no budget can answer is a planning failure, and a script
+    # running this before a pilot should be able to act on it.
+    return 1 if design.verdict == "infeasible" else 0
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.plan:
+        return _run_plan(args, root)
     rows, rate, n_corrupt = _load(root)
     n_lines = len(rows)
     report = integrity.audit(rows, min_arm=args.min_arm)
@@ -177,7 +252,8 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    effects = experiment.analyze(obs, min_arm=args.min_arm, alpha=args.alpha)
+    effects = experiment.analyze(
+        obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect)
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),
         n_lessons=len({o.lesson_slug for o in obs}),

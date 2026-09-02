@@ -570,3 +570,55 @@ class TestTreatmentStability:
         text = integrity.render(integrity.audit(
             [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0) for i in range(40)]))
         assert "whether the lesson text held still" in text
+
+
+class TestThePlanCommand:
+    """`commontrace experiment --plan` is the tool that has to be run BEFORE
+    a pilot. The failure it prevents is a spent window.
+    """
+
+    @staticmethod
+    def _cli(*argv):
+        import os
+        import subprocess
+        import sys
+
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return subprocess.run([sys.executable, "-m", "commontrace.cli", *argv],
+                              capture_output=True, text=True, cwd=repo, check=False)
+
+    def test_it_runs_on_an_empty_store_and_assumes_the_worst(self, tmp_path):
+        """A plan built on no data must not understate the sample. 50% is
+        where the variance peaks, so it is the honest assumption."""
+        root = str(tmp_path / "fleet")
+        assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0
+        result = self._cli("experiment", "--plan", "--dest", root)
+        assert result.returncode == 0, result.stderr
+        assert "50%" in result.stdout
+        assert "most pessimistic" in result.stdout
+
+    def test_an_infeasible_design_exits_non_zero(self, tmp_path):
+        """So a script running this before a pilot can act on it."""
+        root = str(tmp_path / "fleet")
+        assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0
+        result = self._cli("experiment", "--plan", "--occasions", "50",
+                           "--detect", "0.02", "--dest", root)
+        assert result.returncode == 1
+        assert "cannot answer this at any holdout rate" in result.stdout
+
+    def test_it_refuses_an_impossible_target(self, tmp_path):
+        root = str(tmp_path / "fleet")
+        assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0
+        result = self._cli("experiment", "--plan", "--detect", "1.5", "--dest", root)
+        assert result.returncode == 1
+        assert "strictly between 0 and 1" in result.stderr
+
+    def test_json_is_machine_readable(self, tmp_path):
+        import json as _json
+
+        root = str(tmp_path / "fleet")
+        assert self._cli("init", "--dest", root, "--agent-type", "code").returncode == 0
+        result = self._cli("experiment", "--plan", "--occasions", "4000",
+                           "--detect", "0.15", "--json", "--dest", root)
+        payload = _json.loads(result.stdout)
+        assert payload["n_per_arm"] > 0 and payload["verdict"] in ("ok", "raise_rate")

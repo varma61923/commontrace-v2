@@ -2031,10 +2031,20 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     """Per-trace causal effect estimates from the running experiment.
 
     Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
-    two-proportion tests, Benjamini-Hochberg across the lessons that are
-    adequately powered, a minimum detectable effect on the ones that are
-    not, and an explicit UNDERPOWERED verdict so "cannot answer yet" never
-    reads as "no effect".
+    two-proportion tests, Benjamini-Hochberg across the lessons that met the
+    per-arm floor, a minimum detectable effect on every inconclusive one, and
+    an explicit UNDERPOWERED verdict so "cannot answer yet" never reads as
+    "no effect".
+
+    That last guarantee is stronger than it used to be, and it is why a Hub
+    customer may see more UNDERPOWERED rows than before. Clearing the
+    per-arm floor is a condition for running the test, not evidence the test
+    could see anything: at 10 observations per arm the minimum detectable
+    effect is over 60 percentage points. A null from a design that could not
+    have detected an effect worth acting on is now reported as UNDERPOWERED
+    rather than as NO_MEASURABLE_EFFECT, which is what it is
+    (commontrace/experiment.py:DEFAULT_PRACTICAL_EFFECT). The projections
+    beside it say how far each trace is from an answer.
     """
     org = await session.get(Organization, org_id)
     rows = (
