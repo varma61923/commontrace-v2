@@ -1832,3 +1832,97 @@ still caught; both are measured in the test suite rather than argued.
 It was found by a test that failed about one run in fifteen under random
 ordering — which is worth recording as the cheapest instrument in this
 document. Nobody reasoned their way to it. A flaky test did.
+
+---
+
+## 22. Update (2026-09-02): the claim, end to end, and what it cost to make it true
+
+§21.5 said the caveats are where the next defect is. Applied five more times
+in one session, it found five, each in the load-bearing claim rather than
+around it. Recorded here because the *pattern* is the finding, not any one
+of them.
+
+### 22.1 What was wrong, in the order it was found
+
+**The AI-first half of the product could not use its own memory.** Every
+local-tier step — retrieve, capture, distill, approve — was an argparse
+command, so the only agents that could use their own store were the ones
+with a shell. A support agent in a helpdesk could talk to a remote Hub and
+do nothing else. `commontrace serve` (MCP over stdio) closed it.
+
+**The causal number could be confidently wrong.** `analyze()` sees only
+occasions that got an outcome, and both tiers dropped the rest before it.
+That is unbiased only if both arms lose outcomes at the same rate, and the
+withheld arm — by construction the one working without its memory — is the
+one that runs long and gets abandoned. Reproduced: a fleet where the lesson
+does nothing, reported as **HURTS, −12.6%, p=0.003**, significant and
+adequately powered.
+
+**An effect size was attached to a mutable name.** A lesson is a file; the
+holdout log recorded its slug. Edit it mid-run and the two halves of the
+experiment are different treatments pooled into one arm. The MCP work two
+commits earlier had made this *easier* to trigger, and nothing connected the
+two at the time.
+
+**"No measurable effect" was reported by designs that could see nothing.**
+The gate was `min_arm = 10`, at which the minimum detectable effect is 61
+percentage points. A full 240-occasion pilot with a real +25pp effect came
+back `NO_MEASURABLE_EFFECT`. The report printed the MDE beside the verdict,
+which is not enough — the verdict is what travels.
+
+**The rate the planner recommended could not be set.** The holdout rate was
+a CLI flag default on one surface and a hardcoded constant on the other, so
+an agent-driven fleet could not change it at all — and a fleet using both
+interfaces pooled two randomizations without doing anything wrong.
+
+### 22.2 The claim, demonstrated rather than argued
+
+Sized by the product (`--plan`: 900 occasions cannot answer a 15-point effect
+at 10%; use 19% or more), configured to 25%, then curated and run **entirely
+over MCP by an agent with no shell** — 900 occasions against a seeded +18pp
+effect:
+
+| | |
+|---|---|
+| Validity | **Sound** — 900 of 900 assignments observed |
+| Verdict | **HELPS** |
+| Effect | **+14%**, 95% CI **[+7%, +22%]**, p<0.001 |
+| Revision under test | `42d099b46770` |
+
+The interval covers the true value. And the mirror image, from the same
+session's test suite: a fleet where the memory does nothing, which the
+product **refuses to score** rather than reporting the −12.6% its own
+arithmetic produces.
+
+Both halves matter, and the second is the one that is hard to copy. A vendor
+willing to run an experiment that can return `HURTS` about its own product
+is making a different kind of claim; a vendor whose product *declines to
+report a number it cannot stand behind* is making a stronger one.
+
+### 22.3 What this does and does not change about §13.2
+
+Links 1–5 are unchanged. Every one of them still needs customers, and no
+amount of further engineering moves them.
+
+What changed is what a customer's number will be worth when they produce it.
+Before this session the falsifier §13.2 calls cheapest and most gating could
+have returned a confident wrong answer in either direction — from
+differential attrition, from a lesson edited mid-run, or from a design that
+could not detect anything — and nobody would have known. It can still return
+"we cannot tell yet". It can no longer return a false answer quietly.
+
+The customer console (`/app`) exists for the same reason: the person who
+decides on renewal does not run `commontrace prove outcomes`, and a claim
+nobody in the buying organisation can see is not doing the job it was built
+for.
+
+### 22.4 The rule, sixth time
+
+A claim of completeness is worth exactly as much as the falsifier attached to
+it, and **the caveats are where the next defect is** — they mark the places
+someone already knew the ground was soft and wrote it down instead of
+digging.
+
+The cheapest instrument in this document remains a test that failed one run
+in fifteen under random ordering. Nobody reasoned their way to the
+arm-balance defect. A flaky test did.
