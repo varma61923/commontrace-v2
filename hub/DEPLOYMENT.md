@@ -103,10 +103,23 @@ no tenant credentials).
 
 ### The operator console
 
-Set `HUB_ADMIN_TOKEN` and the Hub also serves a **read-only** console at
+Set `HUB_ADMIN_TOKEN` and the Hub also serves an operator console at
 `/admin`: every organization and what it is using against its plan, per-org
 key state and expiry, quarantined traces, retrieval miss rate, recent
-audited actions, and the Knowledge Base review queue.
+audited actions — and the Knowledge Base, which is where the only exchange
+between an org and anything outside it actually happens.
+
+**Orgs never exchange anything with each other.** A fleet's traces stay
+private to that fleet; there is no tool on this Hub that shows one org
+another's data. The Knowledge Base is the single surface where content
+crosses an org boundary, and it does so through a person: an org *consults*
+it by sending a signature (never its text), and an org *proposes* an entry
+that stays invisible to everyone until an operator accepts it here. An
+accepted proposal is published under the operator's org, so what other orgs
+read is operator-curated substrate knowledge rather than a customer's
+record — and the proposing org earns a permanent query-allowance credit,
+which is the whole incentive. See `hub/commons.py` for why direct
+org-to-org sharing was designed out rather than never built.
 
 Unset — the default — **the routes are not registered at all**, so a
 deployment that has not opted in returns 404 rather than 401. Authentication
@@ -114,15 +127,35 @@ is HTTP Basic (the username is ignored; the password is the token, compared
 in constant time), rate limited by client address before the credential is
 even checked.
 
-It is read-only on purpose, and that is a security decision rather than a
-missing feature. Before it, the Hub had no browser-facing surface at all —
-no cookies, no sessions, nothing for a CSRF to target. The operator actions
-worth having in a UI are also the worst ones to get wrong: `purge-org`
-irreversibly destroys a customer's entire history, and `issue-key` would
-render a raw credential into browser history and any screenshot of it. So
-the console shows the exact `hub.manage` command for anything that changes
-state, and the last keystroke happens in a terminal that already prompts for
-confirmation and writes an audit row.
+**What it will and will not do is decided by reversibility.**
+
+| Class | Examples | Where |
+|---|---|---|
+| Reversible moderation | accept/decline a proposal, retract/restore an entry | **The console.** |
+| Irreversible or credential-bearing | `purge-org`, `purge-trace`, `issue-key`, `rotate-key` | **The CLI only.** |
+
+Deleting an organization cannot be undone, and issuing a key would put a live
+credential into browser history, the page cache, and any screenshot. Those
+stay in a terminal that prompts for confirmation. Withdrawing a Knowledge
+Base entry, by contrast, is undone by restoring it — and it is high-frequency
+work, because a Knowledge Base is only as good as its review queue and a
+queue that can only be worked from a terminal does not get worked.
+
+Every console decision writes the same audit row the CLI writes, under the
+actor `operator-console`, so "who published this entry" stays answerable.
+
+Because authentication is HTTP Basic, a browser re-sends those credentials on
+a cross-site form POST. Every mutating endpoint therefore requires a CSRF
+token that is an HMAC of the action **and** its target under the admin
+secret — unforgeable without it, and scoped so a token minted to decline one
+proposal cannot approve another. Cross-site posts are refused outright where
+the browser reports `Sec-Fetch-Site`.
+
+Publishing needs `HUB_OPERATOR_ORG_ID`. Without it the accept action **fails
+closed** and shows the CLI command instead: an accepted proposal is published
+under the operator's org and never the submitter's, and putting a customer's
+id on Knowledge Base content is the one mistake this whole boundary exists to
+prevent.
 
 Everything it renders is customer-supplied — trace titles, tags, quarantine
 reasons — and it is read by the one session with cross-tenant visibility, so
@@ -332,6 +365,8 @@ across a revocation, re-revoke those key ids immediately.
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] `HUB_ADMIN_TOKEN` either unset, or set to a real secret with `/admin`
       reachable only from your operator network.
+- [ ] `HUB_OPERATOR_ORG_ID` set to your own org if you intend to accept
+      Knowledge Base proposals from the console (it fails closed otherwise).
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an

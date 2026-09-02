@@ -199,6 +199,20 @@ class HubConfig:
     # it belongs behind the same TLS and network controls as everything else.
     admin_token: str = ""
 
+    # The org that Knowledge Base entries are published UNDER when an
+    # operator accepts a community submission. Never the submitting org --
+    # the same ownership rule commons_seed follows (hub/crud.py:
+    # review_kb_submission), so an accepted proposal becomes operator-owned
+    # substrate knowledge rather than one customer's content served to
+    # another.
+    #
+    # Unset means the console can still REVIEW and REJECT, but its accept
+    # action fails closed and shows the CLI command instead: publishing
+    # under the wrong org would put a customer's id on Knowledge Base
+    # content, which is the one mistake this whole boundary exists to
+    # prevent, and it is not a mistake a dropdown should be able to make.
+    operator_org_id: str = ""
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -304,6 +318,7 @@ class HubConfig:
             trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
+            operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),

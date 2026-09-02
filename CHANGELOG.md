@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Knowledge Base is now operable from the console** — the review queue
+  that decides what goes into the one surface where anything crosses an org
+  boundary.
+
+  Orgs never exchange anything with each other, and that is designed rather
+  than incidental: a fleet's traces stay private to that fleet, and
+  `hub/commons.py` records why direct org-to-org sharing was retired
+  (adverse selection — the most valuable lessons are the most proprietary,
+  so voluntary contribution biases toward filler). The exchange that does
+  exist has two directions and a person in the middle: an org **consults**
+  the Knowledge Base by sending a MinHash signature (never its text), and an
+  org **proposes** an entry that sits in a separate table no commons query
+  reads, invisible to everyone, until an operator accepts it.
+
+  That review step was CLI-only, which is the wrong place for it: a
+  Knowledge Base is only as good as its queue, and a queue that can only be
+  worked from a terminal does not get worked. The console now shows each
+  proposal with its rationale, its context, its solution and the org that
+  sent it, and accepts or declines it in place. Accepting publishes under the
+  operator's org and permanently credits the proposer's query allowance;
+  declining awards nothing, which is the adverse-selection defence. Published
+  entries can be retracted and restored from the same page.
+
+  **This changed the console's rule from "read-only" to reversibility**, and
+  the new line is the honest one:
+
+  | Class | Where |
+  |---|---|
+  | Reversible moderation (accept/decline, retract/restore) | the console |
+  | Irreversible or credential-bearing (`purge-org`, `issue-key`) | the CLI only |
+
+  Because authentication is HTTP Basic — which a browser re-sends on a
+  cross-site form POST — every mutating endpoint requires a CSRF token that
+  is an HMAC of the action *and* its target under the admin secret, so a
+  token minted to decline one proposal cannot approve another. Cross-site
+  posts are refused where `Sec-Fetch-Site` reports them. Publishing requires
+  `HUB_OPERATOR_ORG_ID` and **fails closed** without it: putting a customer's
+  id on Knowledge Base content is the one mistake this boundary exists to
+  prevent, and not one a form should be able to make. Every decision writes
+  the same audit row the CLI writes, under the actor `operator-console`.
+
+  Verified by driving it in a real browser: a proposal that was genuinely
+  substrate was accepted and a proposal that was one org's own policy was
+  declined; the published entry came out owned by the operator org, the
+  proposer earned credit for the accepted one and nothing for the declined
+  one, and the entry then came back through `commons_search` for a client
+  that consulted it by signature.
+
 - **A read-only operator console at `/admin`**, served by the Hub itself and
   off unless `HUB_ADMIN_TOKEN` is set. Every organization against its plan,
   per-key state and expiry, quarantined traces, retrieval miss rate, recent

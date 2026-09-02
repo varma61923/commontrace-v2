@@ -60,11 +60,24 @@ from starlette.responses import HTMLResponse, Response
 from hub import crud, plans
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.db import session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization, Trace, Vote
+from hub.models import (
+    ApiKey,
+    AuditLogEntry,
+    KnowledgeBaseSubmission,
+    Organization,
+    Trace,
+    UsageCounter,
+    Vote,
+)
 
 logger = logging.getLogger("commontrace.hub.admin")
 
 ADMIN_PATH = "/admin"
+# Every moderation decision made here writes the same audit row the CLI path
+# writes, under an actor that says which surface it came from -- so "who
+# published this entry" is answerable after the fact, and a console decision
+# is distinguishable from a terminal one.
+_ADMIN_ACTOR = "operator-console"
 _REALM = "CommonTrace Hub operator console"
 
 # How many rows each list renders. A console is for noticing, not for bulk
@@ -160,7 +173,33 @@ tr:last-child td{border-bottom:1px solid var(--rule)}
   padding:.9rem 1.1rem;font-size:.9rem;color:var(--muted)}
 .note b{color:var(--ink)}
 .empty{color:var(--muted);font-size:.9rem;padding:.6rem 0}
-@media (max-width:640px){.cmd{grid-template-columns:1fr}}
+.cards{display:flex;flex-direction:column;gap:1rem}
+.card{background:var(--surface);border:1px solid var(--rule);padding:1.1rem 1.25rem;
+  display:flex;flex-direction:column;gap:.7rem}
+.card h3{font-size:1.02rem;margin:0}
+.card .meta{color:var(--muted);font-size:.82rem;margin:0}
+.field{display:flex;flex-direction:column;gap:.15rem}
+.field .lbl{font-family:ui-monospace,monospace;font-size:.62rem;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--muted)}
+.field p{margin:0;font-size:.92rem;max-width:70ch;white-space:pre-wrap}
+.tags{display:flex;gap:.35rem;flex-wrap:wrap}
+.acts{display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;
+  border-top:1px solid var(--rule-soft);padding-top:.75rem}
+form.act{display:flex;gap:.4rem;align-items:center;margin:0}
+form.act input[type=text]{font:inherit;font-size:.85rem;padding:.3rem .45rem;
+  border:1px solid var(--rule);border-radius:2px;background:var(--paper);color:var(--ink);
+  min-width:12rem}
+.btn{font:inherit;font-size:.85rem;font-weight:600;padding:.35rem .8rem;cursor:pointer;
+  border:1px solid var(--muted);border-radius:2px;background:var(--paper);color:var(--ink)}
+.btn:hover{border-color:var(--ink)}
+.btn.ok{border-color:var(--ok);color:var(--ok)}
+.btn.warn{border-color:var(--warn);color:var(--warn)}
+.btn:focus-visible,form.act input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.disabled{color:var(--muted);font-size:.85rem;font-style:italic}
+.flash{background:var(--surface);border:1px solid var(--ok);border-left:3px solid var(--ok);
+  padding:.75rem 1.1rem;font-size:.9rem}
+@media (max-width:640px){.cmd{grid-template-columns:1fr}
+  form.act{flex-wrap:wrap}form.act input[type=text]{min-width:0;flex:1}}
 """
 
 
@@ -170,7 +209,7 @@ def _page(title: str, body: str) -> HTMLResponse:
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>{h(title)} · CommonTrace Hub</title><style>{_CSS}</style></head><body>"
         "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
-        "<span class=\"ro\">read-only console</span>"
+        "<span class=\"ro\">operator console</span>"
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
@@ -191,6 +230,56 @@ def _cmd(what: str, command: str) -> str:
 
 
 # --- Auth -------------------------------------------------------------------
+
+
+# WHICH ACTIONS THIS CONSOLE MAY PERFORM
+# --------------------------------------
+# The original rule here was "read-only, everything else is CLI". That was
+# right about the destructive actions and wrong about moderation, and the
+# difference is reversibility:
+#
+#   IRREVERSIBLE or CREDENTIAL-BEARING -> stays in the CLI.
+#     purge-org destroys one customer's entire history for good; issue-key
+#     and rotate-key render a live credential that would then sit in browser
+#     history, the page cache, and any screenshot. A hijacked console session
+#     must not reach these.
+#
+#   REVERSIBLE MODERATION -> belongs here.
+#     Accepting a submission publishes an entry that kb-retract withdraws;
+#     retract and restore are an explicitly reversible pair. These are also
+#     the HIGH-FREQUENCY actions: a Knowledge Base is only as good as its
+#     review queue, and a queue that can only be worked from a terminal is a
+#     queue that does not get worked. Every one of them writes the same audit
+#     row the CLI path writes.
+#
+# CSRF matters specifically because auth here is HTTP Basic: a browser
+# re-sends those credentials on a cross-site form POST, so a mutating
+# endpoint without a token is forgeable by any page the operator visits while
+# authenticated. The token below is an HMAC of the action and its target
+# under the admin secret -- unforgeable without that secret, and scoped so a
+# token minted for "reject submission X" cannot be replayed as "approve
+# submission Y".
+def _csrf_token(admin_token: str, action: str, target: str) -> str:
+    import hashlib
+    return hmac.new(
+        admin_token.encode("utf-8"), f"{action}:{target}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _csrf_ok(admin_token: str, action: str, target: str, presented: str) -> bool:
+    return hmac.compare_digest(_csrf_token(admin_token, action, target), presented or "")
+
+
+def _same_site(request: Request) -> bool:
+    """Reject a cross-site form post outright where the browser tells us.
+
+    Defence in depth behind the HMAC, not instead of it: `Sec-Fetch-Site` is
+    set by current browsers and cannot be forged by page script, but it is
+    absent on older ones -- so a missing header is allowed through to the
+    token check rather than treated as an attack.
+    """
+    site = request.headers.get("sec-fetch-site")
+    return site in (None, "", "same-origin", "same-site", "none")
 
 
 def _unauthorized() -> Response:
@@ -322,6 +411,59 @@ async def _org_detail(session, org_id: str) -> dict | None:
     }
 
 
+async def _kb_data(session) -> dict:
+    """Everything the Knowledge Base page renders, in one pass.
+
+    `pending` reads the submission table directly rather than through
+    crud.list_kb_submissions because the operator needs one field that
+    projection deliberately omits: WHICH ORG proposed it. That omission is
+    right for the customer-facing tool (an org has no business knowing who
+    else submits) and wrong here -- accepting credits that org's allowance,
+    so the reviewer has to see it.
+    """
+    corpus = int(await session.scalar(
+        select(func.count()).select_from(Trace).where(*crud.commons_visible())
+    ) or 0)
+    hits = int(await session.scalar(
+        select(func.coalesce(func.sum(Trace.commons_hits), 0))
+        .select_from(Trace).where(*crud.commons_visible())
+    ) or 0)
+    consuming = int(await session.scalar(
+        select(func.count(func.distinct(UsageCounter.org_id)))
+        .where(UsageCounter.metric == crud.METRIC_COMMONS_QUERIES)
+    ) or 0)
+
+    rows = (await session.execute(
+        select(KnowledgeBaseSubmission)
+        .where(KnowledgeBaseSubmission.status == "pending")
+        .order_by(KnowledgeBaseSubmission.created_at)
+        .limit(_MAX_ROWS)
+    )).scalars().all()
+    pending = [{
+        "id": s.id, "org_id": s.org_id, "title": s.title,
+        "context_text": s.context_text, "solution_text": s.solution_text,
+        "tags": list(s.tags or []), "agent_type": s.agent_type,
+        "rationale": s.rationale, "created_at": _iso(s.created_at),
+    } for s in rows]
+
+    retracted_rows = (await session.execute(
+        select(Trace)
+        .where(Trace.commons_source == "seed", Trace.commons_retracted_at.isnot(None))
+        .order_by(Trace.commons_retracted_at.desc())
+        .limit(_MAX_ROWS)
+    )).scalars().all()
+    retracted = [{
+        "id": t.id, "title": t.title,
+        "reason": t.commons_retraction_reason, "at": t.commons_retracted_at,
+    } for t in retracted_rows]
+
+    return {
+        "corpus": corpus, "hits": hits, "consuming_orgs": consuming,
+        "pending": pending, "retracted": retracted,
+        "queue": await crud.kb_review_queue(session, limit=_MAX_ROWS),
+    }
+
+
 # --- Rendering --------------------------------------------------------------
 
 
@@ -374,11 +516,13 @@ def _render_overview(data: dict) -> str:
         f'<section><div class="tiles">{tiles}</div></section>'
         f'<section><h2>Organizations</h2>{table}</section>'
         '<section><h2>Operator commands</h2>'
-        '<div class="note">This console never changes state. Destructive and '
-        'credential-issuing actions stay in the CLI, where they prompt for '
-        'confirmation and write an audit row — a hijacked browser session '
-        'must not be able to wipe a tenant or mint a key. See <b>hub/admin.py</b> '
-        'for the reasoning.</div>'
+        '<div class="note">Nothing on this page or an organization page changes '
+        'state. The line is <b>reversibility</b>: withdrawing a Knowledge Base entry '
+        'can be undone, so it is a button on the Knowledge Base page — but deleting '
+        'an organization cannot be, and issuing a key would put a live credential in '
+        'your browser history. Those stay in the CLI, where they prompt for '
+        'confirmation and write an audit row. See <b>hub/admin.py</b> for the '
+        'reasoning.</div>'
         '<div class="cmds" style="margin-top:1rem">'
         + _cmd("Create an organization", 'python -m hub.manage create-org "Acme"')
         + _cmd("Issue a key (90-day)", "python -m hub.manage issue-key <org_id> 90")
@@ -490,47 +634,152 @@ def _render_org(d: dict) -> str:
     )
 
 
-def _render_kb(queue: list[dict], submissions: list[dict]) -> str:
-    if queue:
-        rows = "".join(
-            f'<tr><td>{h(e.get("title"))}</td>'
-            f'<td><span class="pill warn">{h(e.get("why"))}</span></td>'
-            f'<td class="n">{_num(e.get("commons_hits", 0))}</td>'
-            f'<td class="m" style="color:var(--muted)">{h(e.get("id"))}</td></tr>'
-            for e in queue
-        )
-        queue_tbl = ('<div class="scroll"><table><thead><tr><th>Entry</th><th>Why it is listed</th>'
-                     f'<th>Hits</th><th>Trace id</th></tr></thead><tbody>{rows}</tbody></table></div>')
-    else:
-        queue_tbl = '<p class="empty">Nothing in the Knowledge Base needs a human right now.</p>'
+def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = "") -> str:
+    """The Knowledge Base page: the ONE place orgs and the Hub exchange
+    anything, and the only surface where content crosses an org boundary --
+    which it does by passing through an operator, never directly.
 
-    if submissions:
-        rows = "".join(
-            f'<tr><td>{h(s.get("title"))}</td>'
-            f'<td><span class="pill mute">{h(s.get("status"))}</span></td>'
-            f'<td class="n">{h(s.get("created_at"))}</td>'
-            f'<td class="m" style="color:var(--muted)">{h(s.get("id"))}</td></tr>'
-            for s in submissions
-        )
-        subs_tbl = ('<div class="scroll"><table><thead><tr><th>Proposed entry</th><th>Status</th>'
-                    f'<th>Submitted</th><th>Submission id</th></tr></thead><tbody>{rows}</tbody>'
-                    '</table></div>')
+    Written to make that boundary legible rather than assumed. An operator
+    reading this page should be able to see, without opening the source,
+    that a customer proposes and an operator publishes; that what gets
+    published is owned by the operator's org and not the submitter's; and
+    that nothing a customer sends is visible to anyone until that happens.
+    """
+    corpus, hits = data["corpus"], data["hits"]
+    pending, queue, retracted = data["pending"], data["queue"], data["retracted"]
+
+    tiles = "".join([
+        _tile("published entries", _num(corpus)),
+        _tile("answers delivered", _num(hits)),
+        _tile("orgs consulting", _num(data["consuming_orgs"])),
+        _tile("awaiting review", _num(len(pending)), "warn" if pending else ""),
+        _tile("needs attention", _num(len(queue)), "warn" if queue else ""),
+        _tile("retracted", _num(len(retracted))),
+    ])
+
+    exchange = (
+        '<div class="note">'
+        '<b>Orgs never exchange anything with each other.</b> A fleet\'s own traces '
+        'stay private to that fleet — there is no tool on this Hub that shows one '
+        'org another org\'s data, and the query filter that makes it true lives in '
+        'one place (<code>commons_visible()</code>) rather than in each read path. '
+        'This page is the only exchange that exists, and it has exactly two '
+        'directions: an org <b>consults</b> the Knowledge Base by sending a signature '
+        '(never its text), and an org <b>proposes</b> an entry that sits invisible to '
+        'everyone until you accept it here. An accepted proposal is published under '
+        'the operator\'s own org, not the submitter\'s — so what other orgs read is '
+        'operator-curated substrate knowledge, never a customer\'s record.'
+        '</div>'
+    )
+
+    # --- Proposals awaiting a decision ------------------------------------
+    if pending:
+        cards = []
+        for s in pending:
+            sid = s["id"]
+            approve_ready = bool(operator_org_id)
+            if approve_ready:
+                accept = (
+                    f'<form method="post" action="{ADMIN_PATH}/kb/review" class="act">'
+                    f'<input type="hidden" name="submission_id" value="{h(sid)}">'
+                    f'<input type="hidden" name="decision" value="approve">'
+                    f'<input type="hidden" name="csrf" '
+                    f'value="{h(_csrf_token(admin_token, "approve", sid))}">'
+                    f'<button type="submit" class="btn ok">Accept &amp; publish</button></form>'
+                )
+            else:
+                accept = ('<span class="disabled" title="Set HUB_OPERATOR_ORG_ID to publish '
+                          'from here">Accept needs HUB_OPERATOR_ORG_ID</span>')
+            reject = (
+                f'<form method="post" action="{ADMIN_PATH}/kb/review" class="act">'
+                f'<input type="hidden" name="submission_id" value="{h(sid)}">'
+                f'<input type="hidden" name="decision" value="reject">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, "reject", sid))}">'
+                f'<input type="text" name="reason" maxlength="200" placeholder="reason (optional)">'
+                f'<button type="submit" class="btn">Decline</button></form>'
+            )
+            tags = " ".join(f'<span class="pill mute">{h(t)}</span>' for t in (s.get("tags") or []))
+            cards.append(
+                f'<article class="card"><h3>{h(s.get("title"))}</h3>'
+                f'<p class="meta">proposed {h(s.get("created_at"))} · '
+                f'agent_type {h(s.get("agent_type") or "—")} · '
+                f'from org <span class="m">{h(s.get("org_id"))}</span></p>'
+                f'<div class="field"><span class="lbl">Why this is substrate, not our business logic</span>'
+                f'<p>{h(s.get("rationale") or "— no rationale given —")}</p></div>'
+                f'<div class="field"><span class="lbl">When it applies</span>'
+                f'<p>{h(s.get("context_text"))}</p></div>'
+                f'<div class="field"><span class="lbl">What to do</span>'
+                f'<p>{h(s.get("solution_text"))}</p></div>'
+                f'<div class="tags">{tags}</div>'
+                f'<div class="acts">{accept}{reject}</div></article>'
+            )
+        pending_html = f'<div class="cards">{"".join(cards)}</div>'
     else:
-        subs_tbl = '<p class="empty">No pending submissions.</p>'
+        pending_html = ('<p class="empty">No proposals waiting. Orgs propose entries with '
+                        '<code>commontrace commons submit</code>.</p>')
+
+    # --- Published entries that need a human ------------------------------
+    if queue:
+        rows = []
+        for e in queue:
+            tid = e.get("id")
+            rows.append(
+                f'<tr><td>{h(e.get("title"))}</td>'
+                f'<td><span class="pill warn">{h(e.get("why"))}</span></td>'
+                f'<td class="n">{_num(e.get("commons_hits", 0))}</td>'
+                f'<td><form method="post" action="{ADMIN_PATH}/kb/retract" class="act">'
+                f'<input type="hidden" name="trace_id" value="{h(tid)}">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, "retract", str(tid)))}">'
+                f'<input type="text" name="reason" maxlength="200" placeholder="reason">'
+                f'<button type="submit" class="btn warn">Retract</button></form></td></tr>'
+            )
+        queue_html = ('<div class="scroll"><table><thead><tr><th>Entry</th>'
+                      '<th>Why it is listed</th><th>Answers given</th><th>Action</th>'
+                      f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    else:
+        queue_html = '<p class="empty">Nothing published needs a decision right now.</p>'
+
+    # --- Retracted -------------------------------------------------------
+    if retracted:
+        rows = []
+        for e in retracted:
+            tid = e["id"]
+            rows.append(
+                f'<tr><td>{h(e["title"])}</td><td>{h(e["reason"] or "—")}</td>'
+                f'<td class="n">{_iso(e["at"])}</td>'
+                f'<td><form method="post" action="{ADMIN_PATH}/kb/restore" class="act">'
+                f'<input type="hidden" name="trace_id" value="{h(tid)}">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, "restore", str(tid)))}">'
+                f'<button type="submit" class="btn">Restore</button></form></td></tr>'
+            )
+        retracted_html = ('<div class="scroll"><table><thead><tr><th>Entry</th><th>Reason</th>'
+                          '<th>Withdrawn</th><th>Action</th></tr></thead>'
+                          f'<tbody>{"".join(rows)}</tbody></table></div>')
+    else:
+        retracted_html = '<p class="empty">Nothing is currently withdrawn.</p>'
+
+    flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
 
     return (
         '<section><h1>Knowledge Base</h1>'
-        '<p class="sub">Operator-curated content, and what needs a decision. '
-        'Nothing a customer contributes is ever published to another org without '
-        'passing through this queue.</p></section>'
-        f'<section><h2>Needs review — worst first</h2>{queue_tbl}</section>'
-        f'<section><h2>Community submissions</h2>{subs_tbl}</section>'
+        '<p class="sub">The shared substrate every org may consult — and the review '
+        'queue that decides what goes into it.</p></section>'
+        f'{flash_html}'
+        f'<section><div class="tiles">{tiles}</div>{exchange}</section>'
+        f'<section><h2>Proposals awaiting a decision</h2>'
+        '<p class="sub" style="margin-bottom:1rem">Accepting publishes the entry under the '
+        'operator org and permanently raises the proposing org\'s query allowance. '
+        'Declining awards nothing — that silence is the adverse-selection defence.</p>'
+        f'{pending_html}</section>'
+        f'<section><h2>Published entries needing attention</h2>{queue_html}</section>'
+        f'<section><h2>Withdrawn entries</h2>{retracted_html}</section>'
         '<section><h2>Operator commands</h2><div class="cmds">'
-        + _cmd("Review the queue", "python -m hub.manage kb-review 50")
-        + _cmd("Accept a submission", "python -m hub.manage approve-submission <id> <operator_org_id>")
-        + _cmd("Decline a submission", 'python -m hub.manage reject-submission <id> "reason"')
-        + _cmd("Withdraw an entry", 'python -m hub.manage kb-retract <trace_id> "reason"')
+        + _cmd("Bulk-load curated content", "python -m hub.manage commons-seed entries.jsonl <operator_org_id>")
         + _cmd("Content quality", "python -m hub.manage kb-stats")
+        + _cmd("Review queue (CLI)", "python -m hub.manage kb-review 50")
         + '</div></section>'
     )
 
@@ -545,6 +794,7 @@ def add_admin_routes(
     rate_limiter: RateLimiter | None = None,
     trusted_proxy_hops: int = 0,
     commons_enabled: bool = True,
+    operator_org_id: str = "",
 ) -> None:
     """Register the console. Call ONLY when an admin token is configured.
 
@@ -609,20 +859,117 @@ def add_admin_routes(
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
         return _page(data["org"].name, _render_org(data))
 
+    _COMMONS_OFF = (
+        '<section><h1>Knowledge Base</h1><p class="sub">This deployment runs with '
+        '<code>HUB_COMMONS_ENABLED=false</code>, so the Knowledge Base tools do not '
+        'exist on this server at all — there is nothing to review.</p></section>'
+    )
+
     async def kb(request: Request) -> Response:
         denied = _guard(request)
         if denied is not None:
             return denied
         if not commons_enabled:
-            return _page("Knowledge Base", (
-                '<section><h1>Knowledge Base</h1><p class="sub">This deployment runs with '
-                '<code>HUB_COMMONS_ENABLED=false</code>, so the Knowledge Base tools do not '
-                'exist on this server at all — there is nothing to review.</p></section>'))
+            return _page("Knowledge Base", _COMMONS_OFF)
+        flash = request.query_params.get("done", "")[:200]
         async with session_scope(session_factory) as session:
-            queue = await crud.kb_review_queue(session, limit=_MAX_ROWS)
-            submissions = await crud.list_kb_submissions(session, status="pending")
-        return _page("Knowledge Base", _render_kb(queue, list(submissions)))
+            data = await _kb_data(session)
+        return _page("Knowledge Base",
+                     _render_kb(data, admin_token, operator_org_id, flash=flash))
+
+    async def _moderate(request: Request, target_field: str, action_of=None):
+        """Shared front half of every mutating handler: authenticate, refuse
+        a cross-site post, then check the action-scoped CSRF token.
+
+        The token binds the action to its target, so `action_of` derives the
+        action from the parsed form -- the review handler's action is the
+        submitted decision itself, which means a token minted for "reject
+        this submission" cannot be replayed to approve it. The form has to be
+        read before the token can be checked, which is why the ordering here
+        is deliberate rather than incidental.
+
+        Returns (form, target, None) to proceed, or (None, None, response).
+        """
+        denied = _guard(request)
+        if denied is not None:
+            return None, None, denied
+        if not commons_enabled:
+            return None, None, _page("Knowledge Base", _COMMONS_OFF)
+        if not _same_site(request):
+            return None, None, Response("cross-site request refused", status_code=403)
+        form = await request.form()
+        target = str(form.get(target_field, ""))
+        action = action_of(form) if callable(action_of) else str(action_of)
+        if not target or not _csrf_ok(admin_token, action, target, str(form.get("csrf", ""))):
+            # Deliberately terse: a caller that failed this check is either
+            # forging or replaying, and neither deserves a hint about which.
+            return None, None, Response("invalid or missing request token", status_code=403)
+        return form, target, None
+
+    def _back(message: str) -> Response:
+        # POST-then-redirect: without it a reload re-submits the decision,
+        # and a moderation decision is not something to repeat by accident.
+        from urllib.parse import quote
+        return Response(status_code=303,
+                        headers={"Location": f"{ADMIN_PATH}/kb?done={quote(message)}"})
+
+    async def kb_review(request: Request) -> Response:
+        form, submission_id, denied = await _moderate(
+            request, "submission_id", action_of=lambda f: str(f.get("decision", "")))
+        if denied is not None:
+            return denied
+        decision = str(form.get("decision", ""))
+        if decision not in ("approve", "reject"):
+            return Response("unknown decision", status_code=400)
+        if decision == "approve" and not operator_org_id:
+            # Fails closed: publishing under the wrong org would put a
+            # customer's id on Knowledge Base content, which is the one
+            # mistake this boundary exists to prevent.
+            return Response(
+                "refusing to publish: HUB_OPERATOR_ORG_ID is not set, so there is no "
+                "operator org to own the entry. Set it, or use "
+                "`python -m hub.manage approve-submission <id> <operator_org_id>`.",
+                status_code=409,
+            )
+        async with session_scope(session_factory) as session:
+            result = await crud.review_kb_submission(
+                session, submission_id, decision,
+                operator_org_id=operator_org_id,
+                reviewer=_ADMIN_ACTOR,
+                rejection_reason=str(form.get("reason", ""))[:200],
+            )
+        if result is None:
+            return _back("That submission was already decided, or no longer exists.")
+        return _back("Published to the Knowledge Base." if decision == "approve"
+                     else "Proposal declined. No entry, no credit.")
+
+    async def kb_retract(request: Request) -> Response:
+        form, trace_id, denied = await _moderate(request, "trace_id", action_of="retract")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            result = await crud.retract_kb_entry(
+                session, trace_id, reason=str(form.get("reason", ""))[:200],
+                actor=_ADMIN_ACTOR,
+            )
+        if result is None:
+            return _back("That entry is not a published Knowledge Base entry.")
+        return _back("Withdrawn. It stops being served immediately; the row and its "
+                     "history are kept, and Restore puts it back.")
+
+    async def kb_restore(request: Request) -> Response:
+        _form, trace_id, denied = await _moderate(request, "trace_id", action_of="restore")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            result = await crud.restore_kb_entry(session, trace_id, actor=_ADMIN_ACTOR)
+        if result is None:
+            return _back("That entry is not currently withdrawn.")
+        return _back("Restored. It is being served again.")
 
     app.add_route(ADMIN_PATH, overview, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}", org_detail, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/kb", kb, methods=["GET"])
+    app.add_route(f"{ADMIN_PATH}/kb/review", kb_review, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/kb/retract", kb_retract, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/kb/restore", kb_restore, methods=["POST"])

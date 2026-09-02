@@ -844,6 +844,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             admin_token=config.admin_token,
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
+            operator_org_id=config.operator_org_id,
         )
 
     add_health_routes(

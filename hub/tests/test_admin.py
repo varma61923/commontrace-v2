@@ -238,17 +238,38 @@ class TestRendering:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert r.headers["cache-control"] == "no-store"
 
-    async def test_the_console_states_that_it_is_read_only(self, session_factory):
+    async def test_the_console_states_which_actions_it_will_and_will_not_take(
+        self, session_factory
+    ):
         """An operator must not be left wondering whether a click here
-        changed something."""
+        changed something -- and the claim has to stay true as the console
+        grows. The rule is reversibility, and the page says so."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
-        assert "read-only console" in r.text
-        assert "never changes state" in r.text
+        assert "reversibility" in r.text
+        assert "Nothing on this page or an organization page changes" in r.text
 
-    async def test_no_form_or_mutating_control_is_rendered(self, session_factory):
-        """The read-only guarantee, asserted structurally rather than by
-        reading the templates: no forms, no POST targets, no fetch()."""
+    async def test_the_org_facing_pages_stay_read_only(self, session_factory):
+        """The line is reversibility, not squeamishness. Irreversible and
+        credential-bearing actions -- purge-org, issue-key -- stay in the CLI,
+        so the pages that would host them carry no control at all. Asserted
+        structurally rather than by reading the templates."""
+        org_id, _ = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            pages = [
+                await c.get("/admin", headers=_basic("op", "s3cret")),
+                await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret")),
+            ]
+        for r in pages:
+            assert r.status_code == 200
+            lowered = r.text.lower()
+            for forbidden in ("<form", "<button", 'method="post"', "fetch(", "xmlhttprequest"):
+                assert forbidden not in lowered, f"{forbidden} on a page that must stay read-only"
+
+    async def test_no_destructive_action_is_reachable_from_any_page(self, session_factory):
+        """The irreversible commands must never become a POST target. If one
+        of these ever appears in a form action, this test is the thing that
+        says so."""
         org_id, _ = await self._seed(session_factory)
         async with _client(_app(session_factory=session_factory)) as c:
             pages = [
@@ -257,10 +278,8 @@ class TestRendering:
                 await c.get("/admin/kb", headers=_basic("op", "s3cret")),
             ]
         for r in pages:
-            assert r.status_code == 200
-            lowered = r.text.lower()
-            for forbidden in ("<form", "<button", "method=\"post\"", "fetch(", "xmlhttprequest"):
-                assert forbidden not in lowered, f"{forbidden} found in a read-only console"
+            for path in ("/admin/purge", "/admin/org/delete", "/admin/key", "/admin/issue"):
+                assert f'action="{path}' not in r.text
 
     async def test_no_credential_material_ever_reaches_the_page(self, session_factory):
         """Only non-secret key metadata is rendered. `key_hash` is the argon2
@@ -290,3 +309,273 @@ class TestRendering:
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.post("/admin", headers=_basic("op", "s3cret"))
         assert r.status_code == 405
+
+
+# --- Knowledge Base moderation ----------------------------------------------
+
+
+def _kb_app(session_factory, *, operator_org_id: str = "", token: str = "s3cret") -> Starlette:
+    app = Starlette()
+    admin.add_admin_routes(
+        app, session_factory, admin_token=token,
+        rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+        operator_org_id=operator_org_id,
+    )
+    return app
+
+
+class TestKnowledgeBaseIsTheOnlyExchange:
+    """Orgs never exchange anything with each other -- a fleet's traces stay
+    private to that fleet. The Knowledge Base is the single surface where
+    content crosses an org boundary, and it does so by passing through an
+    operator: a customer PROPOSES, an operator PUBLISHES, and what gets
+    published is owned by the operator's org rather than the submitter's."""
+
+    async def _submit(self, session_factory, *, title="Stripe webhooks need idempotency keys"):
+        from hub.db import session_scope
+        from hub.models import KnowledgeBaseSubmission, Organization
+
+        async with session_scope(session_factory) as session:
+            submitter = Organization(name="Submitting Co", plan="team")
+            operator = Organization(name="Operator", plan="operator")
+            session.add_all([submitter, operator])
+            await session.flush()
+            sub = KnowledgeBaseSubmission(
+                org_id=submitter.id, title=title,
+                context_text="A webhook is delivered more than once.",
+                solution_text="Key the handler on the event id.",
+                tags=["webhooks"], agent_type="code",
+                rationale="Vendor behaviour, not our business logic.",
+                status="pending",
+            )
+            session.add(sub)
+            await session.flush()
+            return sub.id, submitter.id, operator.id
+
+    async def test_the_page_states_the_boundary(self, session_factory):
+        """An operator should be able to see, without opening the source,
+        that orgs do not share with each other."""
+        async with _client(_kb_app(session_factory)) as c:
+            r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
+        assert r.status_code == 200
+        assert "Orgs never exchange anything with each other" in r.text
+        assert "operator" in r.text.lower()
+
+    async def test_a_pending_proposal_is_shown_with_who_proposed_it(self, session_factory):
+        """Accepting credits that org's allowance, so the reviewer has to see
+        which org it was -- a field the customer-facing projection rightly
+        omits."""
+        sub_id, submitter_id, _ = await self._submit(session_factory)
+        async with _client(_kb_app(session_factory)) as c:
+            r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
+        assert "Stripe webhooks need idempotency keys" in r.text
+        assert submitter_id in r.text
+        assert sub_id in r.text
+
+    async def test_accepting_publishes_under_the_operator_org_never_the_submitter(
+        self, session_factory
+    ):
+        """The ownership rule that makes this not org-to-org sharing."""
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        sub_id, submitter_id, operator_id = await self._submit(session_factory)
+        app = _kb_app(session_factory, operator_org_id=operator_id)
+        async with _client(app) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "approve", sub_id),
+            })
+        assert r.status_code == 303
+
+        async with session_scope(session_factory) as session:
+            published = (await session.execute(
+                select(Trace).where(Trace.commons_source == "seed")
+            )).scalars().all()
+        assert len(published) == 1
+        assert published[0].org_id == operator_id
+        assert published[0].org_id != submitter_id
+
+    async def test_accepting_fails_closed_without_an_operator_org(self, session_factory):
+        """Publishing under the wrong org would put a customer's id on
+        Knowledge Base content -- the one mistake this boundary exists to
+        prevent, and not one a UI should be able to make."""
+        sub_id, _, _ = await self._submit(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="")) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "approve", sub_id),
+            })
+        assert r.status_code == 409
+        assert "HUB_OPERATOR_ORG_ID" in r.text
+
+    async def test_declining_publishes_nothing_and_awards_nothing(self, session_factory):
+        """That silence is the adverse-selection defence."""
+        from sqlalchemy import func, select
+
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        sub_id, submitter_id, operator_id = await self._submit(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id=operator_id)) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
+                "submission_id": sub_id, "decision": "reject", "reason": "too specific",
+                "csrf": admin._csrf_token("s3cret", "reject", sub_id),
+            })
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            assert int(await session.scalar(
+                select(func.count()).select_from(Trace).where(Trace.commons_source == "seed")
+            ) or 0) == 0
+            submitter = await session.get(Organization, submitter_id)
+            assert submitter.bonus_commons_queries == 0
+
+
+class TestModerationIsCsrfProtected:
+    """Auth here is HTTP Basic, and a browser re-sends those credentials on a
+    cross-site form POST -- so a mutating endpoint without a token is
+    forgeable by any page the operator visits while authenticated."""
+
+    async def _pending(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import KnowledgeBaseSubmission, Organization
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Sub Co", plan="team")
+            session.add(org)
+            await session.flush()
+            sub = KnowledgeBaseSubmission(
+                org_id=org.id, title="t", context_text="c", solution_text="s",
+                tags=[], agent_type="code", rationale="r", status="pending",
+            )
+            session.add(sub)
+            await session.flush()
+            return sub.id
+
+    async def test_a_post_without_a_token_is_refused(self, session_factory):
+        sub_id = await self._pending(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"),
+                             data={"submission_id": sub_id, "decision": "approve"})
+        assert r.status_code == 403
+
+    async def test_a_token_for_one_action_cannot_be_replayed_as_another(self, session_factory):
+        """The token binds the action to its target: a 'decline' token must
+        not approve anything."""
+        sub_id = await self._pending(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "reject", sub_id),
+            })
+        assert r.status_code == 403
+
+    async def test_a_token_for_one_target_cannot_be_replayed_on_another(self, session_factory):
+        sub_id = await self._pending(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/review", headers=_basic("op", "s3cret"), data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "approve", "some-other-id"),
+            })
+        assert r.status_code == 403
+
+    async def test_a_cross_site_post_is_refused_before_anything_else(self, session_factory):
+        sub_id = await self._pending(session_factory)
+        headers = {**_basic("op", "s3cret"), "Sec-Fetch-Site": "cross-site"}
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/review", headers=headers, data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "approve", sub_id),
+            })
+        assert r.status_code == 403
+
+    async def test_an_unauthenticated_post_is_challenged_not_executed(self, session_factory):
+        sub_id = await self._pending(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/review", data={
+                "submission_id": sub_id, "decision": "approve",
+                "csrf": admin._csrf_token("s3cret", "approve", sub_id),
+            })
+        assert r.status_code == 401
+
+    async def test_the_token_is_unforgeable_without_the_admin_secret(self):
+        assert admin._csrf_token("secret-a", "approve", "x") != admin._csrf_token(
+            "secret-b", "approve", "x")
+        assert not admin._csrf_ok("secret-a", "approve", "x",
+                                  admin._csrf_token("secret-b", "approve", "x"))
+        assert not admin._csrf_ok("secret-a", "approve", "x", "")
+
+
+class TestRetractionIsReversible:
+    """Retract and restore are the pair that makes moderation safe to do from
+    a browser at all: the worst outcome of a wrong click is undoing it."""
+
+    async def _published(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            op = Organization(name="Operator", plan="operator")
+            session.add(op)
+            await session.flush()
+            t = Trace(
+                org_id=op.id, title="Published entry", context_text="c", solution_text="s",
+                tags=[], agent_type="code", shared_with_commons=True, commons_source="seed",
+            )
+            session.add(t)
+            await session.flush()
+            return t.id
+
+    async def test_retract_then_restore_round_trips(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        trace_id = await self._published(session_factory)
+        app = _kb_app(session_factory, operator_org_id="x")
+
+        async with _client(app) as c:
+            r = await c.post("/admin/kb/retract", headers=_basic("op", "s3cret"), data={
+                "trace_id": trace_id, "reason": "superseded",
+                "csrf": admin._csrf_token("s3cret", "retract", trace_id),
+            })
+            assert r.status_code == 303
+            async with session_scope(session_factory) as session:
+                assert (await session.get(Trace, trace_id)).commons_retracted_at is not None
+
+            r = await c.post("/admin/kb/restore", headers=_basic("op", "s3cret"), data={
+                "trace_id": trace_id,
+                "csrf": admin._csrf_token("s3cret", "restore", trace_id),
+            })
+            assert r.status_code == 303
+            async with session_scope(session_factory) as session:
+                assert (await session.get(Trace, trace_id)).commons_retracted_at is None
+
+    async def test_a_decision_redirects_so_a_reload_cannot_repeat_it(self, session_factory):
+        trace_id = await self._published(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.post("/admin/kb/retract", headers=_basic("op", "s3cret"), data={
+                "trace_id": trace_id,
+                "csrf": admin._csrf_token("s3cret", "retract", trace_id),
+            })
+        assert r.status_code == 303
+        assert r.headers["location"].startswith("/admin/kb?done=")
+
+    async def test_every_console_decision_is_audited_as_such(self, session_factory):
+        """"Who published this entry" must be answerable after the fact, and a
+        console decision distinguishable from a terminal one."""
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        trace_id = await self._published(session_factory)
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            await c.post("/admin/kb/retract", headers=_basic("op", "s3cret"), data={
+                "trace_id": trace_id, "reason": "bad advice",
+                "csrf": admin._csrf_token("s3cret", "retract", trace_id),
+            })
+        async with session_scope(session_factory) as session:
+            actors = (await session.execute(select(AuditLogEntry.actor))).scalars().all()
+        assert admin._ADMIN_ACTOR in actors
