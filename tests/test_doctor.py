@@ -103,3 +103,72 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     assert "[OK  ] benchmark script found" in out
     assert "[OK  ] pilot metrics script found" in out
     assert "[OK  ] protocol/ spec" in out
+
+
+class TestDoctorReportsAgentNativeAccess:
+    """`commontrace serve` is what lets an agent with no shell use this store,
+    and it fails in the least legible place there is: an MCP client spawns it
+    as a subprocess and reports only that the server exited. `doctor` is where
+    someone looks when something is wrong, so the SDK's absence is named here.
+    """
+
+    @staticmethod
+    def _run(tmp_path, capsys):
+        import argparse
+
+        from commontrace.commands import doctor_cmd
+
+        doctor_cmd.run(argparse.Namespace(dest=str(tmp_path)))
+        return capsys.readouterr().out
+
+    def test_it_reports_the_mcp_sdk(self, tmp_path, capsys):
+        out = self._run(tmp_path, capsys)
+        assert "commontrace serve" in out
+
+    def test_its_absence_is_information_not_a_failure(self, tmp_path, capsys, monkeypatch):
+        from commontrace.commands import doctor_cmd
+
+        real = doctor_cmd._installed
+        monkeypatch.setattr(doctor_cmd, "_installed",
+                            lambda name: False if name == "mcp" else real(name))
+        out = self._run(tmp_path, capsys)
+        # Optional extra: an INFO line with the fix, never an [FAIL].
+        assert "commontrace[serve]" in out
+        line = next(x for x in out.splitlines() if "commontrace serve" in x)
+        assert line.startswith("[INFO]"), line
+
+
+class TestAProbeCannotTakeDownTheReport:
+    """doctor runs precisely when the environment is already broken, which is
+    when a probe is most likely to misbehave. `find_spec` walks sys.meta_path,
+    so any import hook in that interpreter gets to raise inside it -- and an
+    unhandled exception from one optional-dependency probe would kill the
+    report before the checks that would have named the real problem.
+    """
+
+    def test_a_raising_finder_does_not_crash_doctor(self, tmp_path, capsys, monkeypatch):
+        import argparse
+        import importlib.util
+
+        from commontrace.commands import doctor_cmd
+
+        def explode(name, *args, **kwargs):
+            raise ModuleNotFoundError(f"a hostile import hook rejected {name!r}")
+
+        monkeypatch.setattr(importlib.util, "find_spec", explode)
+        monkeypatch.setattr(doctor_cmd.sys, "modules", {})
+        doctor_cmd.run(argparse.Namespace(dest=str(tmp_path)))
+        out = capsys.readouterr().out
+        # It still reached the end and still reported the store.
+        assert "store root" in out and "memory/ store present" in out
+
+    def test_an_unanswerable_probe_reads_as_not_installed(self, monkeypatch):
+        import importlib.util
+
+        from commontrace.commands import doctor_cmd
+
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hook")))
+        # Conservative, because every caller's absent branch is INFO plus an
+        # install hint -- never a failure someone has to chase.
+        assert doctor_cmd._installed("definitely_not_imported_anywhere") is False

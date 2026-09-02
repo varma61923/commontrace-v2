@@ -6,22 +6,14 @@ import json
 import os
 import sys
 
-from commontrace import experiment, frontmatter, paths, trace_io
+from commontrace import experiment, frontmatter, holdout_io, paths, trace_io
 from commontrace.commands._format import read_or_warn
 
+# Re-exported from commontrace.holdout_io, which owns the one definition
+# now that the MCP retriever writes this log too.
+holdout_log_path = holdout_io.holdout_log_path
 
-def holdout_log_path(root: str) -> str:
-    """Append-only record of every holdout assignment the retriever made.
 
-    Written by `commontrace query --experiment` and read here. It has to be
-    persisted rather than recomputed because the analysis needs to know a
-    lesson was *eligible* on an occasion -- that it matched the activation
-    condition and was then either injected or deliberately withheld.
-    Recomputing eligibility later would silently change it as the corpus
-    changes, and comparing against occasions a lesson never matched
-    reintroduces exactly the confound the holdout removes.
-    """
-    return os.path.join(paths.memory_dir(root), "holdout_log.jsonl")
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

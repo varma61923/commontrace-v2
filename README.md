@@ -36,17 +36,18 @@ MCP, which all of the above already support natively.
 ## Table of Contents
 
 1. [Quick Start — CLI (any agent type)](#quick-start--cli-any-agent-type)
-2. [Quick Start — Code Agent reference profile](#quick-start--code-agent-reference-profile)
-3. [How the Reference Pipeline Works](#how-it-works)
-4. [Architecture](#architecture)
-5. [Configuration](#configuration)
-6. [Memory System](#memory-system)
-7. [Benchmark](#benchmark)
-8. [Outcome Metrics](#outcome-metrics)
-9. [The CommonTrace Knowledge Base](#the-commontrace-knowledge-base)
-10. [Deploying to Production](#deploying-to-production)
-11. [File Layout](#file-layout)
-12. [Requirements](#requirements)
+2. [Quick Start — Agents with no terminal (MCP)](#quick-start--agents-with-no-terminal-mcp)
+3. [Quick Start — Code Agent reference profile](#quick-start--code-agent-reference-profile)
+4. [How the Reference Pipeline Works](#how-it-works)
+5. [Architecture](#architecture)
+6. [Configuration](#configuration)
+7. [Memory System](#memory-system)
+8. [Benchmark](#benchmark)
+9. [Outcome Metrics](#outcome-metrics)
+10. [The CommonTrace Knowledge Base](#the-commontrace-knowledge-base)
+11. [Deploying to Production](#deploying-to-production)
+12. [File Layout](#file-layout)
+13. [Requirements](#requirements)
 
 ---
 
@@ -314,6 +315,69 @@ never earns an outright yes — see PILOT.md.
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.
+
+---
+
+## Quick Start — Agents with no terminal (MCP)
+
+Everything above is a CLI, which quietly restricts CommonTrace to agents that
+can run a shell. Most cannot: a support agent inside a helpdesk, a sales agent
+inside a CRM, an ops agent inside a runbook tool. The Hub has spoken MCP since
+it existed; the **local store now does too**.
+
+```bash
+commontrace install --target claude-code   # writes commontrace.local.mcp.json
+```
+
+That file is the MCP entry — merge it into your agent platform's config:
+
+```json
+{
+  "mcpServers": {
+    "commontrace-local": {
+      "command": "commontrace",
+      "args": ["serve", "--dest", "/abs/path/to/your/store"]
+    }
+  }
+}
+```
+
+The agent then has the whole protocol as tools:
+
+| Tool | What the agent does with it |
+| --- | --- |
+| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. |
+| `capture(...)` | Record what happened, with the outcome fields (`resolved`, `tokens_used`, …). Same `occasion_id` joins it back to the retrieval. |
+| `propose_lessons()` | Cluster repeated failures into candidates. |
+| `draft_lesson(slug, rule, why, …)` | Write a candidate's content, over as many calls as it takes. |
+| `approve_lesson(slug)` | Activate it, so retrieval starts injecting it. |
+| `reject_lesson(slug, reason)` | Archive one that should not become a lesson. |
+| `list_lessons` / `get_lesson` / `store_status` | Read the store, and see which recurring patterns still have no lesson. |
+
+Two things about this are deliberate.
+
+**There is no authentication, because there is no boundary to authenticate.**
+The client spawns this process and talks to it over its own stdin/stdout —
+no port, no listener, nothing for another program on the machine to connect
+to. It reads and writes `memory/` with exactly the permissions of the agent
+that launched it, which already had them. That is the opposite of the Hub,
+which is multi-tenant and network-reachable and therefore authenticated on
+every call.
+
+**An agent can approve its own lesson, but the gate is real.**
+`approve_lesson` refuses a lesson that still contains scaffolding (an active
+lesson is injected into every later retrieval *verbatim*, so a rule still
+reading `TODO:` teaches the fleet nothing and displaces a real one), and it
+records **who** approved it, so an agent-approved lesson stays distinguishable
+from a human-approved one. Where a person must be in the loop,
+`commontrace serve --no-approval` removes the tool entirely — absent from the
+listing, not present and refusing, so the agent never plans around a call it
+cannot make.
+
+Nothing here reimplements ranking, holdout assignment, or the approval guard —
+it calls the same functions `commontrace query` and `commontrace lesson
+approve` do, so a fleet's shell-capable and shell-less agents read the same
+memory and land in the same experiment arms.
 
 ---
 

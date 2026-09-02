@@ -9,6 +9,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The local tier now speaks MCP, so an agent no longer needs a terminal to
+  use its own memory.** `commontrace serve` exposes the local store over MCP
+  stdio: `retrieve`, `capture`, `propose_lessons`, `list_lessons`,
+  `get_lesson`, `draft_lesson`, `approve_lesson`, `reject_lesson`,
+  `store_status`.
+
+  Every one of those steps existed already and every one was argparse-only,
+  which meant the only agents that could use their own memory were the ones
+  that happen to have a shell. The README's claim is "works with any agent
+  fleet — code, support, sales, HR, marketing", and it held for the first
+  one: a support agent embedded in a helpdesk, a sales agent inside a CRM,
+  an ops agent in a runbook tool cannot shell out, so none of them could
+  retrieve a lesson, record what happened, or curate anything. They could
+  talk to a remote Hub and do nothing with their own store.
+
+  Nothing here reimplements the protocol. `retrieve` uses the loader and
+  ranker `commontrace query` uses; `capture` and `propose_lessons` run the
+  real `capture` and `distill` commands through their own argparse parsers,
+  in-process. That is not fastidiousness — the first draft *did*
+  reimplement the distill loop and got the candidate naming wrong (the slug
+  already carries its `lesson_` prefix), writing `lesson_lesson_candidate_…`
+  files that every other command then failed to resolve. Routing through the
+  parser also caught a hand-built namespace spelling `--frustration` as
+  `frustration_signal`: accepted in silence, recorded nowhere.
+
+  The randomized holdout came with the same risk and got the same treatment.
+  Arm assignment now lives in one place (`commontrace/holdout_io.py`) that
+  both retrievers call, salt included — two implementations of a randomized
+  assignment is two chances to bias the causal number the whole experiment
+  exists to produce. An occasion gets the same arm whichever surface asked.
+  The loop is measurable end to end from MCP alone: retrieve with an
+  `occasion_id`, capture the outcome under the same id, and
+  `commontrace experiment` reports the arms.
+
+  Two design points worth stating, both tested:
+
+  - **No authentication, because there is no boundary to authenticate.** The
+    client spawns the process and talks to it over its own stdin/stdout —
+    no port, no listener, nothing for another program on the machine to
+    connect to. It touches `memory/` with exactly the permissions of the
+    agent that launched it. A token here would protect nothing and imply a
+    boundary that does not exist. (The Hub is multi-tenant and
+    network-reachable, and is authenticated on every call.)
+  - **An agent may approve its own lesson, but the gate is real.**
+    `approve_lesson` enforces the same scaffolding refusal
+    `commontrace lesson approve` does — an active lesson is injected into
+    every later retrieval verbatim, so activating one whose rule still reads
+    `TODO:` teaches the fleet nothing, displaces a real lesson, and counts as
+    coverage in the reports a customer reads. It also records **who**
+    approved it, so an agent-approved lesson stays distinguishable
+    afterwards. `serve --no-approval` removes the tool entirely — absent from
+    the listing, not present and refusing, so the agent never plans around a
+    call it cannot make.
+
+  `commontrace install` now writes `commontrace.local.mcp.json` for every
+  MCP-capable target, alongside the existing Hub template. Both are usually
+  wanted and they are not interchangeable: an agent with only the Hub entry
+  can search what the Knowledge Base has published and cannot read or write
+  a single lesson of its own. The generated file carries the **resolved**
+  store root, because an MCP client launches the server with a working
+  directory of its own choosing and a relative root silently resolves to a
+  different, usually empty, store — a failure that presents as "no lessons
+  matched" rather than as an error.
+
+  One transport hazard is worth recording, since it is invisible until it
+  bites: **on stdio, the process's stdout is the MCP wire.** The command
+  modules this server reuses print — `capture` prints the path it wrote, the
+  loaders warn about an unreadable file — and a single stray line lands
+  mid-frame and breaks the client's parser for the whole session, not for
+  that one call. The symptom looks like a server crash triggered by
+  something as ordinary as one malformed trace file. Every reused command is
+  therefore run with stdout captured, and `tests/test_mcp_server.py` spawns
+  a real `commontrace serve` subprocess with a deliberately malformed lesson
+  in the store and speaks MCP to it, because nothing short of that proves
+  the framing survives.
+
 - **The Knowledge Base is now operable from the console** — the review queue
   that decides what goes into the one surface where anything crosses an org
   boundary.
@@ -102,6 +178,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential is checked, and no unauthenticated request reaches the database.
 
 ### Fixed
+
+- **`commontrace doctor` could be killed by its own optional-dependency
+  probes.** `importlib.util.find_spec` walks `sys.meta_path`, so any import
+  hook installed in that interpreter gets to raise inside it — and an
+  unhandled exception from the `numpy` or `sentence_transformers` probe took
+  down the whole report *before* the checks that would have named the real
+  problem. That is the worst possible time for it: `doctor` is the command
+  someone runs when the environment is already broken. Every probe is now
+  guarded, and an unanswerable one reads as "not installed", which is
+  conservative — each absent branch is an INFO line with an install hint,
+  never a failure. `doctor` also now reports whether the MCP SDK is present,
+  since `commontrace serve` without it fails inside a subprocess an MCP
+  client spawned, where nobody sees the traceback.
 
 - **`commontrace sync --push-traces` could not complete against a
   default-configured Hub, and reported the failure as a network outage.**

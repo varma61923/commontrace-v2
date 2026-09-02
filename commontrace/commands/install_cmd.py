@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 
-from commontrace import paths
+from commontrace import mcp_server, paths
 
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
@@ -79,9 +79,20 @@ when the task finishes:
 With no experiment running, no `holdout` block appears and nothing
 changes.
 
-**Local tier.** `commontrace query --experiment --occasion-id <id>` does
-the withholding and logging in one step; `commontrace capture
---occasion-id <id>` joins the outcome back to it.
+**Local tier.** This tier speaks MCP too, so a shell is not required:
+if the `commontrace-local` server is attached (see
+`commontrace.local.mcp.json`, written by `commontrace install`), call
+
+    retrieve(task="...", occasion_id="ticket-8821")
+      -> {"lessons": [...], "withheld": [...]}
+
+and honour `withheld` exactly as you honour the Hub's `holdout.withhold`
+above, then `capture(occasion_id="ticket-8821", resolved=true)`.
+
+From a shell the same thing is `commontrace query --experiment
+--occasion-id <id>` and `commontrace capture --occasion-id <id>`. Both
+surfaces share one arm-assignment implementation, so an occasion gets the
+same arm whichever one you use.
 
 Read the result with `commontrace prove outcomes` (Hub) or
 `commontrace experiment` (local). A lesson can come back as `HURTS`; that
@@ -118,6 +129,49 @@ def _hub_mcp_example() -> str:
         },
     }
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def _local_mcp_config(root: str) -> str:
+    """The stdio MCP entry that attaches an agent to THIS machine's store.
+
+    Distinct from _hub_mcp_example above, and both are usually wanted: the Hub
+    is the shared knowledge base over HTTP, this is the fleet's own memory on
+    this machine over stdio. An agent with only the Hub entry can search what
+    other people published and cannot read or write a single one of its own
+    lessons.
+
+    Written with a real, absolute `--dest`, not a relative one: an MCP client
+    launches the server as a subprocess with a working directory of its own
+    choosing, so a relative root resolves somewhere else -- usually to a new,
+    empty store, which fails by silently having no lessons rather than by
+    erroring.
+    """
+    tools = ", ".join(mcp_server.LOCAL_TOOLS)
+    doc = {
+        "_comment": (
+            "Merge the 'commontrace-local' entry into your agent platform's MCP config. "
+            f"Tool surface: [{tools}]. This attaches the agent to the store at "
+            f"{root} on this machine, over stdio -- there is no network listener, no "
+            "endpoint and no credential, so unlike the Hub template this file is safe to "
+            "commit. Add --no-approval to the args if activating a lesson must go "
+            "through a person."
+        ),
+        "mcpServers": {
+            "commontrace-local": {
+                "command": "commontrace",
+                "args": ["serve", "--dest", root],
+            }
+        },
+    }
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def _write_local_mcp(dest: str, root: str) -> str:
+    path = os.path.join(dest, "commontrace.local.mcp.json")
+    _write(path, _local_mcp_config(root))
+    print(f"  Agent-native access to this store: merge {path} into your MCP config")
+    print("  (that is what lets an agent with no terminal use its own memory).")
+    return path
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -212,6 +266,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             _write(out, _GENERIC_POINTER_SKILL)
         print("  Invoke with: /commontrace <task description + success criteria>")
+        _write_local_mcp(dest, root)
 
     elif args.target == "devin":
         out = os.path.join(dest, ".devin", "skills", "commontrace", "SKILL.md")
@@ -237,6 +292,7 @@ def run(args: argparse.Namespace) -> int:
         _write(example, _hub_mcp_example())
         print(f"  To connect to the Hub: merge {example} into .cursor/mcp.json")
         _print_hub_credential_warning(example)
+        _write_local_mcp(dest, root)
 
     elif args.target == "windsurf":
         out = os.path.join(dest, ".windsurf", "rules", "commontrace.md")
@@ -248,6 +304,7 @@ def run(args: argparse.Namespace) -> int:
             "finishing, capture what happened with `commontrace capture`. "
             "Spec: protocol/PROTOCOL.md.\n",
         )
+        _write_local_mcp(dest, root)
 
     elif args.target == "generic-mcp":
         example = os.path.join(dest, "commontrace.hub.mcp.json.example")
@@ -255,6 +312,7 @@ def run(args: argparse.Namespace) -> int:
         print("  Any MCP-capable agent (OpenAI Agents SDK, custom orchestrators, etc.)")
         print(f"  can attach to the Hub by merging {example} into its MCP client config.")
         _print_hub_credential_warning(example)
+        _write_local_mcp(dest, root)
 
     else:  # generic
         out = os.path.join(dest, "COMMONTRACE.md")

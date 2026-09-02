@@ -104,9 +104,14 @@ worse. Retrieval is where the decision belongs, because it is the only
 point that knows which lessons were *eligible*, and eligibility is what
 makes the later comparison causal rather than confounded.
 
-- **Local memory:** `commontrace query --experiment --occasion-id <id>`
-  withholds and logs in one step. Use `<id>` again on
-  `commontrace capture --occasion-id <id>` so the outcome joins back.
+- **Local memory, over MCP:** if the `commontrace-local` server is attached,
+  `retrieve(task, occasion_id="<id>")` withholds and logs in one step and
+  returns the withheld lessons under `withheld`; `capture(occasion_id="<id>",
+  resolved=...)` joins the outcome back. No shell needed.
+- **Local memory, from a shell:** `commontrace query --experiment
+  --occasion-id <id>` does the same, and `commontrace capture --occasion-id
+  <id>` joins the outcome back. Both surfaces share one arm-assignment
+  implementation, so an occasion gets the same arm either way.
 - **Hub memory:** pass `occasion_id` to `search_traces`. If an experiment
   is running the response carries `holdout.withhold`; **exclude those
   traces from the brief**. After the task, call
