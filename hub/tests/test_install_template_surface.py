@@ -2,7 +2,7 @@
 
 `commontrace install --target generic-mcp` writes an MCP config whose
 comment names the tools the Hub exposes. That list had drifted to the
-original six while the Hub grew to eighteen -- so a customer wiring up
+original six while the Hub kept growing -- so a customer wiring up
 their agent platform was told the Hub could do a third of what it does,
 including none of the measurement tools.
 

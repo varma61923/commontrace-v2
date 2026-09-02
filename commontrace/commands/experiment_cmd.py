@@ -6,7 +6,15 @@ import json
 import os
 import sys
 
-from commontrace import experiment, frontmatter, holdout_io, integrity, paths, trace_io
+from commontrace import (
+    experiment,
+    frontmatter,
+    holdout_io,
+    integrity,
+    paths,
+    trace_io,
+    value,
+)
 from commontrace.commands._format import read_or_warn
 
 # Re-exported from commontrace.holdout_io, which owns the one definition
@@ -71,6 +79,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--strict", action="store_true",
         help="Exit non-zero if any lesson significantly HURTS outcomes.",
+    )
+    p.add_argument(
+        "--value-per-occasion", type=float, default=None,
+        help="What one resolved occasion is worth to you. Adds a value section: the "
+             "causal effect turned into a count of occasions, times your rate. The "
+             "count is measured; the rate is yours and is never stored.",
     )
     p.add_argument(
         "--salt", default=None,
@@ -382,6 +396,8 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({
             **dataclasses.asdict(summary),
             "integrity": dataclasses.asdict(report),
+            "value": dataclasses.asdict(
+                value.compute(effects, report, value_per_occasion=args.value_per_occasion)),
             # Which text each effect is about. An effect attached to a slug
             # alone is attached to a mutable name, and silently stops
             # describing the lesson the moment anyone edits it.
@@ -406,6 +422,11 @@ def run(args: argparse.Namespace) -> int:
         print("---")
         print()
         print(experiment.render(summary, alpha=args.alpha))
+        worth = value.compute(effects, report, value_per_occasion=args.value_per_occasion)
+        print()
+        print("---")
+        print()
+        print(value.render(worth))
         if revisions:
             print()
             print("_Revision under test — the exact lesson text each effect above is "

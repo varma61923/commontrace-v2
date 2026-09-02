@@ -63,6 +63,11 @@ commontrace/**
 # an experiment's arms across two treatments. Imported at module level,
 # so without it the container starts and dies.
 !commontrace/revision.py
+# Turns a causal effect into a quantity a price can attach to
+# (hub/crud.py:value_delivered) -- the pricing basis STRATEGY.md 11.5
+# names. Imported at module level, so without it the container starts
+# and dies.
+!commontrace/value.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
 

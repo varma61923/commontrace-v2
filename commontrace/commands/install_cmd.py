@@ -12,7 +12,7 @@ TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic
 # The Hub's full tool surface, advertised in the generated MCP config so a
 # reader knows what they are connecting to. Kept in sync with hub/smoke.py's
 # EXPECTED_TOOLS by hub/tests/test_install_template_surface.py -- this list
-# had drifted to the original six while the Hub grew to eighteen, so a
+# had drifted to the original six while the Hub kept growing, so a
 # customer running `commontrace install` was told the Hub could do a third
 # of what it does. Restated here rather than imported because this is the
 # CLIENT package: it installs with PyYAML alone, and hub/ needs SQLAlchemy,
@@ -20,8 +20,10 @@ TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic
 _HUB_TOOLS = [
     # the six protocol tools
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
-    # measurement: is this working, and did the memory cause it
+    # measurement: is this working, did the memory cause it, and what was
+    # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
+    "value_delivered",
     # entitlements
     "account_usage",
     # self-service deletion

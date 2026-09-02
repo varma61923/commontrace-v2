@@ -767,3 +767,105 @@ class TestTheTreatmentIsPinnedToItsText:
                          if f["check"] == "treatment_stability")
         assert stability["severity"] == "WEAKENS"
         assert "cannot be checked" in stability["headline"]
+
+
+class TestWhatTheMemoryWasWorth:
+    """STRATEGY.md §11.5 names the pricing hypothesis this product rests on --
+    price against measured effect per fleet, not seats or trace volume -- and
+    says the mechanism ships. Half of that was true: the effect size shipped,
+    and this file's own surface computed no value at all.
+
+    These check the rules that keep the resulting figure a measurement.
+    """
+
+    async def _running_experiment(self, session_factory, org, n=120, helps=True):
+        traces = await _traces(session_factory, org, 1)
+        for i in range(n):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            injected = bool(result["inject"])
+            # A real effect, in the direction asked for.
+            good = (i % 10 < 8) if (injected == helps) else (i % 10 < 3)
+            await _resolve(session_factory, org, f"occ-{i}", good)
+        return traces
+
+    async def test_it_reports_occasions_and_takes_the_rate_from_the_caller(
+        self, session_factory, org
+    ):
+        await self._running_experiment(session_factory, org)
+        async with session_scope(session_factory) as session:
+            counted = await crud.value_delivered(session, org)
+            priced = await crud.value_delivered(session, org, value_per_occasion=25.0)
+
+        assert counted["readable"]
+        # A count on its own; currency only once a rate is supplied, and no
+        # price is stored anywhere.
+        assert counted["money"] is None
+        assert counted["value_per_occasion"] is None
+        assert priced["money"] == pytest.approx(
+            priced["occasions_improved"] * 25.0, rel=1e-6)
+        assert priced["money_range"] is not None
+
+    async def test_a_compromised_experiment_yields_no_figure(self, session_factory, org):
+        """Every injected occasion reported, most withheld ones not -- the
+        attrition case. The effects are biased, so any value computed from
+        them is biased by the same mechanism."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(120):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            if bool(result["inject"]) or i % 4 == 0:
+                await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+
+        assert worth["readable"] is False
+        assert worth["occasions_improved"] == 0.0
+        assert worth["money"] is None
+        assert "COMPROMISED" in worth["reason"]
+
+    async def test_the_value_and_the_effect_table_cannot_disagree(
+        self, session_factory, org
+    ):
+        """It reads `causal_effects` rather than re-querying, so the two
+        surfaces of the same run are always computed from one set of rows."""
+        await self._running_experiment(session_factory, org)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+            worth = await crud.value_delivered(session, org)
+
+        assert {m["trace_id"] for m in worth["memories"]} == \
+            {e["trace_id"] for e in causal["effects"]}
+        for memory in worth["memories"]:
+            match = next(e for e in causal["effects"] if e["trace_id"] == memory["trace_id"])
+            assert memory["verdict"] == match["verdict"]
+            assert memory["n_injected"] == match["n_injected"]
+
+    async def test_a_memory_that_hurts_is_subtracted(self, session_factory, org):
+        """The number this product must be willing to print about itself."""
+        await self._running_experiment(session_factory, org, helps=False)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+            worth = await crud.value_delivered(session, org)
+
+        hurts = [e for e in causal["effects"] if e["verdict"] == "HURTS"]
+        if not hurts:  # pragma: no cover - depends on the randomizer's split
+            pytest.skip("this seed did not produce an adequately-powered HURTS verdict")
+        assert worth["occasions_improved"] < 0
+        counted = [m for m in worth["memories"] if m["verdict"] == "HURTS"]
+        assert counted and all(m["counted"] for m in counted)
+
+    async def test_it_states_where_the_number_comes_from(self, session_factory, org):
+        await self._running_experiment(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org)
+        assert "MEASURED" in worth["note"]
+        assert "subtracted rather than" in worth["note"]
+
+    async def test_it_never_reaches_another_orgs_data(
+        self, session_factory, org, other_org
+    ):
+        await self._running_experiment(session_factory, org)
+        async with session_scope(session_factory) as session:
+            theirs = await crud.value_delivered(session, other_org)
+        assert theirs["memories"] == []
+        assert theirs["occasions_improved"] == 0.0

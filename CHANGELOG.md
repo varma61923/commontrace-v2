@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The causal instrument and the commercial number were never connected —
+  and the commercial one was the confounded one.** `STRATEGY.md` §11.5 names
+  this product's pricing hypothesis (price against measured effect per fleet,
+  not seats or trace volume) and says "the mechanism ships". The effect size
+  shipped. Nothing turned it into a quantity a price could attach to, the Hub
+  — the surface customers pay on — computed **no value at all**, and the one
+  estimator that existed (`commontrace impact`) is correlational by its own
+  admission in five places.
+
+  `commontrace/value.py` computes, per memory whose causal effect the holdout
+  has established, `effect × n_injected` — how many more occasions went well
+  *because* that memory existed, carrying the confidence interval through. A
+  count, in the fleet's own units. Available as `commontrace experiment
+  --value-per-occasion`, the Hub's `value_delivered` MCP tool, and on the
+  customer console's Proof page (`?per_occasion=25`).
+
+  **Still no currency anywhere.** §11.5's argument for that is correct and
+  unchanged: the caller supplies what one resolved occasion is worth to them,
+  this supplies how many there were, nothing is stored.
+
+  Three rules make it a measurement rather than a brochure:
+
+  - **A COMPROMISED experiment produces no figure** — not a hedged one. A
+    value report is exactly where a caveat gets separated from its number.
+  - **An UNDERPOWERED memory contributes nothing.** Measured on a real run: a
+    memory reporting +30% on 90 occasions, never established, would have added
+    a phantom +27.
+  - **Memories measured as HURTING are subtracted, not dropped.** A figure that
+    sums only the winners is a brochure, and this product's whole claim is
+    that it will say when its own memory is making things worse.
+
+  Verified end to end on a 700-occasion run at a 40% holdout: a memory seeded
+  at +16% measured +16.4% → **+67 occasions**, and the run's other memory was
+  correctly excluded as unestablished rather than contributing its −16.
+
 - **The Hub can size an experiment before an operator starts one.**
   `python -m hub.manage plan-experiment <org_id>` reads that org's own
   retrieval volume and its own resolution rate and says what holdout rate a

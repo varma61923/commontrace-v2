@@ -1926,3 +1926,96 @@ digging.
 The cheapest instrument in this document remains a test that failed one run
 in fifteen under random ordering. Nobody reasoned their way to the
 arm-balance defect. A flaky test did.
+
+---
+
+## 23. Update (2026-09-02): §11.5 said the mechanism ships. Half of it did.
+
+§11.5 states this product's pricing hypothesis and defends, at length, the
+decision to encode no currency anywhere:
+
+> price against measured resolution-rate improvement per fleet, because that
+> is the only quantity this product can prove causally and it scales with the
+> customer's own benefit rather than with seats or trace volume
+
+> the mechanism ships and the number stays a business decision
+
+The second claim was half true, and the half that was missing is the half
+that matters commercially.
+
+### 23.1 What was actually there
+
+The **effect size** shipped. Nothing turned it into a *quantity a price could
+attach to*, and `hub/crud.py` — the surface customers pay on — computed no
+value at all. Checked rather than assumed: zero occurrences of any
+value-per-unit calculation in the entire Hub.
+
+The one estimator that did exist, `commontrace impact`, is **correlational by
+its own admission**, in five separate places, each pointing at
+`commontrace experiment` for a causal number.
+
+So the product had a causal instrument and a commercial number, and they were
+not connected to each other. The commercial one was the confounded one — the
+exact inversion of what §11.5 argues for.
+
+Meanwhile `hub/plans.py` gates on `max_traces`, `max_agents` and
+`commons_queries_per_month`: **seats and volume**, which is the denominator
+§11.5 identifies as wrong for this product. The entitlement model and the
+stated pricing hypothesis had been pointing in opposite directions since both
+were written, and nothing in the repository noticed because nothing computed
+the quantity that would have made the conflict visible.
+
+### 23.2 The quantity
+
+Per memory whose causal effect the holdout has established:
+
+    occasions_improved = effect × n_injected
+
+How many more occasions went well *because* that memory existed, carrying the
+effect's confidence interval straight through. A count, in the fleet's own
+units, that scales with the customer's benefit and not with their headcount.
+
+It is deliberately **not money**. §11.5's argument for encoding no currency is
+correct and is unchanged by this: the caller supplies what one resolved
+occasion is worth to them, this supplies how many there were, and no price is
+stored anywhere. Ship the mechanism, take the rate from the customer.
+
+### 23.3 Three rules, and the third is the product
+
+1. **A compromised experiment produces no figure.** Not a hedged one. If a
+   named mechanism is biasing the effects it biases every value computed from
+   them, and a value report is precisely the artifact where a caveat gets
+   separated from the number it qualifies.
+2. **An underpowered memory contributes nothing.** Measured on a real run: a
+   memory reporting +30% on 90 occasions — never established — would have
+   added a phantom +27 to the total. That is how a null becomes a sales
+   figure.
+3. **Memories measured as HURTING are subtracted, not dropped.** A figure that
+   sums only the winners is a brochure. This product's entire claim is that it
+   will tell a customer when its own memory is making things worse; a value
+   number that quietly excludes those retracts the claim in the one document
+   where the claim is being cashed.
+
+Rule 3 is why this is a commercial asset rather than a dashboard tile. Every
+vendor in this category can show a number that goes up. **A vendor whose value
+report can come out negative, and whose product refuses to state one at all
+when its own experiment is compromised, is making a different kind of claim** —
+and it is not one a competitor can adopt selectively, because its credibility
+comes entirely from being applied when it costs something.
+
+### 23.4 What this changes about §13.2, and what it does not
+
+Links 1–5 are unchanged and still need customers. This does not move one.
+
+What it changes is §11.5 itself, which listed the price as *not mine to
+decide* and treated the mechanism as done. The mechanism now exists on both
+tiers, on the paid surface, in the console a renewal is read in, and as an
+MCP tool an agent can call. The number remains a business decision, which is
+correct — but it is now a decision with a computed denominator under it
+rather than a hypothesis with nothing behind it.
+
+The honest read on the entitlement model: `plans.py` still gates on seats and
+volume, and that is now a *visible* inconsistency rather than an invisible
+one. Whether to move pricing onto the measured denominator is exactly the
+call §11.6 says is not mine. What has changed is that the question can now be
+asked with a number in hand.

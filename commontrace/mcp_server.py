@@ -3,7 +3,7 @@
 WHY THIS EXISTS
 ---------------
 Everything the Hub does has been callable by an agent since the Hub existed:
-eighteen MCP tools, no shell required. The LOCAL tier never was. `query`,
+its whole tool surface, no shell required. The LOCAL tier never was. `query`,
 `capture`, `distill`, `lesson approve`, `index` are argparse commands, so the
 only agents that could use their own memory were the ones that happen to have
 a terminal.

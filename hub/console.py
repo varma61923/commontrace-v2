@@ -356,10 +356,67 @@ def _miss(search: dict) -> str:
     return f'{rate:.0%} <span class="muted">of {_num(search.get("searches_with_terms", 0))}</span>'
 
 
-def _render_proof(outcomes: dict, causal: dict) -> str:
+
+def _value_block(worth: dict) -> str:
+    """What the memory was worth, in occasions -- and a refusal when it cannot
+    be said.
+
+    This is the number a renewal conversation is actually about, which is
+    exactly why it is the one most worth being strict with. A COMPROMISED
+    experiment shows the refusal, not a hedged figure; underpowered memories
+    contribute nothing; memories measured as HURTING are subtracted rather
+    than dropped. See commontrace/value.py.
+    """
+    if not worth:
+        return ""
+    if not worth.get("readable"):
+        return (
+            '<div class="verdict bad"><h2>What has this been worth?</h2>'
+            "<p><b>Not stated.</b> " + h(worth.get("reason", "")) + "</p>"
+            "<p class=\"muted\">A value figure is the one artifact where a caveat "
+            "reliably gets separated from the number it qualifies, so there is no "
+            "figure to separate.</p></div>"
+        )
+
+    improved = worth.get("occasions_improved") or 0.0
+    ci = worth.get("ci_95") or [0.0, 0.0]
+    tone = "good" if improved > 0 else ("bad" if improved < 0 else "")
+    lines = [
+        f'<div class="verdict {tone}"><h2>What has this been worth?</h2>',
+        f"<p><b>{improved:+,.0f} occasions</b> went differently because of this memory, "
+        f"over the measured window (95% CI {ci[0]:+,.0f} to {ci[1]:+,.0f}).</p>",
+        f'<p class="muted">From {_num(worth.get("n_counted", 0))} memory/memories whose '
+        f'causal effect is established; {_num(worth.get("n_excluded", 0))} contributed '
+        "nothing.</p>",
+    ]
+    if worth.get("money") is not None:
+        low, high = worth.get("money_range") or [0.0, 0.0]
+        lines.append(
+            f"<p><b>{worth['money']:+,.0f}</b> at the "
+            f"{worth['value_per_occasion']:,.2f} per resolved occasion you supplied "
+            f"({low:+,.0f} to {high:+,.0f}).</p>"
+        )
+    else:
+        lines.append(
+            '<p class="muted">Add <code>?per_occasion=25</code> to this URL to see it in '
+            "your own currency. The occasion count is measured here; the rate is yours, "
+            "and nothing about it is stored.</p>"
+        )
+    hurt = [m for m in worth.get("memories", []) if m.get("verdict") == "HURTS"]
+    if hurt:
+        lines.append(
+            '<p class="muted"><em>' + _num(len(hurt)) + " memory/memories measured as "
+            "making outcomes WORSE are subtracted above, not dropped. A figure that "
+            "sums only the winners is a brochure.</em></p>"
+        )
+    return "".join(lines) + "</div>"
+
+
+def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> str:
     body = ["<h1>Proof</h1>",
             '<p class="sub">Two different questions, deliberately not merged: what changed '
             "since your baseline, and what this memory <em>caused</em>.</p>"]
+    body.append(_value_block(worth or {}))
 
     integrity = causal.get("integrity") or {}
     body.append("<h2>Caused by the memory (randomized holdout)</h2>")
@@ -681,10 +738,19 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
+        # An optional rate the reader supplies in the URL. Never stored: this
+        # product ships the quantity and takes the price from whoever is
+        # reading, which is what keeps a number nobody agreed to out of the
+        # one place people treat as authoritative (STRATEGY.md 11.5).
+        try:
+            rate = float(request.query_params.get("per_occasion") or 0) or None
+        except ValueError:
+            rate = None
         async with session_scope(session_factory) as session:
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
-        return _page("Proof", _render_proof(outcomes, causal))
+            worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
+        return _page("Proof", _render_proof(outcomes, causal, worth))
 
     async def memory(request: Request) -> Response:
         claims = await _claims(request)

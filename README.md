@@ -1076,6 +1076,44 @@ one leak compromises both.
 
 ---
 
+### What it was worth
+
+An effect size is a percentage. A renewal conversation is about a quantity.
+
+```bash
+commontrace experiment --value-per-occasion 24
+```
+```
+**+67 occasions** went differently because of this memory, over the measured
+window (95% CI +37 to +98).
+
+At the 24.00 per resolved occasion you supplied, that is **+1,616**.
+```
+
+For every memory whose causal effect the holdout has *established*, that is
+`effect × times injected` — how many more occasions went well because it
+existed, carrying the confidence interval through. On the Hub it is the
+`value_delivered` tool and a section on your console's Proof page.
+
+**The count is measured here; the rate is yours.** This repository attaches no
+currency to anything. You say what one resolved occasion is worth to your
+organisation; nothing about that is stored.
+
+Three rules, and the third is the one that makes the number worth quoting:
+
+- **A compromised experiment produces no figure at all** — not a hedged one.
+  If a named mechanism is biasing the effects it biases every value computed
+  from them, and a value report is precisely where a caveat gets separated
+  from the number it qualifies.
+- **An underpowered memory contributes nothing.** Measured on a real run: one
+  reporting +30% on 90 occasions, never established, would have added a
+  phantom +27. That is how a null becomes a sales figure.
+- **Memories measured as HURTING are subtracted, not dropped.** A figure that
+  sums only the winners is a brochure. The whole claim here is that this will
+  tell you when its own memory is making things worse — a number that quietly
+  excludes those retracts the claim in the one document where it is being
+  cashed.
+
 ### When an answer stops being right
 
 Seeding and submissions both answer "how does content get in". Neither

@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import experiment, integrity, revision
+from commontrace import experiment, integrity, revision, value
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -2152,6 +2152,105 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                "compromised, so they are not estimates of the causal effect.")
         ),
     }
+
+
+async def value_delivered(
+    session: AsyncSession, org_id: str, value_per_occasion: float | None = None
+) -> dict:
+    """What this fleet's memory was worth, causally, in its own units.
+
+    STRATEGY.md 11.5 names the pricing hypothesis this product rests on --
+    price against measured effect per fleet, not seats or trace volume,
+    because measured effect is the only quantity here that is causal and the
+    only one that scales with the customer's own benefit. It also says the
+    mechanism ships and the number stays a business decision.
+
+    Half of that was true. The effect size shipped; nothing turned it into a
+    quantity a price could attach to, and this file -- the surface customers
+    pay on -- computed no value at all. The one estimator that existed
+    (`commontrace impact`) is correlational by its own admission. So the
+    product had a causal instrument and a commercial number that were not
+    connected to each other, and the commercial one was the confounded one.
+
+    Reuses `causal_effects` rather than re-querying, so the value figure and
+    the effect table can never disagree, and so the validity audit that
+    governs the effects governs the value too: a COMPROMISED experiment
+    yields no figure at all (`commontrace/value.py`).
+
+    `value_per_occasion` is the caller's. This function returns a COUNT of
+    occasions; currency enters only if the caller supplies a rate, and no
+    price is stored anywhere.
+    """
+    causal = await causal_effects(session, org_id)
+    effects = [
+        experiment.CausalEffect(
+            lesson_slug=e["trace_id"], n_injected=e["n_injected"],
+            n_withheld=e["n_withheld"], rate_injected=e["rate_injected"],
+            rate_withheld=e["rate_withheld"], effect=e["effect"],
+            ci_low=e["ci_95"][0], ci_high=e["ci_95"][1], p_value=e["p_value"],
+            significant=e["significant"],
+            min_detectable_effect=e["min_detectable_effect"],
+            verdict=e["verdict"], note=e["note"],
+        )
+        for e in causal.get("effects", [])
+    ]
+    audit = _integrity_from_wire(causal.get("integrity") or {})
+    report = value.compute(effects, audit, value_per_occasion=value_per_occasion)
+    titles = {e["trace_id"]: e.get("title") for e in causal.get("effects", [])}
+
+    return {
+        "readable": report.readable,
+        "reason": report.reason,
+        "occasions_improved": report.occasions_improved,
+        "ci_95": [report.ci_low, report.ci_high],
+        "n_counted": report.n_counted,
+        "n_excluded": report.n_excluded,
+        "value_per_occasion": value_per_occasion,
+        "money": report.money,
+        "money_range": list(report.money_range) if report.money_range else None,
+        "memories": [
+            {"trace_id": m.slug, "title": titles.get(m.slug, "(deleted trace)"),
+             "verdict": m.verdict, "n_injected": m.n_injected, "effect": m.effect,
+             "occasions_improved": m.occasions_improved,
+             "ci_95": [m.ci_low, m.ci_high], "counted": m.counted,
+             "why_not": m.why_not}
+            for m in report.memories
+        ],
+        "integrity": causal.get("integrity"),
+        "note": (
+            "The occasion count is MEASURED; any currency comes from the rate you "
+            "supplied. Memories measured as HURTING are subtracted rather than "
+            "dropped -- a figure that sums only the winners is not a measurement. "
+            "Underpowered memories contribute nothing, because an effect that was "
+            "not established multiplied by a volume is a large number with no "
+            "evidence under it."
+        ),
+    }
+
+
+def _integrity_from_wire(wire: dict) -> integrity.IntegrityReport | None:
+    """Rebuild just enough of the audit for `value.compute` to gate on.
+
+    Only the verdict and the blocking findings matter to it; the projections
+    and counts are for humans. Reconstructed rather than recomputed so the
+    value figure is gated by exactly the audit the caller was shown.
+    """
+    if not wire:
+        return None
+    findings = [
+        integrity.Finding(
+            check=str(f.get("check", "")), severity=str(f.get("severity", "")),
+            headline=str(f.get("headline", "")), detail=str(f.get("detail", "")),
+        )
+        for f in wire.get("findings", [])
+    ]
+    return integrity.IntegrityReport(
+        verdict=str(wire.get("verdict", integrity.VERDICT_SOUND)),
+        findings=findings, projections=[],
+        n_assignments=int(wire.get("n_assignments", 0)),
+        n_resolved=int(wire.get("n_resolved", 0)),
+        unit=str(wire.get("unit", integrity.UNIT_TRACE)),
+    )
 
 
 # --- Fleet outcomes: is this actually working for this customer? --------

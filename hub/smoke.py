@@ -232,6 +232,10 @@ CORE_TOOLS = [
     "fleet_outcomes",
     # randomized holdout (hub/crud.py) -- the causal instrument, org-scoped
     "holdout_assign", "record_occasion_outcome",
+    # what that instrument was WORTH (commontrace/value.py) -- the causal
+    # effect turned into a quantity a price can attach to, which STRATEGY.md
+    # 11.5 names as this product's pricing basis. Org-scoped and unmetered.
+    "value_delivered",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

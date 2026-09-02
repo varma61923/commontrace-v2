@@ -547,6 +547,43 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             return _error_response(exc)
 
     @mcp.tool()
+    async def value_delivered(value_per_occasion: float = 0.0) -> dict:
+        """What your fleet's memory has been worth, causally, in occasions.
+
+        Not a usage number and not a correlational one. For each memory whose
+        causal effect the running holdout has actually established, this is
+        `effect x times injected` -- how many more occasions went well BECAUSE
+        that memory existed -- carried through with its confidence interval.
+
+        Three rules make it a measurement rather than a brochure, and you
+        should check all three before quoting it:
+
+        - A COMPROMISED experiment returns no figure at all. Not a hedged one.
+          If a named mechanism is biasing the effects, it biases every value
+          computed from them, and a value report is exactly where a caveat
+          gets separated from the number.
+        - An UNDERPOWERED memory contributes nothing. Its effect was not
+          established, and multiplying it by a volume produces a large number
+          with no evidence under it.
+        - Memories measured as HURTING are SUBTRACTED, not dropped.
+
+        `value_per_occasion` is yours: pass what one resolved occasion is worth
+        to your organisation and the response carries the money too. Pass
+        nothing and you get the count. No price is stored anywhere -- this
+        product ships the quantity and takes the rate from you.
+
+        Reads only your own data. Not metered."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.value_delivered(
+                    session, org_id,
+                    value_per_occasion=(value_per_occasion or None),
+                )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
     async def holdout_assign(trace_ids: list, occasion_id: str) -> dict:
         """Randomized holdout: for each trace eligible on this occasion,
         decide whether to inject it or deliberately withhold it, and record

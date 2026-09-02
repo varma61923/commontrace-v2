@@ -70,7 +70,7 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_eighteen_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_the_whole_tool_surface_is_present_by_default(self, enabled_config, session_factory):
         """An exact set, not a subset: a tool appearing here that nobody
         meant to expose is exactly as much of a problem as one going
         missing, and only equality catches the first case."""
@@ -83,7 +83,7 @@ class TestCommonsEnabledByDefault:
             "commons_overlap", "commons_search",
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage", "fleet_outcomes",
-            "holdout_assign", "record_occasion_outcome",
+            "holdout_assign", "record_occasion_outcome", "value_delivered",
         }
 
 
