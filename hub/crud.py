@@ -2002,6 +2002,7 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
     """
     return {
         "verdict": report.verdict,
+        "unit": report.unit,
         "effects_readable": report.readable,
         "n_assignments": report.n_assignments,
         "n_resolved": report.n_resolved,
@@ -2079,7 +2080,11 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         )
         for r in rows
     ]
-    report = integrity.audit(assignments)
+    # unit="trace": the Hub randomizes traces, not lessons. Without this the
+    # customer console tells a Hub customer that a `lesson` was edited, which
+    # is the other tier's vocabulary and sends them looking for an object they
+    # do not have.
+    report = integrity.audit(assignments, unit=integrity.UNIT_TRACE)
 
     unique, _ = integrity.normalize(assignments)
     observations = [

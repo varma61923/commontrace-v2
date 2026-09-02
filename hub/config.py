@@ -213,6 +213,21 @@ class HubConfig:
     # prevent, and it is not a mistake a dropdown should be able to make.
     operator_org_id: str = ""
 
+    # Signing secret for the CUSTOMER console's session cookies
+    # (hub/console.py). Separate from `admin_token` on purpose: that token is
+    # the operator's credential, and a value that both authenticates the
+    # vendor AND signs customer sessions means one leak compromises both
+    # surfaces at once.
+    #
+    # Unset disables the console entirely -- no /app route is registered, so a
+    # deployment that has not opted in has nothing to probe, exactly as
+    # `admin_token` gates /admin. Failing closed rather than generating an
+    # ephemeral secret is deliberate: an ephemeral one works perfectly on a
+    # single process and silently signs out every user on each deploy and
+    # every scale-out, which reads as a flaky product rather than as a
+    # missing setting.
+    console_secret: str = ""
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -319,6 +334,7 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
+            console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),

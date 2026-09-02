@@ -107,6 +107,18 @@ ARM_BALANCE_ALPHA = 0.001
 # unobserved and the CI stops describing what a reader thinks it describes.
 ATTRITION_WEAKENS_AT = 0.30
 
+# What the experiment randomizes, as a word for the reports.
+#
+# The two tiers randomize different objects: the local tier withholds
+# LESSONS, the Hub withholds TRACES. The checks are identical and the finding
+# text is not -- a Hub customer reading "1 lesson(s) were edited" about their
+# own traces has been handed the other tier's vocabulary and will go looking
+# for a lesson they do not have. Threaded through rather than hardcoded,
+# because getting this wrong is invisible to every test that only reads
+# severities.
+UNIT_LESSON = "lesson"
+UNIT_TRACE = "trace"
+
 SEVERITY_OK = "OK"
 SEVERITY_WEAKENS = "WEAKENS"
 SEVERITY_INVALIDATES = "INVALIDATES"
@@ -175,6 +187,9 @@ class IntegrityReport:
     n_assignments: int
     n_resolved: int
     n_duplicates: int = 0
+    # What the experiment randomizes -- "lesson" locally, "trace" on the Hub.
+    # Purely a word for the rendered findings; every check is identical.
+    unit: str = UNIT_LESSON
 
     @property
     def blocking(self) -> list[Finding]:
@@ -424,7 +439,7 @@ def check_assignment_drift(rows: list[Assignment]) -> Finding:
     )
 
 
-def check_inconsistent_arms(rows: list[Assignment]) -> Finding:
+def check_inconsistent_arms(rows: list[Assignment], unit: str = UNIT_LESSON) -> Finding:
     """Was any (lesson, occasion) recorded in BOTH arms?
 
     The unit of assignment is the pair, and assignment is deterministic, so
@@ -437,24 +452,24 @@ def check_inconsistent_arms(rows: list[Assignment]) -> Finding:
         arms.setdefault((r.lesson, r.occasion_id), set()).add(r.injected)
     conflicted = sorted(k for k, v in arms.items() if len(v) > 1)
     numbers = {"conflicted": len(conflicted),
-               "examples": [f"{lesson} @ {occ}" for lesson, occ in conflicted[:5]]}
+               "examples": [f"{item} @ {occ}" for item, occ in conflicted[:5]]}
     if not conflicted:
         return Finding(
             "consistent_arms", SEVERITY_OK,
-            "Every (lesson, occasion) sits in exactly one arm.", "", numbers,
+            f"Every ({unit}, occasion) sits in exactly one arm.", "", numbers,
         )
     return Finding(
         "consistent_arms", SEVERITY_INVALIDATES,
-        f"{len(conflicted)} (lesson, occasion) pair(s) appear in BOTH arms.",
+        f"{len(conflicted)} ({unit}, occasion) pair(s) appear in BOTH arms.",
         "Assignment is deterministic, so within one randomization this is "
         "impossible -- it means the salt or rate changed (see the drift check) or "
         "something is writing the log that is not the assigner. Those occasions "
-        "count as evidence for and against the same lesson at once.",
+        f"count as evidence for and against the same {unit} at once.",
         numbers,
     )
 
 
-def check_treatment_stability(rows: list[Assignment]) -> Finding:
+def check_treatment_stability(rows: list[Assignment], unit: str = UNIT_LESSON) -> Finding:
     """Did the lesson being measured stay the same lesson?
 
     `check_assignment_drift` catches the randomization changing mid-run. This
@@ -505,21 +520,24 @@ def check_treatment_stability(rows: list[Assignment]) -> Finding:
         named = "; ".join(
             f"`{slug}` ({' -> '.join(revs)})" for slug, revs in sorted(changed.items())
         )
+        how_to_inspect = (
+            " `commontrace lesson history <slug>` shows what changed and when."
+            if unit == UNIT_LESSON else ""
+        )
         return Finding(
             "treatment_stability", SEVERITY_INVALIDATES,
-            f"{len(changed)} lesson(s) were edited while the experiment was running: {named}.",
+            f"{len(changed)} {unit}(s) were edited while the experiment was running: {named}.",
             "Occasions before and after the edit were treated with different "
             "instructions, and both arms pool them into one comparison -- so the "
-            "effect reported for such a lesson is an average over a treatment that "
-            "no longer exists. `commontrace lesson history <slug>` shows what "
-            "changed and when. To measure the current text, start a fresh "
-            "randomization (change the salt) and let this one end.",
+            f"effect reported for such a {unit} is an average over a treatment that "
+            f"no longer exists.{how_to_inspect} To measure the current text, start a "
+            "fresh randomization (change the salt) and let this one end.",
             numbers,
         )
     if not by_lesson:
         return Finding(
             "treatment_stability", SEVERITY_WEAKENS,
-            "No assignment recorded which revision of a lesson it used, so whether "
+            f"No assignment recorded which revision of a {unit} it used, so whether "
             "the treatment held still cannot be checked.",
             "Assignments written before revisions were recorded do not carry one. "
             "The estimate may be fine; nothing here can say so. Assignments made "
@@ -529,13 +547,13 @@ def check_treatment_stability(rows: list[Assignment]) -> Finding:
     if unknown:
         return Finding(
             "treatment_stability", SEVERITY_OK,
-            f"No lesson changed while the experiment ran ({unknown} older "
+            f"No {unit} changed while the experiment ran ({unknown} older "
             "assignment(s) carry no revision and were not checked).",
             "", numbers,
         )
     return Finding(
         "treatment_stability", SEVERITY_OK,
-        f"All {len(by_lesson)} lesson(s) held the same text throughout.",
+        f"All {len(by_lesson)} {unit}(s) held the same text throughout.",
         "", numbers,
     )
 
@@ -647,7 +665,11 @@ def project(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -
 # --- the report ----------------------------------------------------------
 
 
-def audit(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -> IntegrityReport:
+def audit(
+    rows: list[Assignment],
+    min_arm: int = experiment.DEFAULT_MIN_ARM,
+    unit: str = UNIT_LESSON,
+) -> IntegrityReport:
     """Every check, plus the projection, over one experiment's assignments.
 
     Takes the RAW log -- duplicates, unresolved occasions and all. Most of
@@ -658,7 +680,7 @@ def audit(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -> 
     # Conflict detection and drift read the raw rows (a conflict IS a pair
     # logged twice, differently); everything else reads one row per pair, the
     # same unit the estimate is computed on.
-    conflicts = check_inconsistent_arms(rows)
+    conflicts = check_inconsistent_arms(rows, unit)
     drift = check_assignment_drift(rows)
     unique, duplicates = normalize(rows)
     findings = [
@@ -666,7 +688,7 @@ def audit(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -> 
         check_arm_balance(unique),
         drift,
         conflicts,
-        check_treatment_stability(unique),
+        check_treatment_stability(unique, unit),
         check_outcome_variation(unique),
     ]
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=0)
@@ -674,6 +696,7 @@ def audit(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -> 
         verdict=_VERDICT_FOR[worst],
         findings=findings,
         projections=project(unique, min_arm=min_arm),
+        unit=unit,
         n_assignments=len(unique),
         n_resolved=len(_resolved(unique)),
         n_duplicates=duplicates,
@@ -716,9 +739,9 @@ def render(report: IntegrityReport) -> str:
     lines.append("")
     lines.append(
         "_Checked here: attrition, arm balance, mid-run re-randomization, "
-        "conflicting arms, whether the lesson text held still, and whether the "
+        f"conflicting arms, whether the {report.unit} text held still, and whether the "
         "outcome varies at all. NOT checkable "
-        "here: whether an agent used a lesson it was told to withhold. That leaves "
+        f"here: whether an agent used a {report.unit} it was told to withhold. That leaves "
         "no trace in the record and biases the effect toward zero -- it is honoured "
         "by the client or not at all._"
     )

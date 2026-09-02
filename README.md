@@ -961,6 +961,48 @@ Three things it will not do:
   caller cannot distinguish "checked, clean" from "not checked" when only
   failures appear.
 
+## Your team's console
+
+Everything above is a CLI or an MCP tool. The person who approves the renewal
+is neither of those, so the Hub serves a console at `/app` scoped to one
+organisation by its own API key:
+
+| Page | What it answers |
+| --- | --- |
+| **Overview** | How much memory this fleet has, how many agents it runs, and how often a search comes back with nothing |
+| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them |
+| **Memory** | The corpus, searched the way the agents search it, showing which terms matched and which were too common to discriminate |
+| **Knowledge Base** | Proposals sent, consultations used, credit earned |
+
+```bash
+HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+# unset, and no /app route exists at all
+```
+
+Four properties, each ruling something out:
+
+- **It writes no queries of its own.** Every number comes from a function
+  that already takes and filters on `org_id`. A cross-tenant leak is the
+  worst failure this product has available, so the isolation argument rests
+  on the one set of filters the tenant-isolation suite already exercises.
+- **It is read-only.** Everything you could change from a browser alters
+  either a measurement or a shared corpus, and both already have audited,
+  authenticated paths. That is also why there are no CSRF tokens: there is
+  no state-changing request for a forged one to trigger.
+- **Revoking a key ends the browser sessions it opened**, checked on every
+  request. Revocation that leaves a session alive for another eight hours is
+  a false belief about the state of a credential.
+- **When validity is COMPROMISED the effect sizes are withheld, not
+  caveated.** On a page read in a renewal conversation, a number on screen
+  gets quoted and the note beneath it does not travel with it.
+
+It is separate from the operator console at `/admin`, in audience, in auth,
+and in blast radius — and it is gated on a different secret, because one
+value that both authenticates the vendor and signs customer sessions means
+one leak compromises both.
+
+---
+
 ### When an answer stops being right
 
 Seeding and submissions both answer "how does content get in". Neither

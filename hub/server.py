@@ -39,6 +39,7 @@ from hub.abuse import (
 )
 from hub.admin import add_admin_routes
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
+from hub.console import add_console_routes
 from hub.db import session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
@@ -859,6 +860,19 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
             operator_org_id=config.operator_org_id,
+        )
+
+    # The customer-facing console, gated on its own secret. Distinct from the
+    # operator console above in audience, auth and blast radius: that one is
+    # cross-tenant and moderates; this one is scoped to a single org by a
+    # signed session and cannot change any state at all.
+    if config.console_secret:
+        add_console_routes(
+            inner_app,
+            session_factory,
+            console_secret=config.console_secret,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            commons_enabled=config.commons_enabled,
         )
 
     add_health_routes(

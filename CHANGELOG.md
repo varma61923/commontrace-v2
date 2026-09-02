@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Customers had no interface.** `hub/admin.py` is the *operator* console —
+  one vendor employee, cross-tenant, moderating the Knowledge Base — and
+  until now it was the only HTML the Hub served. A paying organisation had
+  an MCP tool surface and a CLI, and nothing else.
+
+  That matters more than it sounds. The product's central claim is that it
+  can prove causally, on the customer's own data, that the memory changed
+  outcomes, and three rounds of work went into making that number
+  trustworthy: a validity audit, a differential-attrition check, a treatment
+  pinned to a content revision. All of it renders in a terminal, to whoever
+  runs `commontrace prove outcomes`. The person who decides whether to renew
+  does not run that command.
+
+  `hub/console.py` serves `/app`: **Overview** (fleet, plan usage, and how
+  often searches come back empty), **Proof** (the causal report with its
+  validity verdict rendered *above* the effect sizes, plus the observational
+  before/after clearly separated), **Memory** (the corpus, searched the same
+  way agents search it, with the matched and ignored terms shown), and
+  **Knowledge Base** (their proposals, consultations used, credit earned).
+
+  Design decisions worth stating, because each rules something out:
+
+  - **It writes no queries of its own.** Every figure comes from a function
+    in `hub/crud.py` that already takes and filters on `org_id`. A
+    cross-tenant leak here is the worst failure available to this product,
+    and the isolation argument should rest on the one set of filters
+    `test_tenant_isolation.py` already exercises rather than a second set a
+    new file introduced.
+  - **It is read-only, and that is the boundary rather than a limitation.**
+    Everything a customer could change from a browser either alters a
+    measurement or alters a shared corpus, and both already have audited,
+    authenticated paths. Read-only also removes the entire CSRF surface —
+    there is no state-changing request for a forged one to trigger — so the
+    absence of CSRF tokens is correct rather than an oversight.
+  - **Sessions are signed, not stored.** The Hub runs behind a load
+    balancer, and an in-memory session table logs everyone out on every
+    deploy. The API key is verified once at sign-in and **never put in the
+    cookie**; only the non-secret prefix goes in, so a leaked cookie is not
+    a leaked credential.
+  - **Revoking a key ends the sessions it opened**, checked per request
+    against the key's live state. An 8-hour window where a revoked key still
+    served data would mean revocation that does not revoke — a false belief
+    about the state of a credential, which is worse than no revocation.
+  - **Effect sizes are withheld, not caveated, when validity is
+    COMPROMISED.** On a page built to be read in a renewal conversation, a
+    number on screen gets quoted and the note under it does not travel.
+  - **Absent unless configured**, like `/admin`: no `HUB_CONSOLE_SECRET`, no
+    routes. The secret is deliberately *not* `HUB_ADMIN_TOKEN` — one value
+    authenticating the vendor and signing customer sessions means one leak
+    compromises both.
+
 - **An effect size was attached to a mutable name, and the treatment could
   change underneath it.** The validity audit shipped alongside this checks
   whether the *sample* can support an estimate. It did not check whether the
@@ -366,6 +417,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the one claim nobody should make.
 
 ### Fixed
+
+- **Hub integrity findings used the local tier's vocabulary.** The two tiers
+  randomize different objects — the local tier withholds *lessons*, the Hub
+  withholds *traces* — and the shared checks reported both as "lesson". A
+  Hub customer reading "1 lesson(s) were edited" about their own traces has
+  been handed the wrong tier's words and will go looking for an object they
+  do not have. `integrity.audit(..., unit=...)` threads the right noun
+  through, and the Hub passes `trace`. Invisible to any test that only
+  asserts severities, which is why it was found by reading a rendered page.
 
 - **`commontrace doctor` could be killed by its own optional-dependency
   probes.** `importlib.util.find_spec` walks `sys.meta_path`, so any import

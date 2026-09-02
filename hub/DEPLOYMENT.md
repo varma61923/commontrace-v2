@@ -101,6 +101,37 @@ the wrong probe causes real outages:
 All three are unauthenticated (a load balancer and a metrics scraper carry
 no tenant credentials).
 
+### The customer console
+
+Set `HUB_CONSOLE_SECRET` and the Hub serves a console at `/app` for your
+**customers**, authenticated by their own API key and scoped to their own
+organisation. Four pages: what their fleet has captured and how it is using
+its plan, whether the memory is working (with the validity verdict rendered
+*above* the effect sizes), the corpus searched the way their agents search
+it, and their Knowledge Base proposals and credit.
+
+```bash
+HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+```
+
+Operationally, four things to know:
+
+- **It is read-only.** Nothing on it changes state, which is why it carries
+  no CSRF token — there is no state-changing request for a forged one to
+  trigger. Everything a customer can change goes through MCP or the CLI,
+  where it is authenticated and audited.
+- **Revoking a key ends the browser sessions it opened**, checked on every
+  request. `revoke-key` is a working emergency stop for the console too.
+- **Rotating `HUB_CONSOLE_SECRET` signs every customer out.** That is the
+  blunt instrument if you suspect a session leak; it needs no database
+  change and takes effect on restart.
+- **Unset means the route does not exist.** A deployment that has not opted
+  in has nothing to probe.
+
+This secret is deliberately **not** `HUB_ADMIN_TOKEN`. That token is your
+operator credential; this one signs customer sessions. One value doing both
+means one leak compromises both surfaces at once.
+
 ### The operator console
 
 Set `HUB_ADMIN_TOKEN` and the Hub also serves an operator console at
@@ -367,6 +398,9 @@ across a revocation, re-revoke those key ids immediately.
       reachable only from your operator network.
 - [ ] `HUB_OPERATOR_ORG_ID` set to your own org if you intend to accept
       Knowledge Base proposals from the console (it fails closed otherwise).
+- [ ] `HUB_CONSOLE_SECRET` either unset, or set to a fresh random secret
+      that is NOT `HUB_ADMIN_TOKEN`. `/app` is customer-reachable by design,
+      so it belongs on your public ingress behind TLS — unlike `/admin`.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
