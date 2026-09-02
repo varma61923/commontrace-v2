@@ -519,9 +519,20 @@ class TestLessonSlugNormalizationAndIndexing:
         ldir = paths.lessons_dir(str(clean_store))
         lesson_file = os.path.join(ldir, "lesson_review_candidate.md")
 
-        # Set status to review
+        # Set status to review, with real content: `lesson approve` refuses a
+        # lesson still carrying `lesson new`'s scaffolding, since an active
+        # lesson is injected into agents verbatim. This test is about slug
+        # resolution, so it approves a lesson that is actually written.
         fm, body = frontmatter.read(lesson_file)
         fm["status"] = "review"
+        fm["applies_when"] = "A test asserts on wall-clock time"
+        fm["do_not_apply_when"] = "The test is deliberately measuring duration"
+        body = (
+            "## Rule\nFreeze the clock instead of sleeping.\n\n"
+            "## Why\nObserved in three flaky suites.\n\n"
+            "## How to apply\nInject a clock and assert on it.\n\n"
+            "## Counter-examples\nBenchmarks.\n"
+        )
         frontmatter.write(lesson_file, fm, body)
 
         # Approve using un-prefixed slug
@@ -569,6 +580,16 @@ class TestLessonSlugNormalizationAndIndexing:
         )
 
         ldir = paths.lessons_dir(str(clean_store))
+        # `lesson new` scaffolds at status=review; only an approved lesson is
+        # active, and iter_active_lessons reads exactly those. The glob/slug
+        # normalization under test is unchanged either way -- activate them so
+        # the assertion is about naming rather than about lifecycle.
+        for filename in ("lesson_auto_norm_1.md", "lesson_auto_norm_2.md"):
+            path = os.path.join(ldir, filename)
+            fm, body = frontmatter.read(path)
+            fm["status"] = "active"
+            frontmatter.write(path, fm, body)
+
         active_slugs = [slug for slug, _ in build_index.iter_active_lessons(ldir)]
         assert "auto_norm_1" in active_slugs
         assert "lesson_auto_norm_2" in active_slugs

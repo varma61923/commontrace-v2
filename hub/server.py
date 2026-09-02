@@ -17,6 +17,7 @@ example.
 from __future__ import annotations
 
 import logging
+import math
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.applications import Starlette
@@ -26,7 +27,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, commons, crud, plans
+from hub import auth, commons, crud, observability, plans
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -108,8 +109,9 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_key = resolve_client_key(request, self._trusted_proxy_hops)
-        if not self._auth_rate_limiter.allow(client_key):
-            return JSONResponse({"error": "rate_limited", "detail": "too many auth attempts"}, status_code=429)
+        allowed, retry_after = self._auth_rate_limiter.check(client_key)
+        if not allowed:
+            return _rate_limited_response("too many auth attempts", retry_after)
 
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
@@ -127,8 +129,33 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             # hub/auth.py:verify_api_key for why they must be indistinguishable.
             return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
 
-        if not self._read_rate_limiter.allow(authenticated.org_id):
-            return JSONResponse({"error": "rate_limited", "detail": "too many requests"}, status_code=429)
+        # The credential verified, so refund the auth-attempt token spent
+        # above. That limiter's job is bounding Argon2 CPU forced by
+        # credentials that DON'T verify; charging the ones that do made it
+        # the binding constraint on legitimate bulk traffic (a bulk push is
+        # hundreds of successful authentications from one address, against a
+        # 60/min budget) while doing nothing extra against an attacker, who
+        # by definition never reaches this line. Valid callers are governed
+        # by the per-org read limiter immediately below -- authenticated,
+        # accountable, and metered, which is the right instrument for them.
+        self._auth_rate_limiter.refund(client_key)
+
+        # A DELETE on the MCP path is the client tearing its session down.
+        # It runs no tool, reads no row, and costs the server less than the
+        # 429 body refusing it would -- while refusing it makes an otherwise
+        # SUCCESSFUL command print "Session termination failed: 429" from
+        # inside the MCP SDK, which is what a user sees and reasonably reads
+        # as "my run failed". It is also self-defeating: the client stops
+        # waiting either way, so the only effect is that the server keeps
+        # the session state it was being asked to release.
+        #
+        # Still authenticated (above), so this is not an unauthenticated
+        # hole: only a caller holding a valid key for this org can reach it,
+        # and it cannot be used to do any work.
+        if request.method != "DELETE":
+            allowed, retry_after = self._read_rate_limiter.check(authenticated.org_id)
+            if not allowed:
+                return _rate_limited_response("too many requests", retry_after)
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
@@ -139,11 +166,49 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             auth.current_actor.reset(actor_token)
 
 
+def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
+    """A 429 that says WHEN to come back.
+
+    Without `Retry-After` a refused client can only guess, and a client
+    guessing short against a limiter that is already saying no turns one
+    burst into a sustained stampede -- measured on this project's own CLI,
+    a bulk `commontrace sync --push-traces` drove 114 rejected requests
+    where the honest answer was "wait about two seconds". The header is the
+    standard, machine-readable way to say that, and
+    commontrace/hub_client.py now paces its whole batch off it.
+
+    Rounded UP to a whole second: `Retry-After` is defined in integer
+    seconds, and rounding down would advertise a moment at which the bucket
+    provably still has no token, inviting exactly the extra rejected
+    request this exists to prevent. Floored at 1 for the same reason.
+    """
+    return JSONResponse(
+        {"error": "rate_limited", "detail": detail, "retry_after": max(1, math.ceil(retry_after))},
+        status_code=429,
+        headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+    )
+
+
 def _error_response(exc: Exception) -> dict:
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
-        return {"error": "rate_limited", "detail": str(exc)}
+        # `retry_after` for the same reason the HTTP 429s carry the header:
+        # this limiter's shipped default (20 writes/minute) means a client
+        # pushing a backlog is refused as a matter of course, and a refusal
+        # that does not say when to come back leaves it guessing -- which,
+        # measured on this project's own `sync --push-traces`, is how a
+        # recoverable wait turned into a permanent per-file error.
+        # Counted here as well as at the HTTP layer: a write-limit refusal
+        # is returned INSIDE a 200 MCP response, so the middleware's
+        # status-code counter never sees it. Without this the metric would
+        # under-report exactly the limiter most likely to be misconfigured.
+        observability.METRICS.observe_rate_limited("write")
+        body = {"error": "rate_limited", "detail": str(exc)}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            body["retry_after"] = max(1, math.ceil(retry_after))
+        return body
     if isinstance(exc, crud.IdempotencyKeyConflict):
         return {"error": "conflict", "detail": str(exc)}
     if isinstance(exc, plans.EntitlementExceeded):

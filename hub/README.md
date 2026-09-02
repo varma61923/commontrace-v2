@@ -520,6 +520,26 @@ needs a shared store (Redis `INCR`+`EXPIRE`, or a Postgres-backed bucket
 table) — not implemented, to avoid pulling in a Redis dependency for an MVP
 that's meant to run as one process.
 
+Three properties worth knowing, because each one was a real defect:
+
+- **Every refusal carries `Retry-After`** (the HTTP 429s, and the
+  `retry_after` field on a tool-level `rate_limited` error). Without it a
+  refused client can only guess, and a client guessing short against a
+  limiter already saying no turns one burst into a sustained stampede.
+  `commontrace sync` paces its whole batch off this value.
+- **The auth-attempt limiter charges only credentials that fail to
+  verify.** Its job is bounding the Argon2 CPU an unauthenticated source
+  can force; charging successful authentications too made it throttle the
+  legitimate heavy client hardest — a bulk push is hundreds of successful
+  authentications from one address against a 60/min budget. Valid callers
+  are governed by the per-org read limiter instead, where they are
+  authenticated, accountable and metered.
+- **Tracked keys are capped** (`_MAX_TRACKED_KEYS`). The idle sweep alone
+  evicts nothing for an hour, and the client-address-keyed limiters are
+  keyed on something the peer chooses — any address out of an IPv6 /64 —
+  so an unauthenticated flood could otherwise grow process memory without
+  bound via the limiter meant to prevent exactly that.
+
 The spam heuristic (`suspicion_reason` in `hub/abuse.py`) is intentionally
 simple — too many URLs, or near-zero character diversity — and is explicitly
 documented in its own docstring as a placeholder, not a moderation system.

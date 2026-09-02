@@ -51,6 +51,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     ap.add_argument("slug")
     ap.add_argument("--rationale", default="", help="One sentence recorded in the lesson body.")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding. "
+             "Refused by default -- an active lesson is injected into agents verbatim.",
+    )
     ap.add_argument("--dest", default=None)
     ap.set_defaults(func=run_approve)
 
@@ -93,9 +99,29 @@ def run_new(args: argparse.Namespace) -> int:
         importance=args.importance,
         importance_rationale=args.importance_rationale,
         source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
+        # Scaffolded at `review`, not `active`.
+        #
+        # `lesson new` writes a body that is entirely template text
+        # ("## Rule\n[1 actionable sentence]"). Creating that at status
+        # `active` made it live the instant it was scaffolded: retrievable by
+        # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
+        # published to the whole fleet by `sync --push` -- all before a single
+        # word of it had been written.
+        #
+        # It also bypassed the one control the protocol defines for exactly
+        # this: run_approve's own docstring says a lesson "is only ever
+        # activated by an explicit human/Validator call to this command,
+        # never automatically by whatever proposed it". `commontrace distill`
+        # already honours that by writing candidates at `review`; this path
+        # was the inconsistent one.
+        status="review",
     )
     frontmatter.write(out_path, fm, templates.lesson_body())
     print(f"[commontrace] created {out_path}")
+    print(
+        f"  Written at status=review. Fill in the Rule/Why/How-to-apply sections, then:\n"
+        f"    commontrace lesson approve {args.slug}"
+    )
     return 0
 
 
@@ -120,8 +146,25 @@ def run_validate(args: argparse.Namespace) -> int:
     for path in _iter_lesson_paths(root, args.path):
         n_checked += 1
         try:
-            fm, _ = frontmatter.read(path)
+            fm, body = frontmatter.read(path)
             errors = validate.validate(fm, schema)
+            # Schema-valid is not the same as fit to inject. An ACTIVE lesson
+            # is retrieved and fed to agents verbatim, counted as coverage by
+            # `taxonomy`/`pilot`, and pushed to the Hub by `sync` -- so one
+            # still full of "TODO:" scaffolding is a defect this command
+            # exists to catch, and it used to report it as "valid".
+            #
+            # Scoped to active lessons on purpose: a `status: review`
+            # candidate is SUPPOSED to carry placeholders (that is what
+            # `commontrace distill` writes and what a human is being asked to
+            # fill in), so flagging those would make the check noise.
+            if fm.get("status") == "active":
+                unfilled = templates.unfilled_placeholders(fm, body)
+                if unfilled:
+                    errors = list(errors) + [
+                        f"active lesson still contains unedited scaffolding in "
+                        f"{', '.join(unfilled)} -- it would be injected into agents as-is"
+                    ]
         except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError) as exc:
             errors = [str(exc)]
         if errors:
@@ -176,10 +219,32 @@ def run_approve(args: argparse.Namespace) -> int:
             )
             return 1
 
+        unfilled = templates.unfilled_placeholders(fm, body)
+        if unfilled and not args.force:
+            print(
+                f"[commontrace] refusing to approve {args.slug}: it still contains "
+                f"unedited scaffolding in {', '.join(unfilled)}.\n"
+                "  Approving activates a lesson for retrieval and injection -- an\n"
+                "  agent injects whatever it is given, so a lesson whose rule is\n"
+                "  still 'TODO: ...' teaches the fleet nothing and displaces a real\n"
+                "  one. It would also be counted as coverage by `commontrace\n"
+                "  taxonomy`/`pilot` and pushed to the Hub by `commontrace sync`.\n"
+                f"  Edit {path} first, or pass --force if this really is the\n"
+                "  intended content.",
+                file=sys.stderr,
+            )
+            return 1
+
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
         frontmatter.write(path, fm, body)
+    if unfilled:
+        print(
+            f"[commontrace] warning: approved {args.slug} with --force while "
+            f"{', '.join(unfilled)} still contain unedited scaffolding.",
+            file=sys.stderr,
+        )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
     return 0
 

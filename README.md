@@ -132,7 +132,11 @@ commontrace capture --title "..." --context "..." --solution "..." \
 commontrace lesson new --slug lesson_x --description "..." --domain escalation \
   --agent-type support --applies-when "..." --do-not-apply-when "..." --importance 4 \
   --importance-rationale "..."
-commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json
+# `lesson new` scaffolds at status=review, like `distill` does: fill in the
+# Rule/Why/How-to-apply sections, then `commontrace lesson approve lesson_x`.
+# Only an approved lesson is retrieved, counted as coverage, or pushed to a Hub.
+commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json,
+                                  # and fails an ACTIVE lesson still full of template text
 commontrace trace validate       # checks against protocol/schemas/trace.schema.json
 commontrace sync                 # push active lessons + pull search results, if a Hub is configured
 commontrace sync --push          # push only
@@ -165,6 +169,17 @@ candidate only becomes retrieval-eligible once a human runs `lesson
 approve`. Traces already referenced by an existing lesson's `source_traces`
 are skipped on the next run, so re-running `distill` doesn't keep
 re-proposing patterns someone already curated.
+
+**`approve` refuses a lesson that is still template text.** A candidate
+arrives with `applies_when`, the Rule, and the counter-examples all written
+as `TODO: ...`; approving it as-is would activate a lesson that teaches the
+fleet nothing, and an agent injects whatever it is given. Such a lesson
+would also be counted as coverage by `commontrace taxonomy`/`pilot` (making
+a real gap read as "Gaps: 0") and published to every agent by `sync --push`.
+So `approve` names the unfilled sections and stops; `--force` overrides it
+and says so; `lesson validate` fails an *active* lesson in that state; and
+`sync --push` will not publish one. Fill it in first — that editing pass is
+the curation step, not a formality.
 
 ### 6 — Measure what another fleet's lessons would be worth to you
 

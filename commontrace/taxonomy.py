@@ -23,7 +23,7 @@ import dataclasses
 import html
 from dataclasses import dataclass, field
 
-from commontrace import distill, report_html
+from commontrace import distill, report_html, templates
 
 
 @dataclass
@@ -69,6 +69,16 @@ def _best_covering_lesson(trace_ids: set[str], lessons: list[dict]) -> str | Non
     best_overlap = 0
     for fm in sorted(lessons, key=lambda lesson: str(lesson.get("name", ""))):
         if fm.get("status") != "active":
+            continue
+        # A lesson that is still unedited scaffolding covers nothing, and
+        # counting it is worse than counting nothing: this number is the
+        # "Already covered by an active lesson" line in `commontrace
+        # taxonomy` and `commontrace pilot`, i.e. the number a customer
+        # reads to decide which failure patterns still need work.
+        # Reproduced before this guard: an all-"TODO:" candidate reported a
+        # real recurring pattern as covered and drove the pilot report's
+        # "Gaps: 0", telling the customer there was nothing left to do.
+        if templates.unfilled_placeholders(fm, str(fm.get(templates.BODY_KEY) or "")):
             continue
         source = set(str(t) for t in (fm.get("source_traces") or []))
         overlap = len(source & trace_ids)

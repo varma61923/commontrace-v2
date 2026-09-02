@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`commontrace sync --push-traces` could not complete against a
+  default-configured Hub, and reported the failure as a network outage.**
+  Measured on a 46-trace store: **0 of 46 traces pushed**, 62 of 100
+  requests refused with HTTP 429, and every one reported as `could not
+  reach the Hub ... unhandled errors in a TaskGroup (1 sub-exception)`.
+  After this change the same store pushes **46 of 46 in 23s with zero
+  429s**. Four independent defects, each reproduced against a live Hub:
+
+  - *Five HTTP requests per logical tool call.* Every `_call_tool` stood up
+    a whole MCP session of its own -- connect, `initialize`, the
+    initialized notification, `tools/call`, terminate -- and the Hub's
+    limiter counts HTTP requests, not tool calls. A batch now holds **one**
+    session open (`HubSession`), opened lazily so an already-up-to-date
+    sync makes no connection at all.
+  - *The retry layer never ran.* The MCP SDK drives its transport inside an
+    anyio task group, so every transport error arrived wrapped -- twice --
+    in an `ExceptionGroup` whose only text is "unhandled errors in a
+    TaskGroup". Classification read that wrapper, so a genuine refused
+    connection was judged **not** retryable and tried exactly once, and
+    `--max-attempts` was a no-op flag. Errors are now classified against
+    the flattened exception tree.
+  - *429 was not handled at all.* It is the one client error a later
+    attempt can succeed at. It is now retried under its own attempt budget,
+    with a shared `_RateLimitGate` that paces the **whole batch** (per-call
+    backoff alone just leaves the other workers stampeding a limiter that
+    has already said no) using additive-increase/multiplicative-decrease
+    against the server's own `Retry-After`.
+  - *Every failure claimed to be a network outage, after a fabricated
+    number of attempts.* A rejected API key, a rate limit and a real outage
+    were indistinguishable, and "after 3 attempt(s)" was the configured
+    maximum printed unconditionally -- a failure that gave up after one
+    attempt still claimed three. Failures now name themselves
+    (`HubAuthError`, `HubRateLimited`, `HubConfigurationError`,
+    `HubToolError`), report the real attempt count, and quote the actual
+    underlying exception.
+
+- **Unedited scaffolding could become an active, injected, published
+  lesson.** Reproduced end to end on a real store: `commontrace distill`
+  writes a candidate whose Rule, How-to-apply, Counter-examples,
+  `applies_when` and `do_not_apply_when` are all `TODO: ...`; `lesson
+  approve` activated it; `lesson validate` called it "1/1 lessons valid";
+  `query` returned it as the top hit; `taxonomy` reported its source
+  pattern as **covered**; `pilot` reported **"Gaps: 0"**; and `sync --push`
+  published it to the whole fleet. An agent injects whatever it is given,
+  so this is the failure this codebase names elsewhere as "context
+  poisoning with this product's name on it" -- and every report the
+  customer reads described it as coverage.
+
+  `approve` now names the unfilled sections and refuses (`--force`
+  overrides and says so), `validate` fails an *active* lesson in that
+  state, `taxonomy`/`pilot` do not count it as coverage, and `sync --push`
+  will not publish it. `lesson new` also scaffolds at `status: review`
+  rather than `active` -- it wrote a lesson that was live, retrievable and
+  publishable over a body that was still entirely template text, bypassing
+  the Validator gate the protocol defines.
+
+- **`sync --pull` followed by `sync --push-traces` pushed the Hub's own
+  traces back to it.** Pulled records are written into the local traces
+  directory as `hub_<slug>_<id>.md` with `hub_trace_id` already set, so the
+  push path saw each as "on the Hub, no recorded fingerprint" and amended
+  the Hub's trace with a round-tripped copy of itself -- 46 captured traces
+  became 68 push candidates after one pull, each spurious amend spending a
+  write-rate-limit token and a plan storage slot.
+
+- **The anti-brute-force limiter throttled legitimate clients hardest.**
+  The auth-attempt limiter exists to bound the Argon2 CPU an
+  unauthenticated source can force, but it charged every request --
+  successful ones included. A bulk push is hundreds of *successful*
+  authentications from one address against a 60/min budget, so the
+  brute-force defense, not the per-org fair-use limiter, was the binding
+  constraint on this product's own documented onboarding. The token is now
+  refunded when the credential verifies; a source presenting bad keys is
+  throttled exactly as before.
+
+- **`hub/bench_scaling.py` crashed while printing its own results.**
+  `growth_factor` is `None` whenever the smallest corpus measured 0ms --
+  the ordinary case for a fast read path -- and formatting `None` with
+  `:>6.1f` raises `TypeError`, after every measurement had been taken and
+  thrown away. The sibling `exponent` on the same row was already guarded.
+
+- **`commontrace doctor` printed affirmative labels for negative results**,
+  e.g. `[INFO] attention extra installed (numpy + sentence-transformers) -
+  optional; install with pip install ...` -- a line asserting the extra is
+  installed and then telling you to install it. Labels are now neutral.
+
+### Added
+
+- **`--threshold-lexical`, `--threshold-freshness` and
+  `--threshold-composite` are implemented.** They were parsed, forwarded by
+  `commontrace bench`, and read by nothing: a fleet could set a quality
+  gate, watch it never fire, and conclude quality was fine. They now
+  compute real metrics -- lexical near-duplicate detection (no optional
+  dependency, unlike `--threshold-semantic`), the fraction of lessons hit
+  in the last 90 days, and a combined health score that names its own
+  components -- each raising a real alert and, under `--strict`, a real
+  non-zero exit. All three stay opt-in, so a run passing none of them
+  produces exactly the report it did before.
+
+- **`GET /metrics`** (Prometheus text format): requests by method/route/
+  status, summed duration per route, and refusals per limiter. Rate
+  limiting was otherwise invisible until a customer complained.
+  Deliberately carries no org id, key prefix or query text -- a scrape
+  endpoint is a different trust boundary from an authenticated tool call --
+  and buckets unknown paths to `other` so a caller cannot inflate label
+  cardinality.
+
+- **Every numeric Hub setting is range-checked at startup.** `HUB_PORT=99999`
+  died in uvicorn's bind, `HUB_DB_POOL_SIZE=-1` in SQLAlchemy on first
+  query, and `HUB_MAX_TITLE_CHARS=-5` rejected every `contribute_trace`
+  with nothing anywhere saying why. A bad value now refuses to start and
+  names the variable and the bound.
+
+- **`Retry-After` on every rate-limit refusal**, HTTP and tool-level alike,
+  plus a one-time notice from `sync` explaining that a large push is pacing
+  itself -- a correct slow push read as a hang.
+
+### Changed
+
+- **`HUB_RATE_LIMIT_PER_MINUTE` default raised from 20 to 120** (burst 5 to
+  30). The old default could not serve this product's own documented
+  onboarding: at 20/min a 46-trace store took over two minutes and a
+  1,000-trace import the better part of an hour. Two writes per second per
+  org still protects the shared Postgres and still bounds a runaway agent.
+
+- **The Hub's rate limiter caps how many keys it tracks.** The idle sweep
+  evicts nothing for an hour, and the client-address-keyed limiters are
+  keyed on something the peer chooses (any address out of an IPv6 /64), so
+  an unauthenticated flood could grow process memory without bound via the
+  limiter meant to prevent exactly that.
+
+- **An MCP session-teardown `DELETE` is no longer charged to the read
+  limiter.** It runs no tool and reads no row, and refusing it made an
+  otherwise successful command print `Session termination failed: 429`.
+
+
 ### Added
 - **The measurement loop is now reachable from where agents actually
   are**: an optional `occasion_id` on `search_traces`, the Hub's full tool

@@ -12,8 +12,16 @@ from __future__ import annotations
 import glob
 import os
 
-from commontrace import frontmatter, paths, reliability, trace_io
+from commontrace import frontmatter, paths, reliability, templates, trace_io
 from commontrace.commands._format import read_or_warn
+
+# Re-exported: the body is stashed on the returned frontmatter dict under
+# this key so a caller holding only that dict can still see the whole lesson
+# -- concretely templates.unfilled_placeholders, which has to read the
+# "## Rule" section to tell a written lesson from unedited scaffolding.
+# Returned on the same dict rather than as a second parallel list so every
+# existing caller (reliability, taxonomy, pilot) keeps its current shape.
+BODY_KEY = templates.BODY_KEY
 
 
 def load_active_lessons(root: str) -> list[dict]:
@@ -24,7 +32,8 @@ def load_active_lessons(root: str) -> list[dict]:
         result = read_or_warn(frontmatter.read, path)
         if result is None:
             continue
-        fm, _ = result
+        fm, body = result
+        fm[BODY_KEY] = body
         out.append(fm)
     return out
 

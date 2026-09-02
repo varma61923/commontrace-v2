@@ -966,8 +966,11 @@ async def contribute_trace(
                 existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome
             )
 
-    if not rate_limiter.allow(org_id):
-        raise RateLimited(f"org {org_id} exceeded contribute_trace rate limit")
+    allowed, retry_after = rate_limiter.check(org_id)
+    if not allowed:
+        raise RateLimited(
+            f"org {org_id} exceeded contribute_trace rate limit", retry_after=retry_after
+        )
 
     # Checked after the idempotent-replay path above, deliberately: a
     # replay stores nothing, so refusing it at the storage limit would turn
@@ -1607,8 +1610,9 @@ async def amend_trace(
     # payloads (a title past the column width became a hard 500 rather than
     # a clean rejection), and spam that quarantine would have caught on the
     # way in.
-    if not rate_limiter.allow(org_id):
-        raise RateLimited(f"org {org_id} exceeded write rate limit")
+    allowed, retry_after = rate_limiter.check(org_id)
+    if not allowed:
+        raise RateLimited(f"org {org_id} exceeded write rate limit", retry_after=retry_after)
 
     plan = await _plan_for(session, org_id)
     await _reserve_trace_slot(session, org_id, plan)
@@ -2325,8 +2329,11 @@ async def submit_kb_entry(
     # deliberate, occasional action, not a bulk capture path, so it does
     # not need its own tuning -- but it gets its own bucket so a fleet
     # capturing traces at volume cannot starve its own ability to submit.
-    if not rate_limiter.allow(f"kb_submit:{org_id}"):
-        raise RateLimited(f"org {org_id} exceeded submit_kb_entry rate limit")
+    allowed, retry_after = rate_limiter.check(f"kb_submit:{org_id}")
+    if not allowed:
+        raise RateLimited(
+            f"org {org_id} exceeded submit_kb_entry rate limit", retry_after=retry_after
+        )
 
     await _reserve_kb_submission_slot(session, org_id)
 

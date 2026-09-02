@@ -79,8 +79,10 @@ the wrong probe causes real outages:
 |---|---|---|---|
 | `GET /healthz` | "Is this process alive?" | **No** | liveness |
 | `GET /readyz` | "Should I get traffic?" | **Yes** (`SELECT 1`) | readiness |
+| `GET /metrics` | "What is it actually serving?" | **No** | Prometheus scrape |
 
-Both are unauthenticated (a load balancer has no tenant credentials).
+All three are unauthenticated (a load balancer and a metrics scraper carry
+no tenant credentials).
 
 `/healthz` must not check the database on purpose: a failing liveness probe
 means *restart me*, so making it DB-dependent turns a 30-second database
@@ -98,6 +100,36 @@ readinessProbe:
   httpGet: { path: /readyz, port: 8420 }
   periodSeconds: 10
 ```
+
+### Metrics
+
+`GET /metrics` serves Prometheus text format. Three counters:
+
+| Metric | Labels | What it answers |
+|---|---|---|
+| `commontrace_hub_requests_total` | `method`, `path`, `status` | Traffic and error rate per route. |
+| `commontrace_hub_request_duration_ms_total` | `path` | Summed latency; divide by the request count for a mean. |
+| `commontrace_hub_rate_limited_total` | `limiter` (`http`, `write`) | **How often you are refusing customers, and by which limiter.** |
+
+The third is the one to alert on. Rate limiting is otherwise invisible
+until a customer complains, and a rising `limiter="write"` count is the
+signal that `HUB_RATE_LIMIT_PER_MINUTE` is set below what your customers'
+fleets actually do. The two limiters are counted separately because they
+refuse at different layers: an HTTP 429 comes from the middleware, while a
+per-org write refusal is returned *inside* a 200 MCP response and so never
+appears in the status-code counter.
+
+There are deliberately **no per-org labels** — no org id, key prefix, or
+query text. That keeps the time-series count bounded (one series per route,
+not one per customer) and keeps a scrape endpoint, which is a different
+trust boundary from an authenticated tool call, free of tenant data. `path`
+is bucketed to the routes this app serves, with everything else as `other`,
+so an unauthenticated caller cannot inflate cardinality by requesting
+arbitrary URLs.
+
+`/metrics` touches no database, so it stays cheap — and readable — exactly
+when the database is down. Expose it to your monitoring network, not the
+public internet, the same as any `/metrics`.
 
 ## 5. Running it
 
@@ -313,6 +345,8 @@ deployment before you hand out the first customer key is the point.
 | `HTTP 404 at <url>` | Wrong endpoint path. It defaults to `/mcp` (`HUB_STREAMABLE_HTTP_PATH`). |
 | `rejected the API key (HTTP 401)` | Key is wrong, revoked, or expired. |
 | `HTTP 5xx` | Reachable but failing. Check the container logs and `/readyz`. |
+| `is rate limiting this client (HTTP 429)` | The read limiter refused it. The CLI paces itself and retries; a run that still fails means `HUB_READ_RATE_LIMIT_PER_MINUTE` is too low for this fleet. Check `commontrace_hub_rate_limited_total{limiter="http"}`. |
+| `refused this write for rate limiting` | The per-org write limiter (`HUB_RATE_LIMIT_PER_MINUTE`, 120/min). Expected mid-way through a large first import; a run that fails at it needs a higher limit. Check `commontrace_hub_rate_limited_total{limiter="write"}`. |
 | A named `[FAIL]` check | The server is up but a behavioural guarantee broke. Do not hand out keys. |
 
 ## 13. Running this for a single organization, privately, on your own fleet

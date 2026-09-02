@@ -210,7 +210,7 @@ class TestPushSkipsAlreadyPushedLessons:
 
         calls = []
 
-        async def _fake_call_tool(hub_url, api_key, tool, args):
+        async def _fake_call_tool(hub_url, api_key, tool, args, **kw):
             calls.append((tool, args))
             return {"id": "newly-minted-id"}
 
@@ -237,7 +237,7 @@ class TestPushSkipsAlreadyPushedLessons:
 
         calls = []
 
-        async def _fake_call_tool(hub_url, api_key, tool, args):
+        async def _fake_call_tool(hub_url, api_key, tool, args, **kw):
             calls.append((tool, args))
             return {"id": "minted-id"}
 
@@ -262,7 +262,7 @@ class TestPushSkipsAlreadyPushedLessons:
 
         calls = []
 
-        async def _fake_call_tool(hub_url, api_key, tool, args):
+        async def _fake_call_tool(hub_url, api_key, tool, args, **kw):
             calls.append((tool, args))
             return {"id": "minted-id"}
 
@@ -815,24 +815,109 @@ class TestReportKeepsPlaceholderRows:
         assert "<td>---</td>" not in html
 
 
-class TestDeadThresholdFlagsAnnounceThemselves:
-    def test_an_unimplemented_flag_warns(self):
-        """Accepted, never read by any metric or alert. A fleet could set a
-        quality gate, watch it never fire, and conclude quality was fine."""
-        r = subprocess.run(
-            [sys.executable, "-m", "commontrace", "bench", "--threshold-lexical=0.99"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
-        )
-        assert "not implemented" in r.stderr
+class TestEveryThresholdFlagIsActuallyImplemented:
+    """--threshold-lexical/-freshness/-composite were accepted, forwarded,
+    and read by nothing: a fleet could set a quality gate, watch it never
+    fire, and conclude quality was fine. bench_cmd.py warned about that in
+    so many words, with the note "implement or delete them deliberately".
+    They are now implemented, so what is pinned is the effect, not the
+    apology for its absence."""
 
-    def test_an_implemented_threshold_does_not_warn(self):
-        """--threshold-semantic IS read (measure_performance.py), so it must
-        not be tarred with the same brush."""
-        r = subprocess.run(
-            [sys.executable, "-m", "commontrace", "bench", "--threshold-semantic=0.99"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+    def test_no_threshold_flag_reports_itself_as_unimplemented(self):
+        for flag in ("--threshold-lexical=0.99", "--threshold-freshness=0.5",
+                     "--threshold-composite=0.7", "--threshold-semantic=0.99"):
+            r = subprocess.run(
+                [sys.executable, "-m", "commontrace", "bench", flag],
+                cwd=REPO_ROOT, capture_output=True, text=True,
+            )
+            assert "not implemented" not in r.stderr, flag
+
+    def test_lexical_duplicates_are_actually_detected(self):
+        """Two lessons saying the same thing split the retrieval signal
+        between them; this is the check that finds them, and it needs no
+        optional dependency (unlike --threshold-semantic)."""
+        from commontrace.reference import measure_performance as mp
+
+        lessons = {
+            "lesson_a": {"description": "Reuse the gateway idempotency key on a refund retry",
+                         "applies_when": "refund retry returns 409"},
+            "lesson_b": {"description": "On a refund retry reuse the gateway idempotency key",
+                         "applies_when": "refund retry returns 409"},
+            "lesson_c": {"description": "Escalate billing disputes to the finance queue",
+                         "applies_when": "customer disputes a charge"},
+        }
+        result = mp.compute_lexical_duplicates(lessons, 0.6)
+        assert [{p["a"], p["b"]} for p in result["pairs"]] == [{"lesson_a", "lesson_b"}]
+
+    def test_freshness_measures_recent_hits_not_merely_any_hit(self):
+        """Distinct from the never-hit ratio: a corpus can have every lesson
+        hit at some point and still be entirely stale."""
+        import datetime
+
+        from commontrace.reference import measure_performance as mp
+
+        now = datetime.datetime(2026, 6, 1)
+        recent = (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+        old = (now - datetime.timedelta(days=mp.FRESHNESS_WINDOW_DAYS + 30)).strftime("%Y-%m-%d")
+        value, n = mp.compute_freshness(
+            {"a": {"last_hit": recent}, "b": {"last_hit": old},
+             "c": {"last_hit": "NEVER"}, "d": {"last_hit": recent}},
+            now=now,
         )
-        assert "--threshold-semantic is accepted but not implemented" not in r.stderr
+        assert n == 4
+        assert value == 0.5
+
+    def test_the_composite_score_names_its_own_components(self):
+        """A single number whose inputs are unstated is exactly the kind of
+        metric that gets quoted and then cannot be defended."""
+        from commontrace.reference import measure_performance as mp
+
+        composite = mp.compute_composite({
+            "lesson_quality": {"value": 0.8},
+            "implicit_retrieval": {"strict": 0.6},
+            "n_lessons": 10,
+            "extras": {"never_hit": ["x", "y"]},   # coverage 0.8
+            "freshness": {"value": 1.0},
+        })
+        assert composite["value"] == pytest.approx((0.8 + 0.6 + 0.8 + 1.0) / 4)
+        assert set(composite["components"]) == {
+            "lesson_quality", "implicit_retrieval", "lesson_coverage", "freshness"
+        }
+
+    def test_a_threshold_that_is_not_passed_raises_no_alert(self):
+        """All three are opt-in: an existing run's alert list is unchanged."""
+        from commontrace.reference import measure_performance as mp
+
+        report = {
+            "lesson_quality": {"value": 0.9}, "implicit_retrieval": {"strict": 0.9},
+            "n_lessons": 1, "extras": {"never_hit": [], "importance_lessons": {}},
+            "freshness": {"value": 0.0, "n": 1, "window_days": 90},
+            "composite": {"value": 0.0, "components": {}},
+            "lexical_duplicates": {"pairs": [{"a": "x", "b": "y", "score": 1.0}], "n_lessons": 2},
+        }
+        thresholds = {"quality": 0.7, "retrieval": 0.5, "never_hit": 0.3, "unimodal": 0.95,
+                      "lexical": None, "freshness": None, "composite": None}
+        assert mp.compute_alerts(report, thresholds) == []
+
+    def test_each_threshold_fires_when_it_is_breached(self):
+        from commontrace.reference import measure_performance as mp
+
+        report = {
+            "lesson_quality": {"value": 0.9}, "implicit_retrieval": {"strict": 0.9},
+            "n_lessons": 1, "extras": {"never_hit": [], "importance_lessons": {}},
+            "freshness": {"value": 0.1, "n": 10, "window_days": 90},
+            "composite": {"value": 0.2, "components": {"freshness": 0.1}},
+            "lexical_duplicates": {"pairs": [{"a": "x", "b": "y", "score": 1.0}], "n_lessons": 2},
+        }
+        alerts = mp.compute_alerts(
+            report,
+            {"quality": 0.7, "retrieval": 0.5, "never_hit": 0.3, "unimodal": 0.95,
+             "lexical": 0.6, "freshness": 0.5, "composite": 0.7},
+        )
+        joined = " | ".join(alerts)
+        assert "near-duplicate lesson pair" in joined
+        assert "freshness" in joined
+        assert "composite health" in joined
 
 
 class TestRootResolutionMatchesTheReferenceScripts:

@@ -325,7 +325,15 @@ async def run(sizes: list[int], as_json: bool) -> int:
     for row in report:
         cells = " ".join(f"{row['latency_ms'][str(s)]:>9.2f}" for s in sizes)
         alpha = f"{row['exponent']:>7.2f}" if row["exponent"] is not None else f"{'-':>7}"
-        print(f"{row['path']:<26} {cells} {row['growth_factor']:>6.1f}x {alpha}  {row['verdict']}")
+        # growth_factor is None whenever the smallest corpus measured 0ms
+        # (ys[0] > 0 guards its computation above) -- a fast read path on a
+        # small corpus, i.e. the ordinary case, not an exotic one. Formatting
+        # None with ":>6.1f" raises TypeError, so printing the table crashed
+        # after every measurement had already been taken and thrown away.
+        # `exponent` on the same row was already guarded this way; this one
+        # was not.
+        growth = f"{row['growth_factor']:>6.1f}x" if row["growth_factor"] is not None else f"{'-':>7}"
+        print(f"{row['path']:<26} {cells} {growth} {alpha}  {row['verdict']}")
     print()
     print(f"alpha is the fitted exponent in latency ~ size**alpha over a "
           f"{sizes[-1] // sizes[0]}x corpus range.")

@@ -4,6 +4,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from typing import Literal, overload
 
 
 def has_attention_deps() -> bool:
@@ -50,6 +51,26 @@ def find_reference_script(root: str, relative: str) -> str | None:
         if os.path.isfile(c):
             return c
     return None
+
+
+# `-> int | tuple[int, str]` is honest about the runtime behaviour and useless
+# to every caller: a type checker cannot know which arm a given call returns,
+# so each of the six call sites that never pass `capture` was flagged
+# ("Incompatible return value type", "int object is not iterable") for code
+# that is correct. Six false positives in a report is how real findings get
+# skimmed past. The overloads say what the flag actually determines.
+@overload
+def run_script(
+    root: str, relative: str, extra_args: list[str], missing_hint: str,
+    capture: Literal[False] = False,
+) -> int: ...
+
+
+@overload
+def run_script(
+    root: str, relative: str, extra_args: list[str], missing_hint: str,
+    capture: Literal[True],
+) -> tuple[int, str]: ...
 
 
 def run_script(

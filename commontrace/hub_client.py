@@ -12,11 +12,13 @@ ModuleNotFoundError traceback.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import glob
 import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
@@ -29,6 +31,37 @@ _T = TypeVar("_T")
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 0.5
+# Ceiling on any single backoff sleep, including one derived from a
+# server-sent Retry-After. A Hub that returns `Retry-After: 3600` must not
+# turn `commontrace sync` into an hour-long hang with no output -- the CLI
+# gives up and says it was rate limited, which the operator can act on,
+# rather than silently blocking.
+RETRY_MAX_DELAY_SECONDS = 30.0
+# Attempt budget for HTTP 429 specifically, separate from DEFAULT_MAX_ATTEMPTS
+# (which covers transport failures). See HubSession.call for why the two are
+# counted apart: during a bulk push, being rate limited is the expected
+# steady state once the server's burst allowance is spent, not a failure --
+# and each of these attempts is a timed wait behind _RateLimitGate rather
+# than another request.
+RATE_LIMIT_MAX_ATTEMPTS = 10
+# Adaptive pacing bounds for _RateLimitGate. The floor is the first spacing
+# tried after a refusal; the ceiling stops a pathologically low server limit
+# from stretching one batch across hours. The decay is applied per success,
+# so a batch recovers its speed in tens of calls rather than instantly
+# (which would just re-trip the limiter) or never.
+_PACE_MIN_INTERVAL_SECONDS = 0.05
+_PACE_MAX_INTERVAL_SECONDS = 2.0
+_PACE_DECAY = 0.9
+
+# A status code named AS a status, not any three digits that happen to appear
+# in an error string. `"429" in text` (or an unanchored \b\d{3}\b) also matches
+# the "500" in "title exceeds 500 chars" and the digits inside a trace id --
+# which would classify a permanent, tool-level rejection as a retryable 5xx and
+# retry it three times. Only used when no structured status is available.
+_STATUS_IN_TEXT_RE = re.compile(
+    r"(?:\bHTTP[/ ]?(?:\d\.\d )?|\bstatus(?:[ _]?code)?[ =:]+|\bcode[ =:]+)(4\d{2}|5\d{2})\b",
+    re.IGNORECASE,
+)
 
 _SECTION_NAMES = r"Rule|Why|How to apply|Counter-examples"
 _SECTION_RE = re.compile(
@@ -43,6 +76,73 @@ class HubClientUnavailable(RuntimeError):
 
 class HubConnectionError(RuntimeError):
     """Raised when the Hub can't be reached or rejects the request."""
+
+
+class HubConfigurationError(HubConnectionError):
+    """The Hub URL itself is unusable (bad scheme, plaintext to a remote
+    host, a cloud-metadata address).
+
+    Never retryable: no number of attempts makes a `file://` URL work. Its
+    own type so that is decided by what the failure IS, rather than by a
+    substring heuristic reading its message.
+    """
+
+
+class _ToolRateLimited(Exception):
+    """Internal: the Hub's tool layer refused this call for rate limiting.
+
+    Distinct from an HTTP 429, and easy to miss because it does not look
+    like a failure at any transport layer: hub/server.py returns it as a
+    perfectly successful MCP result whose PAYLOAD is
+    `{"error": "rate_limited", ...}`. So it never reached any retry or
+    pacing logic -- every batch caller here read `result.get("error")` and
+    recorded a permanent per-file failure for what was actually "come back
+    in two seconds".
+
+    Measured: with HTTP-level pacing already working, a 46-trace
+    `sync --push-traces` still lost 28 of 46 files to this one, because the
+    Hub's write limiter (20/minute by default) refuses a backlog push as a
+    matter of course. Raised here so it joins the same rate-limit gate and
+    attempt budget the HTTP 429s use.
+    """
+
+    def __init__(self, detail: str, retry_after: float | None = None):
+        super().__init__(detail)
+        self.retry_after = retry_after
+
+
+class HubToolError(HubConnectionError):
+    """The Hub ran the tool and the tool said no (an MCP `is_error` result):
+    a schema-invalid trace, an over-length title, a spent entitlement.
+
+    Its own type because it is the one failure here that must NEVER be
+    retried under any classification -- it fails identically on every
+    attempt, and its message is free text from the server that can contain
+    anything, digits included. Left as a plain HubConnectionError, a
+    rejection reading "title exceeds 500 chars" was eligible to be read as
+    a retryable 5xx by any status-sniffing heuristic.
+    """
+
+
+class HubAuthError(HubConnectionError):
+    """The Hub rejected the credential (401/403).
+
+    A subclass rather than a distinct type so every existing
+    `except HubConnectionError` call site keeps catching it, but named so
+    the message can say "your API key was rejected" instead of the
+    "could not reach the Hub" this used to be reported as. Retrying it is
+    pointless -- and actively harmful, since the Hub rate-limits auth
+    attempts per source address (hub/abuse.py:make_auth_rate_limiter).
+    """
+
+
+class HubRateLimited(HubConnectionError):
+    """The Hub returned 429. Carries the server's Retry-After, when it sent
+    one, so a caller can pace rather than guess."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # How many files push_active_lessons/push_captured_traces push at once.
@@ -125,6 +225,22 @@ def _iter_captured_trace_paths(root: str):
         # already excludes this same file for the same reason.
         if os.path.basename(p) == "README.md":
             continue
+        # Files pulled FROM the Hub are not locally captured traces, and
+        # must never be pushed back TO it. `pull_search_results` writes
+        # them as `hub_<slug>_<id>.md` with `hub_trace_id` already set, so
+        # `--push-traces` saw each one as "on the Hub but with no recorded
+        # fingerprint" and issued an amend_trace against the Hub's own
+        # trace -- superseding a record with a round-tripped copy of
+        # itself. Reproduced: a store of 46 captured traces became 68 push
+        # candidates after one `sync --pull`, and each spurious amend
+        # consumed a write-rate-limit token and a plan storage slot for a
+        # trace whose content had not changed.
+        #
+        # The prefix is unambiguous: `capture`/`import` name every file
+        # they write `<date>_<slug>_<id>.md`, so `hub_` is only ever
+        # written by the pull path.
+        if os.path.basename(p).startswith("hub_"):
+            continue
         yield p
 
 
@@ -152,12 +268,12 @@ def _validate_hub_url(hub_url: str) -> None:
     parsed = urlparse(hub_url)
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
-        raise HubConnectionError(
+        raise HubConfigurationError(
             f"refusing to use Hub URL {hub_url!r}: scheme must be http or https, got {scheme or '(none)'!r}"
         )
     hostname = (parsed.hostname or "").lower()
     if scheme == "http" and hostname not in ("localhost", "127.0.0.1", "::1"):
-        raise HubConnectionError(
+        raise HubConfigurationError(
             f"refusing to use plaintext http:// for remote Hub URL {hub_url!r}: "
             "the API key is sent as a Bearer token on every call. Use https://, "
             "or connect to localhost/127.0.0.1 for local development."
@@ -188,11 +304,55 @@ def _validate_hub_url(hub_url: str) -> None:
     # would break the legitimate case of a Hub deployed on a private
     # network address, which this project explicitly supports.
     if ip is not None and (ip.is_link_local or str(ip) == "fd00:ec2::254"):
-        raise HubConnectionError(
+        raise HubConfigurationError(
             f"refusing to use Hub URL {hub_url!r}: {hostname} is a link-local or "
             "cloud-metadata address (e.g. 169.254.169.254, fd00:ec2::254) -- "
             "refusing to send the Hub API key there."
         )
+
+
+class HttpStatusProbe:
+    """Records the last non-2xx HTTP response seen on one httpx client.
+
+    THE MCP SDK THROWS THE STATUS AWAY. A 401 from the Hub's auth
+    middleware and a 429 from its rate limiter both surface to this module
+    as the same opaque `MCPError: Server returned an error response`, with
+    no status code anywhere on the exception or in its message. Measured
+    against a live Hub: a rejected API key was indistinguishable from a
+    rate limit, so it was retried three times -- straight into the Hub's
+    per-source auth-attempt limiter, which is exactly the behaviour the
+    retry policy documents as the thing it must not do.
+
+    An httpx response event hook sees the real status before the SDK
+    swallows it. This is the only place the distinction survives, so
+    classification consults it whenever the exception itself carries
+    nothing (see `_is_auth_failure` / `_is_rate_limited`).
+
+    Only error statuses are recorded, and the value is reset before each
+    call, so a stale 429 from an earlier request in the same session can
+    never be blamed for a later, different failure.
+    """
+
+    __slots__ = ("status", "retry_after")
+
+    def __init__(self) -> None:
+        self.status: int | None = None
+        self.retry_after: float | None = None
+
+    def reset(self) -> None:
+        self.status = None
+        self.retry_after = None
+
+    async def record(self, response) -> None:
+        if response.status_code < 400:
+            return
+        self.status = response.status_code
+        raw = response.headers.get("retry-after")
+        if raw:
+            try:
+                self.retry_after = max(0.0, float(str(raw).strip()))
+            except ValueError:
+                self.retry_after = None
 
 
 async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
@@ -207,6 +367,7 @@ async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
             "`pip install commontrace[hub-sync]`."
         ) from exc
 
+    probe = HttpStatusProbe()
     # Without an explicit timeout the underlying client waits indefinitely,
     # so a Hub that accepts the connection and then stalls hangs
     # `commontrace sync` forever with no output -- the worst failure mode for
@@ -214,49 +375,575 @@ async def _open_session(hub_url: str, api_key: str, timeout_seconds: float):
     http_client = httpx.AsyncClient(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=timeout_seconds,
+        event_hooks={"response": [probe.record]},
     )
     # Returned alongside the transport/session so the caller can close it
     # explicitly (httpx.AsyncClient owns a connection pool / open sockets
     # that are never released otherwise -- streamable_http_client wraps it
     # but does not take ownership of its lifecycle).
-    return streamable_http_client(hub_url, http_client=http_client), ClientSession, http_client
+    return streamable_http_client(hub_url, http_client=http_client), ClientSession, http_client, probe
 
 
-def _is_retryable(exc: Exception) -> bool:
-    """Retry transport-level failures (connection refused, timeout, 5xx),
-    never application-level ones.
+def _iter_causes(exc: BaseException, _seen: set[int] | None = None):
+    """Yield `exc` and every exception reachable from it: the members of an
+    ExceptionGroup (recursively), plus `__cause__`/`__context__` chains.
+
+    THIS IS THE FIX FOR A RETRY LAYER THAT NEVER RAN. Everything below
+    talks to the Hub through the MCP SDK, which drives its transport from
+    inside an `anyio` task group. A task group re-raises whatever its child
+    task raised wrapped in an `ExceptionGroup` -- and here, nested two deep:
+
+        ExceptionGroup('unhandled errors in a TaskGroup', [
+            ExceptionGroup('unhandled errors in a TaskGroup', [
+                <the real httpx.ConnectError / MCPError>])])
+
+    So the exception `_call_tool` actually caught was never an
+    `httpx.HTTPStatusError` with a `.response.status_code`, and its string
+    form was never "connection refused" -- it was always the literal text
+    "unhandled errors in a TaskGroup (1 sub-exception)". Measured against a
+    live Hub before this change:
+
+      - a refused connection (the textbook retryable case) was classified
+        NOT retryable and tried exactly once;
+      - a rejected API key was classified not-retryable only by accident
+        (the group's text happens to contain none of the auth markers),
+        not by the 401 branch that was written to do it;
+      - `--max-attempts` was, in consequence, a no-op flag.
+
+    Flattening the tree first is what lets every classification below run
+    against the exception that actually happened.
+
+    `_seen` guards against a cycle in the `__cause__`/`__context__` chain,
+    which is legal to construct and would otherwise recurse forever.
+    """
+    _seen = set() if _seen is None else _seen
+    if id(exc) in _seen:
+        return
+    _seen.add(id(exc))
+    yield exc
+    for nested in getattr(exc, "exceptions", ()) or ():
+        yield from _iter_causes(nested, _seen)
+    for link in (exc.__cause__, exc.__context__):
+        if link is not None:
+            yield from _iter_causes(link, _seen)
+
+
+def root_cause(exc: BaseException) -> BaseException:
+    """The most informative exception inside `exc`.
+
+    Prefers a leaf carrying a real HTTP status, then any leaf that is not
+    itself a grouping wrapper, then `exc`. Used for the message the user
+    finally reads: "unhandled errors in a TaskGroup (1 sub-exception)"
+    names nothing an operator can act on, while the `ConnectError` or the
+    401 inside it names the actual problem.
+    """
+    leaves = [e for e in _iter_causes(exc) if not getattr(e, "exceptions", None)]
+    for leaf in leaves:
+        if _http_status(leaf) is not None:
+            return leaf
+    # This module's own wrappers are the least informative leaf available:
+    # they restate a diagnosis rather than name the underlying failure.
+    for leaf in leaves:
+        if not isinstance(leaf, HubConnectionError):
+            return leaf
+    return leaves[0] if leaves else exc
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status this one exception carries, if any.
+
+    `exc.response.status_code` is httpx's shape. The status-in-the-message
+    fallback is deliberately anchored to a word boundary: an unanchored
+    `"429" in text` also matches a trace id or a byte count that happens to
+    contain those digits.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    match = _STATUS_IN_TEXT_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """The server's `Retry-After`, in seconds, if it sent one we can read.
+
+    Only the delta-seconds form is honoured. The HTTP-date form is legal
+    too, but parsing it correctly means trusting the client's clock against
+    the server's; when it appears, this returns None and the caller falls
+    back to its own exponential backoff, which is never wrong, only less
+    precise.
+    """
+    for candidate in _iter_causes(exc):
+        # A tool-layer refusal carries the value directly rather than in a
+        # header -- see _ToolRateLimited.
+        direct = getattr(candidate, "retry_after", None)
+        if isinstance(direct, (int, float)) and direct >= 0:
+            return float(direct)
+        headers = getattr(getattr(candidate, "response", None), "headers", None)
+        if headers is None:
+            continue
+        try:
+            raw = headers.get("retry-after")
+        except Exception:  # noqa: BLE001 - a header mapping that misbehaves is not our problem
+            continue
+        if not raw:
+            continue
+        try:
+            seconds = float(str(raw).strip())
+        except ValueError:
+            continue
+        if seconds >= 0:
+            return seconds
+    return None
+
+
+def _is_auth_failure(exc: BaseException, observed_status: int | None = None) -> bool:
+    """Whether anything in `exc` says the credential itself was rejected.
+
+    `observed_status` is HttpStatusProbe's reading -- see that class for why
+    the exception alone cannot answer this through the MCP SDK.
+    """
+    if observed_status in (401, 403):
+        return True
+    for candidate in _iter_causes(exc):
+        if _http_status(candidate) in (401, 403):
+            return True
+        text = f"{type(candidate).__name__}: {candidate}".lower()
+        if any(m in text for m in ("unauthorized", "revoked", "expired api key", "invalid api key")):
+            return True
+    return False
+
+
+def _is_rate_limited(exc: BaseException, observed_status: int | None = None) -> bool:
+    if observed_status == 429:
+        return True
+    for candidate in _iter_causes(exc):
+        if isinstance(candidate, _ToolRateLimited):
+            return True
+        if _http_status(candidate) == 429:
+            return True
+        if "rate_limited" in str(candidate).lower():
+            return True
+    return False
+
+
+def _is_retryable(exc: BaseException, observed_status: int | None = None) -> bool:
+    """Retry transport-level failures (connection refused, timeout, 5xx) and
+    rate limiting; never a rejected credential.
 
     A rejected API key or a schema-invalid trace fails identically on every
     attempt, so retrying it just multiplies the delay before the user sees
     the real error -- and retrying a rejected credential against a server
-    that may be rate-limiting auth failures actively makes things worse.
+    that rate-limits auth failures per source address actively makes things
+    worse.
+
+    429 IS retried, unlike every other 4xx: it is the one client error that
+    a later attempt can succeed at, and backing off is the behaviour the
+    status code exists to request. Before this, a rate-limited bulk push
+    failed permanently on the first 429 -- and reported it as a network
+    outage.
 
     An actual tool-level rejection from the Hub (an MCP `result.is_error`
-    response, e.g. "rejected the API key") never reaches this function at
-    all -- _call_tool raises that as HubConnectionError and re-raises it
-    immediately, bypassing retry entirely. This function only judges
-    transport-layer exceptions that got here some other way, so it checks
-    for a real HTTP status code first (httpx.HTTPStatusError carries one on
-    `exc.response.status_code`) and only falls back to matching substrings
-    in the exception's string form when no structured status is available --
-    a legitimate transient error whose message happens to contain "invalid"
-    or "403" (in a URL, a nested error, ...) would otherwise be
-    misclassified as non-retryable by the substring check alone.
-    """
-    status_code = getattr(getattr(exc, "response", None), "status_code", None)
-    if isinstance(status_code, int):
-        if status_code in (401, 403):
-            return False
-        if status_code >= 500:
-            return True
+    response) never reaches this function: _call_tool raises that as
+    HubConnectionError and re-raises immediately, bypassing retry entirely.
 
-    text = f"{type(exc).__name__}: {exc}".lower()
-    if any(marker in text for marker in ("401", "unauthorized", "invalid", "revoked", "expired", "403")):
+    Every check runs against the FLATTENED exception tree (`_iter_causes`),
+    which is what makes any of this reachable at all through the MCP SDK's
+    task-group wrapping -- see that function's docstring.
+    """
+    if any(isinstance(c, (HubConfigurationError, HubToolError)) for c in _iter_causes(exc)):
         return False
-    return any(
-        marker in text
-        for marker in ("timeout", "connect", "refused", "reset", "temporarily", "502", "503", "504", "eof")
+    if _is_auth_failure(exc, observed_status):
+        return False
+    if _is_rate_limited(exc, observed_status):
+        return True
+    if isinstance(observed_status, int) and observed_status >= 500:
+        return True
+
+    for candidate in _iter_causes(exc):
+        status = _http_status(candidate)
+        if isinstance(status, int) and status >= 500:
+            return True
+        # The type name is part of the evidence for a THIRD-PARTY exception
+        # (httpx.ConnectError, anyio.EndOfStream) but never for one of this
+        # module's own: "HubConnectionError" contains the substring
+        # "connect", so including it here made every wrapper this module
+        # raises -- a rejected URL scheme included -- look like a retryable
+        # transport error to its own classifier.
+        if isinstance(candidate, HubConnectionError):
+            text = str(candidate).lower()
+        else:
+            text = f"{type(candidate).__name__}: {candidate}".lower()
+        if any(
+            marker in text
+            # "502"/"503"/"504" are matched as bare substrings, deliberately,
+            # and "500" deliberately is not: a message containing 502/503/504
+            # is a gateway error in practice, whereas 500 collides with
+            # ordinary content ("title exceeds 500 chars") that must never be
+            # read as a retryable server error. _http_status handles the cases
+            # where a status is stated as a status.
+            for marker in (
+                "timeout", "connect", "refused", "reset", "temporarily",
+                "eof", "broken pipe", "502", "503", "504",
+            )
+        ):
+            return True
+    return False
+
+
+def _tool_rate_limit(payload: dict) -> _ToolRateLimited | None:
+    """A tool-layer rate-limit refusal, if that is what this payload is."""
+    if not isinstance(payload, dict) or payload.get("error") != "rate_limited":
+        return None
+    retry_after = payload.get("retry_after")
+    try:
+        retry_after = float(retry_after) if retry_after is not None else None
+    except (TypeError, ValueError):
+        retry_after = None
+    return _ToolRateLimited(str(payload.get("detail") or "rate_limited"), retry_after)
+
+
+def _unwrap_result(name: str, result) -> dict:
+    """Shape one MCP tool result into a plain dict, or raise."""
+    if result.is_error:
+        text = "; ".join(getattr(c, "text", str(c)) for c in result.content)
+        # An error *from* the tool is an answer, not a transport failure --
+        # surfaced immediately, never retried.
+        raise HubToolError(f"Hub tool {name!r} returned an error: {text}")
+    if result.structured_content is not None:
+        return result.structured_content
+    # Fallback: some transports only populate .content (text blocks of JSON).
+    text = "".join(getattr(c, "text", "") for c in result.content)
+    return json.loads(text) if text else {}
+
+
+def _already_classified(exc: BaseException) -> HubConnectionError | None:
+    """An error this module already turned into a specific, human-readable
+    failure, found anywhere in `exc`'s tree.
+
+    Needed because the MCP SDK runs its transport inside an anyio task
+    group, and a task group re-wraps whatever escapes it -- including a
+    HubAuthError this module raised on the way out of the handshake. Left
+    unrecognised, that got classified a second time and re-wrapped a second
+    time, producing a message with its own full text nested inside itself.
+    """
+    for candidate in _iter_causes(exc):
+        if isinstance(candidate, HubConnectionError):
+            return candidate
+    return None
+
+
+def _transport_failure(
+    hub_url: str,
+    attempts: int,
+    exc: BaseException,
+    observed_status: int | None = None,
+    observed_retry_after: float | None = None,
+) -> HubConnectionError:
+    """Turn a transport failure into an error that names what went wrong.
+
+    Every failure here used to read:
+
+        could not reach the Hub at <url> after 3 attempt(s):
+        unhandled errors in a TaskGroup (1 sub-exception)
+
+    -- for a rejected API key, for a 429, and for a genuine outage alike.
+    Two things were wrong with it beyond the missing diagnosis: the cause
+    was the MCP SDK's task-group wrapper rather than the real exception
+    (see `_iter_causes`), and "after 3 attempt(s)" was the CONFIGURED
+    maximum printed unconditionally -- a failure that gave up after one
+    attempt still claimed three. An operator reading it went looking for a
+    network problem that did not exist.
+    """
+    already = _already_classified(exc)
+    if already is not None:
+        return already
+    cause = root_cause(exc)
+    detail = f"{type(cause).__name__}: {cause}"
+    plural = "attempt" if attempts == 1 else "attempts"
+    if _is_auth_failure(exc, observed_status):
+        return HubAuthError(
+            f"the Hub at {hub_url} rejected the API key (invalid, revoked, or expired). "
+            f"Check COMMONTRACE_HUB_API_KEY, or issue a new key with "
+            f"`python -m hub.manage issue-key <org_id>`. [{detail}]"
+        )
+    if _is_rate_limited(exc, observed_status):
+        retry_after = _retry_after_seconds(exc) or observed_retry_after
+        if any(isinstance(c, _ToolRateLimited) for c in _iter_causes(exc)):
+            when = f" Retry after {retry_after:.0f}s." if retry_after else ""
+            return HubRateLimited(
+                f"the Hub at {hub_url} refused this write for rate limiting and was still "
+                f"refusing after {attempts} {plural}.{when} This is the Hub's per-org WRITE "
+                f"limit (HUB_RATE_LIMIT_PER_MINUTE, 20/min by default), not a network "
+                f"problem -- push a smaller batch, retry later, or raise that limit. "
+                f"[{detail}]",
+                retry_after=retry_after,
+            )
+        when = f" Retry after {retry_after:.0f}s." if retry_after else ""
+        return HubRateLimited(
+            f"the Hub at {hub_url} is rate limiting this client (HTTP 429) and was still "
+            f"rate limiting after {attempts} {plural}.{when} Reduce concurrency "
+            f"(`--concurrency`), retry later, or raise the Hub's "
+            f"HUB_READ_RATE_LIMIT_PER_MINUTE / HUB_RATE_LIMIT_PER_MINUTE. [{detail}]",
+            retry_after=retry_after,
+        )
+    return HubConnectionError(
+        f"could not reach the Hub at {hub_url} after {attempts} {plural}: {detail}"
     )
+
+
+class _RateLimitGate:
+    """Shared brake for one batch: when the Hub says 429, EVERY worker in
+    the batch waits, not just the one that was refused.
+
+    Per-call backoff alone does not fix a stampede. With N workers pushing
+    concurrently, one worker sleeping on its own 429 leaves the other N-1
+    still firing into a limiter that has already said no, so the bucket
+    never refills and each worker independently burns its retry budget.
+    Measured on a 46-trace `sync --push-traces` against a default-configured
+    Hub: 114 rejected requests and a failed run, with per-call backoff
+    already in place.
+
+    One shared "paused until" instant makes the whole batch back off
+    together, which is what actually lets the bucket refill. Workers that
+    arrive during a pause wait it out rather than each adding a rejection.
+    """
+
+    def __init__(self, on_first_pause: Callable[[float], None] | None = None) -> None:
+        self._resume_at = 0.0
+        self._next_slot = 0.0
+        self._min_interval = 0.0
+        self._lock = asyncio.Lock()
+        # A paced push is a CORRECT slow push, but an unexplained one reads
+        # as a hang: a 1,000-trace sync legitimately takes minutes against a
+        # Hub's write limit, and the CLI printed nothing at all until it
+        # finished. Announced once, not per refusal, so the notice is
+        # information rather than a scroll of repeated warnings.
+        self._on_first_pause = on_first_pause
+        self._announced = False
+
+    async def wait(self) -> None:
+        """Acquire this call's turn: serve any batch-wide pause, then take
+        the next paced slot.
+
+        A pause alone is not enough, and measuring showed exactly why: when
+        it expires, every worker in the batch resumes in the same instant
+        and re-exhausts the bucket immediately, so the batch oscillates
+        between stampede and pause and never converges. Handing out slots
+        `_min_interval` apart -- one shared schedule across all workers --
+        is what actually spaces the requests out.
+        """
+        while True:
+            async with self._lock:
+                now = asyncio.get_running_loop().time()
+                if now >= self._resume_at:
+                    slot = max(now, self._next_slot)
+                    self._next_slot = slot + self._min_interval
+                    delay = slot - now
+                    break
+                delay = self._resume_at - now
+            await asyncio.sleep(min(delay, RETRY_MAX_DELAY_SECONDS))
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def pause(self, seconds: float) -> None:
+        """Called on a 429: hold the whole batch, and slow the paced rate.
+
+        Additive-increase/multiplicative-decrease, the standard shape for a
+        client that must discover a limit it was never told. The client
+        cannot know the Hub's configured rate (it is per-deployment, and
+        per-org), so it learns it: widen the spacing on every refusal,
+        narrow it on every success, and the batch settles at whatever rate
+        the server will actually sustain instead of guessing.
+        """
+        loop_time = asyncio.get_running_loop().time()
+        resume_at = loop_time + min(max(seconds, 0.0), RETRY_MAX_DELAY_SECONDS)
+        # Never shorten a pause another worker already set: the longest
+        # observed Retry-After is the one the server actually needs.
+        self._resume_at = max(self._resume_at, resume_at)
+        self._min_interval = min(
+            max(self._min_interval * 2.0, _PACE_MIN_INTERVAL_SECONDS), _PACE_MAX_INTERVAL_SECONDS
+        )
+        # Slots already handed out are in the past relative to the new
+        # pause; rebase so spacing resumes from when the pause ends.
+        self._next_slot = max(self._next_slot, self._resume_at)
+        if not self._announced:
+            self._announced = True
+            if self._on_first_pause is not None:
+                self._on_first_pause(seconds)
+
+    def succeeded(self) -> None:
+        """Called on every successful call: relax the spacing back toward
+        zero, so a batch that hit one transient limit does not stay
+        throttled for its whole remaining run."""
+        if self._min_interval:
+            self._min_interval *= _PACE_DECAY
+            if self._min_interval < _PACE_MIN_INTERVAL_SECONDS / 4:
+                self._min_interval = 0.0
+
+
+class HubSession:
+    """One live MCP session, reusable for many tool calls.
+
+    WHY THIS EXISTS. Every `_call_tool` used to stand up a whole MCP
+    session of its own -- connect, `initialize`, the initialized
+    notification, the actual `tools/call`, then terminate. Measured against
+    a live Hub, that is **5 HTTP requests for one logical tool call**, and
+    the Hub's rate limiter counts HTTP requests, not tool calls.
+
+    The consequence was not theoretical. `commontrace sync --push-traces`
+    on a 46-trace store issued ~230 requests against a Hub whose shipped
+    defaults allow a burst of 60 and 300/minute: 62 of 100 logged requests
+    came back 429 and **not one trace was pushed**. The documented primary
+    workflow could not complete against a default-configured Hub for any
+    store bigger than about a dozen traces -- and, because of the retry
+    defects fixed above, it reported the failure as "could not reach the
+    Hub".
+
+    Reusing one session across a batch drops the cost to roughly two
+    requests per call plus a one-time handshake, which is what makes a bulk
+    push fit inside the same limits. `_PUSH_CONCURRENCY` still bounds how
+    many calls are in flight at once.
+
+    Not thread-safe, and deliberately not reconnect-on-failure: a session
+    that dies mid-batch surfaces per-call errors, which every batch caller
+    here already records per file rather than aborting on.
+    """
+
+    def __init__(
+        self,
+        hub_url: str,
+        api_key: str,
+        timeout_seconds: float,
+        max_attempts: int,
+        probe: "HttpStatusProbe | None" = None,
+        gate: "_RateLimitGate | None" = None,
+    ):
+        self._hub_url = hub_url
+        self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
+        self._max_attempts = max_attempts
+        self._probe = probe
+        self._gate = gate if gate is not None else _RateLimitGate()
+        self._session = None
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> dict:
+        """One tool call, with retries.
+
+        Rate limiting gets its OWN, larger attempt budget
+        (RATE_LIMIT_MAX_ATTEMPTS), counted separately from transport
+        failures. The two deserve different budgets: a connection that
+        keeps refusing is probably not coming back inside this run, while a
+        429 is the server explicitly saying "yes, but later" -- and during
+        a bulk push it is the EXPECTED steady state once the burst
+        allowance is spent, not an error. Sharing one budget of 3 meant a
+        46-trace push failed on traces that only ever needed to wait their
+        turn. Each rate-limited attempt is also cheap and well-behaved:
+        `_RateLimitGate` has already parked the whole batch until the
+        server's own Retry-After elapses, so these are timed waits, not
+        extra load.
+        """
+        last_exc: Exception | None = None
+        attempts = 0
+        transport_attempts = 0
+        rate_limit_attempts = 0
+        status = retry_after = None
+        while True:
+            attempts += 1
+            # Reset per attempt so a 429 recorded on an earlier call in this
+            # same session can never be blamed for a later, unrelated failure.
+            if self._probe is not None:
+                self._probe.reset()
+            # Respect a pause any worker in this batch is already serving.
+            await self._gate.wait()
+            try:
+                result = _unwrap_result(name, await self._session.call_tool(name, arguments))
+                refusal = _tool_rate_limit(result)
+                if refusal is not None:
+                    raise refusal
+            except (HubToolError, HubAuthError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - transport errors aren't one exception type
+                last_exc = exc
+                status = self._probe.status if self._probe is not None else None
+                retry_after = self._probe.retry_after if self._probe is not None else None
+                rate_limited = _is_rate_limited(exc, status)
+                if rate_limited:
+                    rate_limit_attempts += 1
+                    delay = _backoff_delay(rate_limit_attempts, exc, retry_after)
+                    # Brake the whole batch, not just this call.
+                    self._gate.pause(delay)
+                    budget_left = rate_limit_attempts < RATE_LIMIT_MAX_ATTEMPTS
+                else:
+                    transport_attempts += 1
+                    delay = _backoff_delay(transport_attempts, exc, retry_after)
+                    budget_left = transport_attempts < self._max_attempts
+                if not budget_left or not _is_retryable(exc, status):
+                    break
+                await asyncio.sleep(delay)
+            else:
+                self._gate.succeeded()
+                return result
+        raise _transport_failure(
+            self._hub_url, attempts, last_exc, status, retry_after
+        ) from last_exc
+
+
+def _backoff_delay(attempt: int, exc: BaseException, observed_retry_after: float | None = None) -> float:
+    """Seconds to wait before retry `attempt` + 1.
+
+    A server-sent `Retry-After` wins over local exponential backoff when
+    the Hub sent one: the server knows when its own bucket refills, and
+    guessing shorter just burns another request against a limiter that is
+    already saying no. Capped either way (RETRY_MAX_DELAY_SECONDS) so a
+    hostile or misconfigured value cannot hang the CLI.
+    """
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is None:
+        retry_after = observed_retry_after
+    if retry_after is not None:
+        return min(max(retry_after, 0.0), RETRY_MAX_DELAY_SECONDS)
+    return min(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), RETRY_MAX_DELAY_SECONDS)
+
+
+@contextlib.asynccontextmanager
+async def open_hub_session(
+    hub_url: str,
+    api_key: str,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    on_first_pause: Callable[[float], None] | None = None,
+):
+    """Hold one MCP session open for a batch of calls. See HubSession."""
+    transport_ctx, ClientSession, http_client, probe = await _open_session(
+        hub_url, api_key, timeout_seconds
+    )
+    hub_session = HubSession(
+        hub_url, api_key, timeout_seconds, max_attempts, probe,
+        gate=_RateLimitGate(on_first_pause),
+    )
+    try:
+        async with transport_ctx as (read, write), ClientSession(read, write) as session:
+            try:
+                await session.initialize()
+            except Exception as exc:  # noqa: BLE001 - the handshake fails the same ways a call does
+                # The handshake is where a rejected API key actually shows
+                # up: auth runs in middleware ahead of MCP dispatch, so the
+                # 401 lands on `initialize`, not on any tool call.
+                raise _transport_failure(
+                    hub_url, 1, exc, probe.status, probe.retry_after
+                ) from exc
+            hub_session._session = session
+            yield hub_session
+    finally:
+        # httpx.AsyncClient owns a connection pool / open sockets that
+        # streamable_http_client wraps but does not take ownership of;
+        # without this they leak until the process hits "Too many open
+        # files".
+        await http_client.aclose()
 
 
 async def _call_tool(
@@ -266,43 +953,62 @@ async def _call_tool(
     arguments: dict[str, Any],
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    session: "HubSession | _LazyHubSession | None" = None,
 ) -> dict:
+    """One tool call. Reuses `session` when a batch caller supplies one,
+    otherwise opens a session for this single call (the behaviour every
+    one-shot caller in this module wants).
+
+    The retry loop lives in HubSession.call; the whole-session retry here
+    covers the case where the failure was the handshake itself, which a
+    per-call retry inside a dead session could never recover from.
+    """
+    if session is not None:
+        if isinstance(session, _LazyHubSession):
+            session = await session.get()
+        return await session.call(name, arguments)
+
     last_exc: Exception | None = None
+    attempts = 0
     for attempt in range(1, max_attempts + 1):
-        transport_ctx, ClientSession, http_client = await _open_session(hub_url, api_key, timeout_seconds)
+        attempts = attempt
         try:
-            async with transport_ctx as (read, write), ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-                if result.is_error:
-                    text = "; ".join(getattr(c, "text", str(c)) for c in result.content)
-                    # An error *from* the tool is an answer, not a transport
-                    # failure -- surfaced immediately, never retried.
-                    raise HubConnectionError(f"Hub tool {name!r} returned an error: {text}")
-                if result.structured_content is not None:
-                    return result.structured_content
-                # Fallback: some transports only populate .content (text blocks of JSON).
-                text = "".join(getattr(c, "text", "") for c in result.content)
-                return json.loads(text) if text else {}
-        except HubConnectionError:
+            async with open_hub_session(hub_url, api_key, timeout_seconds, max_attempts=1) as one_shot:
+                return await one_shot.call(name, arguments)
+        except (HubConfigurationError, HubToolError, HubAuthError, HubClientUnavailable):
             raise
+        except HubConnectionError as exc:
+            # A tool-level error ("Hub tool X returned an error: ...") is an
+            # answer; only a transport failure is worth another attempt.
+            if not _is_retryable(exc):
+                raise
+            last_exc = exc
+            if attempt >= max_attempts:
+                break
+            await asyncio.sleep(_backoff_delay(attempt, exc))
         except Exception as exc:  # noqa: BLE001 - transport errors aren't one exception type
             last_exc = exc
+            # An anyio task group can re-wrap a HubAuthError/HubToolError
+            # this module already raised; unwrap it before deciding, so a
+            # rejected key is still never retried once it has been
+            # correctly diagnosed one layer down.
+            classified = _already_classified(exc)
+            if isinstance(classified, (HubConfigurationError, HubAuthError, HubToolError)):
+                raise classified from exc
+            # A HubRateLimited that reaches here has ALREADY been through
+            # HubSession.call's own rate-limit budget (RATE_LIMIT_MAX_ATTEMPTS,
+            # each attempt paced against the server's Retry-After). Retrying
+            # it in this outer loop as well would multiply the two budgets
+            # together -- up to 30 attempts, and minutes of wall time, for
+            # one single-shot call -- when the inner loop has already
+            # established that the server is still saying no.
+            if isinstance(classified, HubRateLimited):
+                raise classified from exc
             if attempt >= max_attempts or not _is_retryable(exc):
                 break
-            # Exponential backoff: 0.5s, 1s, 2s, ...
-            await asyncio.sleep(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
-        finally:
-            # Every attempt opens a fresh AsyncClient (a fresh connection
-            # pool / socket); without this it is never released, and a
-            # long-running loop or repeated `commontrace sync` invocations
-            # leak file descriptors until the process hits "Too many open
-            # files".
-            await http_client.aclose()
+            await asyncio.sleep(_backoff_delay(attempt, exc))
 
-    raise HubConnectionError(
-        f"could not reach the Hub at {hub_url} after {max_attempts} attempt(s): {last_exc}"
-    ) from last_exc
+    raise _transport_failure(hub_url, attempts, last_exc) from last_exc
 
 
 def _push_fingerprint(title: str, context_text: str, solution_text: str, tags: list[str]) -> str:
@@ -370,12 +1076,16 @@ def _write_hub_push_fields(path: str, hub_trace_id: str, fingerprint: str) -> No
         frontmatter.write(path, fm, body)
 
 
-async def _gather_bounded(paths_iter: Iterable[str], fn: Callable[[str], Awaitable[_T]]) -> list[_T]:
+async def _gather_bounded(
+    paths_iter: Iterable[str],
+    fn: Callable[[str], Awaitable[_T]],
+    concurrency: int = _PUSH_CONCURRENCY,
+) -> list[_T]:
     """Run `fn(path)` for every `path` in `paths_iter`, at most
-    _PUSH_CONCURRENCY at once. Shared by push_active_lessons and
+    `concurrency` at once. Shared by push_active_lessons and
     push_captured_traces (see _PUSH_CONCURRENCY's comment for why bounded
     rather than unbounded concurrency)."""
-    semaphore = asyncio.Semaphore(_PUSH_CONCURRENCY)
+    semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _bounded(path: str) -> _T:
         async with semaphore:
@@ -384,7 +1094,83 @@ async def _gather_bounded(paths_iter: Iterable[str], fn: Callable[[str], Awaitab
     return await asyncio.gather(*(_bounded(p) for p in paths_iter))
 
 
-async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[PushResult]:
+class _LazyHubSession:
+    """The batch's shared MCP session, opened on first actual use.
+
+    Lazy rather than eager for two reasons. The honest one: a batch in which
+    every file is already up to date makes no Hub calls at all, and opening
+    (and handshaking, and tearing down) a session to discover that is pure
+    waste -- `commontrace sync --push` on an unchanged store is the common
+    case, not the rare one. The second: establishing the connection at the
+    moment of first use keeps the seam at `_call_tool` where every caller,
+    and every test, already expects it.
+
+    The double-checked lock matters: `_gather_bounded` runs up to
+    `_PUSH_CONCURRENCY` workers, and without it the first several would each
+    open a session of their own -- reintroducing exactly the per-call
+    session cost this whole change exists to remove.
+    """
+
+    def __init__(self, stack, hub_url: str, api_key: str, on_first_pause=None):
+        self._stack = stack
+        self._hub_url = hub_url
+        self._api_key = api_key
+        self._on_first_pause = on_first_pause
+        self._session: HubSession | None = None
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> HubSession:
+        if self._session is None:
+            async with self._lock:
+                if self._session is None:
+                    self._session = await self._stack.enter_async_context(
+                        open_hub_session(
+                            self._hub_url, self._api_key, on_first_pause=self._on_first_pause
+                        )
+                    )
+        return self._session
+
+
+async def _push_batch(
+    hub_url: str,
+    api_key: str,
+    paths_iter: Iterable[str],
+    make_push_one: Callable[["_LazyHubSession | None"], Callable[[str], Awaitable[_T]]],
+    concurrency: int = _PUSH_CONCURRENCY,
+) -> list[_T]:
+    """Push a whole batch over ONE MCP session.
+
+    See HubSession for the measurement behind this: a session per call cost
+    5 HTTP requests per logical tool call, which put `sync --push-traces`
+    over the Hub's shipped rate limits on any store past about a dozen
+    traces and pushed nothing at all.
+
+    If the session cannot be established (Hub down, key rejected), that is
+    not a per-file problem -- every file would report the identical error --
+    so it propagates to the caller, which is what `commontrace sync`
+    already renders as a single "sync failed" line rather than one repeated
+    error per file.
+    """
+    files = list(paths_iter)
+    if not files:
+        return []
+
+    def _announce(seconds: float) -> None:
+        print(
+            f"[commontrace] the Hub is rate limiting this push; pacing the remaining "
+            f"{len(files)} file(s) to match (first wait ~{max(1, round(seconds))}s). "
+            f"This is expected for a large batch -- it will finish, just not instantly.",
+            file=sys.stderr,
+        )
+
+    async with contextlib.AsyncExitStack() as stack:
+        session = _LazyHubSession(stack, hub_url, api_key, on_first_pause=_announce)
+        return await _gather_bounded(files, make_push_one(session), concurrency)
+
+
+async def push_active_lessons(
+    hub_url: str, api_key: str, root: str, concurrency: int = _PUSH_CONCURRENCY
+) -> list[PushResult]:
     """Push every `status: active` lesson to the Hub via contribute_trace,
     recording the returned id back into the lesson's `hub_trace_id`
     frontmatter field. Mapping matches the one previously documented as
@@ -403,7 +1189,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
     it's propagated via amend_trace, so the Hub copy stops silently
     diverging from the local one the moment anyone edits it.
     """
-    async def _push_one(path: str) -> PushResult | None:
+    async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult | None:
         try:
             fm, body = frontmatter.read(path)
         except Exception as exc:  # noqa: BLE001 - one malformed local file (hand-edited YAML
@@ -422,6 +1208,24 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
         if fm.get("status") != "active":
             return None
         slug = fm.get("name", os.path.splitext(os.path.basename(path))[0])
+        # An active lesson that is still scaffolding must not be published.
+        # `lesson approve` now refuses to activate one (and warns loudly on
+        # --force), but a lesson can also reach status: active by hand, and
+        # the Hub is the one place the mistake stops being local: from
+        # there `search_traces` serves it to every agent in the fleet.
+        # Reported as an error rather than skipped silently -- the file is
+        # something the operator needs to fix, not something to hide.
+        unfilled = templates.unfilled_placeholders(fm, body)
+        if unfilled:
+            return PushResult(
+                slug=slug,
+                hub_trace_id=None,
+                error=(
+                    f"not pushed: this active lesson still contains unedited "
+                    f"scaffolding in {', '.join(unfilled)}. Fill it in, or set it "
+                    f"back to status: review."
+                ),
+            )
 
         sections = _lesson_sections(body)
         solution_text = "\n\n".join(
@@ -454,6 +1258,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                         # a trace.
                         "idempotency_key": _amend_idempotency_key(slug, fingerprint),
                     },
+                    session=session,
                 )
             except (HubClientUnavailable, HubConnectionError) as exc:
                 return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc))
@@ -510,6 +1315,7 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
                     # original trace instead of minting another.
                     "idempotency_key": f"lesson:{slug}",
                 },
+                session=session,
             )
         except (HubClientUnavailable, HubConnectionError) as exc:
             return PushResult(slug=slug, hub_trace_id=None, error=str(exc))
@@ -534,7 +1340,13 @@ async def push_active_lessons(hub_url: str, api_key: str, root: str) -> list[Pus
     # round trips. asyncio.gather preserves input order in its results
     # regardless of completion order, so this is not just faster but
     # observably identical in ordering to the old sequential loop.
-    outcomes = await _gather_bounded(_iter_active_lesson_paths(root), _push_one)
+    outcomes = await _push_batch(
+        hub_url,
+        api_key,
+        _iter_active_lesson_paths(root),
+        lambda session: (lambda path: _push_one(path, session)),
+        concurrency=concurrency,
+    )
     return [r for r in outcomes if r is not None]
 
 
@@ -571,7 +1383,9 @@ def _trace_amend_idempotency_key(local_id: str, fingerprint: str) -> str:
     return "trace-amend:" + hashlib.sha256(f"{local_id}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
 
-async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[PushResult]:
+async def push_captured_traces(
+    hub_url: str, api_key: str, root: str, concurrency: int = _PUSH_CONCURRENCY
+) -> list[PushResult]:
     """Push every locally captured trace (`commontrace capture`) to the Hub
     via contribute_trace/amend_trace, INCLUDING outcome data -- the bridge
     push_active_lessons does not provide, because lessons and traces are
@@ -598,7 +1412,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
     outcome once a task concludes" pattern needs: the second push must add
     `resolved` without erasing whatever the first push already attached.
     """
-    async def _push_one(path: str) -> PushResult:
+    async def _push_one(path: str, session: "_LazyHubSession | None" = None) -> PushResult:
         try:
             instance, _body = trace_io.read(path)
         except Exception as exc:  # noqa: BLE001 - see push_active_lessons's identical
@@ -646,6 +1460,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
                         # unkeyed push_active_lessons amend used to.
                         "idempotency_key": _trace_amend_idempotency_key(slug, fingerprint),
                     },
+                    session=session,
                 )
             except (HubClientUnavailable, HubConnectionError) as exc:
                 return PushResult(slug=slug, hub_trace_id=str(existing_hub_id), error=str(exc))
@@ -690,6 +1505,7 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
                     # state) must collide deliberately with itself.
                     "idempotency_key": f"trace:{slug}",
                 },
+                session=session,
             )
         except (HubClientUnavailable, HubConnectionError) as exc:
             return PushResult(slug=slug, hub_trace_id=None, error=str(exc))
@@ -708,9 +1524,16 @@ async def push_captured_traces(hub_url: str, api_key: str, root: str) -> list[Pu
             )
         return PushResult(slug=slug, hub_trace_id=new_id, quarantined=result.get("quarantined", False))
 
-    # Bounded concurrency (see _PUSH_CONCURRENCY / _gather_bounded): same
-    # reasoning and same pattern as push_active_lessons above.
-    return await _gather_bounded(_iter_captured_trace_paths(root), _push_one)
+    # Bounded concurrency (see _PUSH_CONCURRENCY / _gather_bounded), over
+    # ONE shared MCP session (see _push_batch): same reasoning and same
+    # pattern as push_active_lessons above.
+    return await _push_batch(
+        hub_url,
+        api_key,
+        _iter_captured_trace_paths(root),
+        lambda session: (lambda path: _push_one(path, session)),
+        concurrency=concurrency,
+    )
 
 
 async def commons_overlap(

@@ -37,10 +37,13 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     assert len(warn_lines) == 1
     assert "lessons in store" in warn_lines[0]
 
+    # Labels are stated neutrally ("attention extra", not "attention extra
+    # installed"): the INFO branch reports ABSENCE, and reusing the
+    # affirmative label made it claim the opposite of its own detail.
     info_labels = {
-        "attention extra installed",
-        "reference attention/query.py found",
-        "protocol/ spec present",
+        "attention extra (numpy + sentence-transformers)",
+        "reference attention/query.py",
+        "protocol/ spec",
     }
     for label in info_labels:
         assert any(label in line for line in info_lines), f"expected an [INFO] line for: {label}"
@@ -96,7 +99,7 @@ def test_doctor_in_repo_checkout_shows_ok_not_info_for_repo_only_checks(capsys):
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assert main(["doctor", "--dest", repo_root]) == 0
     out = capsys.readouterr().out
-    assert "[OK  ] reference attention/query.py found" in out
+    assert "[OK  ] reference attention/query.py" in out
     assert "[OK  ] benchmark script found" in out
     assert "[OK  ] pilot metrics script found" in out
-    assert "[OK  ] protocol/ spec present" in out
+    assert "[OK  ] protocol/ spec" in out

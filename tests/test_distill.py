@@ -279,6 +279,20 @@ class TestLessonApproveReject:
         path = store / "memory" / "lessons" / "lesson_candidate_test.md"
         fm, body = frontmatter.read(str(path))
         fm["status"] = "review"
+        # A real, written lesson -- `lesson new` scaffolds every one of these
+        # fields with a placeholder, and `lesson approve` now refuses to
+        # activate a lesson still carrying them (an active lesson is injected
+        # into agents verbatim). These tests are about the status transition
+        # and slug resolution, so they approve the thing an operator would
+        # actually be approving.
+        fm["applies_when"] = "A refund retry returns HTTP 409 from the gateway"
+        fm["do_not_apply_when"] = "The original charge was never authorized"
+        body = (
+            "## Rule\nReuse the original charge's idempotency key on the retry.\n\n"
+            "## Why\nObserved across six refund incidents.\n\n"
+            "## How to apply\nRead the key from the first charge, resend it.\n\n"
+            "## Counter-examples\nDoes not apply to disputes.\n"
+        )
         frontmatter.write(str(path), fm, body)
         return path
 

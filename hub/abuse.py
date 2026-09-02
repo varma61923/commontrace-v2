@@ -40,7 +40,19 @@ class TraceRejected(ValueError):
 
 
 class RateLimited(Exception):
-    """Hard rejection: the org is over its contribute_trace rate limit."""
+    """Hard rejection: the org is over its contribute_trace rate limit.
+
+    Carries `retry_after` (seconds) so the refusal can tell a client when to
+    come back, exactly like the HTTP 429s hub/server.py returns. Without it
+    a bulk contributor can only guess -- and this limiter's shipped default
+    (20/minute, burst 5) means a client pushing a backlog is refused as a
+    matter of course, not as an error, so "when" is the only useful part of
+    the answer.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def reject_unstorable_text(value: str, field: str) -> None:
@@ -231,6 +243,28 @@ class RateLimiter:
     # Sweep at most this often, so eviction is amortized O(1) per allow()
     # call rather than an O(n) scan of every bucket on every call.
     _SWEEP_INTERVAL_SECONDS = 300.0
+    # Hard ceiling on distinct tracked keys, independent of the idle sweep.
+    #
+    # The sweep alone bounds memory only for keys that go idle: it evicts
+    # nothing until a bucket has been untouched for _IDLE_TTL_SECONDS (1h)
+    # and runs at most every 5 minutes. A client-address-keyed limiter
+    # (auth attempts, /readyz) is keyed on something the peer chooses --
+    # trivially, any address out of an IPv6 /64, or any X-Forwarded-For
+    # value when trusted_proxy_hops is misconfigured -- so an attacker can
+    # mint unbounded distinct keys and hold every one of them live inside
+    # that hour-long window. That is unbounded process memory growth
+    # reachable by an unauthenticated request, which is the failure this
+    # limiter exists to prevent rather than to cause.
+    #
+    # Evicting the least-recently-used bucket when over capacity is safe in
+    # the same sense the idle sweep is: a re-created bucket starts full, so
+    # the worst case is that a flooding client resets its OWN limit --
+    # never that it lowers anyone else's. 100k buckets is far more than any
+    # real deployment's active client count and still bounded memory.
+    _MAX_TRACKED_KEYS = 100_000
+    # What a deny-everything limiter (per_minute <= 0) advertises as
+    # Retry-After. Long, because the honest answer is "never".
+    _DENY_ALL_RETRY_AFTER_SECONDS = 3600
 
     def __init__(self, per_minute: int, burst: int):
         self._rate_per_sec = per_minute / 60.0
@@ -249,11 +283,26 @@ class RateLimiter:
         self._last_sweep = time.monotonic()
 
     def allow(self, key: str) -> bool:
+        return self.check(key)[0]
+
+    def check(self, key: str) -> tuple[bool, float]:
+        """(allowed, retry_after_seconds).
+
+        `retry_after` is 0.0 when allowed, and otherwise how long until this
+        bucket holds a whole token again -- which is exactly the value the
+        `Retry-After` header exists to carry. Without it a refused client
+        can only guess, and every client guessing (and guessing short)
+        against a limiter that is already saying no is what turns one burst
+        into a sustained stampede. Measured on this project's own CLI: a
+        bulk `sync --push-traces` retried blind and drove 114 rejected
+        requests where the honest answer was "wait ~2 seconds".
+        """
         now = time.monotonic()
         with self._lock:
             bucket = self._buckets.get(key)
             if bucket is None:
                 bucket = _Bucket(tokens=float(self._capacity), last_refill=now)
+                self._evict_if_over_capacity(now)
                 self._buckets[key] = bucket
             elapsed = now - bucket.last_refill
             bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._rate_per_sec)
@@ -262,8 +311,53 @@ class RateLimiter:
                 self._sweep_idle_buckets(now)
             if bucket.tokens >= 1.0:
                 bucket.tokens -= 1.0
-                return True
-            return False
+                return True, 0.0
+            if self._rate_per_sec <= 0:
+                # A deny-everything limiter (per_minute <= 0) never refills;
+                # advertising a finite wait would be a lie that invites an
+                # endless retry loop.
+                return False, float(self._DENY_ALL_RETRY_AFTER_SECONDS)
+            return False, (1.0 - bucket.tokens) / self._rate_per_sec
+
+    def _evict_if_over_capacity(self, now: float) -> None:
+        """Make room for one new bucket. Caller already holds self._lock.
+
+        Tries the cheap, behaviour-neutral idle sweep first; only if that
+        frees nothing does it evict the least-recently-used bucket, which
+        is the one whose loss costs the least (it has had the longest to
+        refill).
+        """
+        if len(self._buckets) < self._MAX_TRACKED_KEYS:
+            return
+        self._sweep_idle_buckets(now)
+        while len(self._buckets) >= self._MAX_TRACKED_KEYS:
+            oldest = min(self._buckets, key=lambda k: self._buckets[k].last_refill)
+            del self._buckets[oldest]
+
+    def refund(self, key: str) -> None:
+        """Give back one token, never exceeding capacity.
+
+        Used by the auth-attempt limiter (hub/server.py) to charge only
+        credentials that FAIL to verify. That limiter exists to bound the
+        Argon2 CPU an unauthenticated source can force -- a brute-force
+        defense -- but it was charging every request, successful ones
+        included, so it throttled the legitimate heavy client hardest.
+        Concretely: a `commontrace sync --push-traces` from one machine is
+        hundreds of successful authentications from one address, and at
+        60/min the ANTI-BRUTE-FORCE limiter, not the per-org fair-use one,
+        became the binding constraint on this product's own documented
+        onboarding.
+
+        Refunding on success puts each limiter back on the question it can
+        actually answer: this one bounds work from credentials that do not
+        verify, and the per-org read limiter bounds work from credentials
+        that do -- where the caller is authenticated, accountable and
+        metered.
+        """
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is not None:
+                bucket.tokens = min(self._capacity, bucket.tokens + 1.0)
 
     def _sweep_idle_buckets(self, now: float) -> None:
         """Evict buckets idle long enough to have fully refilled. Caller

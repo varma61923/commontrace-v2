@@ -509,6 +509,22 @@ def test_query_lexical_finds_matching_lesson(store, capsys):
             "--dest", str(store),
         ]
     )
+    # `lesson new` scaffolds at status=review (the Validator step activates a
+    # lesson, never the thing that proposed it), and lexical query only reads
+    # ACTIVE lessons -- so write the rule and approve it, which is the real
+    # path from a scaffolded lesson to a retrievable one.
+    lesson_path = store / "memory" / "lessons" / "lesson_handle_price_objection.md"
+    fm, _ = frontmatter.read(str(lesson_path))
+    frontmatter.write(
+        str(lesson_path),
+        fm,
+        "## Rule\nReframe the price objection around ROI rather than a discount.\n\n"
+        "## Why\nDiscounting first trains prospects to always ask.\n\n"
+        "## How to apply\nQuantify payback period, then restate the price.\n\n"
+        "## Counter-examples\nDoes not apply before a demo.\n",
+    )
+    assert main(["lesson", "approve", "lesson_handle_price_objection", "--dest", str(store)]) == 0
+
     capsys.readouterr()
     rc = main(["query", "prospect is objecting to price", "--lexical", "--dest", str(store)])
     assert rc == 0

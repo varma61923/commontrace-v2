@@ -86,19 +86,33 @@ def run(args: argparse.Namespace) -> int:
     attention_extra = importlib.util.find_spec("numpy") is not None and importlib.util.find_spec(
         "sentence_transformers"
     ) is not None
+    # Labels below are stated NEUTRALLY, not affirmatively.
+    #
+    # These three checks have an INFO branch for "absent, and that is fine",
+    # and each reused the affirmative label from its OK branch -- so a
+    # missing extra printed:
+    #
+    #   [INFO] attention extra installed (numpy + sentence-transformers)
+    #          - optional; install with `pip install commontrace[attention]`
+    #
+    # which asserts the extra IS installed and then tells you to install it.
+    # `doctor` is the command an operator runs precisely when something is
+    # wrong; a label that contradicts its own detail is the last place to
+    # spend someone's attention.
     if attention_extra:
-        _check("attention extra installed (numpy + sentence-transformers)", True)
+        _check("attention extra (numpy + sentence-transformers)", True, "installed")
     else:
         _info(
-            "attention extra installed (numpy + sentence-transformers)",
-            "optional; install with `pip install commontrace[attention]` for semantic retrieval",
+            "attention extra (numpy + sentence-transformers)",
+            "not installed; optional -- `pip install commontrace[attention]` for semantic retrieval",
         )
 
     query_script = find_reference_script(root, "memory/attention/query.py")
     if query_script is not None:
-        _check("reference attention/query.py found", True, query_script)
+        _check("reference attention/query.py", True, query_script)
     else:
-        _info("reference attention/query.py found", "not in a repo checkout (expected for a pip-installed client)")
+        _info("reference attention/query.py",
+              "not found; expected for a pip-installed client (it ships only in a repo checkout)")
 
     bench_script = find_reference_script(root, "benchmark/measure_performance.py")
     if bench_script is not None:
@@ -122,11 +136,15 @@ def run(args: argparse.Namespace) -> int:
 
     protocol_dir = os.path.join(root, "protocol")
     if os.path.isdir(protocol_dir):
-        _check("protocol/ spec present", True, protocol_dir)
+        _check("protocol/ spec", True, protocol_dir)
     else:
+        # Neutral label, same reason as the two above: "protocol/ spec
+        # present - not in a repo checkout" claimed the opposite of what it
+        # was reporting.
         _info(
-            "protocol/ spec present",
-            "not in a repo checkout; schemas are mirrored at commontrace/schemas/ for the installed package",
+            "protocol/ spec",
+            "not present; expected for a pip-installed client -- schemas are mirrored "
+            "at commontrace/schemas/",
         )
 
     if _FAILURES:

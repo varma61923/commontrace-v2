@@ -39,6 +39,30 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _env_int_in_range(name: str, default: int, lo: int, hi: int) -> int:
+    """`_env_int`, plus the range the value actually has to be in.
+
+    Without this, every numeric setting accepted anything an int could
+    parse and failed later, somewhere else, in a way that named neither the
+    variable nor the reason. Concretely, all of these started a process
+    that then misbehaved rather than refusing to start:
+
+      HUB_PORT=99999            -> OSError deep in uvicorn's bind
+      HUB_DB_POOL_SIZE=-1       -> a SQLAlchemy pool error on first query
+      HUB_MAX_TITLE_CHARS=-5    -> every contribute_trace rejected, no
+                                   message anywhere saying why
+      HUB_MAX_REQUEST_BODY_BYTES=0 -> every request rejected as too large
+
+    A deployment misconfiguration should fail at startup, naming the
+    variable and the bound -- the same policy HUB_DATABASE_URL already gets
+    for being absent.
+    """
+    value = _env_int(name, default)
+    if not lo <= value <= hi:
+        raise ValueError(f"{name} must be between {lo} and {hi}, got {value}")
+    return value
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -74,8 +98,26 @@ class HubConfig:
     max_tags: int = 20
     max_tag_chars: int = 64
     max_trace_bytes: int = 65_536  # serialized JSON size ceiling for one trace
-    rate_limit_per_minute: int = 20  # contribute_trace/amend_trace calls, per org
-    rate_limit_burst: int = 5
+    # Per-org write limit (contribute_trace/amend_trace/submit_kb_entry).
+    #
+    # Raised from 20/min burst 5. That default could not serve this
+    # product's own documented onboarding: `commontrace import` a fleet's
+    # existing history, then `commontrace sync --push-traces`. At 20/min a
+    # 46-trace store took over two minutes and a 1,000-trace import -- the
+    # size the import path exists for -- took the better part of an hour,
+    # while the client (before the pacing fix in
+    # commontrace/hub_client.py) simply failed most of the files instead.
+    #
+    # What this limiter is actually for, per this module's own rationale,
+    # is protecting the shared Postgres every org writes into and keeping
+    # an org's search useful to itself. Two writes per second per org
+    # serves both: it is still far below what one Postgres handles, still
+    # bounds a runaway agent to a rate an operator will notice long before
+    # it matters, and it lets the documented first-run finish in a minute
+    # rather than an hour. The burst is what a bulk push actually consumes,
+    # so it moves with it.
+    rate_limit_per_minute: int = 120  # contribute_trace/amend_trace calls, per org
+    rate_limit_burst: int = 30
     suspect_url_threshold: int = 5  # >N URLs in one submission -> quarantine
 
     # --- Rate limiting: every authenticated request, and auth itself ---
@@ -226,30 +268,30 @@ class HubConfig:
         return cls(
             database_url=database_url,
             host=os.environ.get("HUB_HOST", "127.0.0.1"),
-            port=_env_int("HUB_PORT", 8420),
+            port=_env_int_in_range("HUB_PORT", 8420, 1, 65535),
             streamable_http_path=os.environ.get("HUB_STREAMABLE_HTTP_PATH", "/mcp"),
-            max_request_body_bytes=_env_int("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576),
-            max_title_chars=_env_int("HUB_MAX_TITLE_CHARS", 500),
-            max_text_chars=_env_int("HUB_MAX_TEXT_CHARS", 20_000),
-            max_tags=_env_int("HUB_MAX_TAGS", 20),
-            max_tag_chars=_env_int("HUB_MAX_TAG_CHARS", 64),
-            max_trace_bytes=_env_int("HUB_MAX_TRACE_BYTES", 65_536),
-            rate_limit_per_minute=_env_int("HUB_RATE_LIMIT_PER_MINUTE", 20),
-            rate_limit_burst=_env_int("HUB_RATE_LIMIT_BURST", 5),
-            suspect_url_threshold=_env_int("HUB_SUSPECT_URL_THRESHOLD", 5),
-            read_rate_limit_per_minute=_env_int("HUB_READ_RATE_LIMIT_PER_MINUTE", 300),
-            read_rate_limit_burst=_env_int("HUB_READ_RATE_LIMIT_BURST", 60),
-            auth_attempts_per_minute=_env_int("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60),
-            auth_attempts_burst=_env_int("HUB_AUTH_ATTEMPTS_BURST", 20),
-            readyz_rate_limit_per_minute=_env_int("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120),
-            readyz_rate_limit_burst=_env_int("HUB_READYZ_RATE_LIMIT_BURST", 30),
-            trusted_proxy_hops=_env_int("HUB_TRUSTED_PROXY_HOPS", 0),
+            max_request_body_bytes=_env_int_in_range("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576, 1024, 64 * 1024 * 1024),
+            max_title_chars=_env_int_in_range("HUB_MAX_TITLE_CHARS", 500, 1, 100_000),
+            max_text_chars=_env_int_in_range("HUB_MAX_TEXT_CHARS", 20_000, 1, 10_000_000),
+            max_tags=_env_int_in_range("HUB_MAX_TAGS", 20, 1, 1000),
+            max_tag_chars=_env_int_in_range("HUB_MAX_TAG_CHARS", 64, 1, 10_000),
+            max_trace_bytes=_env_int_in_range("HUB_MAX_TRACE_BYTES", 65_536, 1024, 64 * 1024 * 1024),
+            rate_limit_per_minute=_env_int_in_range("HUB_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
+            rate_limit_burst=_env_int_in_range("HUB_RATE_LIMIT_BURST", 30, 0, 1_000_000),
+            suspect_url_threshold=_env_int_in_range("HUB_SUSPECT_URL_THRESHOLD", 5, 0, 10_000),
+            read_rate_limit_per_minute=_env_int_in_range("HUB_READ_RATE_LIMIT_PER_MINUTE", 300, 0, 10_000_000),
+            read_rate_limit_burst=_env_int_in_range("HUB_READ_RATE_LIMIT_BURST", 60, 0, 1_000_000),
+            auth_attempts_per_minute=_env_int_in_range("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60, 0, 10_000_000),
+            auth_attempts_burst=_env_int_in_range("HUB_AUTH_ATTEMPTS_BURST", 20, 0, 1_000_000),
+            readyz_rate_limit_per_minute=_env_int_in_range("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
+            readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
+            trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
-            db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),
-            db_max_overflow=_env_int("HUB_DB_MAX_OVERFLOW", 5),
-            db_pool_timeout=_env_int("HUB_DB_POOL_TIMEOUT", 30),
-            db_pool_recycle=_env_int("HUB_DB_POOL_RECYCLE", 1800),
-            graceful_shutdown_seconds=_env_int("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30),
+            db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
+            db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),
+            db_pool_timeout=_env_int_in_range("HUB_DB_POOL_TIMEOUT", 30, 1, 3600),
+            db_pool_recycle=_env_int_in_range("HUB_DB_POOL_RECYCLE", 1800, -1, 86_400),
+            graceful_shutdown_seconds=_env_int_in_range("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30, 0, 3600),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )
