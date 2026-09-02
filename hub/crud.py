@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import experiment, integrity
+from commontrace import experiment, integrity, revision
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -1843,23 +1843,38 @@ async def holdout_assign(
             "starts one with `python -m hub.manage start-experiment <org_id> [rate]`."
         )
 
+    # The trace CONTENT comes back with the id, not just the id. `amend_trace`
+    # rewrites title/context/solution in place, so recording only the id
+    # records a pointer to something that can change underneath the
+    # experiment -- and the effect would then describe two treatments pooled.
+    # Read at decision time, because what the trace said LATER is not what
+    # this occasion was treated with.
     valid = list(
         (
             await session.execute(
-                select(Trace.id).where(
+                select(
+                    Trace.id, Trace.title, Trace.context_text, Trace.solution_text, Trace.tags
+                ).where(
                     Trace.org_id == org_id,
                     Trace.id.in_([t for t in trace_ids if _is_uuid(str(t))]),
                 )
             )
-        ).scalars().all()
+        ).all()
     )
 
     decisions = []
-    for trace_id in valid:
+    for row in valid:
         withheld = experiment.is_held_out(
-            trace_id, occasion_id, rate=org.holdout_rate, salt=org.holdout_salt
+            row.id, occasion_id, rate=org.holdout_rate, salt=org.holdout_salt
         )
-        decisions.append({"trace_id": trace_id, "injected": not withheld})
+        decisions.append({
+            "trace_id": row.id,
+            "injected": not withheld,
+            "trace_revision": revision.revision_of_trace(
+                row.title or "", row.context_text or "", row.solution_text or "",
+                list(row.tags or []),
+            ),
+        })
 
     if decisions:
         # ON CONFLICT DO NOTHING, not DO UPDATE: the existing row is by
@@ -1877,6 +1892,7 @@ async def holdout_assign(
                         "occasion_id": occasion_id,
                         "injected": d["injected"],
                         "salt": org.holdout_salt,
+                        "trace_revision": d["trace_revision"],
                     }
                     for d in decisions
                 ]
@@ -2059,6 +2075,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             salt=r.salt,
             succeeded=r.succeeded,
             at=r.created_at,
+            revision=r.trace_revision,
         )
         for r in rows
     ]

@@ -920,6 +920,32 @@ at a 10% holdout it takes ~100 occasions to put 10 in the control, so a run
 answers about ten times slower than its occasion count suggests. The report
 says so, and names the rate that fixes it.
 
+**And the treatment has to hold still, too.** A lesson is a file, and
+`lesson approve`, a text editor and an agent calling `draft_lesson` all
+rewrite it in place. Edit one on day 10 of a 30-day run and the occasions
+before and after were treated with different instructions — pooled into one
+arm, reported as one effect, for a treatment that is an average of two.
+
+So a lesson now has a **revision**: a short digest over exactly the fields an
+agent receives. Every assignment records which revision it was made against,
+every effect is reported as `lesson_x @ a3f9c1d2` rather than against a
+mutable name, and a lesson that moved mid-run is flagged with both revisions
+in the order they happened:
+
+```bash
+commontrace lesson history lesson_backoff
+#   (new)        -> d5503396812b   by cli:alice,  initial
+#   d5503396812b -> cab6c7f1707c   by mcp:agent,  widened after three more traces
+```
+
+The digest covers what an agent *reads* and nothing else — `uses` and
+`last_hit` change on every single retrieval, so hashing them would flag every
+experiment inside a week, which is the false positive that teaches people to
+ignore a validity report. Every content change is journaled append-only with
+who changed it and why, so *what instruction was this fleet following on
+March 4th, who approved it, and what did withholding it do* is a question
+with an answer.
+
 Three things it will not do:
 
 - **It will not correct the estimate.** Nothing can recover an outcome that

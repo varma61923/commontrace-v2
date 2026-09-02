@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An effect size was attached to a mutable name, and the treatment could
+  change underneath it.** The validity audit shipped alongside this checks
+  whether the *sample* can support an estimate. It did not check whether the
+  *treatment held still* — and nothing did.
+
+  A lesson is a file. `lesson approve`, `draft_lesson` over MCP, and a text
+  editor all rewrite it in place, and the holdout log recorded the lesson by
+  **slug**. So:
+
+  - Edit a lesson on day 10 of a 30-day run and occasions 1–200 were treated
+    with one rule, 201–400 with another. `analyze()` pools them into a single
+    arm and reports one effect for a treatment that is an average of two, one
+    of which no longer exists anywhere. This is the same defect
+    `check_assignment_drift` catches one level down: there the
+    *randomization* changed, here the *thing being randomized* did.
+  - Finish a run, report "lesson_x HELPS +12%, p=0.01", then rewrite
+    lesson_x. The number in the renewal deck now describes text that is gone,
+    and nothing recorded what it used to say.
+
+  The Hub had the identical defect on a different object: its holdout
+  randomizes **traces**, and `amend_trace` rewrites a trace's title, context
+  and solution in place. Adding the MCP `draft_lesson` tool made the local
+  half worse rather than better — before it, rewriting a lesson mid-run took
+  a person opening a file; now an agent can do it unattended as an ordinary
+  part of curating.
+
+  `commontrace/revision.py` gives a lesson content identity: a short digest
+  over exactly the fields an agent *receives*. That line is what makes the
+  check usable rather than noise — `uses` and `last_hit` change on **every
+  retrieval**, so hashing them would flag every experiment inside a week,
+  which is the false positive that teaches people to ignore a validity
+  report. Provenance (`source_traces`, `hub_trace_id`), lifecycle (`status`)
+  and telemetry are excluded for reasons stated per-field; whitespace is
+  normalized, because a reflowed paragraph is not a different instruction.
+  It is computed on read rather than stored, so it cannot go stale, needs no
+  migration, and applies to every lesson that already exists.
+
+  `commontrace/lesson_io.py` is now the only place a lesson is written —
+  previously seven `frontmatter.write` call sites, each rewriting in place
+  with no record of the previous content. Every content change is journaled
+  to `memory/lesson_revisions.jsonl` (append-only, locked and fsynced, same
+  shape and reasons as the holdout log) with the revision before and after,
+  who changed it, and why. Writes that change nothing are not journaled:
+  approve sets `status`, retrieval bumps `uses`, a push stamps
+  `hub_trace_id` — recording those would bury the changes that matter under
+  the ones that do not.
+
+  - **`integrity.check_treatment_stability`** reports INVALIDATES when a
+    lesson moved during a run, naming the lesson and both revisions in the
+    order they actually happened.
+  - **`commontrace lesson history <slug>`** shows what a lesson has said over
+    time, who changed it and why — which is what makes that finding
+    actionable rather than merely alarming.
+  - Every effect report now names the **revision under test** beside the
+    slug, so a number can never be silently detached from the text that
+    produced it.
+  - `retrieve` over MCP returns each lesson's `revision`, so an agent keeping
+    its own records can join an outcome to the exact text it was given.
+  - Hub: `holdout_observations.trace_revision` (migration
+    `c3a71f5d80b2`, nullable, catalog-only — no rewrite, no long lock),
+    stamped at assignment time from the trace's content.
+
+  **Nothing is backfilled, on either tier.** What a lesson said at assignment
+  time is unrecoverable once it has been edited, so a run with no recorded
+  revisions is reported as *unchecked* — WEAKENS, not OK and not
+  COMPROMISED. Stamping today's digest on those rows would assert the
+  treatment was stable on exactly the runs where nobody can know, and
+  reporting them as clean would let an old log read as a stable treatment,
+  which is the state this exists to distinguish.
+
 - **The causal number is now audited, and it could be confidently wrong
   before.** `commontrace/experiment.py` estimates each lesson's effect
   correctly — two-proportion tests, a 95% interval, Benjamini-Hochberg across
@@ -268,6 +338,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential is checked, and no unauthenticated request reaches the database.
 
 ### Changed
+
+- **The arm-balance check flagged one sound experiment in ten.** It shared
+  the attrition check's alpha (0.10), and a two-sided test at alpha=0.10
+  flags a *correct* randomizer about 10% of the time — at every n; that is
+  what an alpha is. Since this check runs on every experiment, one valid run
+  in ten would have been reported COMPROMISED for nothing, which is the
+  "cries wolf" failure the module's own comments warn about.
+
+  The two checks are looking for effects of different size, so they now have
+  different alphas. Attrition is a gradient where a 10-point reporting gap
+  between arms matters. Arm balance is not: assignment is a deterministic
+  hash compared against a threshold, so it is either being applied or it is
+  not, and a broken assigner misses by many standard deviations rather than
+  by a couple. At `ARM_BALANCE_ALPHA = 0.001` a correct randomizer is flagged
+  ~0.1% of the time and every realistic breakage — a rate 2× or 5× off, one
+  arm always — is still caught. Both properties are measured in
+  `tests/test_integrity.py` rather than argued.
+
+  Found by a test that failed about one run in fifteen under random
+  ordering.
 
 - **`commontrace experiment --strict` now also fails a compromised run.**
   The flag means "stop the build if the memory is making things worse", and

@@ -6,7 +6,7 @@ import glob
 import os
 import sys
 
-from commontrace import distill, frontmatter, paths, templates, trace_io
+from commontrace import distill, frontmatter, lesson_io, paths, templates, trace_io
 from commontrace.frontmatter import FrontmatterError
 
 
@@ -176,7 +176,10 @@ def run(args: argparse.Namespace) -> int:
             "TODO: cases where the rule does NOT apply.",
         ]
         out_path = os.path.join(ldir, f"{slug}.md")
-        frontmatter.write(out_path, fm, "\n".join(body_lines) + "\n")
+        lesson_io.write_lesson(
+            out_path, fm, "\n".join(body_lines) + "\n", root=root,
+            actor="distill", reason=f"auto-proposed from {len(cluster.traces)} traces",
+        )
 
         print(f"  [{n}] {slug} <- {len(cluster.traces)} traces, shared terms: {', '.join(cluster.shared_terms[:5])}")
         print(f"      wrote {out_path}")

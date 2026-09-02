@@ -1702,3 +1702,133 @@ finding. The rule that follows from it is not "check harder next time"; it
 is that a claim of completeness is worth exactly as much as the falsifier
 attached to it, and this section's is `tests/test_integrity.py` — a fleet
 where the truth is known to be zero, which the product must refuse to score.
+
+---
+
+## 21. Update (2026-09-02): §20 audited the sample and left the treatment unpinned
+
+§20 shipped a validity layer and said, of the checks it did not include,
+that "absence of a finding is not proof of validity: these detect the
+failures that leave a trace in the assignment log." That sentence was
+written as a caveat about *contamination*. It was also, unnoticed, true of
+something much more ordinary.
+
+§20 checked whether the **sample** could support an estimate. Nothing
+checked whether the **treatment held still**.
+
+### 21.1 The defect
+
+A lesson is a file. `lesson approve`, a text editor, and — since the MCP
+surface shipped — an agent calling `draft_lesson`, all rewrite it in place.
+The holdout log recorded the lesson by **slug**: a mutable name.
+
+So editing a lesson on day 10 of a 30-day run means occasions 1–200 were
+treated with one instruction and 201–400 with another, `analyze()` pools
+them into a single arm, and the reported effect is for a treatment that is
+an average of two — one of which no longer exists anywhere. And a concluded
+run reporting "+12%, p=0.01" describes text that the next edit silently
+deletes, with no record of what it was.
+
+This is precisely the defect `Organization.holdout_salt` was built to make
+detectable, one level down. There the **randomization** could change
+silently. Here the **thing being randomized** could. §20 added a check for
+the first and did not notice it had described the second.
+
+The Hub had it identically on a different object: its holdout randomizes
+traces, and `amend_trace` rewrites title, context and solution in place.
+
+Worth stating plainly, because it is the uncomfortable part: **the MCP work
+two commits earlier increased the exposure.** Before it, rewriting a lesson
+mid-experiment took a person opening a file. After it, an agent could do it
+unattended, as an ordinary and *correct* part of curating. A feature that
+makes the product better made a measurement defect easier to trigger, and
+nothing connected the two at the time.
+
+### 21.2 Why this is the system-of-record question, not a bug
+
+§13.3's claim is a causal number on the customer's own data. §20 made that
+number auditable *as a statistic*. This makes it auditable *as a record*:
+what was measured, what it said, who changed it, when.
+
+That distinction is the whole difference between a tool and a system of
+record, and systems of record do not get bundled away. A memory layer that
+stores lessons is a feature any agent platform can add in a quarter. A
+memory layer that can answer **"what instruction was this fleet following on
+March 4th, who approved it, and what did withholding it do"** is a different
+kind of object, and the answer has to be reconstructible from the record
+rather than from someone's memory of it.
+
+Every ingredient for that already existed here — approval, audit, standing,
+reliability, causal effect. The one missing piece was that none of it was
+pinned to a *version* of the thing it was about.
+
+### 21.3 What it deliberately does not do
+
+**Nothing is backfilled, on either tier.** What a lesson said at assignment
+time is unrecoverable once it has been edited. A run with no recorded
+revisions is therefore reported as *unchecked* — WEAKENS, not OK and not
+COMPROMISED. Both wrong answers were available and both were rejected:
+stamping today's digest on old rows would assert the treatment was stable on
+exactly the runs where nobody can know, and reporting them clean would let
+an unversioned log read as a stable treatment, which is the state this
+exists to distinguish.
+
+**The digest covers what an agent reads, and nothing else.** `uses` and
+`last_hit` move on every retrieval; hashing them would flag every experiment
+within a week, and a validity report that cries wolf is worse than none —
+the same reasoning that keeps `check_arm_balance` quiet below 30
+assignments.
+
+### 21.4 What this changes about §13.2's chain
+
+Again nothing about which links are open, and again that is the point. Links
+1–5 are unchanged and every one of them still needs customers.
+
+What changed is the same thing §20 changed, one layer down: when those
+customers produce a number, there is now a record of what the number was
+about. §20 made the estimate checkable by someone who does not trust us.
+This makes it *reconstructible* by them — and the second is the harder
+property, because it survives the people who ran the experiment leaving.
+
+### 21.5 The pattern, now four for four
+
+§18.4, §19.5, §20 and now §21 are four consecutive sections in which a
+confident statement about what was left to build turned out to be a claim
+nobody had checked. The specific claims differed; the shape did not.
+
+§20 drew the rule: *a claim of completeness is worth exactly as much as the
+falsifier attached to it.* This section is evidence that the rule works and
+that applying it once is not enough — §20's own caveat contained the next
+defect, correctly worded, and it still took a separate deliberate look to
+find it. The corollary is narrower and more useful than "check harder":
+**the caveats are where the next defect is.** They are the places someone
+already knew the ground was soft and wrote it down instead of digging. This
+document should be read that way, starting with §21.3.
+
+### 21.6 Postscript: §21.5's rule caught its own defect within the hour
+
+§21.5 said the caveats are where the next defect is. The first place to look
+was §20's own tuning decision, and it was wrong.
+
+`check_arm_balance` shipped sharing the attrition check's alpha of 0.10.
+Measured afterwards, a **correct** randomizer trips a two-sided test at that
+alpha about 10% of the time — at every sample size, because that is what an
+alpha is. The check runs on every experiment, so roughly one sound run in
+ten would have been reported COMPROMISED for nothing.
+
+§20's own commentary named the failure this creates ("a validity report
+whose findings are mostly noise teaches people to skip the section where the
+real ones appear") and then built it, because the reasoning that produced
+the loose alpha — *for a validity check a false negative is the expensive
+error* — is correct for attrition and wrong for arm balance. Attrition is a
+gradient; a ten-point reporting gap is a real finding. Arm balance is
+binary: a deterministic hash is being applied or it is not, and a broken
+assigner misses by many standard deviations. One number for two checks was
+the mistake.
+
+At 0.001 the false-positive rate is ~0.1% and every realistic breakage is
+still caught; both are measured in the test suite rather than argued.
+
+It was found by a test that failed about one run in fifteen under random
+ordering — which is worth recording as the cheapest instrument in this
+document. Nobody reasoned their way to it. A flaky test did.

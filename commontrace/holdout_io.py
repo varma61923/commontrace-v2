@@ -18,7 +18,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from commontrace import experiment, frontmatter, paths
+from commontrace import experiment, frontmatter, lesson_io, paths
 
 # Arm assignment is a deterministic hash of (lesson, occasion, SALT), so the
 # salt is not cosmetic: two retrievers using different salts put the SAME
@@ -81,6 +81,18 @@ def assign_and_log(
                     "rate": rate,
                     "salt": salt,
                     "at": now,
+                    # WHICH TEXT was eligible on this occasion, not just which
+                    # lesson name. A lesson is a file and every surface can
+                    # rewrite it -- so a slug alone identifies a mutable
+                    # thing, and an experiment keyed on one pools occasions
+                    # treated with different instructions into a single arm
+                    # and reports an effect for a treatment that no longer
+                    # exists (commontrace/revision.py).
+                    #
+                    # Resolved here, at decision time, rather than passed in:
+                    # every caller would otherwise have to remember to, and
+                    # the one that forgot would silently log the old shape.
+                    "revision": lesson_io.revision_for_slug(root, slug),
                 }) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -98,6 +110,11 @@ class LogRecord:
     rate: float
     salt: str
     at: datetime.datetime | None
+    # None on lines written before revisions were recorded, and on a lesson
+    # that could not be read at assignment time. The stability check treats
+    # an unknown revision as unknown rather than as a change -- an old log
+    # must not read as a broken experiment.
+    revision: str | None = None
 
 
 def read_log(root: str) -> tuple[list[LogRecord], int]:
@@ -146,6 +163,7 @@ def read_log(root: str) -> tuple[list[LogRecord], int]:
                 rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
                 salt=str(raw.get("salt", "")),
                 at=at,
+                revision=(str(raw["revision"]) if raw.get("revision") else None),
             ))
     return records, corrupt
 

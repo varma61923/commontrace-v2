@@ -4,13 +4,26 @@ import argparse
 import datetime
 import glob
 import os
-import re
 import sys
 
-from commontrace import frontmatter, paths, templates, validate
+from commontrace import frontmatter, lesson_io, paths, templates, validate
 from commontrace.commands._format import cell, read_or_warn
 
-_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+def _actor() -> str:
+    """Who made this change, for the revision journal.
+
+    Best-effort and clearly labelled as such. The point is not authentication
+    -- a local store has no identity to authenticate against -- it is that a
+    later reader can tell a person's edit apart from `distill`'s or an
+    agent's when asking what changed the instruction the fleet follows.
+    """
+    import getpass
+
+    try:
+        return f"cli:{getpass.getuser()}"
+    except Exception:  # noqa: BLE001 - no passwd entry in a container
+        return "cli"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -69,6 +82,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rj.add_argument("--dest", default=None)
     rj.set_defaults(func=run_reject)
 
+    hist = sub.add_parser(
+        "history",
+        help="What this lesson has said over time, and who changed it.",
+        description=(
+            "A lesson's content is the treatment in any experiment measuring it, so "
+            "an effect size is about a specific revision, not about a slug. This is "
+            "how you recover which -- and it is what makes `commontrace experiment`'s "
+            "'edited mid-run' finding actionable rather than merely alarming."
+        ),
+    )
+    hist.add_argument("slug", help="Lesson slug (e.g. lesson_retry_backoff)")
+    hist.add_argument("--dest", default=None)
+    hist.set_defaults(func=run_history)
+
 
 def run_new(args: argparse.Namespace) -> int:
     if not _SLUG_RE.match(args.slug):
@@ -116,7 +143,8 @@ def run_new(args: argparse.Namespace) -> int:
         # was the inconsistent one.
         status="review",
     )
-    frontmatter.write(out_path, fm, templates.lesson_body())
+    lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
+                           actor=_actor(), reason="scaffolded by `lesson new`")
     print(f"[commontrace] created {out_path}")
     print(
         f"  Written at status=review. Fill in the Rule/Why/How-to-apply sections, then:\n"
@@ -178,18 +206,10 @@ def run_validate(args: argparse.Namespace) -> int:
     return 1 if n_failed else 0
 
 
-def _resolve_lesson_path(root: str, slug: str) -> str | None:
-    if not _SLUG_RE.match(slug):
-        return None
-    ldir = paths.lessons_dir(root)
-    filename = f"{slug}.md" if slug.startswith("lesson_") else f"lesson_{slug}.md"
-    path = os.path.join(ldir, filename)
-    if os.path.isfile(path):
-        return path
-    legacy_path = os.path.join(ldir, f"{slug}.md")
-    if os.path.isfile(legacy_path):
-        return legacy_path
-    return None
+# Re-exported from commontrace.lesson_io, which owns the one definition now
+# that the MCP server and the holdout logger resolve slugs too.
+_resolve_lesson_path = lesson_io.lesson_path
+_SLUG_RE = lesson_io.SLUG_RE
 
 
 def _append_body_note(body: str, heading: str, text: str) -> str:
@@ -238,7 +258,8 @@ def run_approve(args: argparse.Namespace) -> int:
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
-        frontmatter.write(path, fm, body)
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+                               reason=args.rationale or "approved")
     if unfilled:
         print(
             f"[commontrace] warning: approved {args.slug} with --force while "
@@ -268,7 +289,8 @@ def run_reject(args: argparse.Namespace) -> int:
 
         fm["status"] = "archived"
         body = _append_body_note(body, "Rejected", args.reason)
-        frontmatter.write(path, fm, body)
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+                               reason=args.reason)
     print(f"[commontrace] rejected {args.slug} (status: review -> archived)")
     return 0
 
@@ -296,4 +318,42 @@ def run_list(args: argparse.Namespace) -> int:
             f"status={cell(fm.get('status')):8s} "
             f"{fm.get('description') or ''}"
         )
+    return 0
+
+
+def run_history(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    records = lesson_io.history(root, args.slug)
+    path = lesson_io.lesson_path(root, args.slug)
+    now = lesson_io.current_revision(path) if path else None
+
+    if not records:
+        # Distinguished carefully. "No lesson" and "a lesson with no recorded
+        # history" are different facts, and the second is the ordinary state
+        # of every lesson written before the journal existed -- reporting it
+        # as the first would send someone looking for a missing file.
+        if path is None:
+            print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+            return 1
+        print(f"[commontrace] {args.slug} is at revision {now}, with no recorded history.")
+        print("  Changes are journaled from the first write through `lesson new`, "
+              "`lesson approve`, `distill` or the MCP tools.")
+        return 0
+
+    print(f"# {args.slug}")
+    print()
+    print(f"Currently at **{now}**, {len(records)} recorded change(s).")
+    print()
+    for record in records:
+        arrow = f"{record.get('from') or '(new)'} -> {record.get('to')}"
+        print(f"- `{arrow}`  {record.get('at', '')}")
+        print(f"    by {record.get('actor', 'unknown')}"
+              + (f", status {record['status']}" if record.get("status") else ""))
+        if record.get("reason"):
+            print(f"    {record['reason']}")
+    print()
+    print("_An effect size from `commontrace experiment` is about the revision that was "
+          "on disk while the assignments were made, not about the slug. A lesson edited "
+          "during a run makes the two arms measure different treatments, which the "
+          "validity section of that report calls out._")
     return 0

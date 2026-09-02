@@ -65,8 +65,10 @@ from commontrace import (
     experiment,
     frontmatter,
     holdout_io,
+    lesson_io,
     paths,
     retrieval,
+    revision,
     taxonomy,
     templates,
     trace_io,
@@ -172,6 +174,17 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     return int(rc or 0), out.getvalue(), err.getvalue()
 
 
+def _agent_actor(who: str = "") -> str:
+    """Who to record in the revision journal for a change made over MCP.
+
+    There is no authentication on this transport and none is claimed (see the
+    module docstring): the label exists so a later reader can tell an agent's
+    edit from a person's when asking what changed the instruction the fleet
+    is following, not to prove anything about who ran it.
+    """
+    return f"mcp:{who}" if who else "mcp:agent"
+
+
 def _lesson_path(root: str, slug: str) -> str:
     from commontrace.commands.lesson_cmd import _SLUG_RE, _resolve_lesson_path
 
@@ -203,6 +216,11 @@ def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dic
         # scaffolding. Leaving it implicit is how template text reached
         # production in the first place.
         "unfilled": templates.unfilled_placeholders(fm, body),
+        # Content identity of exactly this text. An experiment measuring this
+        # lesson is measuring THIS revision; report it back with the outcome
+        # if you keep your own records, and expect the effect estimate to be
+        # about it rather than about the slug.
+        "revision": revision.revision_of(fm, body),
     }
     if include_body:
         out["body"] = body
@@ -560,7 +578,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                 for name, text in sections.items():
                     if text:
                         body = _replace_section(body, name, text)
-                frontmatter.write(path, fm, body)
+                lesson_io.write_lesson(path, fm, body, root=root, actor=_agent_actor(),
+                                       reason="drafted over MCP")
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not write {slug!r}: {type(exc).__name__}: {exc}")
 
@@ -622,11 +641,19 @@ def build_server(root: str, *, allow_approval: bool = True):
                     fm["status"] = "active"
                     note = f"Approved by {approved_by}" + (f": {rationale}" if rationale else "")
                     body = body.rstrip() + f"\n\n<!-- {note} -->\n"
-                    frontmatter.write(path, fm, body)
+                    activated = lesson_io.write_lesson(
+                        path, fm, body, root=root, actor=_agent_actor(approved_by),
+                        reason=rationale or "approved",
+                    )
             except Exception as exc:  # noqa: BLE001
                 return _err(f"could not approve {slug!r}: {type(exc).__name__}: {exc}")
-            return _ok(slug=slug, status="active", approved_by=approved_by,
-                       note="Retrieval will now inject this lesson.")
+            return _ok(
+                slug=slug, status="active", approved_by=approved_by, revision=activated,
+                note="Retrieval will now inject this lesson. `revision` identifies the "
+                     "exact text activated -- an experiment measuring this lesson is "
+                     "measuring THIS revision, and editing it mid-run splits the arms "
+                     "across two different treatments.",
+            )
 
         @mcp.tool()
         async def reject_lesson(slug: str, reason: str) -> dict:
@@ -643,7 +670,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                         return _err(f"{slug!r} has status {fm.get('status')!r}, not 'review'.")
                     fm["status"] = "archived"
                     body = body.rstrip() + f"\n\n<!-- Rejected: {reason} -->\n"
-                    frontmatter.write(path, fm, body)
+                    lesson_io.write_lesson(path, fm, body, root=root,
+                                           actor=_agent_actor(), reason=reason)
             except LocalStoreError as exc:
                 return _err(str(exc))
             except Exception as exc:  # noqa: BLE001

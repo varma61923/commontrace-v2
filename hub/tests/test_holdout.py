@@ -30,7 +30,9 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 
+from commontrace import revision
 from hub import crud, manage
 from hub.db import session_scope
 from hub.models import HoldoutObservation, Organization, Trace
@@ -507,17 +509,20 @@ class TestTheEstimateIsAuditable:
     """
 
     async def test_the_report_carries_a_validity_verdict(self, session_factory, org):
+        # 80 occasions rather than 40: assignment hashes a random trace uuid,
+        # so the realized split differs run to run and a marginal sample made
+        # this assertion depend on the draw.
         traces = await _traces(session_factory, org, 1)
-        for i in range(40):
+        for i in range(80):
             await _assign(session_factory, org, traces, f"occ-{i}")
             await _resolve(session_factory, org, f"occ-{i}", i % 3 == 0)
 
         async with session_scope(session_factory) as session:
             report = await crud.causal_effects(session, org)
 
-        assert report["integrity"]["verdict"] == "SOUND"
+        assert report["integrity"]["verdict"] == "SOUND", report["integrity"]["findings"]
         assert report["integrity"]["effects_readable"] is True
-        assert report["integrity"]["n_resolved"] == 40
+        assert report["integrity"]["n_resolved"] == 80
 
     async def test_passing_checks_come_back_too_not_just_failures(self, session_factory, org):
         """A caller cannot tell "checked, clean" from "not checked" when only
@@ -621,3 +626,144 @@ class TestTheEstimateIsAuditable:
 
         assert report["integrity"]["n_assignments"] == 0
         assert report["effects"] == []
+
+
+class TestTheTreatmentIsPinnedToItsText:
+    """`trace_id` is a stable id pointing at MUTABLE content: `amend_trace`
+    rewrites title, context and solution in place.
+
+    So an observation recording only the id cannot tell whether every
+    occasion in an arm was treated with the same text -- and when they were
+    not, the pooled effect describes a treatment that is an average of two,
+    one of which no longer exists anywhere. This is the same defect
+    `Organization.holdout_salt` exists to make detectable, one level down.
+    """
+
+    async def test_assignment_records_what_the_trace_said(self, session_factory, org):
+        traces = await _traces(session_factory, org, 1)
+        await _assign(session_factory, org, traces, "occ-1")
+
+        async with session_scope(session_factory) as session:
+            row = (await session.execute(
+                select(HoldoutObservation).where(HoldoutObservation.org_id == org)
+            )).scalars().one()
+            trace = await session.get(Trace, traces[0])
+            assert row.trace_revision == revision.revision_of_trace(
+                trace.title, trace.context_text, trace.solution_text, list(trace.tags or [])
+            )
+
+    async def test_amending_a_trace_mid_experiment_is_caught(self, session_factory, org):
+        """The realistic version: a trace is corrected part-way through a run,
+        which is an ordinary and good thing to do -- and silently makes the
+        two halves of the experiment different experiments."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(20):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, traces[0])
+            trace.solution_text = "A materially different solution, rewritten mid-run."
+
+        for i in range(20, 40):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        assert report["integrity"]["verdict"] == "COMPROMISED"
+        blocking = [f["check"] for f in report["integrity"]["findings"]
+                    if f["severity"] == "INVALIDATES"]
+        assert "treatment_stability" in blocking
+
+    async def test_an_unchanged_trace_reads_as_stable(self, session_factory, org):
+        traces = await _traces(session_factory, org, 1)
+        for i in range(20):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        stability = next(f for f in report["integrity"]["findings"]
+                         if f["check"] == "treatment_stability")
+        assert stability["severity"] == "OK"
+        assert report["integrity"]["verdict"] == "SOUND"
+
+    async def test_recording_an_outcome_is_not_a_change_to_the_treatment(
+        self, session_factory, org
+    ):
+        """Outcomes attach AFTER retrieval by definition. Counting them would
+        make every measured trace look edited, which is the false positive
+        that teaches people to ignore a validity report."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(20):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, traces[0])
+            trace.outcome = {"resolved": True, "tokens_used": 900}
+
+        for i in range(20, 40):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+        for i in range(20):
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        stability = next(f for f in report["integrity"]["findings"]
+                         if f["check"] == "treatment_stability")
+        assert stability["severity"] == "OK", stability
+
+    async def test_a_retry_does_not_restamp_the_revision(self, session_factory, org):
+        """ON CONFLICT DO NOTHING: the first assignment's revision is what
+        that occasion was treated with. A retry after an edit must not
+        rewrite history to say otherwise."""
+        traces = await _traces(session_factory, org, 1)
+        await _assign(session_factory, org, traces, "occ-1")
+
+        async with session_scope(session_factory) as session:
+            original = (await session.execute(
+                select(HoldoutObservation.trace_revision).where(
+                    HoldoutObservation.org_id == org)
+            )).scalars().one()
+            trace = await session.get(Trace, traces[0])
+            trace.solution_text = "Rewritten after the assignment was made."
+
+        await _assign(session_factory, org, traces, "occ-1")
+
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(
+                select(HoldoutObservation.trace_revision).where(
+                    HoldoutObservation.org_id == org)
+            )).scalars().all()
+        assert rows == [original]
+
+    async def test_rows_written_before_the_column_existed_are_unchecked(
+        self, session_factory, org
+    ):
+        """NULL is never backfilled: what a trace said at assignment time is
+        unrecoverable once it has been amended, and stamping today's digest
+        would assert stability on exactly the runs where nobody can know."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(20):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                sa_update(HoldoutObservation)
+                .where(HoldoutObservation.org_id == org)
+                .values(trace_revision=None)
+            )
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        stability = next(f for f in report["integrity"]["findings"]
+                         if f["check"] == "treatment_stability")
+        assert stability["severity"] == "WEAKENS"
+        assert "cannot be checked" in stability["headline"]

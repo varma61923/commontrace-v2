@@ -598,6 +598,25 @@ class HoldoutObservation(Base):
     # silently mixing two randomizations (see Organization.holdout_salt).
     salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
+    # WHAT THE TRACE SAID when this arm was decided
+    # (commontrace/revision.py:revision_of_trace). `trace_id` is a stable id
+    # pointing at MUTABLE content -- amend_trace rewrites title, context and
+    # solution in place -- so an observation keyed on the id alone cannot tell
+    # whether every occasion in an arm was treated with the same text. When
+    # they were not, the pooled effect describes a treatment that is an
+    # average of two, one of which no longer exists.
+    #
+    # Same defect `salt` above exists to catch, one level down: there the
+    # randomization could change silently, here the thing being randomized
+    # could.
+    #
+    # Nullable, and never backfilled: for rows written before this column
+    # existed, what the trace said at assignment time is unrecoverable.
+    # `integrity.check_treatment_stability` reports those as unchecked, which
+    # is the honest answer -- stamping today's digest on them would assert
+    # stability on exactly the runs where nobody can know.
+    trace_revision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -90,6 +90,7 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
             salt=rec.salt,
             succeeded=outcomes.get(rec.occasion_id),
             at=rec.at,
+            revision=rec.revision,
         )
         for rec in records
     ]
@@ -115,6 +116,23 @@ def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutOb
         )
         for r in unique if r.succeeded is not None
     ]
+
+
+
+def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[str]]:
+    """lesson -> the revision(s) its assignments were made against.
+
+    One entry means the effect describes that exact text. More than one means
+    the lesson was edited mid-run and the effect describes neither -- which
+    `integrity.check_treatment_stability` reports as INVALIDATES.
+    """
+    # Chronological (the log is append-ordered), so a lesson that moved reads
+    # in the direction it actually moved.
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        if r.revision and r.revision not in out.setdefault(r.lesson, []):
+            out[r.lesson].append(r.revision)
+    return dict(sorted(out.items()))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -167,12 +185,18 @@ def run(args: argparse.Namespace) -> int:
         effects=effects,
     )
 
+    revisions = _revisions_under_test(rows)
+
     if args.json:
         import dataclasses
 
         print(json.dumps({
             **dataclasses.asdict(summary),
             "integrity": dataclasses.asdict(report),
+            # Which text each effect is about. An effect attached to a slug
+            # alone is attached to a mutable name, and silently stops
+            # describing the lesson the moment anyone edits it.
+            "revisions_under_test": revisions,
         }, indent=2, default=str))
     else:
         # Validity FIRST, effects second. A report that leads with a
@@ -186,6 +210,16 @@ def run(args: argparse.Namespace) -> int:
         print("---")
         print()
         print(experiment.render(summary, alpha=args.alpha))
+        if revisions:
+            print()
+            print("_Revision under test — the exact lesson text each effect above is "
+                  "about. A lesson edited after this ran is no longer the lesson these "
+                  "numbers describe; `commontrace lesson history <slug>` shows what "
+                  "changed._")
+            print()
+            for slug, revs in revisions.items():
+                mark = "" if len(revs) == 1 else "  ← CHANGED MID-RUN, see the validity section"
+                print(f"- `{slug}` @ {', '.join(revs)}{mark}")
         if n_no_outcome:
             print(
                 f"\n_{n_no_outcome} assignment(s) skipped: no recorded outcome for that occasion yet._"

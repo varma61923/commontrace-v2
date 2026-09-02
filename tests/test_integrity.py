@@ -20,9 +20,14 @@ UTC = datetime.timezone.utc
 
 
 def a(lesson="lesson_x", occasion="occ", injected=True, succeeded=None,
-      rate=0.5, salt="s", at=None) -> integrity.Assignment:
+      rate=0.5, salt="s", at=None, rev="rev-aaa") -> integrity.Assignment:
+    """One assignment. `rev` defaults to a fixed revision, i.e. a lesson whose
+    text did not move -- the ordinary case. Pass `rev=None` for an assignment
+    written before revisions were recorded, which is unchecked rather than
+    clean."""
     return integrity.Assignment(lesson=lesson, occasion_id=occasion, injected=injected,
-                                rate=rate, salt=salt, succeeded=succeeded, at=at)
+                                rate=rate, salt=salt, succeeded=succeeded, at=at,
+                                revision=rev)
 
 
 def observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
@@ -142,6 +147,45 @@ class TestArmBalance:
         rows = [a(occasion=f"o{i}", injected=i % 10 != 0, rate=0.10, succeeded=True)
                 for i in range(200)]
         assert integrity.check_arm_balance(rows).severity == integrity.SEVERITY_OK
+
+    def test_a_correct_randomizer_is_essentially_never_flagged(self):
+        """The property the first version of this check did not have.
+
+        A two-sided test at alpha=0.10 flags a CORRECT randomizer ~10% of the
+        time, at every n -- that is what an alpha is. This check runs on every
+        experiment, so one sound run in ten would have been reported
+        COMPROMISED for nothing, and a validity report whose findings are
+        mostly noise teaches people to skip the section where the real ones
+        appear. Caught by a test that failed about one run in fifteen under
+        random ordering.
+        """
+        rng = random.Random(99)
+        trials, flagged = 2000, 0
+        for _ in range(trials):
+            rows = [a(occasion=f"o{i}", injected=rng.random() >= 0.5, rate=0.5, succeeded=True)
+                    for i in range(60)]
+            flagged += integrity.check_arm_balance(rows).severity != integrity.SEVERITY_OK
+        assert flagged / trials < 0.01, f"{flagged}/{trials} sound runs flagged"
+
+    @pytest.mark.parametrize("configured,injected_when,n", [
+        (0.10, lambda i: i % 2 == 0, 60),    # configured 10%, realized 50%
+        (0.50, lambda i: True, 40),          # one arm, always
+        (0.20, lambda i: i % 5 >= 2, 100),   # 2x off
+        (0.10, lambda i: i % 5 != 0, 200),   # 2x off at a low rate
+    ])
+    def test_every_realistic_breakage_is_still_caught(self, configured, injected_when, n):
+        """The strict alpha buys quiet, not blindness. What this detects is a
+        broken assigner, and a broken assigner misses by many standard
+        deviations rather than by a couple."""
+        rows = [a(occasion=f"o{i}", injected=injected_when(i), rate=configured, succeeded=True)
+                for i in range(n)]
+        assert integrity.check_arm_balance(rows).severity == integrity.SEVERITY_INVALIDATES
+
+    def test_its_alpha_is_far_stricter_than_the_attrition_one(self):
+        """Different checks, different effect sizes. Attrition is a gradient
+        where a 10-point gap matters; arm balance is binary -- the hash is
+        being applied or it is not."""
+        assert integrity.ARM_BALANCE_ALPHA < integrity.VALIDITY_ALPHA / 50
 
     def test_a_small_sample_is_not_flagged_for_ordinary_noise(self):
         """An early experiment flagged for sampling noise is the false
@@ -382,6 +426,7 @@ class TestTheExperimentCommand:
                     "occasion_id": r.occasion_id, "lesson": r.lesson,
                     "injected": r.injected, "rate": r.rate, "salt": r.salt,
                     **({"at": r.at.isoformat()} if r.at else {}),
+                    **({"revision": r.revision} if r.revision else {}),
                 }) + "\n")
         return root, cli
 
@@ -449,3 +494,79 @@ class TestTheExperimentCommand:
         result = cli("experiment", "--dest", root)
         assert result.returncode == 0, result.stderr
         assert "Can this be trusted?" in result.stdout
+
+
+class TestTreatmentStability:
+    """`check_assignment_drift` catches the randomization changing mid-run.
+    This catches the thing being randomized changing mid-run -- the same
+    defect one level down, and the easier of the two to cause: a lesson is a
+    file, and `lesson edit`, an MCP `draft_lesson` call and a text editor all
+    rewrite it in place.
+    """
+
+    def test_a_lesson_edited_mid_run_invalidates(self):
+        rows = ([a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev="aaa")
+                 for i in range(20)]
+                + [a(occasion=f"p{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev="bbb")
+                   for i in range(20)])
+        finding = integrity.check_treatment_stability(rows)
+        assert finding.severity == integrity.SEVERITY_INVALIDATES
+        # Both revisions named, so a reader can look up what changed.
+        assert finding.numbers["changed"] == {"lesson_x": ["aaa", "bbb"]}
+        assert "no longer exists" in finding.detail
+
+    def test_it_blocks_the_whole_report(self):
+        rows = ([a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev="aaa")
+                 for i in range(20)]
+                + [a(occasion=f"p{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev="bbb")
+                   for i in range(20)])
+        report = integrity.audit(rows)
+        assert report.verdict == integrity.VERDICT_COMPROMISED
+        assert [f.check for f in report.blocking] == ["treatment_stability"]
+
+    def test_one_lesson_moving_does_not_implicate_another(self):
+        rows = ([a(lesson="stable", occasion=f"o{i}", injected=i % 2 == 0,
+                   succeeded=i % 3 == 0, rev="aaa") for i in range(20)]
+                + [a(lesson="moved", occasion=f"o{i}", injected=i % 2 == 0,
+                     succeeded=i % 3 == 0, rev="bbb" if i > 10 else "ccc")
+                   for i in range(20)])
+        finding = integrity.check_treatment_stability(rows)
+        assert set(finding.numbers["changed"]) == {"moved"}
+
+    def test_a_stable_lesson_passes(self):
+        rows = [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0)
+                for i in range(40)]
+        assert integrity.check_treatment_stability(rows).severity == integrity.SEVERITY_OK
+        assert integrity.audit(rows).verdict == integrity.VERDICT_SOUND
+
+    def test_an_unversioned_log_is_unchecked_not_clean(self):
+        """Silence would let a log that never recorded revisions read as a
+        stable treatment, which is exactly the state this distinguishes."""
+        rows = [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev=None)
+                for i in range(40)]
+        finding = integrity.check_treatment_stability(rows)
+        assert finding.severity == integrity.SEVERITY_WEAKENS
+        assert "cannot be checked" in finding.headline
+        # Weakened, not compromised: the estimate may well be fine, and saying
+        # otherwise on no evidence is its own kind of wrong.
+        assert integrity.audit(rows).verdict == integrity.VERDICT_WEAKENED
+
+    def test_a_partly_versioned_log_checks_what_it_can(self):
+        rows = ([a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev=None)
+                 for i in range(10)]
+                + [a(occasion=f"p{i}", injected=i % 2 == 0, succeeded=i % 3 == 0, rev="aaa")
+                   for i in range(30)])
+        finding = integrity.check_treatment_stability(rows)
+        assert finding.severity == integrity.SEVERITY_OK
+        assert finding.numbers["assignments_without_a_revision"] == 10
+        assert "not checked" in finding.headline
+
+    def test_an_empty_experiment_has_nothing_to_check(self):
+        finding = integrity.check_treatment_stability([])
+        assert finding.severity == integrity.SEVERITY_OK
+        assert integrity.audit([]).verdict == integrity.VERDICT_SOUND
+
+    def test_the_report_says_the_text_was_checked(self):
+        text = integrity.render(integrity.audit(
+            [a(occasion=f"o{i}", injected=i % 2 == 0, succeeded=i % 3 == 0) for i in range(40)]))
+        assert "whether the lesson text held still" in text

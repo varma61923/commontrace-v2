@@ -78,6 +78,29 @@ from commontrace import experiment
 # experiment costs someone a look; an unflagged broken one costs the claim.
 VALIDITY_ALPHA = 0.10
 
+# Arm balance gets its OWN, far stricter alpha, and the reason is that the two
+# checks are looking for effects of completely different size.
+#
+# Attrition is a gradient: a 10-point reporting gap between arms is a real
+# problem and is what VALIDITY_ALPHA is tuned to catch. Arm balance is not a
+# gradient. Assignment is a deterministic hash compared against a threshold,
+# so it is either doing that or it is not -- and a broken assigner (one arm
+# always, a rate off by 5x, a client on a different rate) misses by many
+# standard deviations, not by a couple.
+#
+# Measured, because the first version of this check used VALIDITY_ALPHA and
+# the consequence is not intuitive: a CORRECT randomizer trips a two-sided
+# test at alpha=0.10 about 10% of the time, at EVERY n -- that is what an
+# alpha is. This check runs on every experiment, so one sound run in ten
+# would have been reported COMPROMISED for nothing. A validity report whose
+# findings are mostly noise is worse than no validity report, because it
+# teaches people to skip the section where the real ones appear. Found by a
+# test that failed roughly one run in fifteen under random ordering.
+#
+# At 0.001 a correct randomizer is essentially never flagged and every
+# realistic breakage still is (tests/test_integrity.py measures both).
+ARM_BALANCE_ALPHA = 0.001
+
 # Overall missing-outcome share above which the run is called degraded even
 # when the two arms lose data at the SAME rate. Symmetric attrition does not
 # bias the estimate, it just shrinks it, but at this level the run is mostly
@@ -112,6 +135,11 @@ class Assignment:
     salt: str = ""
     succeeded: bool | None = None
     at: datetime.datetime | None = None
+    # Content identity of the lesson AS IT WAS on this occasion
+    # (commontrace/revision.py). None means unknown -- an assignment logged
+    # before revisions were recorded, or a lesson that could not be read --
+    # and unknown is treated as unknown, never as a change.
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -329,9 +357,10 @@ def check_arm_balance(rows: list[Assignment]) -> Finding:
     numbers = {"withheld": k, "total": n, "observed_rate": observed,
                "configured_rate": configured}
 
-    # Below this the normal approximation is not worth trusting, and an early
-    # experiment would be flagged for ordinary sampling noise -- the exact
-    # false positive that teaches people to ignore a validity report.
+    # Below this the normal approximation is not worth trusting. (It is no
+    # longer the main defence against false positives -- ARM_BALANCE_ALPHA
+    # is -- but a tail probability computed from a bad approximation is not
+    # worth acting on at either alpha.)
     if n < 30:
         return Finding(
             "arm_balance", SEVERITY_OK,
@@ -342,7 +371,7 @@ def check_arm_balance(rows: list[Assignment]) -> Finding:
 
     p = _binomial_tail_p(k, n, configured)
     numbers["p"] = p
-    if p < VALIDITY_ALPHA:
+    if p < ARM_BALANCE_ALPHA:
         return Finding(
             "arm_balance", SEVERITY_INVALIDATES,
             f"Withheld share is {_pct(observed)} where {_pct(configured)} was configured "
@@ -422,6 +451,92 @@ def check_inconsistent_arms(rows: list[Assignment]) -> Finding:
         "something is writing the log that is not the assigner. Those occasions "
         "count as evidence for and against the same lesson at once.",
         numbers,
+    )
+
+
+def check_treatment_stability(rows: list[Assignment]) -> Finding:
+    """Did the lesson being measured stay the same lesson?
+
+    `check_assignment_drift` catches the randomization changing mid-run. This
+    catches the thing being randomized changing mid-run, which is the same
+    defect one level down and is the easier of the two to cause: a lesson is
+    a file, and `lesson edit`, an MCP `draft_lesson` call, and a text editor
+    all rewrite it in place.
+
+    Edit a lesson on day 10 of a 30-day run and the occasions before and
+    after were treated with different instructions. `analyze()` pools them
+    into one arm and reports a single effect -- for a treatment that is an
+    average of two, one of which no longer exists anywhere. The estimate is
+    not wrong about a lesson; there is no longer one lesson for it to be
+    about.
+
+    A run with no recorded revisions is reported as unchecked rather than
+    clean. Silence would let an old log -- or a client that never recorded
+    them -- read as a stable treatment, which is precisely the state this
+    exists to distinguish from one.
+    """
+    # First-seen order, not sorted. The log is chronological, so this is the
+    # order the lesson actually moved through -- and the finding renders it
+    # with an arrow. Sorting alphabetically produced an arrow pointing the
+    # wrong way, which reads as a sequence and cross-references against
+    # `commontrace lesson history` incorrectly.
+    by_lesson: dict[str, list[str]] = {}
+    unknown = 0
+    for r in rows:
+        if r.revision is None:
+            unknown += 1
+            continue
+        seen = by_lesson.setdefault(r.lesson, [])
+        if r.revision not in seen:
+            seen.append(r.revision)
+
+    if not rows:
+        return Finding("treatment_stability", SEVERITY_OK, "No assignments yet.", "",
+                       {"lessons_tracked": 0})
+
+    changed = {slug: revs for slug, revs in by_lesson.items() if len(revs) > 1}
+    numbers = {
+        "lessons_tracked": len(by_lesson),
+        "assignments_without_a_revision": unknown,
+        "changed": {slug: list(revs) for slug, revs in sorted(changed.items())},
+    }
+
+    if changed:
+        named = "; ".join(
+            f"`{slug}` ({' -> '.join(revs)})" for slug, revs in sorted(changed.items())
+        )
+        return Finding(
+            "treatment_stability", SEVERITY_INVALIDATES,
+            f"{len(changed)} lesson(s) were edited while the experiment was running: {named}.",
+            "Occasions before and after the edit were treated with different "
+            "instructions, and both arms pool them into one comparison -- so the "
+            "effect reported for such a lesson is an average over a treatment that "
+            "no longer exists. `commontrace lesson history <slug>` shows what "
+            "changed and when. To measure the current text, start a fresh "
+            "randomization (change the salt) and let this one end.",
+            numbers,
+        )
+    if not by_lesson:
+        return Finding(
+            "treatment_stability", SEVERITY_WEAKENS,
+            "No assignment recorded which revision of a lesson it used, so whether "
+            "the treatment held still cannot be checked.",
+            "Assignments written before revisions were recorded do not carry one. "
+            "The estimate may be fine; nothing here can say so. Assignments made "
+            "from now on carry the revision, and this check answers on the next run.",
+            numbers,
+        )
+    if unknown:
+        return Finding(
+            "treatment_stability", SEVERITY_OK,
+            f"No lesson changed while the experiment ran ({unknown} older "
+            "assignment(s) carry no revision and were not checked).",
+            "", numbers,
+        )
+    return Finding(
+        "treatment_stability", SEVERITY_OK,
+        f"All {len(by_lesson)} lesson(s) held the same text throughout.",
+        "", numbers,
     )
 
 
@@ -551,6 +666,7 @@ def audit(rows: list[Assignment], min_arm: int = experiment.DEFAULT_MIN_ARM) -> 
         check_arm_balance(unique),
         drift,
         conflicts,
+        check_treatment_stability(unique),
         check_outcome_variation(unique),
     ]
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=0)
@@ -600,7 +716,8 @@ def render(report: IntegrityReport) -> str:
     lines.append("")
     lines.append(
         "_Checked here: attrition, arm balance, mid-run re-randomization, "
-        "conflicting arms, and whether the outcome varies at all. NOT checkable "
+        "conflicting arms, whether the lesson text held still, and whether the "
+        "outcome varies at all. NOT checkable "
         "here: whether an agent used a lesson it was told to withhold. That leaves "
         "no trace in the record and biases the effect toward zero -- it is honoured "
         "by the client or not at all._"
