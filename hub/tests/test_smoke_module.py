@@ -6,6 +6,7 @@ cover the reporting and diagnosis logic; the tool's end-to-end behaviour
 against a live server is exercised by the `compose-stack` CI job.
 """
 import argparse
+import asyncio
 
 import pytest
 
@@ -223,3 +224,71 @@ def test_run_stops_before_writing_anything_when_preflight_fails(monkeypatch, cap
     import asyncio
     assert asyncio.run(smoke.run(args)) == 1
     assert "server is down" in capsys.readouterr().err
+
+
+class TestPassingChecksNeverPrintFailureWording:
+    """Reporter.check used ONE string for both outcomes, so a detail written
+    to explain a failure was printed verbatim next to [PASS]. The worst of
+    them was on the tenant-isolation check that matters most, which
+    announced that the other org's commons_overlap "returned our trace" on a
+    run where nothing leaked -- an operator running this to gain confidence
+    in a fresh deployment would reasonably conclude the opposite."""
+
+    def test_a_pass_prints_the_pass_detail(self, capsys):
+        report = smoke.Reporter()
+        report.check("isolation holds", True,
+                     detail="the other org did not receive it",
+                     fail_detail="the other org's commons_overlap returned our trace")
+        out = capsys.readouterr().out
+        assert "[PASS]" in out
+        assert "did not receive it" in out
+        assert "returned our trace" not in out
+
+    def test_a_fail_prints_the_fail_detail(self, capsys):
+        report = smoke.Reporter()
+        report.check("isolation holds", False,
+                     detail="the other org did not receive it",
+                     fail_detail="the other org's commons_overlap returned our trace")
+        captured = capsys.readouterr()
+        assert "[FAIL]" in captured.err
+        assert "returned our trace" in captured.err
+        assert report.failures == ["isolation holds"]
+
+    def test_a_single_detail_still_serves_both(self, capsys):
+        """Neutral details ("trust=1.0") are shared by design; only the
+        failure-worded ones needed splitting."""
+        report = smoke.Reporter()
+        report.check("vote_trace updates trust", True, "trust=1.0")
+        assert "trust=1.0" in capsys.readouterr().out
+        report.check("vote_trace updates trust", False, "trust=0.0")
+        assert "trust=0.0" in capsys.readouterr().err
+
+
+class TestSmokeCleansUpAfterItself:
+    """Section 12 tells operators this check is safe to run against
+    production, which invites wiring it into a deploy gate -- and every run
+    used to permanently add two traces (the original plus its amendment) to
+    a real customer org. They are not quarantined, so they come back in
+    search_traces results for real agent queries and count against the org's
+    plan storage. Measured on a deployment smoked a handful of times: 12 of
+    12 traces in the org were this check's own residue."""
+
+    def test_cleanup_is_the_default_and_keep_opts_out(self, capsys):
+        with pytest.raises(SystemExit):
+            smoke.main(["--help"])
+        help_text = capsys.readouterr().out
+        assert "--keep" in help_text
+        assert "deleted when the run finishes" in help_text
+
+    def test_cleanup_failure_is_reported_loudly_not_swallowed(self, capsys):
+        """An operator who is not told cleanup failed has no reason to look,
+        and the residue accumulates in a customer's corpus."""
+        asyncio.run(smoke._cleanup("http://127.0.0.1:1/mcp", "ct_live_x", "trace-123"))
+        err = capsys.readouterr().err
+        assert "WARNING" in err
+        assert "purge-trace trace-123" in err
+
+    def test_cleanup_never_raises_so_it_cannot_mask_the_verdict(self):
+        """The checks have already run by then; their verdict is what the
+        caller came for."""
+        asyncio.run(smoke._cleanup("not-even-a-url", "k", "t"))

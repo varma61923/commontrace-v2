@@ -116,8 +116,23 @@ class Reporter:
         print(f"  [FAIL] {label} - {detail}", file=sys.stderr)
         self.failures.append(label)
 
-    def check(self, label: str, condition: bool, detail: str = "") -> bool:
-        (self.ok if condition else self.fail)(label, detail)
+    def check(self, label: str, condition: bool, detail: str = "", fail_detail: str = "") -> bool:
+        """`detail` is what a PASS prints; `fail_detail`, when given, is what
+        a FAIL prints instead.
+
+        One shared string used to be printed either way, so a detail written
+        to explain a failure was printed verbatim next to `[PASS]`. The worst
+        of them was on the tenant-isolation check that matters most, which
+        announced "the other org's commons_overlap returned our trace: {...}"
+        on a run where nothing leaked -- an operator running this to gain
+        confidence in a fresh deployment would reasonably conclude the
+        opposite. A check that reports a passing result in the language of
+        failure is worse than one that prints nothing.
+        """
+        if condition:
+            self.ok(label, detail)
+        else:
+            self.fail(label, fail_detail or detail)
         return condition
 
 
@@ -289,9 +304,12 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
         phrased_ids = [t["id"] for t in phrased.get("traces", [])] if isinstance(phrased, dict) else []
         report.check(
             "search_traces finds it from a natural-language description", trace_id in phrased_ids,
-            "a sentence-length query returned "
-            f"{len(phrased_ids)} result(s) and not the trace just written -- if this is the only "
-            "failing check, query terms are being combined with AND rather than ranked",
+            detail=f"a sentence-length query returned it among {len(phrased_ids)} result(s)",
+            fail_detail=(
+                f"a sentence-length query returned {len(phrased_ids)} result(s) and not the "
+                "trace just written -- if this is the only failing check, query terms are "
+                "being combined with AND rather than ranked"
+            ),
         )
 
     fetched = await _call(session, report, "get_trace returns it", "get_trace", {"id": trace_id})
@@ -317,8 +335,14 @@ async def _round_trip(session, report: Reporter, marker: str) -> str | None:
             and amended.get("id") != trace_id
             and amended.get("supersedes_trace_id") == trace_id
         )
-        report.check("amend_trace supersedes rather than mutating", is_new_immutable_record,
-                     "an amendment must create a new trace that supersedes the original")
+        report.check(
+            "amend_trace supersedes rather than mutating", is_new_immutable_record,
+            detail=(
+                f"{amended.get('id')!r} supersedes {trace_id!r}"
+                if is_new_immutable_record else ""
+            ),
+            fail_detail="an amendment must create a new trace that supersedes the original",
+        )
         amended_id = amended.get("id") if isinstance(amended, dict) else None
 
     # A retry with the same idempotency_key -- over the real deployed MCP
@@ -431,7 +455,8 @@ async def _tenant_isolation(
                     label, denied,
                     # not_found rather than forbidden: a wrong answer here leaks
                     # that the id exists, which is itself a disclosure.
-                    f"expected error=not_found, got {result!r}",
+                    detail="refused with error=not_found, disclosing nothing about the id",
+                    fail_detail=f"expected error=not_found, got {result!r}",
                 )
 
             if not commons_enabled:
@@ -464,7 +489,11 @@ async def _tenant_isolation(
                 report.check(
                     overlap_label,
                     isinstance(overlap, dict) and not leaked,
-                    f"the other org's commons_overlap returned our trace: {overlap!r}",
+                    detail=(
+                        "probed with a signature built from the trace's exact text; "
+                        "the other org's commons_overlap did not return it"
+                    ),
+                    fail_detail=f"the other org's commons_overlap returned our trace: {overlap!r}",
                 )
 
 
@@ -508,6 +537,28 @@ async def run(args: argparse.Namespace) -> int:
             commons_enabled=commons_enabled,
         )
 
+    # Clean up before reporting, and on failure as well as success: the
+    # traces exist either way, and the run that failed is the one most
+    # likely to be repeated.
+    #
+    # WHY THIS IS NOT OPTIONAL HOUSEKEEPING. Section 12 tells operators this
+    # check is safe to run against production, which invites wiring it into
+    # a deploy gate -- and every run permanently added two traces (the
+    # original plus its amendment) to a real customer org. They are not
+    # quarantined, so they come back in `search_traces` results for real
+    # agent queries, they count against the org's plan storage, and they
+    # inflate its trace counts. Measured on a deployment smoked a handful of
+    # times: 12 of 12 traces in the org were this check's own residue. An
+    # acceptance check that degrades the thing it certifies is a bad trade,
+    # and "remove them with: python -m hub.manage purge-trace <id>" put that
+    # work on a human, once per deploy, forever.
+    #
+    # delete_trace is the right instrument: it is org-scoped, it is reached
+    # with the same key the check already holds, and it removes the whole
+    # amendment chain -- so one call covers both traces.
+    if trace_id and not args.keep:
+        await _cleanup(args.url, args.api_key, trace_id)
+
     print()
     if report.failures:
         print(f"[smoke] FAILED: {len(report.failures)} check(s) - "
@@ -515,10 +566,40 @@ async def run(args: argparse.Namespace) -> int:
         return 1
 
     print("[smoke] all checks passed.")
-    if trace_id:
-        print(f"[smoke] this run wrote traces tagged '{SMOKE_TAG}'. Remove them with:\n"
-              f"          python -m hub.manage purge-trace {trace_id}")
     return 0
+
+
+async def _cleanup(url: str, api_key: str, trace_id: str) -> None:
+    """Delete what this run wrote, and say so either way.
+
+    A failure here is reported, never raised: the checks have already run
+    and their verdict is what the caller came for. What must not happen is
+    silence -- an operator who is not told cleanup failed has no reason to
+    look, and the residue accumulates in a customer's corpus.
+    """
+    from mcp import ClientSession
+
+    try:
+        async with _session(url, api_key) as (read, write, *_):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("delete_trace", {"id": trace_id})
+                payload = _content(result)
+                deleted = isinstance(payload, dict) and payload.get("deleted") is True
+    except Exception as exc:  # noqa: BLE001 - cleanup must never mask the verdict
+        deleted = False
+        payload = f"{type(exc).__name__}: {exc}"
+
+    if deleted:
+        print(f"[smoke] cleaned up: deleted the trace(s) this run wrote (tagged '{SMOKE_TAG}').")
+    else:
+        print(
+            f"[smoke] WARNING: could not delete the trace this run wrote ({payload!r}).\n"
+            f"          It is tagged '{SMOKE_TAG}' and will otherwise stay in this org's\n"
+            f"          corpus, where real searches can return it. Remove it with:\n"
+            f"          python -m hub.manage purge-trace {trace_id}",
+            file=sys.stderr,
+        )
 
 
 def _diagnose(error: BaseException) -> str:
@@ -572,6 +653,12 @@ def main(argv: list[str] | None = None) -> int:
         "--other-api-key", default=None,
         help="A key from a DIFFERENT org. Enables the tenant-isolation checks, "
              "which are the ones worth caring about most.",
+    )
+    parser.add_argument(
+        "--keep", action="store_true",
+        help="Leave the traces this check writes in place. By default they are "
+             "deleted when the run finishes, so repeatedly smoking a production "
+             "deployment does not accumulate them in a real org's corpus.",
     )
     args = parser.parse_args(argv)
     if not args.url.rstrip("/").endswith("/mcp"):

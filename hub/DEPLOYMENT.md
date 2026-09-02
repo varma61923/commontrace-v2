@@ -4,26 +4,43 @@ What an operator needs to run the Hub for real, as opposed to the
 local-checkout instructions in [`hub/README.md`](README.md).
 
 > **Verification status, stated up front.** The application is exercised
-> against a real PostgreSQL 16 instance by `hub/tests/` (69 tests, including
-> tenant isolation), on Python 3.10/3.11/3.12, and CI additionally applies
-> every migration to an empty database and runs `alembic check` for drift.
+> against a real PostgreSQL 16 instance by `hub/tests/` (767 tests, tenant
+> isolation among them) on Python 3.10/3.11/3.12, alongside 939 client-side
+> tests. CI additionally applies every migration to an empty database, runs
+> `alembic check` for drift, and proves an interrupted `CONCURRENTLY` index
+> migration can be retried.
 >
-> The **container image** is built and started in CI (`docker-build` job):
-> it builds, the container comes up, `/healthz` serves, and `/readyz`
-> correctly returns 503 with no database reachable.
+> The **container image** is built and started in CI (`docker-build` job),
+> and the **compose stack end to end** (`compose-stack` job): it brings up
+> the documented stack, waits on `/readyz`, asserts the migrations created
+> every table, provisions two organizations through the operator CLI, drives
+> the running server over real HTTP — every MCP tool, an unauthenticated
+> request refused with 401, cross-tenant reads refused — restarts the app
+> and checks the data survived, and asserts the logs are structured JSON
+> containing no API key or database password.
 >
-> The **compose stack is exercised end to end in CI** (`compose-stack` job):
-> it brings up the documented stack, waits on `/readyz`, asserts the
-> migrations created every table, provisions two organizations through the
-> operator CLI, then drives the running server over real HTTP — every MCP
-> tool, an unauthenticated request refused with 401, and cross-tenant reads
-> refused — restarts the app and checks the data survived, and asserts the
-> logs are structured JSON containing no API key or database password.
+> The following were additionally rehearsed by hand against a live
+> deployment, because each is something a client depends on and none of them
+> is proven by a unit test:
 >
-> One honest caveat remains: none of this has run against a
-> production-*like* environment — real TLS termination, a managed Postgres,
-> more than one replica. Do a rehearsal deploy before a client's data lands,
-> and run `python -m hub.smoke` (§12) against it.
+> | Rehearsed | Result |
+> |---|---|
+> | Migrations onto an empty database, then `alembic check` | 13 revisions applied, no drift |
+> | Image built and run directly | Serves `/healthz`, `/readyz`, `/metrics`; runs as uid 10001, not root |
+> | Container `HEALTHCHECK` | Reports healthy, and honours a non-default `HUB_PORT` |
+> | Container restart | Data intact; logs JSON with no key or password in them |
+> | Compose stack from clean, via the documented commands | Both services healthy; `hub.smoke` 17/17 including tenant isolation |
+> | `rotate-key` | Old key refused on the next request; new key passes the full smoke check |
+> | `purge-org` | Target org fully removed, the other tenant's traces untouched |
+> | Self-service deletion gates | Refused when too early, on a wrong token, and with no pending request |
+> | Backup → restore → serve (§9) | Row counts match; a key the client already held still authenticates; 17/17 smoke |
+>
+> **The caveat that remains, stated plainly:** none of this has run against
+> a production-*like* environment — real TLS termination, a managed
+> Postgres, more than one replica, or sustained concurrent load. Single-
+> process rate limiting (§6) is a known limit of that shape. Do a rehearsal
+> deploy before a client's data lands, and run `python -m hub.smoke` (§12)
+> against it.
 
 ---
 
@@ -230,14 +247,48 @@ read visibility comes from the request logs.
 ## 9. Backup and restore
 
 Nothing to back up but Postgres — take your provider's automated backups
-(or `pg_dump`) and, more importantly, **test a restore**. An untested backup
-is a hypothesis.
+(or `pg_dump`). An untested backup is a hypothesis, so the rehearsal below
+is the part that matters. It has been run against a populated deployment;
+the expected results are what it actually produced.
 
-The one Hub-specific note: API keys are stored only as argon2 hashes, so a
-restore does **not** recover any raw key. Keys that clients hold keep working
-after a restore (the hash is what's compared); but there is still no way to
-re-display a key anyone has lost — rotate instead
-(`python -m hub.manage rotate-key <key_id>`).
+```bash
+# 1. Dump.
+pg_dump -h $PGHOST -U $PGUSER -d commontrace_hub -Fc -f hub-$(date +%F).dump
+
+# 2. Restore into a NEW database -- never over the live one.
+createdb -h $PGHOST -U $PGUSER commontrace_hub_restored
+pg_restore -h $PGHOST -U $PGUSER -d commontrace_hub_restored --no-owner hub-$(date +%F).dump
+
+# 3. Verify the schema is current rather than merely present.
+HUB_DATABASE_URL=postgresql+asyncpg://.../commontrace_hub_restored \
+  python -m alembic -c hub/alembic.ini check     # -> "No new upgrade operations detected."
+
+# 4. Point a Hub at the restored copy and prove it serves, using a key a
+#    client already holds -- see the note below for why that is the check.
+HUB_DATABASE_URL=postgresql+asyncpg://.../commontrace_hub_restored \
+  HUB_PORT=8440 python -m hub.main &
+python -m hub.smoke --url http://127.0.0.1:8440/mcp \
+  --api-key <existing-client-key> --other-api-key <second-org-key>
+```
+
+Step 4 is the one people skip, and it is the only one that proves the
+restore is usable rather than merely complete. Row counts matching tells
+you the bytes arrived; a passing smoke check tells you a client can still
+work.
+
+**API keys survive a restore, and this is worth understanding rather than
+assuming.** Keys are stored only as argon2 hashes, so a restore recovers no
+raw key — but it does not need to: verification compares the presented key
+against the stored hash, so **every key a client already holds keeps working
+against the restored database** (verified: an existing key passes the full
+smoke check, tenant-isolation checks included, against a freshly restored
+copy). What a restore cannot do is re-display a key someone has lost —
+there is no path back from the hash. Rotate instead:
+`python -m hub.manage rotate-key <key_id>`.
+
+The corollary matters for incident response: restoring an older backup
+**resurrects keys revoked after that backup was taken**. If you restore
+across a revocation, re-revoke those key ids immediately.
 
 ## 10. Security checklist before a client's data lands
 
@@ -333,9 +384,17 @@ python -m hub.manage issue-key <org_id> 1        # expires tomorrow
 ```
 
 The run writes a small number of traces tagged `commontrace-smoke` under the
-calling org and nothing else. It prints the `purge-trace` command to remove
-them. Running it against production is safe; running it against a fresh
-deployment before you hand out the first customer key is the point.
+calling org, **and deletes them again before it exits** — so wiring this
+into a deploy gate does not slowly fill a real org's corpus with the
+check's own residue (which is not quarantined, and so would come back in
+real agent searches and count against the org's plan storage). Pass
+`--keep` to leave them for inspection; if cleanup fails for any reason the
+run says so loudly and prints the `purge-trace` command.
+
+Running it against production is safe; running it against a fresh
+deployment before you hand out the first customer key is the point. It
+exits non-zero on any failure, so `python -m hub.smoke ... && <promote>`
+works as a gate.
 
 ### What a failure means
 

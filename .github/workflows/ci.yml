@@ -381,10 +381,17 @@ jobs:
           # Two keys, so the tenant-isolation checks actually run rather than
           # being skipped -- isolation is the property worth proving before a
           # customer's data lands in a deployment.
+          # --keep: the restart step below asserts traces SURVIVE a restart,
+          # and needs some to survive. hub.smoke deletes what it wrote by
+          # default (so wiring it into a deploy gate does not accumulate
+          # residue in a real org), which would otherwise leave nothing for
+          # that check to be about. The default path is exercised by its own
+          # step further down.
           python -m hub.smoke \
             --url http://127.0.0.1:8420/mcp \
             --api-key "$KEY_A" \
-            --other-api-key "$KEY_B"
+            --other-api-key "$KEY_B" \
+            --keep
 
       - name: The stack survives a restart with its data intact
         run: |
@@ -395,8 +402,27 @@ jobs:
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
           after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
-          test "$after" -gt 0 || { echo "expected traces to exist after the smoke run"; exit 1; }
+          test "$after" -gt 0 || { echo "expected traces to exist after the --keep smoke run"; exit 1; }
           echo "$after trace(s) survived the restart"
+
+      - name: hub.smoke cleans up after itself by default
+        env:
+          KEY_A: ${{ steps.provision.outputs.key_a }}
+        run: |
+          # The shipped default. Section 12 tells operators this check is
+          # safe to run against production, which invites putting it in a
+          # deploy gate -- so every run leaving two un-quarantined traces
+          # behind would slowly fill a real org's corpus with the check's
+          # own residue, where real agent searches return it and it counts
+          # against the org's plan storage.
+          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          python -m hub.smoke --url http://127.0.0.1:8420/mcp --api-key "$KEY_A"
+          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          test "$before" = "$after" || {
+            echo "hub.smoke left $((after - before)) trace(s) behind; it must clean up unless --keep is passed"
+            exit 1
+          }
+          echo "smoke run left no residue ($after trace(s), unchanged)"
 
       - name: Logs are structured JSON, and carry no secrets
         run: |
