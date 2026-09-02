@@ -52,6 +52,12 @@ commontrace/**
 !commontrace/__init__.py
 !commontrace/overlap.py
 !commontrace/experiment.py
+# The validity audit that runs in front of every causal number
+# (hub/crud.py:causal_effects). Without it the Hub answers
+# fleet_outcomes with effect sizes and no way to tell whether the
+# sample can support them -- and the container would not even start,
+# because crud.py imports it at module level.
+!commontrace/integrity.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
 

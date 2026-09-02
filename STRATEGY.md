@@ -1544,3 +1544,161 @@ half was not finished when §18 said it was. It is now, as far as this
 repository can establish — and that phrasing is doing real work, because
 §18.4 is the second time in two sections that a confident "nothing left to
 build" turned out to be a claim nobody had checked.
+
+---
+
+## 20. Update (2026-09-02): the instrument was measuring, and nothing was auditing the instrument
+
+§19.5 closed with "every remaining question needs customers *and* the
+instruments to have been built where those customers are", and hedged that
+with *as far as this repository can establish* on the grounds that §18.4 had
+twice declared "nothing left to build" without checking. This is the third
+time, and the hedge earned its keep.
+
+The instruments were built. What was never built is the thing that decides
+whether an instrument's reading means anything.
+
+### 20.1 The defect, stated as the number it produces
+
+`commontrace/experiment.py` is right. Two-proportion tests, a 95% interval,
+Benjamini-Hochberg across lessons, underpowered comparisons kept out of the
+correction so they cannot inflate *m*, and an explicit `UNDERPOWERED`
+verdict so a small sample never reads as "no effect". Nothing in the
+arithmetic needed fixing.
+
+But `analyze()` only ever sees occasions that HAVE a recorded outcome, and
+both tiers dropped the rest before it. `hub/crud.py:causal_effects` did it
+in SQL — `succeeded IS NOT NULL` — so nothing downstream could even count
+what went missing, let alone which arm it came from. `hub/models.py` states
+the reasoning, and it is correct:
+
+> An observation with no outcome is excluded from the analysis rather than
+> counted as a failure: an agent that crashed before reporting is missing
+> data, and scoring it as a loss would bias the arm that crashed more.
+
+Excluding is the right handling. It is unbiased **only if both arms lose
+outcomes at the same rate**, and nothing anywhere checked that. Worse, there
+is a specific reason to expect they do not: the withheld arm is *by
+construction* the arm working without its memory, so it is the arm more
+likely to run long, escalate, or be abandoned before anyone writes up how it
+went. The treatment effect leaks into who gets measured.
+
+Reproduced, in `tests/test_integrity.py`. A fleet of 600 occasions where the
+lesson does **nothing** — both arms succeed at exactly 50% — and the only
+asymmetry is that a withheld occasion which failed often never gets
+reported:
+
+| | |
+|---|---|
+| True effect | **0.0%** |
+| `analyze()` reported | **HURTS, −12.6%** |
+| 95% CI | **[−20.8%, −4.4%]** — does not contain zero |
+| p | **0.003** |
+| Verdict | significant, adequately powered |
+
+Driven end to end through `commontrace experiment` on a seeded store, the
+same defect reads `HURTS −17%, 95% CI [−28%, −7%], p=0.002`.
+
+The failure mode is the dangerous kind. It does not error. It does not
+return empty. It does not read as underpowered. It reads as a clean,
+significant, well-powered result with a plausible effect size and a tight
+interval — and it points the wrong way about a lesson that was fine.
+
+### 20.2 Why this is a strategy problem and not a bug report
+
+§13.3 says one thing makes this more than a good DevTools business: *a
+product that retrieves the right prior experience reliably, and can prove
+causally on the customer's own data that doing so changed the outcome.*
+
+That claim is only worth what it survives. The first question a sophisticated
+buyer's data-science function asks — the first question a technical diligence
+partner asks — is not "what was the p-value". It is **"how do you know that
+number isn't an artifact of who got measured?"** Until now the honest answer
+was "we don't check", and the product would have answered it with a
+`HURTS` verdict about a lesson that does nothing.
+
+§13.3 also names the three things a competitor bolting memory onto an
+existing product lacks: the activation-condition data model, the
+occasion-level join, and *a willingness to publish nulls*. The third was a
+disposition. It is now mechanical: a run whose sample cannot support an
+estimate does not get a hedged number, it gets a refusal to report one.
+
+### 20.3 What was built
+
+`commontrace/integrity.py`, shared by both tiers — the same discipline
+`holdout_io.py` applies to arm assignment, for the same reason. Five checks,
+each with a severity that means something specific (`INVALIDATES` — a named
+mechanism is biasing the estimate; `WEAKENS` — the sample is degraded but
+not demonstrably biased; `OK` — checked, nothing found, stated explicitly so
+silence is never mistaken for a clean bill):
+
+1. **Differential attrition.** The load-bearing one. Reports the direction,
+   because which arm loses data decides which way the number is wrong.
+2. **Arm balance.** Realized withheld share against the configured rate.
+   Assignment is a deterministic hash, so a large gap is not luck.
+3. **Mid-run re-randomization.** A changed salt or rate re-randomizes every
+   occasion, so the log stops being one experiment and becomes two pooled —
+   and an occasion can sit in opposite arms in each.
+4. **Conflicting arms.** One (lesson, occasion) recorded in both arms:
+   evidence for and against the same lesson at once.
+5. **Outcome variation.** An all-succeeded corpus yields a difference of
+   exactly zero with a tidy interval, and reads as a confident null.
+
+Plus a **power projection**: how far each lesson is from being answerable
+and, where the log is dated, roughly when. That is not a validity check, it
+is what decides whether a pilot lands. `experiment` already said
+`UNDERPOWERED`; a team told that on day 30 has spent the pilot, and the same
+team told on day 3 that the control arm lands in 94 days can raise the
+holdout rate that afternoon. The control arm almost always binds and the
+reason is arithmetic: at a 10% holdout it takes ~100 occasions to put 10 in
+the control, so a run reaches an answer about ten times slower than its
+occasion count suggests. The projection now says so, and says what rate
+would fix it.
+
+Wired everywhere the number is read: `commontrace experiment` (validity
+above the table, and `--strict` fails a compromised run — the flag means
+"stop if the memory is hurting", and a biased comparison cannot answer that
+either way), `commontrace pilot` (a compromised run yields no effects rather
+than effects with a caveat elsewhere in a renewal deck), `prove outcomes`,
+the Hub's `fleet_outcomes` response under `causal.integrity`, and the local
+MCP server's `experiment_status`.
+
+### 20.4 What it deliberately does not do
+
+**It does not correct the estimate.** A compromised experiment does not get
+a fixed number here. It gets a report saying the number should not be read
+and why, which is the honest output and the only one available: nothing can
+recover an outcome that was never recorded.
+
+**It cannot detect contamination.** An agent that uses a lesson it was told
+to withhold leaves no trace in the record, and biases the effect toward
+zero. No analysis can find it. It is honoured by the client or not at all,
+which is why it is stated in the tool descriptions, the skill, and every
+rendered report rather than checked — silence about it would read as
+coverage of a failure nothing here can see.
+
+**Absence of a finding is not proof of validity.** These detect the failures
+that leave a trace in the assignment log. That set is not everything.
+
+### 20.5 What this changes about §13.2's chain
+
+Nothing about which links are open, and that is the point — this does not
+move a link, it makes one of them *checkable by someone who does not trust
+us*.
+
+- **Link 1** (per-org memory delivers measurable value): unchanged, still
+  needs two fleets. What changed is that when those two fleets report a
+  number, there is now something that says whether the number is an estimate
+  of anything. Before this, link 1's falsifier could have returned a
+  confident false answer in either direction and nobody would have known.
+- **Links 2, 3, 4, 5**: unchanged.
+
+The correction to §19.5 is narrow and worth stating plainly: *the
+instruments existed; nothing audited the instruments.* An instrument nobody
+audits is not a measurement, it is a number — and this document has now
+found three separate confident claims that "nothing is left to build",
+each of which was a claim nobody had checked. That rate is itself the
+finding. The rule that follows from it is not "check harder next time"; it
+is that a claim of completeness is worth exactly as much as the falsifier
+attached to it, and this section's is `tests/test_integrity.py` — a fleet
+where the truth is known to be zero, which the product must refuse to score.

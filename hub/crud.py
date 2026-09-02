@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import experiment
+from commontrace import experiment, integrity
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -1976,6 +1976,40 @@ async def record_occasion_outcome(
     return {"occasion_id": occasion_id, "observations_resolved": result.rowcount or 0}
 
 
+def _integrity_wire(report: integrity.IntegrityReport) -> dict:
+    """The validity report, as JSON an agent can act on.
+
+    Findings that passed are included, not filtered to the failures. A
+    caller has no way to distinguish "checked, clean" from "not checked"
+    when only problems are reported, and those two mean opposite things
+    about how much to trust the number underneath.
+    """
+    return {
+        "verdict": report.verdict,
+        "effects_readable": report.readable,
+        "n_assignments": report.n_assignments,
+        "n_resolved": report.n_resolved,
+        "findings": [
+            {"check": f.check, "severity": f.severity, "headline": f.headline,
+             "detail": f.detail, "numbers": f.numbers}
+            for f in report.findings
+        ],
+        "projections": [
+            {"trace_id": p.lesson, "n_injected": p.n_injected, "n_withheld": p.n_withheld,
+             "needed_per_arm": p.needed_per_arm, "binding_arm": p.binding_arm,
+             "still_needed": p.still_needed, "per_day": p.per_day,
+             "days_remaining": p.days_remaining,
+             "eta": p.eta.isoformat() if p.eta else None, "advice": p.advice}
+            for p in report.projections
+        ],
+        "not_checkable": (
+            "Whether an agent used a lesson it was told to withhold. That leaves no "
+            "trace in the record and biases the effect toward zero -- it is honoured "
+            "by the client or not at all."
+        ),
+    }
+
+
 async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
     """Per-trace causal effect estimates from the running experiment.
 
@@ -1990,23 +2024,53 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         await session.execute(
             select(HoldoutObservation).where(
                 HoldoutObservation.org_id == org_id,
-                HoldoutObservation.succeeded.isnot(None),
                 # Scoped to the CURRENT experiment. Observations from an
                 # earlier salt were drawn from a different randomization
                 # and pooling them would mix two experiments into one
                 # comparison -- the exact failure Organization.holdout_salt
                 # exists to make detectable.
                 HoldoutObservation.salt == (org.holdout_salt if org else ""),
+                #
+                # NOTE what is NOT filtered here any more. This used to carry
+                # `succeeded.isnot(None)`, which is correct for the estimate
+                # and is exactly where the estimate stopped being auditable:
+                # an unresolved observation is an occasion that was assigned
+                # an arm and then never reported, and dropping those in the
+                # QUERY meant nothing downstream could see how many there
+                # were or which arm they came from.
+                #
+                # Excluding them is unbiased only if both arms lose them at
+                # the same rate, and the withheld arm -- by construction, the
+                # one working without its memory -- is the arm more likely to
+                # run long, escalate, or be abandoned before anyone reports.
+                # They are fetched now and separated below: `analyze` still
+                # sees only the resolved ones, and `integrity.audit` sees all
+                # of them, which is the only way that check can exist.
             )
         )
     ).scalars().all()
 
-    observations = [
-        experiment.HoldoutObservation(
-            lesson_slug=r.trace_id, occasion_id=r.occasion_id, injected=r.injected,
-            succeeded=bool(r.succeeded),
+    assignments = [
+        integrity.Assignment(
+            lesson=r.trace_id,
+            occasion_id=r.occasion_id,
+            injected=r.injected,
+            rate=(org.holdout_rate if org else experiment.DEFAULT_HOLDOUT_RATE),
+            salt=r.salt,
+            succeeded=r.succeeded,
+            at=r.created_at,
         )
         for r in rows
+    ]
+    report = integrity.audit(assignments)
+
+    unique, _ = integrity.normalize(assignments)
+    observations = [
+        experiment.HoldoutObservation(
+            lesson_slug=r.lesson, occasion_id=r.occasion_id, injected=r.injected,
+            succeeded=bool(r.succeeded),
+        )
+        for r in unique if r.succeeded is not None
     ]
     effects = experiment.analyze(observations, alpha=alpha)
 
@@ -2024,6 +2088,11 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         "holdout_rate": org.holdout_rate if org else 0.0,
         "n_observations": len(observations),
         "n_occasions": len({o.occasion_id for o in observations}),
+        # First key a reader meets after the counts, and first for the same
+        # reason the CLI prints it above the table: a caller that reads
+        # `effects` without reading this can quote a number that a named,
+        # identified mechanism is biasing.
+        "integrity": _integrity_wire(report),
         "effects": [
             {
                 "trace_id": e.lesson_slug,
@@ -2046,6 +2115,9 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             "CAUSAL, unlike the before/after comparison alongside it: the two arms "
             "are the same fleet in the same window, differing only by whether the "
             "memory was injected. That is what makes this survive 'what else changed?'."
+            + ("" if report.readable else
+               " READ `integrity` FIRST: the sample these effects were computed on is "
+               "compromised, so they are not estimates of the causal effect.")
         ),
     }
 

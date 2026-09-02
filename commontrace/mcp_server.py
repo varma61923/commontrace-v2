@@ -89,6 +89,7 @@ from commontrace.commands._traces import load_trace_candidates
 LOCAL_TOOLS = (
     "retrieve", "capture", "propose_lessons", "list_lessons", "get_lesson",
     "draft_lesson", "approve_lesson", "reject_lesson", "store_status",
+    "experiment_status",
 )
 
 # Removed by `serve --no-approval`.
@@ -648,6 +649,82 @@ def build_server(root: str, *, allow_approval: bool = True):
             except Exception as exc:  # noqa: BLE001
                 return _err(f"could not reject {slug!r}: {type(exc).__name__}: {exc}")
             return _ok(slug=slug, status="archived")
+
+    @mcp.tool()
+    async def experiment_status() -> dict:
+        """Is the randomized holdout you are feeding actually going to answer?
+
+        Call this when you have been retrieving with an `occasion_id` for a
+        while. It reports three things, and the first two are the ones that
+        decide whether the run was worth doing.
+
+        `integrity` says whether the comparison can be trusted at all. The
+        estimate is computed only on occasions that got an outcome recorded,
+        which is unbiased ONLY if both arms record at the same rate -- and the
+        withheld arm is by construction the one working without its memory, so
+        it is the arm more likely to run long, escalate, or be abandoned
+        before anyone reports. When that happens the result does not look
+        empty or underpowered. It looks like a confident, significant effect
+        with a tight interval, pointing the wrong way. If `verdict` is
+        COMPROMISED, stop quoting effects and fix what it names.
+
+        `projections` says how far each lesson is from being answerable and,
+        where the log is dated, roughly when. The control arm almost always
+        binds: at a 10% holdout it takes ~100 occasions to put 10 in the
+        control, so a run reaches an answer about ten times slower than its
+        occasion count suggests. Finding that out early is the difference
+        between a pilot that lands and one that is spent.
+
+        `effects` is the causal estimate itself, per lesson.
+
+        The one thing NOT checkable here: whether you used a lesson you were
+        told to withhold. That leaves no trace, and it biases the effect
+        toward zero. Honour `withheld` from `retrieve` or the number is
+        yours to have broken.
+        """
+        import dataclasses
+
+        from commontrace import integrity
+        from commontrace.commands import experiment_cmd
+
+        try:
+            with _quiet():
+                rows, rate, corrupt = experiment_cmd._load(root)
+                report = integrity.audit(rows)
+                observations = experiment_cmd._observations(rows)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not read the experiment: {type(exc).__name__}: {exc}")
+
+        if not rows:
+            return _ok(
+                running=False, integrity=None, effects=[], projections=[],
+                note="No holdout assignments yet. Pass `occasion_id` to `retrieve` and "
+                     "the same id to `capture` to start measuring cause instead of "
+                     "correlation.",
+            )
+
+        effects = experiment.analyze(observations)
+        return _ok(
+            running=True,
+            holdout_rate=rate,
+            n_assignments=report.n_assignments,
+            n_resolved=report.n_resolved,
+            corrupt_lines=corrupt,
+            integrity={
+                "verdict": report.verdict,
+                "effects_readable": report.readable,
+                "findings": [dataclasses.asdict(f) for f in report.findings],
+            },
+            projections=[dataclasses.asdict(p) for p in report.projections],
+            effects=[dataclasses.asdict(e) for e in effects],
+            next_step=(
+                "Fix what `integrity` names before reading `effects` -- they are not "
+                "estimates of the causal effect right now."
+                if not report.readable else
+                "Keep retrieving with an occasion_id and capturing the outcome under "
+                "the same id."
+            ),
+        )
 
     @mcp.tool()
     async def store_status() -> dict:

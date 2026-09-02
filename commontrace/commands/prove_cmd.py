@@ -83,6 +83,46 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     record.set_defaults(func=run_record)
 
 
+def _validity_lines(report: dict) -> list[str]:
+    """The validity verdict, placed ABOVE the effect sizes.
+
+    `prove` is the document that goes into a renewal conversation, which is
+    the worst possible place for a caveat under a table: the number gets
+    quoted and the footnote does not travel with it. When the sample cannot
+    support the estimate, that is the first thing on this section -- and the
+    effects that follow are labelled, not silently printed.
+    """
+    if not report:
+        return []
+    verdict = report.get("verdict", "")
+    if verdict == "COMPROMISED":
+        lines = [
+            "> **Do not quote the effect sizes in this section.** The comparison "
+            "below was computed on a sample that a named mechanism is biasing, so "
+            "it is not an estimate of the causal effect. This is not a sample-size "
+            "problem and more data will not fix it.",
+            "",
+        ]
+        for f in report.get("findings", []):
+            if f.get("severity") == "INVALIDATES":
+                lines.append(f"> - {f.get('headline', '')} {f.get('detail', '')}".rstrip())
+        return lines + [""]
+    if verdict == "WEAKENED":
+        weak = [f for f in report.get("findings", []) if f.get("severity") == "WEAKENS"]
+        return [
+            "> **Weakened.** Still an estimate, with less behind it than its "
+            "confidence interval implies. "
+            + " ".join(f.get("headline", "") for f in weak),
+            "",
+        ]
+    return [
+        "_Validity checked: attrition, arm balance, mid-run re-randomization, "
+        "conflicting arms, outcome variation. Nothing found. Not checkable here: "
+        "whether an agent used a memory it was told to withhold._",
+        "",
+    ]
+
+
 def _pct(value) -> str:
     return f"{value:.0%}" if isinstance(value, (int, float)) else "-"
 
@@ -104,6 +144,7 @@ def render_outcomes(report: dict) -> str:
             f"holdout rate {_pct(causal.get('holdout_rate'))}.",
             "",
         ]
+        lines += _validity_lines(causal.get("integrity") or {})
         for e in effects:
             lines.append(f"### {e['verdict']} — {e.get('title', e['trace_id'])}")
             lines.append("")

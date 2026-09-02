@@ -241,8 +241,8 @@ commontrace query "..." --experiment --occasion-id task-4711   # withhold at ran
 # ...do the task...
 commontrace capture --title "..." --context "..." --solution "..." \
     --agent-type code --occasion-id task-4711 --resolved        # same id: this is the join
-commontrace experiment                  # causal effect per lesson
-commontrace experiment --strict         # non-zero exit if a lesson significantly HURTS
+commontrace experiment                  # causal effect per lesson, validity checked first
+commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if the run is not valid
 ```
 
 **Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
@@ -867,6 +867,73 @@ fires on hard tasks looks good by retrieval count and bad by outcome.
 **The cost is real and bounded:** the withheld fraction gets a worse
 product on purpose. That is the price of knowing whether the product works
 at all. Nothing turns it on by default.
+
+### Auditing the instrument
+
+An effect size is worth what it survives, and the first question a
+data-science function asks is not "what was the p-value" — it is **"how do
+you know that number isn't an artifact of who got measured?"**
+
+Every report now answers that before it shows a number.
+
+The estimate is computed only on occasions that got an outcome recorded.
+Dropping the rest is the right handling — an agent that crashed before
+reporting is missing data, and scoring it as a failure would penalise the
+arm that crashed more — but it is unbiased **only if both arms lose
+outcomes at the same rate**. They have a specific reason not to: the
+withheld arm is, by construction, the one working without its memory, so it
+is the arm more likely to run long, escalate, or be abandoned before anyone
+writes up how it went. The treatment effect leaks into who gets measured.
+
+Here is what that costs, from this repo's own test suite — a fleet of 600
+occasions where the lesson does **nothing**, both arms succeeding at exactly
+50%, with the single asymmetry that a withheld occasion which failed often
+never gets reported:
+
+| | |
+|---|---|
+| True effect | **0.0%** |
+| Reported without the audit | **HURTS, −12.6%** |
+| 95% CI | **[−20.8%, −4.4%]** — does not contain zero |
+| p | **0.003**, significant, adequately powered |
+
+It does not error, return empty, or read as underpowered. It reads as a
+clean finding pointing the wrong way about a lesson that was fine — and
+because `HURTS` is a first-class result here, a customer would have retired
+it.
+
+Five checks now run before any effect is shown, on both tiers:
+
+| Check | Catches |
+|---|---|
+| **Differential attrition** | One arm being less likely to get an outcome recorded — and it reports the *direction*, because which arm loses data decides which way the number is wrong |
+| **Arm balance** | A realized holdout share far from the configured rate. Assignment is a deterministic hash, so this is not luck |
+| **Mid-run re-randomization** | A changed salt or rate, which silently makes the log two experiments pooled into one comparison |
+| **Conflicting arms** | One (lesson, occasion) counted as evidence for *and* against the same lesson |
+| **Outcome variation** | An outcome nothing can fail, which yields a difference of exactly zero and reads as a confident null |
+
+Alongside them, a **power projection**: how far each lesson is from being
+answerable, and roughly when at the current rate. `UNDERPOWERED` on day 30
+is a spent pilot; the same fact on day 3 is a holdout rate you can still
+change. The control arm almost always binds, and the reason is arithmetic —
+at a 10% holdout it takes ~100 occasions to put 10 in the control, so a run
+answers about ten times slower than its occasion count suggests. The report
+says so, and names the rate that fixes it.
+
+Three things it will not do:
+
+- **It will not correct the estimate.** Nothing can recover an outcome that
+  was never recorded, so a compromised run gets a refusal to report a
+  number, not a repaired one. `--strict` fails it.
+- **It cannot detect contamination.** An agent that uses a lesson it was
+  told to withhold leaves no trace and biases the effect toward zero. That
+  is honoured by the client or not at all — and every report says so, out
+  loud, because silence would read as coverage.
+- **It will not treat a clean result as proof.** These catch the failures
+  that leave a trace in the assignment log. That set is not everything, and
+  the report says which is which rather than only listing problems: a
+  caller cannot distinguish "checked, clean" from "not checked" when only
+  failures appear.
 
 ### When an answer stops being right
 

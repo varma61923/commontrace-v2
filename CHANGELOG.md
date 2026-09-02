@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The causal number is now audited, and it could be confidently wrong
+  before.** `commontrace/experiment.py` estimates each lesson's effect
+  correctly — two-proportion tests, a 95% interval, Benjamini-Hochberg across
+  lessons, underpowered comparisons kept out of the correction, an explicit
+  `UNDERPOWERED` verdict so a small sample never reads as "no effect".
+  Nothing in the arithmetic needed fixing.
+
+  But `analyze()` only ever sees occasions that HAVE a recorded outcome, and
+  both tiers dropped the rest before it — the Hub did it in SQL
+  (`succeeded IS NOT NULL`), so nothing downstream could count what went
+  missing, let alone which arm it came from. `hub/models.py` states the
+  reasoning and it is correct: an unresolved observation is missing data,
+  and scoring it as a failure would bias the arm that crashed more. What
+  nothing checked is that excluding it is unbiased **only if both arms lose
+  outcomes at the same rate** — and the withheld arm is *by construction*
+  the one working without its memory, so it is the arm more likely to run
+  long, escalate, or be abandoned before anyone writes up how it went. The
+  treatment effect leaks into who gets measured.
+
+  Reproduced, and it is in the test suite: a fleet of 600 occasions where
+  the lesson does **nothing** — both arms succeed at exactly 50% — with the
+  single asymmetry that a withheld occasion which failed often never gets
+  reported. `analyze()` returns **HURTS, −12.6%, 95% CI [−20.8%, −4.4%],
+  p=0.003**, significant and adequately powered. Driven through
+  `commontrace experiment` on a seeded store the same defect reads
+  **−17%, p=0.002**. It does not error, does not return empty, and does not
+  read as underpowered. It reads as a clean, well-powered finding pointing
+  the wrong way about a lesson that was fine — and the product's own
+  documentation makes a virtue of reporting `HURTS`, so a customer would
+  have retired it.
+
+  `commontrace/integrity.py` is the audit, shared by both tiers for the same
+  reason `holdout_io.py` owns arm assignment. Five checks, each with a
+  severity that means something specific — `INVALIDATES` (a named mechanism
+  is biasing the estimate), `WEAKENS` (degraded but not demonstrably biased,
+  usually lost power), `OK` (checked, nothing found — stated explicitly, so
+  silence is never mistaken for a clean bill):
+
+  - **Differential attrition**, the load-bearing one. Reports the direction,
+    because which arm loses data decides which way the number is wrong.
+  - **Arm balance** — realized withheld share against the configured rate.
+    Assignment is a deterministic hash, so a large gap is not luck; it means
+    something other than that hash decided these arms.
+  - **Mid-run re-randomization** — a changed salt or rate re-randomizes every
+    occasion, so the log stops being one experiment and becomes two pooled
+    into one comparison, with the same occasion able to sit in opposite arms.
+  - **Conflicting arms** — one (lesson, occasion) in both arms at once:
+    evidence for and against the same lesson simultaneously.
+  - **Outcome variation** — an all-succeeded corpus produces a difference of
+    exactly zero with a tidy interval, and reads as a confident null. It is
+    not one; it is an outcome nothing can fail.
+
+  The validity alpha is deliberately **looser** than the 0.05 the effect
+  analysis uses (0.10). The two tests are asked in opposite directions: for
+  an effect a false positive is the expensive error, so the bar is high; for
+  a validity check a false *negative* is — missing a real bias means
+  publishing a wrong number — so the bar is lower. A flagged experiment
+  costs someone a look; an unflagged broken one costs the claim.
+
+- **A power projection, because "underpowered" on day 30 is a spent pilot.**
+  `experiment` already said a lesson was underpowered and how many
+  observations each arm needed. What decides whether a pilot lands is
+  *when*. Each lesson now reports how far it is from answerable and, where
+  the log is dated, roughly what date at the current accrual rate. The
+  control arm almost always binds and the reason is arithmetic rather than
+  bad luck: at a 10% holdout it takes ~100 occasions to put 10 in the
+  control, so a run reaches an answer about ten times slower than its
+  occasion count suggests. The projection says so and names the rate that
+  would fix it. Assignments now carry a timestamp; a log written before this
+  simply reports no accrual rate rather than failing.
+
+  Wired everywhere the number is read: `commontrace experiment` (validity
+  above the table, never in a footnote under it — a report that leads with a
+  significant number and caveats it underneath is exactly how a broken one
+  gets quoted), `commontrace pilot`, `prove outcomes`, the Hub's
+  `fleet_outcomes` response under `causal.integrity`, and a new
+  `experiment_status` tool on the local MCP server so an agent can check
+  whether the run it is feeding will ever answer.
+
+  Three things it deliberately does not do. It does **not correct** the
+  estimate — nothing can recover an outcome that was never recorded, so a
+  compromised run gets a refusal to report rather than a fixed number. It
+  **cannot detect contamination** — an agent that uses a lesson it was told
+  to withhold leaves no trace and biases the effect toward zero; that is
+  honoured by the client or not at all, and every rendered report says so
+  rather than staying silent, because silence would read as coverage. And
+  **absence of a finding is not proof of validity**: these catch the
+  failures that leave a trace in the assignment log, which is not every
+  failure.
+
 - **The local tier now speaks MCP, so an agent no longer needs a terminal to
   use its own memory.** `commontrace serve` exposes the local store over MCP
   stdio: `retrieve`, `capture`, `propose_lessons`, `list_lessons`,
@@ -176,6 +266,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Authentication is HTTP Basic (username ignored, password compared with
   `hmac.compare_digest`), rate limited by client address *before* the
   credential is checked, and no unauthenticated request reaches the database.
+
+### Changed
+
+- **`commontrace experiment --strict` now also fails a compromised run.**
+  The flag means "stop the build if the memory is making things worse", and
+  a biased comparison cannot answer that in either direction. Passing it
+  silently converts "we could not tell" into "we checked and it was fine",
+  which is the one claim nobody should make.
 
 ### Fixed
 

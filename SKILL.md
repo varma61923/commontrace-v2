@@ -120,9 +120,21 @@ makes the later comparison causal rather than confounded.
 Using a withheld lesson anyway does not raise an error. It silently moves
 that occasion into the treated arm, biasing the measured effect toward
 zero — so this is a rule Alpha has to follow deliberately, not one the
-tooling can enforce afterwards. Read the result with
-`commontrace prove outcomes` (Hub) or `commontrace experiment` (local); a
-lesson coming back as `HURTS` is the point, not a failure.
+tooling can enforce afterwards. It is also the one validity failure nothing
+downstream can detect: it leaves no trace in the assignment record.
+
+**Report an outcome for every occasion you retrieved against — including
+the ones that were abandoned or escalated.** Skipping the ones that went
+badly is not a small omission; it is the failure that biases the result
+most, because the withheld arm is the one working without its memory and
+therefore the one that runs long and gets abandoned. `commontrace
+experiment` now audits for exactly this and refuses to report an effect
+when it finds it, so an incomplete write-up does not produce a wrong
+number — it produces no number.
+
+Read the result with `commontrace prove outcomes` (Hub) or `commontrace
+experiment` (local); a lesson coming back as `HURTS` is the point, not a
+failure — provided the validity section above it says the run is sound.
 
 **Alpha brief (self-contained template, copy verbatim)**:
 

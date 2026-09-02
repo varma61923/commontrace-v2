@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-from commontrace import experiment, frontmatter, holdout_io, paths, trace_io
+from commontrace import experiment, frontmatter, holdout_io, integrity, paths, trace_io
 from commontrace.commands._format import read_or_warn
 
 # Re-exported from commontrace.holdout_io, which owns the one definition
@@ -66,69 +66,65 @@ def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     return out
 
 
-def _load_observations(root: str) -> tuple[list[experiment.HoldoutObservation], float, int, int, int, int]:
-    log = holdout_log_path(root)
-    if not os.path.isfile(log):
-        return [], experiment.DEFAULT_HOLDOUT_RATE, 0, 0, 0, 0
+def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
+    """Every logged assignment, joined to its outcome. Returns (rows, rate, corrupt).
+
+    `succeeded is None` means no outcome was ever recorded for that occasion.
+    Those rows are carried rather than dropped here, which is the difference
+    between this and what it replaced: the estimate cannot use them, but the
+    validity checks are largely ABOUT them, and a loader that filtered first
+    would hand the auditor a record with the evidence already removed
+    (commontrace/integrity.py).
+    """
+    records, corrupt = holdout_io.read_log(root)
+    if not records:
+        return [], experiment.DEFAULT_HOLDOUT_RATE, corrupt
 
     outcomes = _outcomes_by_occasion(root)
-    obs: list[experiment.HoldoutObservation] = []
-    rate = experiment.DEFAULT_HOLDOUT_RATE
-    n_lines = 0
-    n_no_outcome = 0
-    # (lesson, occasion) is the unit of assignment, and the log is append-only,
-    # so a retried task writes the same pair again. Counting it twice inflates
-    # the arm and deflates the p-value -- a retry storm would manufacture
-    # significance out of nothing. Assignment is a deterministic hash of the
-    # pair, so duplicates are always identical and keeping the first is safe.
-    seen_pairs: set[tuple[str, str]] = set()
-    n_duplicate = 0
-    n_corrupt = 0
+    rows = [
+        integrity.Assignment(
+            lesson=rec.lesson,
+            occasion_id=rec.occasion_id,
+            injected=rec.injected,
+            rate=rec.rate,
+            salt=rec.salt,
+            succeeded=outcomes.get(rec.occasion_id),
+            at=rec.at,
+        )
+        for rec in records
+    ]
+    rate = sum(r.rate for r in rows) / len(rows)
+    return rows, rate, corrupt
 
-    with open(log, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                # Counted and surfaced, never silently dropped. A corrupt
-                # line is a LOST OBSERVATION from one arm of a randomized
-                # comparison, so discarding it quietly biases the effect
-                # size rather than merely shrinking the sample -- and it
-                # would do so invisibly, in the one number this command
-                # exists to produce. Writes are locked (query_cmd), so a
-                # non-zero count here means something else corrupted the
-                # log and the result should not be trusted until it is
-                # explained.
-                n_corrupt += 1
-                continue
-            n_lines += 1
-            rate = float(rec.get("rate", rate))
-            occ = str(rec.get("occasion_id", ""))
-            slug = str(rec.get("lesson", ""))
-            if (slug, occ) in seen_pairs:
-                n_duplicate += 1
-                continue
-            seen_pairs.add((slug, occ))
-            if occ not in outcomes:
-                n_no_outcome += 1
-                continue
-            obs.append(
-                experiment.HoldoutObservation(
-                    lesson_slug=slug,
-                    occasion_id=occ,
-                    injected=bool(rec.get("injected", True)),
-                    succeeded=outcomes[occ],
-                )
-            )
-    return obs, rate, n_lines, n_no_outcome, n_duplicate, n_corrupt
+
+def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
+    """The resolved, de-duplicated subset the estimate is computed on.
+
+    Collapsing retries is `integrity.normalize`'s job, not a second copy of
+    it here: the auditor and the estimate must agree on what one assignment
+    is, or the attrition rate is reported against a denominator the effect
+    size never used.
+    """
+    unique, _ = integrity.normalize(rows)
+    return [
+        experiment.HoldoutObservation(
+            lesson_slug=r.lesson,
+            occasion_id=r.occasion_id,
+            injected=r.injected,
+            succeeded=bool(r.succeeded),
+        )
+        for r in unique if r.succeeded is not None
+    ]
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
-    obs, rate, n_lines, n_no_outcome, n_duplicate, n_corrupt = _load_observations(root)
+    rows, rate, n_corrupt = _load(root)
+    n_lines = len(rows)
+    report = integrity.audit(rows, min_arm=args.min_arm)
+    obs = _observations(rows)
+    n_no_outcome = report.n_assignments - report.n_resolved
+    n_duplicate = report.n_duplicates
     if n_corrupt:
         print(
             f"[commontrace] WARNING: {n_corrupt} unparseable line(s) in the holdout log.\n"
@@ -174,8 +170,21 @@ def run(args: argparse.Namespace) -> int:
     if args.json:
         import dataclasses
 
-        print(json.dumps(dataclasses.asdict(summary), indent=2))
+        print(json.dumps({
+            **dataclasses.asdict(summary),
+            "integrity": dataclasses.asdict(report),
+        }, indent=2, default=str))
     else:
+        # Validity FIRST, effects second. A report that leads with a
+        # significant number and mentions the caveat underneath is exactly how
+        # a broken one gets quoted: the headline travels and the caveat does
+        # not. tests/test_integrity.py holds a fleet where the lesson does
+        # nothing and the estimate reads HURTS at p=0.003 -- if that page opens
+        # with "HURTS", someone retires a lesson that was fine.
+        print(integrity.render(report))
+        print()
+        print("---")
+        print()
         print(experiment.render(summary, alpha=args.alpha))
         if n_no_outcome:
             print(
@@ -188,6 +197,19 @@ def run(args: argparse.Namespace) -> int:
             )
 
     if args.strict:
+        # A compromised experiment fails --strict too, and it has to: the flag
+        # means "stop the build if the memory is making things worse", and a
+        # biased comparison cannot answer that either way. Passing it silently
+        # is the worse error -- it converts "we could not tell" into "we
+        # checked and it was fine", which is the claim nobody should make.
+        if not report.readable:
+            print(
+                "\n[commontrace] --strict: the experiment's validity is COMPROMISED, so "
+                "no verdict below can be trusted:\n"
+                + "\n".join(f"  - {f.headline}" for f in report.blocking),
+                file=sys.stderr,
+            )
+            return 1
         hurts = [e for e in effects if e.verdict == experiment.VERDICT_HURTS]
         if hurts:
             print(

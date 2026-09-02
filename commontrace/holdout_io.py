@@ -13,8 +13,10 @@ decision time and never reconstructed.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
+from dataclasses import dataclass
 
 from commontrace import experiment, frontmatter, paths
 
@@ -52,6 +54,13 @@ def assign_and_log(
     retry returns the same answer and an occasion cannot change arms.
     """
     withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rate, salt)}
+    # Written on every line from now on. Without it the log says how far an
+    # experiment has got and never when it will get there, and "underpowered"
+    # on day 30 of a 30-day pilot is a spent pilot -- the same fact on day 3
+    # is a holdout rate you can still change (commontrace/integrity.py:project).
+    # Old lines have no `at`; the projection degrades to "no accrual rate"
+    # rather than failing, so an existing log stays readable.
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     path = holdout_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -71,7 +80,78 @@ def assign_and_log(
                     "injected": slug not in withheld,
                     "rate": rate,
                     "salt": salt,
+                    "at": now,
                 }) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
     return withheld
+
+
+@dataclass(frozen=True)
+class LogRecord:
+    """One parsed assignment line. `at` is None on lines written before
+    timestamps were logged."""
+
+    lesson: str
+    occasion_id: str
+    injected: bool
+    rate: float
+    salt: str
+    at: datetime.datetime | None
+
+
+def read_log(root: str) -> tuple[list[LogRecord], int]:
+    """Every assignment ever logged, plus a count of unparseable lines.
+
+    Deliberately returns ALL of them, including duplicates and lines whose
+    occasion has no outcome. `experiment.analyze` needs the opposite -- the
+    resolved, de-duplicated subset -- but the validity checks
+    (commontrace/integrity.py) are mostly ABOUT what analysis drops, so a
+    reader that pre-filtered would be structurally unable to see the failure
+    it exists to find.
+
+    A corrupt line is counted, not raised: one torn write must not make the
+    rest of an experiment unreadable, and the count is surfaced so silent
+    data loss stays visible.
+    """
+    path = holdout_log_path(root)
+    if not os.path.isfile(path):
+        return [], 0
+
+    records: list[LogRecord] = []
+    corrupt = 0
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+                lesson = str(raw["lesson"])
+                occasion_id = str(raw["occasion_id"])
+                injected = bool(raw["injected"])
+            except (ValueError, KeyError, TypeError):
+                corrupt += 1
+                continue
+            at = None
+            if raw.get("at"):
+                try:
+                    at = datetime.datetime.fromisoformat(str(raw["at"]))
+                except ValueError:
+                    at = None
+            records.append(LogRecord(
+                lesson=lesson,
+                occasion_id=occasion_id,
+                injected=injected,
+                rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
+                salt=str(raw.get("salt", "")),
+                at=at,
+            ))
+    return records, corrupt
+
+
+def _float_or(value: object, default: float) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default

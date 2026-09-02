@@ -488,3 +488,136 @@ class TestOperatorCommands:
             "00000000-0000-0000-0000-000000000000", session_factory=session_factory
         )
         assert "no such organization" in capsys.readouterr().err
+
+
+class TestTheEstimateIsAuditable:
+    """Excluding unresolved observations (point 4 above) is correct handling
+    and, on its own, not enough.
+
+    Dropping them is unbiased ONLY if both arms lose them at the same rate.
+    The withheld arm is by construction the one working without its memory,
+    so it is the arm more likely to run long, escalate, or be abandoned
+    before anyone reports -- the treatment effect leaking into who gets
+    measured. `causal_effects` used to filter `succeeded IS NOT NULL` in the
+    SQL itself, which meant nothing downstream could even count what was
+    missing, let alone which arm it came from.
+
+    `tests/test_integrity.py` shows what that costs: a lesson with no effect
+    at all reporting a significant verdict with a tight interval.
+    """
+
+    async def test_the_report_carries_a_validity_verdict(self, session_factory, org):
+        traces = await _traces(session_factory, org, 1)
+        for i in range(40):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 3 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        assert report["integrity"]["verdict"] == "SOUND"
+        assert report["integrity"]["effects_readable"] is True
+        assert report["integrity"]["n_resolved"] == 40
+
+    async def test_passing_checks_come_back_too_not_just_failures(self, session_factory, org):
+        """A caller cannot tell "checked, clean" from "not checked" when only
+        problems are reported, and those mean opposite things about how far
+        to trust the number underneath."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(30):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        checks = {f["check"] for f in report["integrity"]["findings"]}
+        assert {"differential_attrition", "arm_balance", "consistent_arms"} <= checks
+
+    async def test_a_reporting_gap_in_one_arm_is_caught_and_named(self, session_factory, org):
+        """The load-bearing case, built the way it actually happens: every
+        injected occasion gets reported and most withheld ones do not."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(120):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            injected = bool(result["inject"])
+            if injected or i % 4 == 0:
+                await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        integrity_report = report["integrity"]
+        assert integrity_report["verdict"] == "COMPROMISED"
+        assert integrity_report["effects_readable"] is False
+        blocking = [f for f in integrity_report["findings"] if f["severity"] == "INVALIDATES"]
+        assert [f["check"] for f in blocking] == ["differential_attrition"]
+        # The unresolved rows are visible now. Before this they were filtered
+        # out in SQL, so `n_assignments` and `n_resolved` were the same number
+        # and the gap could not be seen from the response at all.
+        assert integrity_report["n_assignments"] > integrity_report["n_resolved"]
+
+    async def test_a_compromised_report_says_so_in_the_note_an_agent_reads(
+        self, session_factory, org
+    ):
+        """The MCP response is read by an agent, which acts on whichever field
+        it looks at first. The note that ships beside `effects` has to carry
+        the warning, not only a sibling key it may never open."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(120):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            if bool(result["inject"]) or i % 4 == 0:
+                await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        assert "READ `integrity` FIRST" in report["note"]
+
+    async def test_it_projects_when_each_trace_becomes_answerable(self, session_factory, org):
+        """`experiment` already says a lesson is underpowered. What decides
+        whether a pilot lands is WHEN -- told on day 30 the pilot is spent,
+        told on day 3 the holdout rate is still changeable."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(20):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        [projection] = report["integrity"]["projections"]
+        assert projection["trace_id"] == traces[0]
+        assert projection["binding_arm"] in ("withheld", "injected")
+        assert projection["advice"]
+
+    async def test_it_states_what_it_cannot_check(self, session_factory, org):
+        """Contamination -- an agent using a trace it was told to withhold --
+        leaves no trace in the record. Silence about it would read as
+        coverage of a failure nothing here can see."""
+        traces = await _traces(session_factory, org, 1)
+        await _assign(session_factory, org, traces, "occ-1")
+        await _resolve(session_factory, org, "occ-1", True)
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        assert "withhold" in report["integrity"]["not_checkable"]
+
+    async def test_two_experiments_still_never_pool(self, session_factory, org):
+        """The salt scope is still applied in SQL. Removing the
+        `succeeded IS NOT NULL` filter must not have widened anything else."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(10):
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", True)
+
+        async with session_scope(session_factory) as session:
+            organization = await session.get(Organization, org)
+            organization.holdout_salt = "salt-two"
+
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+
+        assert report["integrity"]["n_assignments"] == 0
+        assert report["effects"] == []

@@ -94,9 +94,18 @@ From a shell the same thing is `commontrace query --experiment
 surfaces share one arm-assignment implementation, so an occasion gets the
 same arm whichever one you use.
 
+Report an outcome for EVERY occasion you retrieved against, including
+the ones that were abandoned or escalated. Skipping the ones that went
+badly is the failure that biases the result most: the withheld arm is
+the one working without its memory, so it is the arm that runs long and
+gets abandoned. Both readers audit for this and refuse to report an
+effect when they find it, so an incomplete write-up produces no number
+rather than a wrong one.
+
 Read the result with `commontrace prove outcomes` (Hub) or
-`commontrace experiment` (local). A lesson can come back as `HURTS`; that
-is the point.
+`commontrace experiment` (local). A lesson can come back as `HURTS`;
+that is the point -- provided the validity section above it says the run
+is sound.
 """
 
 

@@ -240,7 +240,14 @@ def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
     # outcomes captured, and nothing joining them -- which reads as a clean
     # "no data" rather than as a bug.
     assert "no recorded outcome" not in result.stdout.lower(), result.stdout
-    assert "0 occasion" not in result.stdout.lower(), result.stdout
+    # The count itself, not a substring of it -- "about 100 occasions" in the
+    # power projection contains "0 occasion" and made the loose form pass or
+    # fail for reasons unrelated to what it was checking.
+    assert "Occasions analyzed: **0**" not in result.stdout, result.stdout
+    assert "Occasions analyzed: **60**" in result.stdout, result.stdout
+    # And the run has to be sound: an experiment this test drove end to end
+    # with an outcome captured for every occasion must not report attrition.
+    assert "**Sound.**" in result.stdout, result.stdout
 
 
 # --- capture -------------------------------------------------------------

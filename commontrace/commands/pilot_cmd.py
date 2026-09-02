@@ -6,7 +6,16 @@ import json
 import os
 import sys
 
-from commontrace import evidence_io, experiment, impact, paths, pilot, reliability, taxonomy
+from commontrace import (
+    evidence_io,
+    experiment,
+    impact,
+    integrity,
+    paths,
+    pilot,
+    reliability,
+    taxonomy,
+)
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
 from commontrace.commands._traces import load_trace_candidates, load_trace_instances
@@ -83,8 +92,19 @@ def run(args: argparse.Namespace) -> int:
     ) if evidence else []
     harmful_lesson_slugs = [s.slug for s in scores if s.verdict == reliability.VERDICT_HARMFUL]
 
-    obs, _rate, n_lines, _n_no_outcome, _n_dup, _n_corrupt = experiment_cmd._load_observations(root)
-    causal_effects = None if n_lines == 0 else (experiment.analyze(obs) if obs else [])
+    holdout_rows, _rate, _corrupt = experiment_cmd._load(root)
+    obs = experiment_cmd._observations(holdout_rows)
+    # The pilot report is the document a customer's sponsor reads to decide
+    # whether to renew, so a causal claim inside it needs the same validity
+    # gate `commontrace experiment` puts in front of one. A compromised run
+    # yields no effects here rather than effects with a caveat elsewhere on
+    # the page -- in a renewal deck the caveat does not survive the copy-paste.
+    causal_report = integrity.audit(holdout_rows) if holdout_rows else None
+    n_lines = causal_report.n_assignments if causal_report else 0
+    causal_effects = (
+        None if not holdout_rows
+        else (experiment.analyze(obs) if (obs and causal_report.readable) else [])
+    )
 
     pilot_json = _load_pilot_metrics(root, args.agent_type)
     if pilot_json:

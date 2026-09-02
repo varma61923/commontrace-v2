@@ -210,3 +210,66 @@ def _async(value):
         return value
 
     return _inner()
+
+
+class TestTheValidityVerdictIsAboveTheEffects:
+    """`prove outcomes` is the document that goes into a renewal
+    conversation, which is the worst place for a caveat under a table: the
+    number gets quoted and the footnote does not travel with it.
+    """
+
+    @staticmethod
+    def _report(integrity: dict) -> str:
+        from commontrace.commands import prove_cmd
+
+        return prove_cmd.render_outcomes({
+            "headline": "Resolution is up.",
+            "metrics": [],
+            "causal": {
+                "experiment_running": True,
+                "holdout_rate": 0.5,
+                "n_observations": 300,
+                "n_occasions": 300,
+                "integrity": integrity,
+                "effects": [{
+                    "trace_id": "t1", "title": "A lesson", "verdict": "HURTS",
+                    "n_injected": 150, "n_withheld": 150,
+                    "rate_injected": 0.48, "rate_withheld": 0.65,
+                    "effect": -0.17, "ci_95": [-0.28, -0.07], "p_value": 0.002,
+                    "significant": True, "min_detectable_effect": 0.1,
+                    "note": "Outcomes are WORSE when this is injected.",
+                }],
+            },
+        })
+
+    def test_a_compromised_sample_is_flagged_before_the_numbers(self):
+        text = self._report({
+            "verdict": "COMPROMISED", "effects_readable": False,
+            "findings": [{
+                "check": "differential_attrition", "severity": "INVALIDATES",
+                "headline": "The arms are not equally observed.",
+                "detail": "The withheld arm is losing occasions faster.",
+            }],
+        })
+        assert "Do not quote the effect sizes" in text
+        assert "more data will not fix it" in text
+        # Position, not presence: above the verdict it is warning about.
+        assert text.index("Do not quote") < text.index("HURTS")
+
+    def test_a_weakened_sample_says_so_without_suppressing_the_estimate(self):
+        text = self._report({
+            "verdict": "WEAKENED", "effects_readable": True,
+            "findings": [{"check": "differential_attrition", "severity": "WEAKENS",
+                          "headline": "38.0% of assignments never got an outcome.",
+                          "detail": ""}],
+        })
+        assert "Weakened" in text and "38.0%" in text
+        assert "HURTS" in text  # still an estimate, still shown
+
+    def test_a_clean_run_says_what_was_checked_and_what_was_not(self):
+        """Silence would read as coverage. Contamination -- an agent using a
+        memory it was told to withhold -- leaves no trace and is not checked
+        anywhere, so the report has to say so."""
+        text = self._report({"verdict": "SOUND", "effects_readable": True, "findings": []})
+        assert "Validity checked" in text
+        assert "told to withhold" in text

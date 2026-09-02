@@ -516,6 +516,20 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         holdout (`commontrace experiment`), which withholds lessons at
         random so the arms differ only by the treatment.
 
+        The causal estimate comes back under `causal`, and inside it
+        `causal.integrity` says whether the sample it was computed on can
+        support it. READ THAT BEFORE THE EFFECT SIZES. It is not a
+        formality: the estimate is computed only on occasions that got an
+        outcome reported, which is unbiased only when both arms report at
+        the same rate -- and the withheld arm, by construction the one
+        working without its memory, is the one more likely to run long or
+        be abandoned before anyone reports. When that happens the result
+        does not look empty or underpowered; it looks like a confident,
+        well-powered, significant effect with a tight interval.
+        `causal.integrity.effects_readable` is false when a named mechanism
+        is biasing it, and `causal.integrity.projections` says how far each
+        trace is from being answerable at all.
+
         Optionally narrow to one `agent_type`."""
         try:
             org_id = auth.get_current_org_id()
