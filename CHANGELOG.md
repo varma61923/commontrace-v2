@@ -390,6 +390,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A proposed lesson now carries the evidence needed to write it.** This is
+  the throughput limit on the whole product, and `distill` was making it as
+  expensive as possible.
+
+  Found by running the cold-start journey a new customer runs: import 60
+  support tickets, `taxonomy`, `distill`. The first two steps are good — 60
+  tickets in, five recurring failure families correctly identified, all
+  reported as uncovered gaps. The third produced five candidates that looked
+  like this:
+
+  - the description was the cluster's shared **terms** —
+    `"Candidate: 12 traces show a repeated pattern around: anywhere, byte,
+    csv, customer, empty"` — so a review queue was a list of
+    indistinguishable word bags. `description` is also a ranked retrieval
+    field, so those were the tokens the candidate matched on.
+  - the evidence section printed **one line per trace**, context only, with a
+    UUID on each — the same paragraph twelve times.
+  - **the solution text was nowhere in the file.** The one thing anyone needs
+    in order to write the Rule. Curating a lesson meant opening twelve trace
+    files to find what had actually worked.
+
+  That chain has a cost at every link: coverage stays low because curating is
+  expensive, retrieval returns nothing because coverage is low, and the
+  randomized experiment stays underpowered because there is nothing to
+  measure.
+
+  Now: the description is the **medoid** trace's own title — a sentence a
+  person already wrote about this exact failure, picked as the most typical
+  member of the cluster rather than whichever sorted first, and deterministic
+  so two identical runs propose identical text. The evidence section groups
+  repeats with counts and shows **both** the situation and what resolved it.
+
+  The most useful case is the one that was completely invisible before: when
+  a cluster has more than one distinct resolution, all of them are listed and
+  the candidate is flagged — *"3 different resolutions for the same symptom.
+  That usually means this is more than one problem — consider splitting the
+  candidate."* One symptom with three root causes written up as a single rule
+  produces a lesson that fires on cases it cannot help, and nothing surfaced
+  that before.
+
+  **The TODOs stay.** `applies_when`, `do_not_apply_when` and the Rule are
+  judgements, and filling them from a term-frequency count would push
+  fabricated text past the scaffolding guard that exists to stop exactly
+  that. Proposing better evidence is honest; proposing the conclusion is not.
+
+  The description is one real example standing in for a cluster and is
+  labelled as a proposal, because it is one — a reviewer still has to
+  generalise it, and a title carrying instance-specific detail (a ticket
+  number, a customer name) is a reason to edit it rather than to go back to
+  a word list.
+
+  Reaches the MCP surface for free: `propose_lessons` runs the real `distill`
+  command, so an agent calling `get_lesson` on a candidate now reads what
+  worked without looking up a single trace.
+
 - **The arm-balance check flagged one sound experiment in ten.** It shared
   the attrition check's alpha (0.10), and a two-sided test at alpha=0.10
   flags a *correct* randomizer about 10% of the time — at every n; that is

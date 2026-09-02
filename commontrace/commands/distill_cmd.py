@@ -114,6 +114,79 @@ def _unique_candidate_slug(ldir: str, date: str, n: int) -> str:
         i += 1
 
 
+def _candidate_body(cluster: distill.Cluster) -> list[str]:
+    """The evidence a reviewer needs, in the file they are reviewing.
+
+    What this used to emit was one line per trace, context only, with a UUID
+    on each -- so a 12-trace cluster printed the same paragraph twelve times
+    and the SOLUTION TEXT, the single thing anyone needs in order to write
+    the Rule, appeared nowhere at all. Writing a lesson meant opening twelve
+    trace files to find what had actually worked. That is the throughput
+    limit on this entire product: coverage stays low because curating is
+    expensive, retrieval returns nothing because coverage is low, and the
+    causal experiment stays underpowered because there is nothing to
+    measure.
+
+    So the evidence is grouped, and both halves are shown: the situation and
+    what resolved it. `distill.variants` collapses the repeats and counts
+    them, which also surfaces the case that matters most -- more than one
+    distinct solution to the same symptom means the cluster is really two
+    problems, and the candidate should be split rather than written up as
+    one rule.
+
+    The TODOs stay. `applies_when`, `do_not_apply_when` and the Rule are
+    JUDGEMENTS, and filling them in from a term-frequency count would put
+    fabricated text past the scaffolding guard that exists to stop exactly
+    that (commontrace/templates.py). Proposing better evidence is honest;
+    proposing the conclusion is not.
+    """
+    n = len(cluster.traces)
+    contexts = distill.variants([t.context_text for t in cluster.traces])
+    solutions = distill.variants([t.solution_text for t in cluster.traces])
+
+    lines = [
+        "## Rule",
+        "TODO: one actionable sentence, derived from `What worked` below.",
+        "",
+        "## Why",
+        f"{n} traces show this pattern. Grouped, they say:",
+        "",
+        "**The situation**",
+        "",
+    ]
+    lines += _variant_lines(contexts, n)
+    lines += ["", "**What worked**", ""]
+    lines += _variant_lines(solutions, n)
+    if len(solutions) > 1:
+        lines += [
+            "",
+            f"> Note: {len(solutions)} different resolutions for the same symptom. "
+            "That usually means this is more than one problem — consider splitting "
+            "the candidate, or narrowing `applies_when` until it covers only one.",
+        ]
+    lines += [
+        "",
+        "<!-- Source traces are listed in `source_traces` above. -->",
+        "",
+        "## How to apply",
+        "TODO: when to invoke it, how to use it concretely.",
+        "",
+        "## Counter-examples",
+        "TODO: cases where the rule does NOT apply.",
+    ]
+    return lines
+
+
+def _variant_lines(items: list[tuple[str, int]], total: int) -> list[str]:
+    if not items:
+        return ["- _(none recorded)_"]
+    shown = sum(count for _text, count in items)
+    lines = [f"- ({count} of {total}) {text}" for text, count in items]
+    if shown < total:
+        lines.append(f"- _…and {total - shown} further variant(s), each seen once._")
+    return lines
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     traces = _load_traces(root, args.agent_type)
@@ -158,23 +231,7 @@ def run(args: argparse.Namespace) -> int:
             source_traces=[t.id for t in cluster.traces],
             status="review",
         )
-        body_lines = [
-            "## Rule",
-            "TODO: derive the actionable rule from the traces below.",
-            "",
-            "## Why",
-        ]
-        for t in cluster.traces:
-            excerpt = (t.context_text or "").strip().replace("\n", " ")[:140]
-            body_lines.append(f"- `{t.title}` ({t.id}): {excerpt}")
-        body_lines += [
-            "",
-            "## How to apply",
-            "TODO: when to invoke it, how to use it concretely.",
-            "",
-            "## Counter-examples",
-            "TODO: cases where the rule does NOT apply.",
-        ]
+        body_lines = _candidate_body(cluster)
         out_path = os.path.join(ldir, f"{slug}.md")
         lesson_io.write_lesson(
             out_path, fm, "\n".join(body_lines) + "\n", root=root,

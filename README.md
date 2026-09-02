@@ -171,6 +171,32 @@ approve`. Traces already referenced by an existing lesson's `source_traces`
 are skipped on the next run, so re-running `distill` doesn't keep
 re-proposing patterns someone already curated.
 
+**A candidate arrives with its evidence, grouped.** Writing the rule is the
+expensive step in this whole pipeline, so the proposal carries what you need
+to write it — the situation *and* what actually resolved it, with repeats
+collapsed and counted:
+
+```markdown
+## Why
+12 traces show this pattern. Grouped, they say:
+
+**The situation**
+- (12 of 12) Customer scheduled a large CSV export and received a zero-byte file with no error in the UI.
+
+**What worked**
+- (12 of 12) The export exceeded the worker memory ceiling and was OOM-killed without surfacing. Re-ran with date chunking.
+```
+
+The case worth having is the other one. When a cluster has several distinct
+resolutions, all of them are listed and the candidate is flagged:
+
+> Note: 3 different resolutions for the same symptom. That usually means
+> this is more than one problem — consider splitting the candidate, or
+> narrowing `applies_when` until it covers only one.
+
+One symptom with three root causes, written up as a single rule, produces a
+lesson that fires on cases it cannot help. Nothing surfaced that before.
+
 **`approve` refuses a lesson that is still template text.** A candidate
 arrives with `applies_when`, the Rule, and the counter-examples all written
 as `TODO: ...`; approving it as-is would activate a lesson that teaches the
