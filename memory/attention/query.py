@@ -195,6 +195,87 @@ def _append_telemetry(record, path=None):
         print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
 
 
+def check_staleness(
+    index_path: str,
+    lessons_dir: str,
+    indexed_slugs: "set[str]",
+    active_slugs: "set[str]",
+):
+    """Return a list of human-readable reasons the on-disk index may no longer match the
+    current lesson store, or [] if it looks current.
+
+    build_index.py already refuses a no-op rebuild once either signal below fires, but
+    that check only runs when someone *remembers* to invoke build_index.py again. Nothing
+    previously stopped `query.py` itself from silently ranking against embeddings that no
+    longer reflect what is on disk -- edit a lesson's wording (same slug, so the
+    importance-floor override above never notices) and every subsequent query keeps
+    scoring the *old* text with no signal anything is wrong. Two independent signals,
+    mirroring build_index.py's own freshness check:
+      1. slug set: the active lesson slugs on disk differ from what got embedded --
+         catches deletions/renames/status changes that don't necessarily advance any
+         *surviving* file's mtime.
+      2. mtime: an ACTIVE lesson file (add or edit) is newer than the index file itself
+         (a same-slug edit -- reworded rule/applies_when -- that signal 1 can't see).
+         Deliberately excludes archived/malformed lessons so touching one of *those*
+         doesn't manufacture a false warning: only a file newer than the index is even
+         opened and frontmatter-parsed, so on the common already-fresh path (nothing
+         postdates the index) this reads nothing and costs one glob + a stat per file --
+         no full second frontmatter-parse pass duplicating load_importances()'s.
+    Best-effort throughout: an unreadable index_path, lessons_dir, or individual lesson
+    file just drops out of the signal it would have fed rather than raising -- staleness
+    detection must never itself break retrieval.
+    """
+    reasons: list[str] = []
+
+    added = active_slugs - indexed_slugs
+    removed = indexed_slugs - active_slugs
+    if added:
+        reasons.append(
+            f"{len(added)} active lesson(s) not embedded in the index: {', '.join(sorted(added))}"
+        )
+    if removed:
+        reasons.append(
+            f"{len(removed)} embedded slug(s) no longer active on disk: {', '.join(sorted(removed))}"
+        )
+
+    try:
+        index_mtime = os.path.getmtime(index_path)
+    except OSError:
+        index_mtime = None
+    if index_mtime is not None:
+        newest_active_mtime = 0.0
+        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+            if os.path.basename(path) == "lesson_template.md":
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime <= index_mtime:
+                continue  # can't raise newest_active_mtime past index_mtime either way
+            try:
+                with open(path, "r", encoding="utf-8-sig") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            delims = list(_DELIM_RE.finditer(content))
+            if len(delims) < 2:
+                continue
+            try:
+                frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
+            except yaml.YAMLError:
+                continue
+            if not isinstance(frontmatter, dict):
+                continue
+            if frontmatter.get("status", "active") != "active":
+                continue
+            newest_active_mtime = max(newest_active_mtime, mtime)
+        if newest_active_mtime > index_mtime:
+            reasons.append("an active lesson file was modified after the index was last built")
+
+    return reasons
+
+
 def _positive_int(raw: str) -> int:
     """argparse type= for --top-k. `order[:top_k]` below is a Python slice,
     not a bounds check: `order[:-1]` means "all but the last", not
@@ -338,6 +419,7 @@ def main() -> int:
     # last `build_index.py` run exists on disk but not in the index, so iterating only the
     # index's own slugs silently breaks this script's own documented safety guarantee for
     # exactly the lessons most likely to need it (freshly-authored critical rules).
+    indexed_slugs = {str(s) for s in slugs}
     floor = args.include_importance_floor
     missing_from_index = []
     # importance is schema-bounded to [1, 5] (protocol/schemas/lesson.schema.json),
@@ -348,7 +430,6 @@ def main() -> int:
     # valid range and there was previously no way to disable the override at all.
     if floor is not None and floor > 0:
         existing = set(top_k_idx)
-        indexed_slugs = {str(s) for s in slugs}
         for i, slug in enumerate(slugs):
             if i in existing:
                 continue
@@ -360,11 +441,27 @@ def main() -> int:
                 missing_from_index.append((slug, imp))
 
     override_desc = f"+ importance>={floor} override" if floor is not None and floor > 0 else "override disabled"
+
+    # General staleness check (independent of the importance floor above): catches an
+    # edited-but-not-renamed lesson, a below-floor addition/removal, or a forgotten
+    # rebuild after any lesson-store change. See check_staleness()'s docstring.
+    stale_reasons = check_staleness(
+        INDEX_PATH, LESSONS_DIR, indexed_slugs, set(importances.keys())
+    )
+
     brief_lines = [
         f"# Top-{args.top_k} retrieval ({override_desc})",
         f"# Index: {n_lessons} lessons, model={model_name}",
         f"# Query: {args.query!r}",
     ]
+    if stale_reasons:
+        brief_lines.append(f"# WARNING: index may be stale -- {'; '.join(stale_reasons)}")
+        print(
+            f"[WARN] {INDEX_PATH} may be stale -- {'; '.join(stale_reasons)}. "
+            "Cosine scores below may not reflect current lesson content. Rebuild: "
+            "python memory/attention/build_index.py --force",
+            file=sys.stderr,
+        )
     if missing_from_index:
         print(
             f"# WARNING: {len(missing_from_index)} importance>={floor} lesson(s) not yet in "
@@ -400,6 +497,7 @@ def main() -> int:
             "n_frontmatters_parsed": n_frontmatters_parsed,
             "n_candidates_surfaced": len(top_k_idx),
             "n_missing_from_index": len(missing_from_index),
+            "index_stale": bool(stale_reasons),
             "estimated_tokens": estimated_tokens,
             "top_k": args.top_k,
             "query_chars": len(args.query),
