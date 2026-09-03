@@ -290,19 +290,47 @@ python -m hub.main
 Clients connect to `https://<your-host>/mcp` with
 `Authorization: Bearer <api-key>`.
 
-## 6. Scaling, and the one thing that doesn't scale horizontally yet
+## 6. Scaling, and rate-limit backends
 
 The Hub is stateless apart from Postgres, so replicas scale out normally —
-**with one documented exception**:
+**with one caveat that depends on a setting**:
 
-> `contribute_trace` rate limiting (`hub/abuse.py`) is an **in-process token
+> By default, rate limiting (`hub/abuse.py`) is an **in-process token
 > bucket**. It resets on restart and does not coordinate across replicas, so
 > N replicas allow roughly N× the configured rate.
 
-That is a known MVP limitation, not a bug to be surprised by. Until it moves
-to a shared store (Redis `INCR`+`EXPIRE`, or a Postgres-backed bucket), your
-options are: run a single replica, set `HUB_RATE_LIMIT_PER_MINUTE` to
-`desired ÷ replicas`, or enforce the real limit at your ingress.
+`HUB_RATE_LIMIT_BACKEND` selects which `RateLimiter` implementation backs
+every limiter the Hub constructs (`contribute_trace`/`amend_trace`, the
+per-request read limiter, and the pre-auth attempt limiter alike):
+
+- `memory` (default) — the in-process bucket above. Exact current behavior;
+  an existing deployment that never sets this is unaffected. Right choice
+  for a single replica, or when you'd rather cap the *effective* rate by
+  setting `HUB_RATE_LIMIT_PER_MINUTE` to `desired ÷ replicas`, or enforce
+  the real limit at your ingress instead.
+- `postgres` — a token bucket backed by a `hub_rate_limit_buckets` table in
+  this same database (created with `CREATE TABLE IF NOT EXISTS` on first
+  use, not an Alembic migration — no schema change to run). Every replica
+  sharing one `HUB_DATABASE_URL` enforces one real shared limit instead of
+  its own independent N-way allowance. No new infrastructure dependency
+  (no Redis), but the every-request call sites this gates
+  (`ApiKeyAuthMiddleware`, `contribute_trace`/`amend_trace`) call
+  `RateLimiter.allow()` synchronously — a constraint of the existing
+  interface, unchanged by this feature — so each `allow()` call becomes a
+  **blocking** Postgres round trip that stalls that replica's entire event
+  loop (every other in-flight request on it, not just the one calling
+  `allow()`) for its duration, typically sub-millisecond to a few ms
+  against a co-located Postgres but real under load or DB latency spikes.
+  It also adds query load to the same database serving every other
+  request. Budget for both before enabling this on a deployment with a
+  strict latency target; a lightly-loaded internal deployment behind a
+  handful of replicas is the comfortable case. One exception either way:
+  the `/readyz` liveness-probe limiter is constructed directly in
+  `hub/server.py`, outside this setting, and always stays in-process (a
+  per-replica liveness check has no reason to be shared).
+
+Set `HUB_RATE_LIMIT_BACKEND=postgres` once you're running more than one
+replica and need the configured rate to actually mean what it says.
 
 Search scales differently and is fine: matching goes through the
 `ix_traces_search_vector_gin` full-text index rather than a sequential scan

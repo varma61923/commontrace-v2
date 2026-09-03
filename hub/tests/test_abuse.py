@@ -1,12 +1,64 @@
 from __future__ import annotations
 
+import os
+import time
+import uuid
 from dataclasses import dataclass
 
 import pytest
 
 from hub import abuse
-from hub.abuse import RateLimiter, TraceRejected, resolve_client_key, suspicion_reason, validate_size
+from hub.abuse import (
+    PostgresRateLimiter,
+    RateLimiter,
+    TraceRejected,
+    resolve_client_key,
+    suspicion_reason,
+    validate_size,
+)
 from hub.config import HubConfig
+
+# Separate from hub/tests/conftest.py's TEST_DATABASE_URL on purpose: that
+# fixture's _schema drops/recreates every table in hub/models.py's Base
+# metadata, and hub_rate_limit_buckets is deliberately NOT one of those
+# (no Alembic migration -- see PostgresRateLimiter's docstring). Reading
+# the same env var directly here means these tests still point at the same
+# real database without taking a dependency on conftest's schema fixture.
+PG_TEST_DATABASE_URL = os.environ.get(
+    "HUB_TEST_DATABASE_URL",
+    "postgresql+asyncpg://commontrace_dev:devpassword@localhost:5432/commontrace_hub_test",
+)
+
+
+def _skip_if_no_pg():
+    if not PG_TEST_DATABASE_URL:
+        pytest.skip("HUB_TEST_DATABASE_URL not set; PostgresRateLimiter tests need a real Postgres instance")
+
+
+@pytest.fixture
+def pg_limiter_factory():
+    """Builds PostgresRateLimiter instances against the test database. Every
+    instance built with the same database_url in this process shares one
+    background thread/asyncpg pool (PostgresRateLimiter._shared, keyed by
+    DSN) that lives for the test process's whole lifetime by design -- see
+    PostgresRateLimiter.close()'s docstring for why closing one instance
+    must not tear that down for the others still using it -- so there is
+    nothing for this fixture's teardown to close. Each call defaults to a
+    fresh random limiter_name so tests never see bucket rows a previous
+    test (or a previous run against a persistent local test DB) left behind
+    -- callers that want to share one limiter_name across two instances
+    (simulating two replicas) pass it explicitly."""
+    _skip_if_no_pg()
+
+    def make(per_minute: int, burst: int, limiter_name: str | None = None) -> PostgresRateLimiter:
+        return PostgresRateLimiter(
+            per_minute=per_minute,
+            burst=burst,
+            database_url=PG_TEST_DATABASE_URL,
+            limiter_name=limiter_name or f"test-{uuid.uuid4().hex[:8]}",
+        )
+
+    yield make
 
 
 @dataclass
@@ -229,3 +281,135 @@ def test_negative_per_minute_also_denies_every_key():
     limiter = RateLimiter(per_minute=-1, burst=5)
     assert limiter.allow("org-x") is False
     assert limiter.allow("idle-org") is False
+
+
+# --- HUB_RATE_LIMIT_BACKEND config -----------------------------------------
+
+
+def test_memory_is_the_default_rate_limit_backend(small_config):
+    assert small_config.rate_limit_backend == "memory"
+
+
+def test_invalid_rate_limit_backend_rejected():
+    with pytest.raises(ValueError):
+        HubConfig(database_url="postgresql+asyncpg://unused/unused", rate_limit_backend="redis")
+
+
+def test_make_rate_limiter_defaults_to_in_memory_backend(small_config):
+    assert isinstance(abuse.make_rate_limiter(small_config), RateLimiter)
+    assert isinstance(abuse.make_read_rate_limiter(small_config), RateLimiter)
+    assert isinstance(abuse.make_auth_rate_limiter(small_config), RateLimiter)
+
+
+def test_to_asyncpg_dsn_strips_sqlalchemy_driver_suffix():
+    assert abuse._to_asyncpg_dsn("postgresql+asyncpg://u:p@h:5432/d") == "postgresql://u:p@h:5432/d"
+
+
+def test_to_asyncpg_dsn_passes_through_a_bare_dsn_unchanged():
+    assert abuse._to_asyncpg_dsn("postgresql://u:p@h:5432/d") == "postgresql://u:p@h:5432/d"
+
+
+# --- PostgresRateLimiter (needs a real Postgres -- see conftest.py) --------
+
+
+def test_pg_rate_limiter_allows_up_to_burst_then_blocks(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=60, burst=3)
+    assert limiter.allow("org-x") is True
+    assert limiter.allow("org-x") is True
+    assert limiter.allow("org-x") is True
+    assert limiter.allow("org-x") is False
+
+
+def test_pg_rate_limiter_is_per_key(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=60, burst=1)
+    assert limiter.allow("org-a") is True
+    assert limiter.allow("org-b") is True  # independent bucket, not shared with org-a
+    assert limiter.allow("org-a") is False
+
+
+def test_pg_rate_limiter_zero_per_minute_denies_every_key_from_the_first_call(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=0, burst=5)
+    for _ in range(5):
+        assert limiter.allow("org-x") is False
+    assert limiter.allow("org-brand-new") is False
+
+
+def test_pg_rate_limiter_negative_per_minute_also_denies_every_key(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=-1, burst=5)
+    assert limiter.allow("org-x") is False
+    assert limiter.allow("idle-org") is False
+
+
+def test_pg_rate_limiter_refills_continuously_over_time(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=6000, burst=1)  # ~100 tokens/sec
+    assert limiter.allow("org-x") is True
+    assert limiter.allow("org-x") is False
+    time.sleep(0.05)  # comfortably >= 1 token refilled at 100/sec
+    assert limiter.allow("org-x") is True
+
+
+def test_pg_rate_limiter_namespaces_by_limiter_name(pg_limiter_factory):
+    """Two limiters with different limiter_name but the same key must not
+    share a bucket -- e.g. the write limiter and the read limiter must not
+    let one org's write-rate exhaustion also block its reads."""
+    write_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="write-ns-test")
+    read_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="read-ns-test")
+    assert write_limiter.allow("org-shared-key") is True
+    assert write_limiter.allow("org-shared-key") is False
+    assert read_limiter.allow("org-shared-key") is True  # unaffected by the write bucket
+
+
+def test_pg_rate_limiter_shares_state_across_instances(pg_limiter_factory):
+    """The whole point of this backend: two PostgresRateLimiter instances
+    constructed with the same limiter_name -- standing in for two replicas
+    of a horizontally-scaled Hub -- enforce one shared limit instead of
+    each granting its own independent allowance (the gap hub/DEPLOYMENT.md
+    documents for the in-memory RateLimiter)."""
+    shared_name = f"shared-{uuid.uuid4().hex[:8]}"
+    replica_a = pg_limiter_factory(per_minute=60, burst=2, limiter_name=shared_name)
+    replica_b = pg_limiter_factory(per_minute=60, burst=2, limiter_name=shared_name)
+
+    assert replica_a.allow("org-x") is True
+    assert replica_b.allow("org-x") is True
+    # Burst of 2 is now exhausted across BOTH replicas combined, not 2 each.
+    assert replica_a.allow("org-x") is False
+    assert replica_b.allow("org-x") is False
+
+
+def test_pg_rate_limiter_sweeps_idle_rows(pg_limiter_factory):
+    """Same regression this module already covers for RateLimiter's
+    in-memory buckets (test_rate_limiter_evicts_idle_buckets above): a
+    bucket idle past the TTL is swept, and a fresh call for that key
+    afterward behaves like a brand-new key rather than resuming stale
+    state (which would be observably identical here, but the row must
+    actually be gone -- unbounded table growth is the bug this guards
+    against for a long-running Hub)."""
+    limiter = pg_limiter_factory(per_minute=60, burst=1)
+    limiter._IDLE_TTL_SECONDS = 0.05
+    limiter._SWEEP_INTERVAL_SECONDS = 0.0
+
+    assert limiter.allow("idle-org") is True
+    assert limiter.allow("idle-org") is False  # bucket exhausted
+
+    time.sleep(0.2)  # past the idle TTL
+    assert limiter.allow("busy-org") is True  # triggers the sweep as a side effect
+    time.sleep(0.2)  # let the fire-and-forget sweep task actually run
+
+    # A fresh call for the swept key behaves like a brand-new key -- full
+    # burst capacity again, not a resumed or exhausted bucket.
+    assert limiter.allow("idle-org") is True
+
+
+def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_factory):
+    _skip_if_no_pg()
+    config = HubConfig(database_url=PG_TEST_DATABASE_URL, rate_limit_backend="postgres")
+    limiter = abuse.make_rate_limiter(config)
+    try:
+        assert isinstance(limiter, PostgresRateLimiter)
+        # Random key: make_rate_limiter always uses the fixed "write"
+        # limiter_name, so a fixed key could collide with state a previous
+        # run against a persistent local test DB left behind.
+        key = f"org-{uuid.uuid4().hex[:8]}"
+        assert limiter.allow(key) is True
+    finally:
+        limiter.close()

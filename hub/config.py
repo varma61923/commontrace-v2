@@ -120,6 +120,17 @@ class HubConfig:
     rate_limit_burst: int = 30
     suspect_url_threshold: int = 5  # >N URLs in one submission -> quarantine
 
+    # Which RateLimiter implementation hub/abuse.py's make_*_rate_limiter()
+    # factories construct. "memory" (default) is the original in-process
+    # token bucket -- exact current behavior, so an existing deployment that
+    # never sets this env var is unaffected. "postgres" shares bucket state
+    # in a table in this same database instead, so a horizontally-scaled
+    # deployment (multiple replicas) enforces one shared limit instead of
+    # N replicas each granting their own independent allowance (hub/
+    # DEPLOYMENT.md section 6). Validated in __post_init__ below rather than
+    # left to fail confusingly wherever a factory happens to read it.
+    rate_limit_backend: str = "memory"
+
     # --- Rate limiting: every authenticated request, and auth itself ---
     #
     # rate_limit_per_minute above only ever gated the two write tools
@@ -283,6 +294,12 @@ class HubConfig:
     log_level: str = "INFO"
     extra: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.rate_limit_backend not in ("memory", "postgres"):
+            raise ValueError(
+                f"HUB_RATE_LIMIT_BACKEND must be 'memory' or 'postgres', got {self.rate_limit_backend!r}"
+            )
+
     def validate_transport_safety(self) -> None:
         """Refuse to construct a config that would serve plaintext HTTP on a
         publicly reachable interface. Called from hub/main.py at startup --
@@ -324,6 +341,7 @@ class HubConfig:
             rate_limit_per_minute=_env_int_in_range("HUB_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
             rate_limit_burst=_env_int_in_range("HUB_RATE_LIMIT_BURST", 30, 0, 1_000_000),
             suspect_url_threshold=_env_int_in_range("HUB_SUSPECT_URL_THRESHOLD", 5, 0, 10_000),
+            rate_limit_backend=os.environ.get("HUB_RATE_LIMIT_BACKEND", "memory"),
             read_rate_limit_per_minute=_env_int_in_range("HUB_READ_RATE_LIMIT_PER_MINUTE", 300, 0, 10_000_000),
             read_rate_limit_burst=_env_int_in_range("HUB_READ_RATE_LIMIT_BURST", 60, 0, 1_000_000),
             auth_attempts_per_minute=_env_int_in_range("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60, 0, 10_000_000),
