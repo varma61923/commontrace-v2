@@ -306,8 +306,15 @@ class TestArchivedLessonsExcludedFromTopK:
             rc = attn_query.main()
         out = buf.getvalue()
         assert rc == 0
-        assert "archived_one" not in out
-        assert "active_one" in out
+        # archived_one must never be ranked as a result -- but it IS correctly named in
+        # the staleness warning (an embedded slug this index has that is no longer
+        # active on disk is exactly the condition check_staleness() exists to surface),
+        # so check the result lines specifically rather than the whole output.
+        result_lines = [
+            line for line in out.splitlines() if line and not line.startswith("#")
+        ]
+        assert not any(line.startswith("archived_one ") for line in result_lines)
+        assert any(line.startswith("active_one ") for line in result_lines)
 
 
 class TestImportanceFloorZeroDisablesOverride:
@@ -348,6 +355,161 @@ class TestImportanceFloorZeroDisablesOverride:
         assert len(result_lines) == 2, f"expected top-k=2 results, got {len(result_lines)}: {result_lines}"
         assert "override disabled" in out
 
+
+class TestCheckStaleness:
+    """Unit tests for check_staleness() -- query.py's own detection that index.npz no
+    longer matches the current lesson store, independent of build_index.py's freshness
+    check (which only protects the *next* build, not queries run against a stale one)."""
+
+    def test_matching_slugs_and_older_lessons_is_not_stale(self, tmp_path):
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        os.utime(index_path, (2_000_000_000, 2_000_000_000))
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir()
+        lesson = lessons_dir / "lesson_a.md"
+        lesson.write_text(
+            "---\nname: lesson_a\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        os.utime(lesson, (1_000_000_000, 1_000_000_000))  # older than the index
+        reasons = attn_query.check_staleness(
+            str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
+        )
+        assert reasons == []
+
+    def test_active_lesson_missing_from_index_is_stale(self, tmp_path):
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir()
+        reasons = attn_query.check_staleness(
+            str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a", "lesson_b"}
+        )
+        assert any("lesson_b" in r for r in reasons)
+
+    def test_indexed_slug_no_longer_active_is_stale(self, tmp_path):
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir()
+        reasons = attn_query.check_staleness(
+            str(index_path), str(lessons_dir), {"lesson_a", "lesson_b"}, {"lesson_a"}
+        )
+        assert any("lesson_b" in r for r in reasons)
+
+    def test_edited_lesson_same_slug_detected_via_mtime(self, tmp_path):
+        """A reworded lesson (same slug, so the slug-set signal alone stays silent) must
+        still be caught -- this is the gap the mtime signal exists to close."""
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        os.utime(index_path, (1_000_000_000, 1_000_000_000))
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir()
+        lesson = lessons_dir / "lesson_a.md"
+        lesson.write_text(
+            "---\nname: lesson_a\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        os.utime(lesson, (2_000_000_000, 2_000_000_000))  # newer than the index
+        reasons = attn_query.check_staleness(
+            str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
+        )
+        assert any("modified after" in r for r in reasons)
+
+    def test_archived_lesson_edit_does_not_count_towards_mtime_signal(self, tmp_path):
+        """A touched archived lesson, newer than the index but never embedded, must not
+        trigger the mtime signal -- this is the false-positive it must avoid. (The
+        slug-set signal is a separate concern and doesn't apply here: an archived lesson
+        is correctly absent from both `indexed_slugs` and `active_slugs`.)"""
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        os.utime(index_path, (1_000_000_000, 1_000_000_000))
+        lessons_dir = tmp_path / "lessons"
+        lessons_dir.mkdir()
+        archived = lessons_dir / "lesson_archived.md"
+        archived.write_text(
+            "---\nname: lesson_archived\nstatus: archived\n---\nbody\n", encoding="utf-8"
+        )
+        os.utime(archived, (2_000_000_000, 2_000_000_000))  # newer than the index
+        reasons = attn_query.check_staleness(
+            str(index_path), str(lessons_dir), {"lesson_a"}, {"lesson_a"}
+        )
+        assert reasons == []
+
+    def test_missing_lessons_dir_is_best_effort_not_a_crash(self, tmp_path):
+        index_path = tmp_path / "index.npz"
+        index_path.write_bytes(b"x")
+        reasons = attn_query.check_staleness(
+            str(index_path), str(tmp_path / "does_not_exist"), {"lesson_a"}, {"lesson_a"}
+        )
+        assert reasons == []  # slug sets match; mtime scan of a missing dir just finds nothing
+
+    def test_missing_index_file_is_best_effort_not_a_crash(self, tmp_path):
+        reasons = attn_query.check_staleness(
+            str(tmp_path / "does_not_exist.npz"), str(tmp_path), {"lesson_a"}, {"lesson_a"}
+        )
+        assert reasons == []  # slug sets match; mtime check just skips silently
+
+
+class TestQueryMainSurfacesStaleness:
+    """End-to-end (through main()) check that a stale index produces a visible
+    [WARN]/stdout signal instead of silently returning results."""
+
+    def _setup(self, tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2")):
+        index_path = tmp_path / "index.npz"
+        _write_index(str(index_path), attn_query._TRUSTED_MODEL_NAME, n=len(lesson_slugs))
+        os.utime(index_path, (2_000_000_000, 2_000_000_000))
+        monkeypatch.setattr(attn_query, "INDEX_PATH", str(index_path))
+        monkeypatch.setattr(attn_query, "LESSONS_DIR", str(tmp_path))
+        monkeypatch.setattr(attn_query, "TELEMETRY_PATH", str(tmp_path / "alpha_telemetry.jsonl"))
+
+        class FakeModel:
+            def encode(self, *a, **k):
+                return np.zeros(3, dtype=np.float32)
+
+        monkeypatch.setattr(attn_query, "SentenceTransformer", lambda name: FakeModel())
+        monkeypatch.setattr(sys, "argv", ["query.py", "some task"])
+        return index_path
+
+    def test_matching_lessons_on_disk_produce_no_stale_warning(self, tmp_path, monkeypatch, capsys):
+        self._setup(tmp_path, monkeypatch)
+        for slug in ("lesson_0", "lesson_1", "lesson_2"):
+            (tmp_path / f"{slug}.md").write_text(
+                f"---\nname: {slug}\nimportance: 1\nstatus: active\n---\nbody\n", encoding="utf-8"
+            )
+            os.utime(tmp_path / f"{slug}.md", (1_000_000_000, 1_000_000_000))  # older than index
+
+        rc = attn_query.main()
+        assert rc == 0
+        out, err = capsys.readouterr()
+        assert "WARNING: index may be stale" not in out
+        assert "[WARN]" not in err or "stale" not in err
+
+    def test_lesson_added_since_build_triggers_stale_warning(self, tmp_path, monkeypatch, capsys):
+        self._setup(tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2"))
+        # A brand new, low-importance lesson: absent from the index and below the
+        # importance floor, so only the new staleness check (not the existing
+        # missing_from_index override) can surface it.
+        (tmp_path / "lesson_new.md").write_text(
+            "---\nname: lesson_new\nimportance: 1\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+
+        rc = attn_query.main()
+        assert rc == 0
+        out, err = capsys.readouterr()
+        assert "WARNING: index may be stale" in out
+        assert "lesson_new" in out
+        assert "[WARN]" in err and "stale" in err
+
+    def test_telemetry_records_index_stale_flag(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, lesson_slugs=("lesson_0", "lesson_1", "lesson_2"))
+        (tmp_path / "lesson_new.md").write_text(
+            "---\nname: lesson_new\nimportance: 1\nstatus: active\n---\nbody\n", encoding="utf-8"
+        )
+        rc = attn_query.main()
+        assert rc == 0
+        telemetry_path = tmp_path / "alpha_telemetry.jsonl"
+        rec = json.loads(telemetry_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert rec["index_stale"] is True
 
 class TestStrictBoolLoaderParity:
     """query.py used plain yaml.safe_load while build_index.py used

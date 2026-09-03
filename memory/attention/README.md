@@ -60,6 +60,35 @@ silently excluded by an orthogonal query. Floor configurable via
 
 The `--force` mode ignores the freshness check (mtime).
 
+## Staleness Detection at Query Time
+
+`build_index.py`'s freshness check only protects the *next* `build_index.py`
+invocation — it does nothing if a lesson changes and nobody remembers to
+rebuild. `query.py` therefore runs its own, independent staleness check on
+every invocation, before returning results:
+
+1. **Slug-set drift**: the set of currently-active lesson slugs on disk is
+   compared against the slugs actually embedded in `index.npz`. Catches
+   lessons added, archived, or deleted since the last build — including
+   below the importance floor, where the existing safety override wouldn't
+   otherwise surface the gap.
+2. **mtime drift**: any *active* `lesson_*.md` file newer than `index.npz`
+   itself (an edit that keeps the same slug, e.g. reworded `rule` or
+   `applies_when`, which the slug-set check alone can't see). Archived or
+   malformed lessons are deliberately excluded from this signal — editing
+   one of those doesn't change what got embedded, so it must not trigger a
+   false warning.
+
+Either signal firing prints a `[WARN]` to stderr and adds a
+`# WARNING: index may be stale -- ...` comment line to the `query.py`
+stdout brief itself, so Alpha sees it inline rather than only in a log it
+may not be reading. The query still runs and returns its best-effort
+result — a stale index is a **degraded** signal, not a fatal one, since the
+alternative (refusing to answer) would make retrieval unavailable exactly
+when a rebuild hasn't caught up yet. `alpha_telemetry.jsonl` records an
+`index_stale` boolean per invocation so staleness frequency is visible in
+aggregate, not just per-call.
+
 ## Dreamer Hooks (v2.4, NOT implemented here)
 
 The `index.npz` format is intentionally exposed for reuse by a future
