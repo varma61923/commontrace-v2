@@ -32,7 +32,9 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import math
 import re
+import threading
 import time
 import uuid
 
@@ -40,9 +42,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
-from hub.abuse import RateLimiter
+from hub.abuse import RateLimiter, resolve_client_key
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
@@ -152,6 +154,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            METRICS.observe_request(request.method, request.url.path, status, duration_ms)
+            if status == 429:
+                METRICS.observe_rate_limited("http")
             # Deliberately does not log query strings or bodies: request
             # payloads here carry customer trace content.
             self._logger.info(
@@ -166,10 +171,94 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             current_request_id.reset(token)
 
 
+class Metrics:
+    """Process-wide counters, rendered in Prometheus text format.
+
+    WHY: nothing in this Hub could answer "how many requests are we
+    refusing, and why" without grepping JSON logs after the fact. Rate
+    limiting in particular is invisible until a customer complains -- the
+    429s are the earliest signal that a limit is set wrong or that a client
+    is misbehaving, and they were only ever a log line.
+
+    WHAT IS DELIBERATELY NOT LABELLED: org_id, api key prefix, tool
+    arguments, query text. Per-org labels would make this a cardinality
+    problem (one time series per customer, unbounded) and a privacy one --
+    a scrape endpoint is a different trust boundary from an authenticated
+    tool call, and DATA_RETENTION.md's reasoning about not logging query
+    text applies here for the same reason. Method, path and status are
+    bounded, non-identifying sets.
+
+    Counters only, never gauges derived from the database: this must stay a
+    cheap in-memory read, so that scraping it can never itself become load
+    on Postgres the way /readyz can.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests: dict[tuple[str, str, int], int] = {}
+        self._duration_sum_ms: dict[str, float] = {}
+        self._rate_limited: dict[str, int] = {}
+
+    def observe_request(self, method: str, path: str, status: int, duration_ms: float) -> None:
+        # The path is bucketed to the routes this app actually serves, so a
+        # client cannot inflate cardinality by requesting /aaaa, /aaab, ...
+        # -- an unbounded label set is the classic way a metrics endpoint
+        # becomes the outage.
+        bucket = path if path in _KNOWN_PATHS else "other"
+        with self._lock:
+            key = (method, bucket, status)
+            self._requests[key] = self._requests.get(key, 0) + 1
+            self._duration_sum_ms[bucket] = self._duration_sum_ms.get(bucket, 0.0) + duration_ms
+
+    def observe_rate_limited(self, limiter: str) -> None:
+        with self._lock:
+            self._rate_limited[limiter] = self._rate_limited.get(limiter, 0) + 1
+
+    def render(self) -> str:
+        with self._lock:
+            requests = dict(self._requests)
+            durations = dict(self._duration_sum_ms)
+            rate_limited = dict(self._rate_limited)
+
+        lines = [
+            "# HELP commontrace_hub_requests_total Requests served, by method, route and status.",
+            "# TYPE commontrace_hub_requests_total counter",
+        ]
+        for (method, path, status), count in sorted(requests.items()):
+            lines.append(
+                f'commontrace_hub_requests_total{{method="{method}",path="{path}",'
+                f'status="{status}"}} {count}'
+            )
+        lines += [
+            "# HELP commontrace_hub_request_duration_ms_total Summed request duration, by route.",
+            "# TYPE commontrace_hub_request_duration_ms_total counter",
+        ]
+        for path, total in sorted(durations.items()):
+            lines.append(f'commontrace_hub_request_duration_ms_total{{path="{path}"}} {total:.2f}')
+        lines += [
+            "# HELP commontrace_hub_rate_limited_total Requests refused, by which limiter refused them.",
+            "# TYPE commontrace_hub_rate_limited_total counter",
+        ]
+        for limiter, count in sorted(rate_limited.items()):
+            lines.append(f'commontrace_hub_rate_limited_total{{limiter="{limiter}"}} {count}')
+        return "\n".join(lines) + "\n"
+
+
+_KNOWN_PATHS = frozenset({"/mcp", "/healthz", "/readyz", "/metrics"})
+
+# One process-wide instance: middleware and route handlers are constructed at
+# different points in build_app, and threading a shared object through both
+# adds a parameter to every one of them for no benefit over a module-level
+# counter set, which is what a metrics registry is in every library that
+# implements one.
+METRICS = Metrics()
+
+
 def add_health_routes(
     app,
     session_factory: async_sessionmaker,
     readyz_rate_limiter: RateLimiter | None = None,
+    trusted_proxy_hops: int = 0,
 ) -> None:
     """Wire /healthz (liveness) and /readyz (readiness). See module docstring
     for why these must answer different questions.
@@ -182,16 +271,27 @@ def add_health_routes(
     can exhaust connections the same way any other unbounded query would.
     `readyz_rate_limiter` is keyed by client address and defaults to a
     generous bucket that a real orchestrator's poll interval (typically
-    every few seconds) never comes close to."""
+    every few seconds) never comes close to. `trusted_proxy_hops` is
+    HubConfig.trusted_proxy_hops, passed straight through to
+    hub.abuse.resolve_client_key -- see that config field's docstring."""
     readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
-        client_key = request.client.host if request is not None and request.client else "unknown"
-        if not readyz_rate_limiter.allow(client_key):
-            return JSONResponse({"status": "rate_limited"}, status_code=429)
+        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        if not allowed:
+            # Retry-After for the same reason hub/server.py's 429s carry it:
+            # an orchestrator that backs off by a known interval stops
+            # adding load to a probe endpoint that is already refusing.
+            seconds = str(max(1, math.ceil(retry_after)))
+            return JSONResponse(
+                {"status": "rate_limited", "retry_after": int(seconds)},
+                status_code=429,
+                headers={"Retry-After": seconds},
+            )
         try:
             async with session_factory() as session:
                 await session.execute(text("SELECT 1"))
@@ -202,5 +302,32 @@ def add_health_routes(
             return JSONResponse({"status": "not_ready", "database": "unreachable"}, status_code=503)
         return JSONResponse({"status": "ready", "database": "ok"})
 
+    async def metrics(request: Request) -> Response:
+        """Prometheus scrape endpoint. Unauthenticated, like the probes, and
+        for the same reason: a scraper carries no tenant credential.
+
+        That is safe here only because of what Metrics deliberately does NOT
+        record -- no org ids, no key prefixes, no query text (see its
+        docstring). Expose it to your monitoring network, not the public
+        internet, the same way you would any /metrics; the Hub's documented
+        deployment already puts a reverse proxy in front (hub/DEPLOYMENT.md).
+
+        Rate limited on the same bucket as /readyz so an unauthenticated
+        caller cannot use it as a free request generator; unlike /readyz it
+        touches no database, so it is cheap even when the database is down
+        -- which is exactly when you want to be able to read it.
+        """
+        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        if not allowed:
+            seconds = str(max(1, math.ceil(retry_after)))
+            return JSONResponse(
+                {"status": "rate_limited", "retry_after": int(seconds)},
+                status_code=429,
+                headers={"Retry-After": seconds},
+            )
+        return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
     app.add_route("/healthz", healthz, methods=["GET"])
     app.add_route("/readyz", readyz, methods=["GET"])
+    app.add_route("/metrics", metrics, methods=["GET"])

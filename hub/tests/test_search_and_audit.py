@@ -2,11 +2,13 @@
 matching, the N+1 batch-loading fix, audit-log writes, and API-key expiry."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from hub import audit, auth, crud
+from hub import audit, auth, commons, crud
 from hub.abuse import TraceRejected, make_rate_limiter
 from hub.config import MAX_SEARCH_LIMIT
 from hub.db import session_scope
@@ -41,6 +43,28 @@ async def _contribute(session_factory, config, org_id, title, context, solution,
             title=title, context_text=context, solution_text=solution,
             tags=tags or [], agent_type="code", actor=actor,
         )
+
+
+async def _seed_kb(session_factory, operator_org_id, title, context="c", solution="s", contributor=None):
+    """A Knowledge Base entry, seeded directly the way
+    hub/manage.py:commons_seed does it -- the only way one exists in
+    production. vote_trace's cross-org path is only reachable for these
+    (commons_source == "seed"), never for another org's private trace."""
+    async with session_scope(session_factory) as session:
+        trace = Trace(
+            org_id=operator_org_id,
+            title=title, context_text=context, solution_text=solution,
+            tags=[], agent_type="code",
+            shared_with_commons=True,
+            shared_at=datetime.now(timezone.utc),
+            shared_rationale="test fixture",
+            commons_signature=commons.signature_for(title, context, []),
+            commons_source="seed",
+            contributor=contributor,
+        )
+        session.add(trace)
+        await session.flush()
+        return trace.id
 
 
 class TestPagination:
@@ -404,25 +428,29 @@ class TestVoteInputValidation:
             result = await crud.vote_trace(session, org, trace["id"], "down", feedback_tag="outdated")
         assert result["votes"][0]["feedback_tag"] == "outdated"
 
+    async def test_invalid_vote_type_is_a_clean_value_error(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        with pytest.raises(ValueError, match="vote_type"):
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(session, org, trace["id"], "sideways")
+
 
 class TestCrossOrgVoting:
     """vote_trace used to scope its trace lookup to `Trace.org_id ==
-    org_id` only, which made trust a self-rating: an org's own vote on its
-    own trace, never a community signal, even though `trust` is surfaced to
-    every other org a shared trace matches for (commons_overlap). An org
-    may now also vote on any OTHER org's trace, but only once it is in the
-    commons -- a private trace stays exactly as invisible to other orgs as
-    every other read path makes it."""
+    org_id` only, which made trust a self-rating. It now also reaches a
+    Knowledge Base entry (`commons_source == "seed"`) regardless of which
+    org is voting, since `trust` is surfaced to every org a Knowledge Base
+    entry matches for (commons_overlap/commons_search). A private trace --
+    one that never entered the Knowledge Base -- stays exactly as invisible
+    to other orgs as every other read path makes it; there is no org-to-org
+    path here at all, only org-to-Knowledge-Base."""
 
-    async def test_another_org_can_vote_on_a_shared_trace(
-        self, session_factory, config, org, other_org
+    async def test_another_org_can_vote_on_a_kb_entry(
+        self, session_factory, org, other_org
     ):
-        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        trace_id = await _seed_kb(session_factory, org, "t")
         async with session_scope(session_factory) as session:
-            await crud.share_trace(session, org, trace["id"])
-
-        async with session_scope(session_factory) as session:
-            result = await crud.vote_trace(session, other_org, trace["id"], "up")
+            result = await crud.vote_trace(session, other_org, trace_id, "up")
         assert result is not None
         assert result["trust"] == pytest.approx(1.0)
 
@@ -430,29 +458,25 @@ class TestCrossOrgVoting:
         self, session_factory, config, org, other_org
     ):
         trace = await _contribute(session_factory, config, org, "t", "c", "s")
-        # Never shared -- must be exactly as unreachable to other_org as
-        # get_trace/search_traces already make it.
+        # Never seeded into the Knowledge Base -- must be exactly as
+        # unreachable to other_org as get_trace/search_traces already make it.
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, other_org, trace["id"], "up")
         assert result is None
 
     async def test_cross_org_vote_response_excludes_private_fields(
-        self, session_factory, config, org, other_org
+        self, session_factory, org, other_org
     ):
         """The vote succeeded and the response reflects it (id, trust), but
         a cross-org voter gets the same narrow projection commons_overlap
-        returns (H-08) -- voting on someone else's trace is not an
+        returns (H-08) -- voting on a Knowledge Base entry is not an
         invitation to see its contributor/extensions/outcome/etc."""
-        trace = await _contribute(session_factory, config, org, "t", "c", "s")
-        async with session_scope(session_factory) as session:
-            row = await session.get(Trace, trace["id"])
-            row.contributor = "alice@example.com"
-            await crud.share_trace(session, org, trace["id"])
+        trace_id = await _seed_kb(session_factory, org, "t", contributor="alice@example.com")
 
         async with session_scope(session_factory) as session:
-            result = await crud.vote_trace(session, other_org, trace["id"], "down", feedback_tag="outdated")
+            result = await crud.vote_trace(session, other_org, trace_id, "down", feedback_tag="outdated")
 
-        assert result["id"] == trace["id"]
+        assert result["id"] == trace_id
         assert result["trust"] == pytest.approx(0.0)
         for private_field in ("contributor", "extensions", "outcome", "votes", "related"):
             assert private_field not in result
@@ -469,29 +493,27 @@ class TestCrossOrgVoting:
         assert result["votes"][0]["vote_type"] == "up"
 
     async def test_owner_and_another_org_votes_both_count_toward_trust(
-        self, session_factory, config, org, other_org
+        self, session_factory, org, other_org
     ):
-        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        trace_id = await _seed_kb(session_factory, org, "t")
         async with session_scope(session_factory) as session:
-            await crud.share_trace(session, org, trace["id"])
-            await crud.vote_trace(session, org, trace["id"], "up")
+            await crud.vote_trace(session, org, trace_id, "up")
         async with session_scope(session_factory) as session:
-            result = await crud.vote_trace(session, other_org, trace["id"], "down")
-        # 1 up (owner) + 1 down (other_org) = 0.5, an actual aggregate
-        # across two distinct orgs' votes -- previously unreachable, since
-        # only the owner could ever cast one.
+            result = await crud.vote_trace(session, other_org, trace_id, "down")
+        # 1 up (the seeding org) + 1 down (other_org) = 0.5, an actual
+        # aggregate across two distinct orgs' votes.
         assert result["trust"] == pytest.approx(0.5)
 
 
 class TestMalformedIdsAreCleanNotFoundNot500s:
-    """get_trace/vote_trace/amend_trace/share_trace/unshare_trace all
-    compare a caller-supplied trace_id directly against Trace.id, a UUID
-    column. asyncpg validates the bind parameter against the column's real
-    type -- a non-UUID string raised asyncpg.DataError (wrapped as
-    DBAPIError by SQLAlchemy), which is not an IntegrityError and isn't
-    caught by any handler in hub/server.py's _error_response, reaching the
-    caller as an opaque HTTP 500 instead of the same clean "not found" a
-    well-formed-but-nonexistent id already produces."""
+    """get_trace/vote_trace/amend_trace all compare a caller-supplied
+    trace_id directly against Trace.id, a UUID column. asyncpg validates
+    the bind parameter against the column's real type -- a non-UUID string
+    raised asyncpg.DataError (wrapped as DBAPIError by SQLAlchemy), which is
+    not an IntegrityError and isn't caught by any handler in
+    hub/server.py's _error_response, reaching the caller as an opaque HTTP
+    500 instead of the same clean "not found" a well-formed-but-nonexistent
+    id already produces."""
 
     async def test_get_trace_with_a_non_uuid_id_returns_none_not_raises(
         self, session_factory, config, org
@@ -517,20 +539,6 @@ class TestMalformedIdsAreCleanNotFoundNot500s:
             )
         assert result is None
 
-    async def test_share_trace_with_a_non_uuid_id_returns_none_not_raises(
-        self, session_factory, config, org
-    ):
-        async with session_scope(session_factory) as session:
-            result = await crud.share_trace(session, org, "not-a-uuid-at-all")
-        assert result is None
-
-    async def test_unshare_trace_with_a_non_uuid_id_returns_none_not_raises(
-        self, session_factory, config, org
-    ):
-        async with session_scope(session_factory) as session:
-            result = await crud.unshare_trace(session, org, "not-a-uuid-at-all")
-        assert result is None
-
 
 class TestOversizedIdempotencyKeyIsRejectedCleanly:
     """Trace.idempotency_key is String(128) at the DB layer; a too-long
@@ -549,5 +557,25 @@ class TestOversizedIdempotencyKeyIsRejectedCleanly:
                     session, org, config, rate_limiter,
                     title="t", context_text="c", solution_text="s",
                     tags=[], agent_type="code", actor="test",
+                    idempotency_key="x" * 129,
+                )
+
+    async def test_amend_trace_oversized_idempotency_key_is_rejected(self, session_factory, config, org):
+        trace = await _contribute(session_factory, config, org, "t", "c", "s")
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.amend_trace(
+                    session, org, trace["id"], config, rate_limiter,
+                    title="new", actor="test", idempotency_key="x" * 129,
+                )
+
+    async def test_submit_kb_entry_oversized_idempotency_key_is_rejected(self, session_factory, config, org):
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            with pytest.raises(TraceRejected):
+                await crud.submit_kb_entry(
+                    session, org, config, rate_limiter,
+                    title="t", context_text="c", solution_text="s",
                     idempotency_key="x" * 129,
                 )

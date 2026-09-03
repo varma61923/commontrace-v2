@@ -44,9 +44,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Unimodal importance-distribution alert threshold",
     )
     p.add_argument("--threshold-semantic", type=float, default=None, help="Semantic similarity threshold")
-    p.add_argument("--threshold-lexical", type=float, default=None, help="Lexical similarity threshold")
-    p.add_argument("--threshold-freshness", type=float, default=None, help="Freshness threshold")
-    p.add_argument("--threshold-composite", type=float, default=None, help="Composite threshold")
+    p.add_argument("--threshold-lexical", type=float, default=None,
+                   help="Warn on near-duplicate lessons at or above this lexical similarity (0-1).")
+    p.add_argument("--threshold-freshness", type=float, default=None,
+                   help="Warn when the fraction of recently-hit lessons falls below this (0-1).")
+    p.add_argument("--threshold-composite", type=float, default=None,
+                   help="Warn when the combined health score falls below this (0-1).")
     p.add_argument("--dest", default=None, help="Override store root directory")
     p.add_argument(
         "--pilot", action="store_true",
@@ -122,16 +125,13 @@ def run(args: argparse.Namespace) -> int:
         extra += [f"--threshold-unimodal={args.threshold_unimodal}"]
     if args.threshold_semantic is not None:
         extra += [f"--threshold-semantic={args.threshold_semantic}"]
-    # These three are accepted by measure_performance's parser but never
-    # read by any metric or alert (only --threshold-semantic is). Passing
-    # one produced no error and no effect, so a fleet could set a quality
-    # gate, watch it never fire, and conclude quality was fine. Warned
-    # rather than removed: removing them would break any script that
-    # already passes them, and a loud no-op is more honest than a silent
-    # one. Implement or delete them deliberately; do not leave them quiet.
-    # Still forwarded -- measure_performance's parser accepts them, so
-    # passing them through is harmless and keeps the two CLIs' surfaces
-    # aligned. The defect was never the forwarding, it was the silence.
+    # These three used to be accepted here, forwarded, and then read by
+    # nothing -- a fleet could set a quality gate, watch it never fire, and
+    # conclude quality was fine. The warning that stood here said
+    # "implement or delete them deliberately; do not leave them quiet";
+    # they are now implemented (measure_performance.py:
+    # compute_lexical_duplicates / compute_freshness / compute_composite),
+    # each raising a real alert and, under --strict, a real non-zero exit.
     for flag, value in (
         ("--threshold-lexical", args.threshold_lexical),
         ("--threshold-freshness", args.threshold_freshness),
@@ -139,11 +139,6 @@ def run(args: argparse.Namespace) -> int:
     ):
         if value is not None:
             extra += [f"{flag}={value}"]
-            print(
-                f"[commontrace] warning: {flag} is accepted but not implemented -- "
-                "it does not affect any metric, alert or exit code.",
-                file=sys.stderr,
-            )
 
     return run_script(
         root,

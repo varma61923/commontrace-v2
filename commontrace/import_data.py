@@ -18,8 +18,19 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Iterator
+
+# See commontrace/failure_import.py's identical guard: the stdlib default
+# (128 KiB) is a defense against a pathological file, not a limit a real
+# CRM/support-system export is expected to respect, and this module's own
+# iter_csv had no protection against the raw `_csv.Error` a field over that
+# limit raises.
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    csv.field_size_limit(2**31 - 1)
 
 # Must stay in sync with the `outcome` properties in trace.schema.json. A
 # field missing here is not a validation error -- it is silently dropped from

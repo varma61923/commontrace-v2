@@ -432,6 +432,58 @@ opens, it is an unvalidated hypothesis, and `commons-stats` deliberately
 reports contributing-orgs separately from seeded rows precisely so nobody —
 including us — can mistake operator seeding for a network effect.
 
+### 11.4a Update (2026-08-29): the gate's binding constraint was measured, and it does not bind
+
+§11.4 below names three conditions, and calls the first — "the instrument
+works", defined as recall above ~60% on the held-out set — *the binding
+constraint, and a research task, not a feature*. §11.1 reasoned that
+fixing it required semantic embeddings, which would retract the
+"failure text never leaves your fleet" guarantee, making condition 2
+(settle the privacy question first) unavoidable.
+
+**Measured, that chain does not hold.** §12.7 had already shown that
+ranking rather than thresholding recovers the answers — but it showed it
+using the per-org ranker, which reads query *text*, so it did not transfer
+to the commons. `commons/eval/search_modes.py` measures the version that
+does transfer: rank the commons's own **MinHash signatures**, no
+threshold, nothing but a signature on the wire.
+
+| | Recall@1 | @5 | @10 | Text leaves the fleet? |
+|---|---|---|---|---|
+| Threshold (what §11.1 measured) | 10.9% | — | — | No |
+| **Signature ranking** | **89.1%** | **95.7%** | **100%** | **No** |
+| Text ranking (§12.7) | 84.8% | 95.7% | 95.7% | Yes |
+
+Read against §11.4's own condition 1: **89.1% clears the ~60% bar it set,
+and clears it without touching the privacy guarantee** — so condition 2,
+which existed because the only known fix was embeddings, is moot for this
+surface. Signature ranking even beats text ranking at rank 1.
+
+**What this does and does not change.**
+
+- It does **not** improve the coverage *percentage*. That is still 10.9%
+  recall at the shipped threshold, still 0% false positives, and it is
+  untouched. Anything quoted to a customer still comes from there.
+- It **does** mean the commons can be useful without a trustworthy
+  coverage percentage, because the product surface becomes *lookup* —
+  "has anyone solved this?", answered with ranked candidates and their
+  solutions (`commons_search`) — rather than a number. That is the Stack
+  Overflow shape the positioning has always described, and the shape
+  §12.7 identified as the open question about the output contract.
+- The limit that keeps it honest is unchanged and is why the two tools
+  stay separate: absent failures return a non-empty list 100% of the time
+  and the score distributions overlap, so ranked results are candidates
+  to judge and are never coverage.
+
+So the honest status of the gate is: **condition 1 is met for lookup and
+unmet for coverage, and lookup is the surface that makes a commons worth
+joining.** Condition 3 — run the overlap report against real customer
+stores — is unchanged and still the thing that decides (B), and it is
+still gated on corpus, which §12.1 established comes from (A) at scale.
+§11.3's recommendation therefore stands: commit to (A), and note that
+(B)'s remaining cost just fell from "fund a research programme" to
+"accumulate a corpus", which (A) does as a byproduct.
+
 ### 11.4 The gate that would reopen (B)
 
 Three conditions, in order. All are falsifiable and none is a matter of
@@ -734,6 +786,39 @@ identity does establish is what to instrument: the Hub already meters
 per-org usage (`hub/plans.py`, `manage usage`), so agents-under-management
 is measurable from day one rather than reconstructed later.
 
+> **Correction (2026-08-29): that last sentence was false, and it was false
+> in the same way §13.2's "the machinery already ships" was.** The Hub did
+> meter per-org usage — but it metered *traces stored* and *commons
+> queries*. It had no concept of an agent at all. `Trace.agent_type` is a
+> CATEGORY (`support`, `sales`, `code`), so a fleet of 25 support agents
+> shared one value and was indistinguishable from one agent; `grep` for
+> `agent_id`/`max_agents` across the repository returned nothing. **The
+> variable §12.6 concludes the company should be run on could not be
+> computed, and the per-agent tiers in the sales deck — 5 / 25 / unlimited
+> — were unenforceable**, since `Plan` had no agent field and `crud.py`
+> checked no agent limit.
+>
+> This is now built: `Trace.agent_id`, `Plan.max_agents`, and
+> `crud.agents_under_management`, reported per org by `manage usage`.
+> Two design choices are load-bearing and are stated here because they
+> change what the number means:
+>
+> - It counts agents **active in a trailing 30-day window**, not distinct
+>   agents all-time. An all-time count can only rise, so it could never
+>   show churn and would bill a customer forever for an agent they ran once
+>   and decommissioned. This number can fall, which is the point of it.
+> - It is a **floor, not a total**, for any org whose clients do not send
+>   `agent_id` — those traces collapse into one `unattributed` agent
+>   however many really produced them. `manage usage` marks such orgs with
+>   a trailing `+` rather than quoting the number as exact. Same discipline
+>   as the commons coverage figure, and for the same reason.
+>
+> What this does **not** do is make the §13.1 identity answerable. It makes
+> the first term countable. Which shape — many agents cheap, or few agents
+> expensive — is reachable is still exactly what nobody here knows, and
+> still the first thing a real pilot would measure. The difference is that
+> a pilot can now measure it instead of estimating it afterwards.
+
 ### 13.2 The chain, in dependency order
 
 **Link 1 — per-org memory delivers measurable value.** *Status: evidence
@@ -831,3 +916,1282 @@ Run link 1's falsifier first. It is the cheapest, it gates everything
 downstream, and as of `capture --occasion-id` the loop actually closes —
 which it did not when this section was written, and which nobody would have
 discovered without trying to run the thing the section recommends.
+
+---
+
+## 14. Update (2026-08-30): the org-to-org commons is retired — §3's problem is resolved, §12.1's claim is not
+
+Every section above through §13 was written assuming the shape §3 named:
+org A opts a trace in, org B's queries can match it, and the hard problem
+is adverse selection (§3) — why would an org contribute knowledge that
+might help a competitor? That shape is now gone from the codebase.
+`share_trace`/`unshare_trace` and `commontrace commons contribute` do not
+exist any more. There is no tool, customer-facing or otherwise, by which
+one org's trace can ever become visible to another org.
+
+**What replaced it.** A single corpus the *operator* authors and curates —
+`hub/manage.py commons-seed` is the only thing that ever writes to it —
+optional per org (`commons_access`, a plan setting) and removable per
+deployment (`HUB_COMMONS_ENABLED=false`). Closer to a vendor-maintained
+Stack Overflow or wiki than to anything shared between customers. See
+`hub/commons.py`'s module docstring for the full reasoning.
+
+**Why, stated plainly rather than re-derived:** orgs do not share their IP
+and data with each other. Asking them to was solving a problem nobody
+actually has a reason to opt into, adverse selection or not.
+
+### 14.1 §3 is not mitigated, it is dissolved
+
+§3 asked how to design incentives so that voluntary contribution does not
+fill the commons with filler. There is no answer to that question that
+survives contact with self-interest, which is exactly what §3 already
+concluded. The fix taken here is not a better incentive — it is removing
+the thing the incentive was for. There is no contribution decision for any
+org to face adverse selection about, because no org is ever asked to
+contribute. This is not a workaround; it is the honest reading of §3's own
+conclusion, taken to its actual end instead of designed around.
+
+### 14.2 §12.1's load-bearing claim is false under the new architecture
+
+§12.1 argued **"(A) is the corpus engine for (B)"**: every org running (A)
+accumulates traces as a byproduct, and `share_trace` / `commons contribute`
+were one call away from turning that accumulation into commons corpus. That
+mechanism is exactly what no longer exists. Running (A) at any scale now
+produces **zero** bytes of Knowledge Base content — corpus growth requires
+the operator to deliberately author and run `commons-seed`, which is
+editorial work, not a byproduct of usage.
+
+This reopens the question §12.1 believed it had closed: where does the
+corpus come from? The honest answer now is **operator labor**, not
+customer adoption. That is a real, ongoing cost this business must fund
+directly (writing and maintaining substrate knowledge, the way a vendor
+maintains documentation) rather than one that "falls out" of selling (A)
+well. It does not scale with the install base the way §12.1 described; it
+scales with however much the operator is willing to write and curate.
+
+### 14.3 What survives measurement, unchanged
+
+The instrument numbers in §11.1 and §11.4a are properties of the *matching
+algorithm* against whatever corpus exists, not of who populated that
+corpus. They hold exactly as measured:
+
+| | Recall@1 | @5 | @10 | Text leaves the fleet? |
+|---|---|---|---|---|
+| Threshold (§11.1) | 10.9% | — | — | No |
+| Signature ranking (§11.4a, shipped as `commons_search`) | 89.1% | 95.7% | 100% | No |
+
+An operator-curated corpus of the same size and quality as an org-contributed
+one would score identically on both. What changed is the source and the
+growth curve of the corpus, not the retrieval properties measured against it.
+
+### 14.4 §11.4's gate, re-read
+
+Condition 1 ("the instrument works") is unaffected — met for lookup per
+§11.4a, unmet for a trustworthy coverage percentage, exactly as before.
+Condition 3 ("corpus large enough to mean something") is the one §12.1
+mis-costed: it is no longer a byproduct of (A) at scale, it is a direct,
+funded, ongoing editorial commitment. §11.3's recommendation to commit to
+(A) still stands on its own terms — (A) remains the whole product for
+customers who never touch the Knowledge Base — but it no longer doubles as
+an argument for how (B) gets its corpus. Those are now two separate
+investments, not one.
+
+### 14.5 §11.5's pricing denominator loses a term
+
+§11.5 named two computable denominators for pricing: measured
+resolution-rate improvement (§8.4), and "delivered commons hits
+(`commons-value`)" if (B) ever opened. `commons-value` — the per-org
+ledger of what an org shared versus what that delivered — no longer exists,
+because there is no org contribution to have a ledger about. `hub/manage.py
+kb-stats` replaces it with a content-quality report (which Knowledge Base
+entries are actually earning their query traffic), but that is an operator
+diagnostic, not a customer-facing pricing denominator: no customer
+contributed anything to be credited for. §11.5's surviving pricing
+hypothesis is the first one alone — price (A) against measured
+resolution-rate improvement per fleet — and it was already the stronger of
+the two.
+
+### 14.6 What this does not touch
+
+Links 1–4 of §13.2 are per-fleet or per-platform claims about (A); none of
+them mentioned the commons and none of them are affected. §12.2–§12.7's
+reasoning about (A)'s own economics and retrieval quality is unchanged.
+This update is scoped entirely to link 5 and to §3's problem statement —
+both of which were always the (B) side of the fork, and (B) remains, as
+§11.3 already concluded, not the thing to spend on next.
+
+---
+
+## 15. Update (2026-08-30): a reviewed community-submission channel, not a network effect reopened
+
+§14.2 identified a real cost of retiring org-to-org sharing: corpus growth
+stopped scaling with (A)'s install base and became direct, funded operator
+labor instead — writing and citing substrate knowledge one entry at a
+time. This update adds a second source, `submit_kb_entry` +
+`hub/manage.py review-submission`, without reopening §3's problem or
+walking back §14's retirement.
+
+**The mechanism.** An org may propose an entry; nothing is published by
+that call. It writes to a table (`KnowledgeBaseSubmission`) neither
+`commons_overlap` nor `commons_search` ever reads. Only an operator's own
+`review-submission` action can turn an *accepted* proposal into a real
+`Trace(commons_source='seed')`, owned by the operator, never by the
+submitter. Acceptance also awards a permanent, one-time addition to the
+submitting org's Knowledge Base query allowance
+(`Organization.bonus_commons_queries`); a rejected or still-pending
+proposal awards nothing.
+
+**Why this does not repeat §3's failure.** §3's naive fix ("reciprocity")
+fails because credit for the ACT of sharing rewards volume: an org keeps
+its best lessons and contributes filler to collect the reward. Credit for
+ACCEPTANCE changes what is being rewarded. Submitting costs nothing and
+proves nothing; only content an operator judged worth publishing earns
+anything, so filler is not a viable strategy for extracting allowance the
+way it would be under a credit-for-sharing rule. This does not make an
+org's incentive to withhold its most differentiated knowledge disappear —
+nothing could, and nothing here claims to. What it produces is content
+self-selected for being non-competitive enough to clear a human's review,
+the same category §14 already described the operator's own seeded
+content as: Stack-Overflow-shaped, not trade-secret-shaped.
+
+**What this is not.** It is not §12.1's retired thesis restored. §12.1
+claimed corpus size scales with (A)'s adoption automatically, as a
+byproduct of usage. This channel scales with review THROUGHPUT, which is
+still an operator-side constraint, not a customer-side one — nobody's
+corpus grows merely because more organizations run (A). What changes from
+§14.4's "direct, funded, ongoing editorial commitment" framing is narrower
+than a network effect: reviewing a submitted write-up (read, judge,
+accept/reject) is cheaper operator labor than authoring one from nothing
+(write, verify, cite a source), so this raises plausible curation
+throughput without changing who gates quality or removing the labor
+constraint entirely. Call it a labor multiplier for the operator, not a
+network effect — a real but modest claim, and the honest one.
+
+**§14.5's pricing correction, refined further.** `bonus_commons_queries`
+reintroduces a customer-facing incentive number, but it is not
+`commons-value` reborn as a pricing denominator. `commons-value` measured
+a two-sided commercial relationship: value a customer delivered to other
+customers, arguable as a basis for revenue share. This is one-sided: an
+org gets query allowance for helping build the *operator's own* product
+content, closer to a loyalty credit or a paid-in-product bounty for
+editorial labor than to IP licensing. It does not change §11.5's surviving
+pricing hypothesis (price (A) against measured resolution-rate
+improvement); it is a retention/engagement mechanic sitting next to that
+pricing, not a substitute for it.
+
+**§11.4's gate, condition 3, updated once more.** Corpus size is now
+funded by two paths instead of one: direct operator authorship (unchanged
+from §14.4) and reviewed community submissions (this section). Both are
+operator-labor-bound; neither is the free, adoption-driven growth §12.1
+originally assumed. The gate's status is otherwise unchanged from §14.4:
+condition 1 (instrument works) is met for lookup, unmet for a trustworthy
+coverage percentage; condition 3 (corpus large enough) remains a funded
+commitment, now with a second, likely cheaper channel feeding it.
+
+---
+
+## 16. Update (2026-08-30): maintenance, and the objection §15 left standing
+
+§14 retired the org-to-org commons and put the operator in charge of the
+corpus. §15 added a second way for content to enter it (reviewed community
+submissions) and priced the honest claim carefully: a labor multiplier, not
+a network effect, because review throughput is still an operator-side
+constraint.
+
+Both of those are about **growth**. Neither addressed the objection that
+does the most damage to the operator-curated model, which is about
+**maintenance**:
+
+> Every entry ever published has to stay true forever, or the product
+> degrades in a way that is invisible from the inside. At 100 entries the
+> operator can re-read them. At 100,000 nobody can. So curation cost is
+> O(corpus), and the model has a ceiling somewhere well below the corpus
+> size the §11.4 gate needs.
+
+That argument is correct as far as it goes, and it is the one a technical
+diligence would reach for. What makes it wrong is a step it assumes
+without stating: that *finding* the bad entries is the expensive part.
+
+### 16.1 Usage already generates the maintenance signal
+
+It was being collected and thrown away. Every `commons_overlap` match
+credits `Trace.commons_hits` — the operator's own record of which entries
+are actually reaching real failures. Every fleet that tries an answer can
+`vote_trace` on it, with a `feedback_tag` that says what kind of wrong it
+was (`outdated`, `wrong`, `security_concern`). `trust` was computed from
+those votes on every cast and then read by nothing but a tie-break;
+`feedback_tag` was consulted nowhere at all.
+
+So the corpus already knew which entries were failing and roughly how
+badly, and nothing looked. `hub/commons.py:entry_standing` and
+`hub/manage.py kb-review` are the read side of data that was already
+there.
+
+The consequence is the part that answers the objection: an operator does
+not review the corpus, they review a **queue ordered by damage done** —
+security flags, then disputed entries, then expired ones, then dead
+weight, each ranked by how much traffic it is affecting. Review cost
+therefore tracks the **error rate**, not the corpus size. A 100,000-entry
+corpus with a 0.5% error rate is 500 decisions, arriving continuously,
+pre-sorted by urgency. That is a staffed function, not an impossible one.
+
+This is the same mechanism that lets Stack Overflow and Wikipedia stay
+usable at a scale no editorial staff could read: readers find the errors,
+editors adjudicate them. §15 drew the Stack Overflow analogy for the
+*contribution* half and was careful to under-claim it. This is the half of
+the analogy that actually transfers, and it transfers for a reason the
+contribution half does not — flagging a wrong answer costs a fleet
+nothing and helps it directly, so the incentive problem §3 identified for
+contribution simply does not arise for maintenance.
+
+### 16.2 What it deliberately does not do, and why that is the point
+
+The obvious next step from "the crowd flags errors" is "so let the crowd
+remove them." That step is not taken, at any vote count.
+
+Disputed content stops counting toward the coverage figure and sorts last
+in lookup. Both of those make this product's own claims *smaller*. Neither
+removes anything, and `hub/tests/test_kb_standing.py:TestVotesNeverRetract`
+pins it. A corpus where three downvotes silently delete the operator's
+content is a corpus a competitor can edit, and the asymmetry between "make
+our claims more conservative" (automatic, safe in every direction) and
+"remove our content" (a human, audited) is the whole design.
+
+The one place a single vote is acted on is `security_concern`, and what it
+does is raise queue priority. Reading a spurious report costs a minute;
+missing a real one means bad security advice served from a corpus
+customers were told to trust, to every fleet whose failure matches it, for
+as long as nobody looks.
+
+### 16.3 What this changes about the gate, stated narrowly
+
+Less than §16.1 might suggest, and saying so is the point of this section
+being short.
+
+- **Condition 1** (the instrument works) is untouched. Standing does not
+  affect matching at all.
+- **Condition 3** (corpus large enough, and the overlap number that
+  decides (B)) is affected only indirectly. Corpus growth is still
+  operator-labor-bound, exactly as §15 concluded. What changes is that the
+  corpus's *carrying cost* no longer grows linearly with its size, which
+  removes a ceiling on how large a corpus one operator can responsibly
+  hold — a precondition for condition 3, not progress toward it.
+
+The coverage figure will now read slightly lower wherever a disputed entry
+was previously counted. That is a real, deliberate reduction in a number
+this document has repeatedly said is the one thing customers may quote,
+and it is the right direction: §11.1's whole finding was that the
+instrument under-reports, and every correction since has moved the number
+toward honesty rather than away from it.
+
+### 16.4 The remaining objection this does not answer
+
+Standing depends on fleets voting. Nothing in the product makes them, and
+nothing measures whether they do. `kb-stats` will report a corpus almost
+entirely `unproven` for as long as query volume is low, which is a truthful
+reading and a useless one — an `unproven` corpus is indistinguishable from
+an un-consulted one. Both of the automatic consequences degrade gracefully
+in that state (an unproven entry counts as coverage and ranks normally, as
+it should), so nothing breaks; the maintenance loop simply does not start
+turning until there is real traffic.
+
+That is the same dependency §11.4's condition 3 already has, and it is
+still gated on the same thing: adoption of (A). Nothing here changes
+§11.3's recommendation.
+
+---
+
+## 17. Update (2026-08-30): the moat was a claim about a number the service could not compute
+
+§11.3 settled the strategic question and named the defence:
+
+> **The moat for (A) is switching cost, not network effect.** A fleet's
+> accumulated, validated, causally-measured memory lives here. §8's
+> randomized-holdout machinery is what makes that defensible rather than
+> sticky-by-inertia: nobody rips out the thing with a measured effect size
+> on their own data.
+
+§11.5 then named the only pricing denominator this product can defend:
+measured resolution-rate improvement per fleet, "because that is the only
+quantity this product can prove causally."
+
+Both sentences are about a number. Until this update, **the Hub could not
+compute it.**
+
+### 17.1 What was actually there
+
+`Trace.outcome` has carried the five business-outcome fields since the
+schema was written — `resolved`, `escalated`, `repeated_error`,
+`frustration_signal`, token and call cost — plus `baseline`, a flag
+marking traces captured before lessons were being injected. Every
+`contribute_trace` writes all of it. A deployment running for a year holds
+a complete before/after dataset per customer.
+
+The Hub read that column in exactly two places: it copied it onto the wire
+projection, and it carried it forward on amend. It computed nothing.
+
+So the moat argument reduced to: *a customer who thought to run a local
+CLI command, against files on their own disk, could see a version of the
+number.* The service holding the data could not. Neither could the person
+selling it, at renewal, about the customer in front of them.
+
+That is the third time this pattern has appeared in three consecutive
+passes over this codebase — `Trace.trust` computed and read only as a
+tie-break (§16), `Vote.feedback_tag` recorded and consulted nowhere
+(§16), and now `Trace.outcome` written on every call and never once
+aggregated. The recurring shape is worth naming, because it is not
+sloppiness: each of these was collected *correctly and early*, by someone
+who understood it would matter, and then nothing was built on top because
+the collecting felt like the hard part. It is not. Collecting a signal is
+the cheap half; the expensive half is being willing to publish what it
+says.
+
+### 17.2 Why it had to be built defensively rather than persuasively
+
+This is the number that ends up in a renewal conversation, a board deck,
+and eventually a diligence memo. The temptation in every design decision
+is toward the flattering reading, and every one of them was taken the
+other way:
+
+- **The correction is applied.** Four metrics at α=0.05 means roughly one
+  in five fleets shows a "significant" result by chance. Benjamini-Hochberg
+  across the four is what stops the lucky one being the one that gets
+  quoted. `hub/tests/test_fleet_outcomes.py` pins this with a fixture tuned
+  to sit inside the window where corrected and uncorrected disagree, so the
+  test fails if the correction is ever quietly dropped.
+- **`worsened` is a first-class verdict**, at equal prominence, never
+  sorted below the wins. A measurement instrument that can only return
+  good news is not one, and §11.3's argument depends on this being a
+  number a customer can trust *against the operator's interest*. If it
+  cannot say "you got worse", it cannot credibly say "you got better".
+- **Nulls report their own power.** "No significant improvement" from 60
+  traces and from 60,000 are the same string and opposite facts. Every
+  inconclusive row carries the minimum effect that sample could have
+  detected, so an early customer reads "cannot answer this yet" rather
+  than "the product does nothing".
+- **The report explains its own apparent contradiction.** A row can show a
+  95% CI excluding zero next to a `no change` verdict, because the
+  interval is uncorrected and describes one metric while significance is
+  judged across four. Both numbers are right. Left unexplained, a careful
+  reader concludes the instrument is broken — which is worse than either
+  number alone.
+
+### 17.3 The claim this does NOT support, stated as loudly as the code states it
+
+**It is a before/after comparison. It is not causal, and it must never be
+described as one.**
+
+`baseline` marks a time window. A model upgrade, a shift in task mix, a
+seasonal change in what customers ask, or a team simply getting better at
+its job all sit inside that window alongside anything this product did,
+and no amount of statistics applied to two buckets separates them.
+
+§11.3's own wording — "causally-measured memory" — refers to §8's
+randomized holdout, which withholds lessons at random so the arms differ
+only by the treatment. That is a different and stronger design, it is
+already implemented in `commontrace/experiment.py`, and this new surface
+deliberately borrows its statistics while refusing its language.
+`OBSERVATIONAL_CAVEAT` is returned on every response and printed on every
+operator run for exactly this reason.
+
+The distinction is not pedantry, it is the difference between a durable
+claim and one that dies in a single meeting. "Our customers improved 23%"
+is demolished by the first person who asks what else changed that quarter.
+"Our customers' recorded resolution rate rose 23% since their baseline
+window, observed not causal, and here is the randomized design that would
+settle it" survives that question, and is the only version worth building
+a company's evidence base on.
+
+### 17.4 What this changes, narrowly
+
+- **§11.3's moat argument becomes checkable** rather than aspirational. A
+  customer can ask the question themselves, over the same MCP surface
+  their agents already use, unmetered.
+- **§11.5's pricing hypothesis becomes testable.** You cannot price
+  against a number you cannot compute; now it can be computed per fleet,
+  per month. Whether the market accepts that pricing shape is still
+  unknown and still not answerable from this repository, and no currency
+  figure appears anywhere here.
+- **The operator gets a leading indicator.** `usage` and `revenue` report
+  consumption, which looks healthy right up to a renewal a customer
+  declines. `manage.py outcomes` reports whether each fleet's own numbers
+  are moving. It refuses to correct across orgs and says so, because
+  scanning fifty customers and quoting the three that came back
+  significant is a further multiple-comparisons problem no per-report
+  correction can fix.
+
+### 17.5 What it does not change
+
+The evidence base is still thin, and this does not thicken it — it builds
+the instrument that could. §11.2's field signal (one customer, internal
+B2B deployments, traction better there than for the commons) is unchanged.
+§11.4's gate on (B) is untouched; none of this bears on the commons
+question at all.
+
+And the honest limit on the instrument itself: it needs fleets to have
+recorded a baseline window, and a fleet that never ran one gets a report
+saying so rather than a number. That is the correct behaviour and it is
+also a real adoption cost — the most valuable measurement this product can
+make requires a customer to have instrumented *before* they saw any value
+from it, which is precisely when they are least motivated to. The
+randomized holdout has no such requirement and is the better answer for
+anyone starting today; this surface is what makes the year of data an
+existing customer already has worth something.
+
+---
+
+## 18. Update (2026-08-30): link 3 was the weakest link, and its cost half now has a number
+
+§13.2 lists five links the (A) case rests on and marks exactly one
+**"unmeasured, and the weakest link nobody has looked at"**:
+
+> **Link 3 — value compounds within a customer faster than it costs to
+> serve them.** *Falsifier:* per-org gross margin at 10× current scale. If
+> serving cost grows with corpus size faster than value does, this is a
+> services business wearing infrastructure clothes.
+
+That falsifier is the whole ballgame for which multiple this business
+gets, and §13.2 also noted the data to run it was already there ("cost to
+serve is knowable"). Nobody had run it. `hub/bench_scaling.py` now does,
+and `hub/SCALING.md` records the result.
+
+### 18.1 The measured answer: no path grows linearly with a customer's own corpus
+
+Across a 64× corpus range, fitted exponents in `latency ~ size**alpha`:
+
+| read path | alpha |
+|---|---:|
+| `search_traces`, selective query | **0.19** |
+| `search_traces`, by tag | **-0.00** |
+| `entitlements` | 0.58 |
+| `fleet_outcomes` | 0.62 |
+| `agents_under_management` | 0.68 |
+| `list_tags` | 0.74 |
+| `search_traces`, query matching every row (worst case) | 0.83 |
+
+A 64× increase in a customer's accumulated history costs **2.2×** on the
+read they issue most. On the cost side, link 3's falsifier does not fire,
+and the shape is the infrastructure one rather than the services one.
+
+### 18.2 What that does not entitle anyone to say
+
+Three limits, and they matter more than the table.
+
+**It is the cost half only.** The falsifier compares cost growth against
+*value* growth. Value per query needs real customers, not synthetic rows —
+that is what §17's `fleet_outcomes` and `commons_hits` are for. A clean
+cost result removes the cost-side objection to link 3; it does not
+establish link 3. Link 3's status moves from "unmeasured" to "half
+measured, and the measured half is good."
+
+**It says nothing about concurrency.** Every number is a single query
+against an idle database. Cost per customer at N simultaneous customers is
+a different measurement that nobody has made, and it is where the
+in-process rate limiter (§6 of `hub/DEPLOYMENT.md`) and the connection
+pool would actually bind.
+
+**It is one machine's Postgres.** Only the exponents transfer; the
+milliseconds are worth nothing to anyone else.
+
+### 18.3 The first run said something different, and the instrument was half the reason
+
+Worth recording, because it is the third time in this document that a
+measurement's first answer was about the instrument rather than the world
+(§11.1's 10.9% recall, §12.7's ranking correction, now this).
+
+The first run flagged **two** paths as linear-or-worse. They had opposite
+causes:
+
+1. **`fleet_outcomes` was genuinely superlinear (alpha 1.12)** — and it
+   was three commits old, added by §17. It pulled every matching trace's
+   `outcome` JSONB across the wire and counted in Python. Moving the
+   counting into one grouped aggregate took 64,000 traces from 572 ms to
+   95 ms and the exponent to 0.62. So §17 shipped a real instance of
+   precisely the failure mode §13.2 warns about, and §18 caught it — which
+   is an argument for running the measurement continuously rather than
+   once.
+
+2. **`search_traces` was the benchmark's fault.** Every synthetic row
+   shared near-identical title text, so the probe query matched 64,000 of
+   64,000 rows. `EXPLAIN` showed a sequential scan feeding a top-N
+   heapsort, which is correct for that query — `ORDER BY ts_rank(...)` must
+   score every match and no index can serve it. With realistic text
+   diversity the same path measures 0.19.
+
+Both numbers are published, not just the flattering one: the worst case is
+real, and a fleet that searches for common words will hit it.
+
+### 18.4 What this changes about the case
+
+Narrowly: §13.2's link 3 was the only link with no evidence of any kind,
+and the cost half of it now has some. Links 1 (measurable value, one
+customer) and 4 (survives platform bundling, argued) are unchanged and
+remain the two that need customers rather than code.
+
+That ordering is worth stating plainly, because it is the answer to "what
+would make this a large outcome" and it is not a feature list. **Every
+remaining question on the critical path needs customers, not
+engineering.** Link 1's falsifier is "run `--experiment` on the next two
+fleets", link 3's remaining half needs real query volume against real
+value, and link 4's is "a customer consolidates onto one platform and
+drops this." The instruments for all three now exist and are, as far as
+this repository can establish, correct. Nothing further can be learned
+about whether this is a billion-dollar business by writing more of it.
+
+---
+
+## 19. Correction to §18.4: the cheapest falsifier could not be run on the product
+
+§18.4 closed with a confident claim, and it was wrong:
+
+> **Every remaining question on the critical path needs customers, not
+> engineering.** … Nothing further can be learned about whether this is a
+> billion-dollar business by writing more of it.
+
+The first half is still broadly right. The second half was not, and the
+gap it hid is the largest one this document has recorded.
+
+### 19.1 What was missing
+
+§11.3 names the moat in one sentence — *"nobody rips out the thing with a
+measured effect size on their own data"* — and the measurement it means is
+§8's randomized holdout, not §17's before/after comparison. §13.2 goes
+further and calls running that holdout **"the cheapest falsifier in the
+document and it should be run first."**
+
+`commontrace/experiment.py` implements it correctly and completely. It
+works against a **local file store**. The Hub had no notion of a holdout
+at all — no assignment, no arms, no observations. Every mention of
+`experiment` in `hub/` was a comment or an import of its *statistics*.
+
+So the position was:
+
+- A **Hub customer** — which is to say, the product — could obtain no
+  causal number of any kind. `fleet_outcomes` (§17) was the ceiling, and
+  it is explicitly observational.
+- §11.3's moat sentence was true only of the local tier, which is not
+  what anyone is being sold.
+- §13.2's cheapest, most gating falsifier **could not be run on paying
+  customers** without asking them to abandon the Hub for local files.
+
+That is not "needs customers". That is a missing instrument on the surface
+the customers are on, and §18.4 asserted otherwise without checking.
+
+### 19.2 What now exists
+
+`holdout_assign(trace_ids, occasion_id)` and
+`record_occasion_outcome(occasion_id, succeeded)` on the MCP surface;
+`start-experiment` / `experiment` / `stop-experiment` on the operator CLI;
+`HoldoutObservation` as the only structure in the Hub that supports a
+causal claim. Analysis is `commontrace.experiment.analyze` unchanged —
+imported, for the third time and the third variation on one reason. Here
+a drifted copy would randomize the same lesson two ways across a fleet
+running both tiers and silently compare two mixtures, biasing every
+effect toward zero.
+
+Validated against seeded ground truth, 700 occasions, three lessons:
+
+| lesson | true effect | recovered | 95% CI | verdict |
+|---|---:|---:|---|---|
+| retry with jittered backoff | +30% | +29.2% | [+21.7%, +36.7%] | HELPS |
+| disable the circuit breaker | −25% | −24.5% | [−31.8%, −17.3%] | HURTS |
+| always set pool_timeout | 0% | −6.0% | — | no effect (MDE ~13%) |
+
+Every interval covers the true value, and the null case reports its own
+power rather than being read as evidence of absence. That validates the
+instrument. It says nothing about any real fleet, which is the point of
+running it on one.
+
+### 19.3 The one that only this can produce
+
+`HURTS` is not symmetry for its own sake. A lesson retrieved often
+*because* it fires on the hardest tasks scores well on every correlational
+signal this system has — retrievals, trust, `commons_hits` — and may be
+making outcomes worse. No amount of observation separates those two
+stories. Withholding it at random does, and nothing else does.
+
+A memory product that cannot detect its own harmful memories is a product
+whose corpus degrades silently as it grows, which is the same failure
+§16 addressed for the Knowledge Base and had not addressed for a fleet's
+own store.
+
+### 19.4 The cost, stated plainly
+
+The withheld fraction gets a worse product on purpose. That is the price
+of knowing whether the product works at all; it is bounded by the rate;
+and no migration or default ever turns it on. An operator decides, per
+org, and the decision is recorded in the audit log.
+
+This is also the honest answer to why a customer would agree: they are
+buying the claim in §11.3, and this is the only way anyone — including
+them — can check it. A vendor willing to run an experiment that can return
+`HURTS` about its own product is making a different kind of claim than one
+that reports retrieval counts.
+
+### 19.5 Revised status of §13.2's chain
+
+- **Link 1** (per-org memory delivers measurable value): falsifier was
+  *"run `--experiment` on the next two fleets"*, and until now that could
+  not be done on the Hub at all. The instrument now exists on the product
+  surface. Still needs two fleets.
+- **Link 3** (value compounds faster than cost): cost half measured (§18),
+  value half still needs real query volume.
+- **Links 2, 4, 5**: unchanged.
+
+§18.4's claim, corrected: every remaining question needs customers *and*
+the instruments to have been built where those customers are. The second
+half was not finished when §18 said it was. It is now, as far as this
+repository can establish — and that phrasing is doing real work, because
+§18.4 is the second time in two sections that a confident "nothing left to
+build" turned out to be a claim nobody had checked.
+
+---
+
+## 20. Update (2026-09-02): the instrument was measuring, and nothing was auditing the instrument
+
+§19.5 closed with "every remaining question needs customers *and* the
+instruments to have been built where those customers are", and hedged that
+with *as far as this repository can establish* on the grounds that §18.4 had
+twice declared "nothing left to build" without checking. This is the third
+time, and the hedge earned its keep.
+
+The instruments were built. What was never built is the thing that decides
+whether an instrument's reading means anything.
+
+### 20.1 The defect, stated as the number it produces
+
+`commontrace/experiment.py` is right. Two-proportion tests, a 95% interval,
+Benjamini-Hochberg across lessons, underpowered comparisons kept out of the
+correction so they cannot inflate *m*, and an explicit `UNDERPOWERED`
+verdict so a small sample never reads as "no effect". Nothing in the
+arithmetic needed fixing.
+
+But `analyze()` only ever sees occasions that HAVE a recorded outcome, and
+both tiers dropped the rest before it. `hub/crud.py:causal_effects` did it
+in SQL — `succeeded IS NOT NULL` — so nothing downstream could even count
+what went missing, let alone which arm it came from. `hub/models.py` states
+the reasoning, and it is correct:
+
+> An observation with no outcome is excluded from the analysis rather than
+> counted as a failure: an agent that crashed before reporting is missing
+> data, and scoring it as a loss would bias the arm that crashed more.
+
+Excluding is the right handling. It is unbiased **only if both arms lose
+outcomes at the same rate**, and nothing anywhere checked that. Worse, there
+is a specific reason to expect they do not: the withheld arm is *by
+construction* the arm working without its memory, so it is the arm more
+likely to run long, escalate, or be abandoned before anyone writes up how it
+went. The treatment effect leaks into who gets measured.
+
+Reproduced, in `tests/test_integrity.py`. A fleet of 600 occasions where the
+lesson does **nothing** — both arms succeed at exactly 50% — and the only
+asymmetry is that a withheld occasion which failed often never gets
+reported:
+
+| | |
+|---|---|
+| True effect | **0.0%** |
+| `analyze()` reported | **HURTS, −12.6%** |
+| 95% CI | **[−20.8%, −4.4%]** — does not contain zero |
+| p | **0.003** |
+| Verdict | significant, adequately powered |
+
+Driven end to end through `commontrace experiment` on a seeded store, the
+same defect reads `HURTS −17%, 95% CI [−28%, −7%], p=0.002`.
+
+The failure mode is the dangerous kind. It does not error. It does not
+return empty. It does not read as underpowered. It reads as a clean,
+significant, well-powered result with a plausible effect size and a tight
+interval — and it points the wrong way about a lesson that was fine.
+
+### 20.2 Why this is a strategy problem and not a bug report
+
+§13.3 says one thing makes this more than a good DevTools business: *a
+product that retrieves the right prior experience reliably, and can prove
+causally on the customer's own data that doing so changed the outcome.*
+
+That claim is only worth what it survives. The first question a sophisticated
+buyer's data-science function asks — the first question a technical diligence
+partner asks — is not "what was the p-value". It is **"how do you know that
+number isn't an artifact of who got measured?"** Until now the honest answer
+was "we don't check", and the product would have answered it with a
+`HURTS` verdict about a lesson that does nothing.
+
+§13.3 also names the three things a competitor bolting memory onto an
+existing product lacks: the activation-condition data model, the
+occasion-level join, and *a willingness to publish nulls*. The third was a
+disposition. It is now mechanical: a run whose sample cannot support an
+estimate does not get a hedged number, it gets a refusal to report one.
+
+### 20.3 What was built
+
+`commontrace/integrity.py`, shared by both tiers — the same discipline
+`holdout_io.py` applies to arm assignment, for the same reason. Five checks,
+each with a severity that means something specific (`INVALIDATES` — a named
+mechanism is biasing the estimate; `WEAKENS` — the sample is degraded but
+not demonstrably biased; `OK` — checked, nothing found, stated explicitly so
+silence is never mistaken for a clean bill):
+
+1. **Differential attrition.** The load-bearing one. Reports the direction,
+   because which arm loses data decides which way the number is wrong.
+2. **Arm balance.** Realized withheld share against the configured rate.
+   Assignment is a deterministic hash, so a large gap is not luck.
+3. **Mid-run re-randomization.** A changed salt or rate re-randomizes every
+   occasion, so the log stops being one experiment and becomes two pooled —
+   and an occasion can sit in opposite arms in each.
+4. **Conflicting arms.** One (lesson, occasion) recorded in both arms:
+   evidence for and against the same lesson at once.
+5. **Outcome variation.** An all-succeeded corpus yields a difference of
+   exactly zero with a tidy interval, and reads as a confident null.
+
+Plus a **power projection**: how far each lesson is from being answerable
+and, where the log is dated, roughly when. That is not a validity check, it
+is what decides whether a pilot lands. `experiment` already said
+`UNDERPOWERED`; a team told that on day 30 has spent the pilot, and the same
+team told on day 3 that the control arm lands in 94 days can raise the
+holdout rate that afternoon. The control arm almost always binds and the
+reason is arithmetic: at a 10% holdout it takes ~100 occasions to put 10 in
+the control, so a run reaches an answer about ten times slower than its
+occasion count suggests. The projection now says so, and says what rate
+would fix it.
+
+Wired everywhere the number is read: `commontrace experiment` (validity
+above the table, and `--strict` fails a compromised run — the flag means
+"stop if the memory is hurting", and a biased comparison cannot answer that
+either way), `commontrace pilot` (a compromised run yields no effects rather
+than effects with a caveat elsewhere in a renewal deck), `prove outcomes`,
+the Hub's `fleet_outcomes` response under `causal.integrity`, and the local
+MCP server's `experiment_status`.
+
+### 20.4 What it deliberately does not do
+
+**It does not correct the estimate.** A compromised experiment does not get
+a fixed number here. It gets a report saying the number should not be read
+and why, which is the honest output and the only one available: nothing can
+recover an outcome that was never recorded.
+
+**It cannot detect contamination.** An agent that uses a lesson it was told
+to withhold leaves no trace in the record, and biases the effect toward
+zero. No analysis can find it. It is honoured by the client or not at all,
+which is why it is stated in the tool descriptions, the skill, and every
+rendered report rather than checked — silence about it would read as
+coverage of a failure nothing here can see.
+
+**Absence of a finding is not proof of validity.** These detect the failures
+that leave a trace in the assignment log. That set is not everything.
+
+### 20.5 What this changes about §13.2's chain
+
+Nothing about which links are open, and that is the point — this does not
+move a link, it makes one of them *checkable by someone who does not trust
+us*.
+
+- **Link 1** (per-org memory delivers measurable value): unchanged, still
+  needs two fleets. What changed is that when those two fleets report a
+  number, there is now something that says whether the number is an estimate
+  of anything. Before this, link 1's falsifier could have returned a
+  confident false answer in either direction and nobody would have known.
+- **Links 2, 3, 4, 5**: unchanged.
+
+The correction to §19.5 is narrow and worth stating plainly: *the
+instruments existed; nothing audited the instruments.* An instrument nobody
+audits is not a measurement, it is a number — and this document has now
+found three separate confident claims that "nothing is left to build",
+each of which was a claim nobody had checked. That rate is itself the
+finding. The rule that follows from it is not "check harder next time"; it
+is that a claim of completeness is worth exactly as much as the falsifier
+attached to it, and this section's is `tests/test_integrity.py` — a fleet
+where the truth is known to be zero, which the product must refuse to score.
+
+---
+
+## 21. Update (2026-09-02): §20 audited the sample and left the treatment unpinned
+
+§20 shipped a validity layer and said, of the checks it did not include,
+that "absence of a finding is not proof of validity: these detect the
+failures that leave a trace in the assignment log." That sentence was
+written as a caveat about *contamination*. It was also, unnoticed, true of
+something much more ordinary.
+
+§20 checked whether the **sample** could support an estimate. Nothing
+checked whether the **treatment held still**.
+
+### 21.1 The defect
+
+A lesson is a file. `lesson approve`, a text editor, and — since the MCP
+surface shipped — an agent calling `draft_lesson`, all rewrite it in place.
+The holdout log recorded the lesson by **slug**: a mutable name.
+
+So editing a lesson on day 10 of a 30-day run means occasions 1–200 were
+treated with one instruction and 201–400 with another, `analyze()` pools
+them into a single arm, and the reported effect is for a treatment that is
+an average of two — one of which no longer exists anywhere. And a concluded
+run reporting "+12%, p=0.01" describes text that the next edit silently
+deletes, with no record of what it was.
+
+This is precisely the defect `Organization.holdout_salt` was built to make
+detectable, one level down. There the **randomization** could change
+silently. Here the **thing being randomized** could. §20 added a check for
+the first and did not notice it had described the second.
+
+The Hub had it identically on a different object: its holdout randomizes
+traces, and `amend_trace` rewrites title, context and solution in place.
+
+Worth stating plainly, because it is the uncomfortable part: **the MCP work
+two commits earlier increased the exposure.** Before it, rewriting a lesson
+mid-experiment took a person opening a file. After it, an agent could do it
+unattended, as an ordinary and *correct* part of curating. A feature that
+makes the product better made a measurement defect easier to trigger, and
+nothing connected the two at the time.
+
+### 21.2 Why this is the system-of-record question, not a bug
+
+§13.3's claim is a causal number on the customer's own data. §20 made that
+number auditable *as a statistic*. This makes it auditable *as a record*:
+what was measured, what it said, who changed it, when.
+
+That distinction is the whole difference between a tool and a system of
+record, and systems of record do not get bundled away. A memory layer that
+stores lessons is a feature any agent platform can add in a quarter. A
+memory layer that can answer **"what instruction was this fleet following on
+March 4th, who approved it, and what did withholding it do"** is a different
+kind of object, and the answer has to be reconstructible from the record
+rather than from someone's memory of it.
+
+Every ingredient for that already existed here — approval, audit, standing,
+reliability, causal effect. The one missing piece was that none of it was
+pinned to a *version* of the thing it was about.
+
+### 21.3 What it deliberately does not do
+
+**Nothing is backfilled, on either tier.** What a lesson said at assignment
+time is unrecoverable once it has been edited. A run with no recorded
+revisions is therefore reported as *unchecked* — WEAKENS, not OK and not
+COMPROMISED. Both wrong answers were available and both were rejected:
+stamping today's digest on old rows would assert the treatment was stable on
+exactly the runs where nobody can know, and reporting them clean would let
+an unversioned log read as a stable treatment, which is the state this
+exists to distinguish.
+
+**The digest covers what an agent reads, and nothing else.** `uses` and
+`last_hit` move on every retrieval; hashing them would flag every experiment
+within a week, and a validity report that cries wolf is worse than none —
+the same reasoning that keeps `check_arm_balance` quiet below 30
+assignments.
+
+### 21.4 What this changes about §13.2's chain
+
+Again nothing about which links are open, and again that is the point. Links
+1–5 are unchanged and every one of them still needs customers.
+
+What changed is the same thing §20 changed, one layer down: when those
+customers produce a number, there is now a record of what the number was
+about. §20 made the estimate checkable by someone who does not trust us.
+This makes it *reconstructible* by them — and the second is the harder
+property, because it survives the people who ran the experiment leaving.
+
+### 21.5 The pattern, now four for four
+
+§18.4, §19.5, §20 and now §21 are four consecutive sections in which a
+confident statement about what was left to build turned out to be a claim
+nobody had checked. The specific claims differed; the shape did not.
+
+§20 drew the rule: *a claim of completeness is worth exactly as much as the
+falsifier attached to it.* This section is evidence that the rule works and
+that applying it once is not enough — §20's own caveat contained the next
+defect, correctly worded, and it still took a separate deliberate look to
+find it. The corollary is narrower and more useful than "check harder":
+**the caveats are where the next defect is.** They are the places someone
+already knew the ground was soft and wrote it down instead of digging. This
+document should be read that way, starting with §21.3.
+
+### 21.6 Postscript: §21.5's rule caught its own defect within the hour
+
+§21.5 said the caveats are where the next defect is. The first place to look
+was §20's own tuning decision, and it was wrong.
+
+`check_arm_balance` shipped sharing the attrition check's alpha of 0.10.
+Measured afterwards, a **correct** randomizer trips a two-sided test at that
+alpha about 10% of the time — at every sample size, because that is what an
+alpha is. The check runs on every experiment, so roughly one sound run in
+ten would have been reported COMPROMISED for nothing.
+
+§20's own commentary named the failure this creates ("a validity report
+whose findings are mostly noise teaches people to skip the section where the
+real ones appear") and then built it, because the reasoning that produced
+the loose alpha — *for a validity check a false negative is the expensive
+error* — is correct for attrition and wrong for arm balance. Attrition is a
+gradient; a ten-point reporting gap is a real finding. Arm balance is
+binary: a deterministic hash is being applied or it is not, and a broken
+assigner misses by many standard deviations. One number for two checks was
+the mistake.
+
+At 0.001 the false-positive rate is ~0.1% and every realistic breakage is
+still caught; both are measured in the test suite rather than argued.
+
+It was found by a test that failed about one run in fifteen under random
+ordering — which is worth recording as the cheapest instrument in this
+document. Nobody reasoned their way to it. A flaky test did.
+
+---
+
+## 22. Update (2026-09-02): the claim, end to end, and what it cost to make it true
+
+§21.5 said the caveats are where the next defect is. Applied five more times
+in one session, it found five, each in the load-bearing claim rather than
+around it. Recorded here because the *pattern* is the finding, not any one
+of them.
+
+### 22.1 What was wrong, in the order it was found
+
+**The AI-first half of the product could not use its own memory.** Every
+local-tier step — retrieve, capture, distill, approve — was an argparse
+command, so the only agents that could use their own store were the ones
+with a shell. A support agent in a helpdesk could talk to a remote Hub and
+do nothing else. `commontrace serve` (MCP over stdio) closed it.
+
+**The causal number could be confidently wrong.** `analyze()` sees only
+occasions that got an outcome, and both tiers dropped the rest before it.
+That is unbiased only if both arms lose outcomes at the same rate, and the
+withheld arm — by construction the one working without its memory — is the
+one that runs long and gets abandoned. Reproduced: a fleet where the lesson
+does nothing, reported as **HURTS, −12.6%, p=0.003**, significant and
+adequately powered.
+
+**An effect size was attached to a mutable name.** A lesson is a file; the
+holdout log recorded its slug. Edit it mid-run and the two halves of the
+experiment are different treatments pooled into one arm. The MCP work two
+commits earlier had made this *easier* to trigger, and nothing connected the
+two at the time.
+
+**"No measurable effect" was reported by designs that could see nothing.**
+The gate was `min_arm = 10`, at which the minimum detectable effect is 61
+percentage points. A full 240-occasion pilot with a real +25pp effect came
+back `NO_MEASURABLE_EFFECT`. The report printed the MDE beside the verdict,
+which is not enough — the verdict is what travels.
+
+**The rate the planner recommended could not be set.** The holdout rate was
+a CLI flag default on one surface and a hardcoded constant on the other, so
+an agent-driven fleet could not change it at all — and a fleet using both
+interfaces pooled two randomizations without doing anything wrong.
+
+### 22.2 The claim, demonstrated rather than argued
+
+Sized by the product (`--plan`: 900 occasions cannot answer a 15-point effect
+at 10%; use 19% or more), configured to 25%, then curated and run **entirely
+over MCP by an agent with no shell** — 900 occasions against a seeded +18pp
+effect:
+
+| | |
+|---|---|
+| Validity | **Sound** — 900 of 900 assignments observed |
+| Verdict | **HELPS** |
+| Effect | **+14%**, 95% CI **[+7%, +22%]**, p<0.001 |
+| Revision under test | `42d099b46770` |
+
+The interval covers the true value. And the mirror image, from the same
+session's test suite: a fleet where the memory does nothing, which the
+product **refuses to score** rather than reporting the −12.6% its own
+arithmetic produces.
+
+Both halves matter, and the second is the one that is hard to copy. A vendor
+willing to run an experiment that can return `HURTS` about its own product
+is making a different kind of claim; a vendor whose product *declines to
+report a number it cannot stand behind* is making a stronger one.
+
+### 22.3 What this does and does not change about §13.2
+
+Links 1–5 are unchanged. Every one of them still needs customers, and no
+amount of further engineering moves them.
+
+What changed is what a customer's number will be worth when they produce it.
+Before this session the falsifier §13.2 calls cheapest and most gating could
+have returned a confident wrong answer in either direction — from
+differential attrition, from a lesson edited mid-run, or from a design that
+could not detect anything — and nobody would have known. It can still return
+"we cannot tell yet". It can no longer return a false answer quietly.
+
+The customer console (`/app`) exists for the same reason: the person who
+decides on renewal does not run `commontrace prove outcomes`, and a claim
+nobody in the buying organisation can see is not doing the job it was built
+for.
+
+### 22.4 The rule, sixth time
+
+A claim of completeness is worth exactly as much as the falsifier attached to
+it, and **the caveats are where the next defect is** — they mark the places
+someone already knew the ground was soft and wrote it down instead of
+digging.
+
+The cheapest instrument in this document remains a test that failed one run
+in fifteen under random ordering. Nobody reasoned their way to the
+arm-balance defect. A flaky test did.
+
+---
+
+## 23. Update (2026-09-02): §11.5 said the mechanism ships. Half of it did.
+
+§11.5 states this product's pricing hypothesis and defends, at length, the
+decision to encode no currency anywhere:
+
+> price against measured resolution-rate improvement per fleet, because that
+> is the only quantity this product can prove causally and it scales with the
+> customer's own benefit rather than with seats or trace volume
+
+> the mechanism ships and the number stays a business decision
+
+The second claim was half true, and the half that was missing is the half
+that matters commercially.
+
+### 23.1 What was actually there
+
+The **effect size** shipped. Nothing turned it into a *quantity a price could
+attach to*, and `hub/crud.py` — the surface customers pay on — computed no
+value at all. Checked rather than assumed: zero occurrences of any
+value-per-unit calculation in the entire Hub.
+
+The one estimator that did exist, `commontrace impact`, is **correlational by
+its own admission**, in five separate places, each pointing at
+`commontrace experiment` for a causal number.
+
+So the product had a causal instrument and a commercial number, and they were
+not connected to each other. The commercial one was the confounded one — the
+exact inversion of what §11.5 argues for.
+
+Meanwhile `hub/plans.py` gates on `max_traces`, `max_agents` and
+`commons_queries_per_month`: **seats and volume**, which is the denominator
+§11.5 identifies as wrong for this product. The entitlement model and the
+stated pricing hypothesis had been pointing in opposite directions since both
+were written, and nothing in the repository noticed because nothing computed
+the quantity that would have made the conflict visible.
+
+### 23.2 The quantity
+
+Per memory whose causal effect the holdout has established:
+
+    occasions_improved = effect × n_injected
+
+How many more occasions went well *because* that memory existed, carrying the
+effect's confidence interval straight through. A count, in the fleet's own
+units, that scales with the customer's benefit and not with their headcount.
+
+It is deliberately **not money**. §11.5's argument for encoding no currency is
+correct and is unchanged by this: the caller supplies what one resolved
+occasion is worth to them, this supplies how many there were, and no price is
+stored anywhere. Ship the mechanism, take the rate from the customer.
+
+### 23.3 Three rules, and the third is the product
+
+1. **A compromised experiment produces no figure.** Not a hedged one. If a
+   named mechanism is biasing the effects it biases every value computed from
+   them, and a value report is precisely the artifact where a caveat gets
+   separated from the number it qualifies.
+2. **An underpowered memory contributes nothing.** Measured on a real run: a
+   memory reporting +30% on 90 occasions — never established — would have
+   added a phantom +27 to the total. That is how a null becomes a sales
+   figure.
+3. **Memories measured as HURTING are subtracted, not dropped.** A figure that
+   sums only the winners is a brochure. This product's entire claim is that it
+   will tell a customer when its own memory is making things worse; a value
+   number that quietly excludes those retracts the claim in the one document
+   where the claim is being cashed.
+
+Rule 3 is why this is a commercial asset rather than a dashboard tile. Every
+vendor in this category can show a number that goes up. **A vendor whose value
+report can come out negative, and whose product refuses to state one at all
+when its own experiment is compromised, is making a different kind of claim** —
+and it is not one a competitor can adopt selectively, because its credibility
+comes entirely from being applied when it costs something.
+
+### 23.4 What this changes about §13.2, and what it does not
+
+Links 1–5 are unchanged and still need customers. This does not move one.
+
+What it changes is §11.5 itself, which listed the price as *not mine to
+decide* and treated the mechanism as done. The mechanism now exists on both
+tiers, on the paid surface, in the console a renewal is read in, and as an
+MCP tool an agent can call. The number remains a business decision, which is
+correct — but it is now a decision with a computed denominator under it
+rather than a hypothesis with nothing behind it.
+
+The honest read on the entitlement model: `plans.py` still gates on seats and
+volume, and that is now a *visible* inconsistency rather than an invisible
+one. Whether to move pricing onto the measured denominator is exactly the
+call §11.6 says is not mine. What has changed is that the question can now be
+asked with a number in hand.
+
+---
+
+## 24. Update (2026-09-02): the decisions §11.6 reserved, taken
+
+§11.6 lists what is "not mine to decide": commons terms, open-source
+posture, and **the actual price**. That list was written when nobody had
+delegated those decisions. The owner has since delegated them explicitly and
+more than once, so this section takes them.
+
+They are stated as decisions, with the reasoning and the falsifier for each,
+because a decision you cannot see the reasoning behind is one nobody can
+overturn when it turns out to be wrong. Every one of them is reversible.
+
+### 24.1 Segment: high-volume service operations, first and specifically
+
+**The first customer runs a support or service agent fleet, not a coding
+fleet.**
+
+This is a positioning call and it cuts against where the repository came
+from — the reference profile is a code-review pipeline, and `SKILL.md` is
+about code. Two reasons override that:
+
+1. **An occasion has a legible dollar value there and nowhere else.** Every
+   support organisation already tracks cost-per-contact, escalation rate and
+   handle time. `value.py` needs exactly one number from the customer — what
+   one resolved occasion is worth — and in support that number already
+   exists, is already agreed internally, and is already in someone's budget.
+   In engineering it does not: nobody has a defended figure for what one
+   resolved code review is worth, so the value report has no denominator to
+   multiply and the strongest thing this product does goes dark.
+
+2. **There is a buyer with a P&L.** A VP of Support owns a cost line that
+   this moves. An engineering leader typically owns headcount, not a
+   per-incident cost, so the same evidence lands as "interesting" rather
+   than "budgeted".
+
+Code fleets are the second segment, not the first, and the reason to
+sequence them second is not that the product works less well — it is that
+the *proof* works less well, and the proof is the product.
+
+**Not for**, stated because a positioning that excludes nobody is not one:
+
+- Teams who want a vector store. They should buy pgvector and a weekend.
+  §12.7 measured this repository's own retrieval at 95.7% recall@1; the
+  retrieval is not the differentiator and pretending otherwise invites a
+  comparison this loses on features.
+- Teams with no outcome data. Without a recorded resolution the causal loop
+  cannot close, and everything that remains is a nicer file format.
+- Single-agent or hobby use. The thesis is that lessons compound ACROSS
+  agents; one agent cannot demonstrate it.
+
+*Falsifier:* two support pilots that fail to produce a per-occasion value
+their own finance function will sign off on. If the number is not already
+theirs, this segment is not the wedge it looks like.
+
+### 24.2 Price: a per-agent platform fee, plus 20% of measured value
+
+§13.1's identity is revenue = agents under management × price per agent-year,
+and §11.5 refused to state a price on the ground that a price is a claim
+about value. Both correct, and together they left the product priced on
+seats and volume — the denominator §11.5 itself calls wrong.
+
+`commontrace/value.py` now computes the right denominator, so the decision
+can be taken without inventing anything:
+
+- **Platform fee, per agent under management.** Predictable, covers
+  cost-to-serve (§18 measured it), and bills against the one term §13.1
+  identifies as the compounding one.
+- **Plus 20% of measured value delivered** — occasions improved × the
+  customer's own per-occasion value (`hub/plans.py:VALUE_CAPTURE_SHARE`).
+
+**20%, and the ratio is ours to state even though the currency is not.**
+That is the distinction §11.5's argument actually turns on: what a resolved
+occasion is worth is the customer's number and is never stored here; what
+fraction of proven improvement this product charges for is a decision only
+we can make, and declining to make it just means every conversation starts
+from zero. A fifth leaves the measured surplus unambiguously with the
+customer, which is the only version of value pricing that survives a
+renewal. A half turns every renewal into a negotiation about the
+measurement — and the measurement is the product.
+
+**Billed only on established effects.** A quarter whose experiment came back
+COMPROMISED, or whose memories were all underpowered, bills the platform fee
+and nothing else. `plans.billable_value` returns `None` in exactly the cases
+`value.py` refuses to produce a figure, inheriting the refusal rather than
+re-deciding it.
+
+This is the part worth being loud about. **A vendor paid on measured value
+has every incentive to weaken its own validity checks. A vendor whose
+revenue is gated by those checks cannot weaken them without losing the
+ability to bill.** The incentive alignment is structural, not promised — and
+it is not a position a competitor can adopt selectively, because it only
+means anything when it costs something.
+
+Negative is possible and is returned as such: if the memory measurably made
+outcomes worse, the value component is negative. A pricing model floored at
+zero is one that cannot lose, which is the same thing as one that never
+proved anything.
+
+*Falsifier:* a customer who accepts the platform fee and refuses the
+value-linked component. That is the market saying it does not believe the
+measurement — which is a far more useful thing to learn than a lost deal.
+
+### 24.3 What the identity permits, with the assumptions labelled
+
+Not a forecast. §13.1's identity worked in the direction that matters, with
+every input named so each can be argued with separately.
+
+Price per agent-year is *derived*, not listed: it is
+`occasions/agent/year × improvement rate × value/occasion × 20%`.
+
+| | conservative | central | high-volume |
+|---|---:|---:|---:|
+| occasions per agent per year | 2,000 | 6,000 | 12,000 |
+| improvement rate (measured) | 4% | 5% | 6% |
+| value per resolved occasion | $30 | $50 | $60 |
+| measured value per agent-year | $2,400 | $15,000 | $43,200 |
+| **price at 20% capture** | **$480** | **$3,000** | **$8,640** |
+| agents needed for $1B ARR | 2.1M | 333k | 116k |
+| customers at ~150 agents each | 13,900 | 2,200 | 770 |
+
+**The single number the business is levered on is occasions per agent per
+year.** Price scales linearly with it at a fixed capture ratio, so a
+high-volume service fleet is worth an order of magnitude more per agent than
+a low-volume one — while costing almost the same to serve. That is the whole
+argument for §24.1's segment choice, and it is also why seat pricing would
+be a mistake here rather than merely suboptimal: a per-seat price leaves
+every bit of the volume upside on the table.
+
+The central column is a business of roughly 2,200 customers at ~$450k ACV.
+That is a known, hard, reachable shape. It is not the shape of a company
+that needs a new market to exist — support operations already spend this
+money on people.
+
+*Falsifier, and it is the cheapest one in this document:* the improvement
+rate row. It is the only input this product measures rather than assumes,
+and two real pilots settle whether 4–6% is optimistic. If measured
+improvement lands at 1%, every column divides by four or five and the
+answer is a good business rather than this one.
+
+### 24.4 Motion: the pilot is the go-to-market
+
+There is no separate sales motion to design, because the product now
+executes one.
+
+1. `experiment --plan --occasions N` sizes the pilot **on day zero** and
+   says plainly when the window cannot answer the question at any holdout
+   rate. That conversation used to happen on day 30, after the window was
+   spent.
+2. The fleet runs. The console shows validity above effects, so the customer
+   watches the proof accrue rather than waiting for a report.
+3. The close is `value_delivered`, in their own currency, against a number
+   their finance function already owns.
+
+**Time-to-first-defensible-number is the metric to run the company on**, and
+it is now measurable rather than anecdotal. Every engineering decision this
+session either shortened it (the planner, the evidence in a proposed lesson,
+the MCP surface so agents curate without a human) or protected it (the
+validity audit, the revision pinning, the underpowered verdict).
+
+*Falsifier:* pilots that produce a sound, positive number and still do not
+convert. That would mean the causal proof is not what the buyer is buying,
+and everything above would need rebuilding around whatever is.
+
+### 24.5 What is still not decided, and now honestly so
+
+Commons terms and open-source posture, unchanged from §11.6 — neither is
+blocking and both are genuinely governance rather than product.
+
+And the list prices in §24.3 are **derived, not set**. The mechanism
+computes a customer's price from their own measured volume and value; what
+the floor is, what the cap is, and what the platform fee covers are
+commercial terms that need a first real contract to fix. The difference from
+§11.5 is that these are now the last mile of a decision rather than the
+whole of it.

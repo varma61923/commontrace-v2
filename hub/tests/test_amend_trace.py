@@ -39,7 +39,7 @@ async def _contribute_with_extra_fields(session_factory, config, org_id):
         result = await crud.contribute_trace(
             session, org_id, config, rate_limiter,
             title="original title", context_text="c", solution_text="s",
-            tags=["a", "b"], agent_type="claude-code", actor="test",
+            tags=["a", "b"], agent_type="claude-code", agent_id="agent-42", actor="test",
         )
     # contribute_trace's MCP-facing signature has no params for these --
     # set them directly to mirror a trace that arrived with richer data
@@ -77,9 +77,15 @@ class TestAmendTraceFieldCarryForward:
         assert row.contributor == "alice@example.com"
         assert row.outcome == {"resolved": True, "notes": "worked"}
         assert row.agent_type == "claude-code"
+        assert row.agent_id == "agent-42"
         assert row.profile == "code-review"
         assert row.extensions == {"custom_field": "custom_value"}
         assert row.tags == ["a", "b"]
+        # agent_id must also be readable back on the wire, the same as
+        # every other carried-forward field above -- not just correct in
+        # the database. amend_trace's own return value is already the
+        # _to_wire-shaped dict, so this is the direct client-facing check.
+        assert amended["agent_id"] == "agent-42"
 
     async def test_amending_only_context_leaves_outcome_and_contributor_intact(
         self, session_factory, config, org

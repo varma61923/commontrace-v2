@@ -1,18 +1,22 @@
-"""HUB_COMMONS_ENABLED=false: the cross-org commons removed, not just refused.
+"""HUB_COMMONS_ENABLED=false: the Knowledge Base removed, not just refused.
 
 Prompted by a real deployment shape: an internal-only B2B offering that must
-have "no common knowledge" with any other organization until traction is
-proven. `share_trace`/`unshare_trace`/`commons_overlap` being opt-in and
-unused by every org already gets there in practice -- but "in practice" is
-discipline, not a guarantee, and this deployment's whole point is not
-depending on discipline. This tests the guarantee: with the flag off, the
-three commons tools are absent from the MCP tool surface entirely, so a
-client that tries gets the framework's own "unknown tool" error rather than
-a per-call refusal that some future call site could forget to apply.
+consult no content beyond what the fleet itself captured, full stop. The
+Knowledge Base is already operator-curated (with an optional
+community-submission channel that publishes nothing without a review) and
+opt-in per plan (`commons_access`) -- but a deployment that wants a
+stronger guarantee than "unused" can remove the surface entirely. This
+tests that guarantee: with the flag off, all four Knowledge Base tools
+(`commons_overlap`, `commons_search`, `submit_kb_entry`,
+`list_my_kb_submissions`) are absent from the MCP tool surface, so a
+client that tries gets the framework's own "unknown tool" error rather
+than a per-call refusal that some future call site could forget to apply.
 
-account_usage is checked as the control: it reports an org's own plan and
-its own usage, never another org's data, so disabling the commons must not
-disable it.
+account_usage, fleet_outcomes, the randomized-holdout tools
+(holdout_assign, record_occasion_outcome) and the self-service deletion
+tools (delete_trace, request/cancel/confirm_account_deletion) are checked
+as controls: they act on an org's own data only, never Knowledge Base
+content, so disabling the Knowledge Base must not disable any of them.
 """
 from __future__ import annotations
 
@@ -66,12 +70,20 @@ class TestCommonsEnabledByDefault:
         cfg = HubConfig(database_url="postgresql+asyncpg://x/y")
         assert cfg.commons_enabled is True
 
-    async def test_all_ten_tools_present_by_default(self, enabled_config, session_factory):
+    async def test_the_whole_tool_surface_is_present_by_default(self, enabled_config, session_factory):
+        """An exact set, not a subset: a tool appearing here that nobody
+        meant to expose is exactly as much of a problem as one going
+        missing, and only equality catches the first case."""
         names = await _tool_names(enabled_config, session_factory)
         assert names == {
             "search_traces", "contribute_trace", "get_trace", "vote_trace",
-            "amend_trace", "list_tags", "share_trace", "unshare_trace",
-            "commons_overlap", "account_usage",
+            "amend_trace", "list_tags",
+            "delete_trace", "request_account_deletion",
+            "cancel_account_deletion", "confirm_account_deletion",
+            "commons_overlap", "commons_search",
+            "submit_kb_entry", "list_my_kb_submissions",
+            "account_usage", "fleet_outcomes",
+            "holdout_assign", "record_occasion_outcome", "value_delivered",
         }
 
 
@@ -81,12 +93,24 @@ class TestCommonsDisabled:
         assert "share_trace" not in names
         assert "unshare_trace" not in names
         assert "commons_overlap" not in names
+        # commons_search reads other orgs' shared traces exactly as
+        # commons_overlap does, so a deployment that turned cross-org
+        # sharing off must not acquire a second door to it.
+        assert "commons_search" not in names
+        # Proposing to a Knowledge Base that has been removed from the
+        # deployment entirely makes no sense either -- both submission
+        # tools go with it.
+        assert "submit_kb_entry" not in names
+        assert "list_my_kb_submissions" not in names
 
-    async def test_the_six_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
+    async def test_the_org_scoped_tools_are_unaffected(self, disabled_config, session_factory):
         names = await _tool_names(disabled_config, session_factory)
         for tool in (
             "search_traces", "contribute_trace", "get_trace",
             "vote_trace", "amend_trace", "list_tags",
+            "delete_trace", "request_account_deletion",
+            "cancel_account_deletion", "confirm_account_deletion",
+            "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
         ):
             assert tool in names, tool
 

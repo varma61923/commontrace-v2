@@ -120,6 +120,63 @@ class TestAuthAttemptRateLimiting:
         assert second.status_code == 429  # bucket drained, negligible refill within the test: rejected
 
 
+class TestTrustedProxyHops:
+    """[SEC-HUB-01]: with no proxy awareness, every request behind a
+    reverse proxy shares the proxy's own request.client.host -- collapsing
+    the auth-attempt limiter into one bucket across every real client
+    behind it. trusted_proxy_hops=1 must let two distinct clients (as seen
+    through X-Forwarded-For) get independent buckets, while trusted_proxy_hops=0
+    (the default, and every other test in this file) must still ignore the
+    header entirely -- unaudited trust in a client-settable header would be
+    a worse bug than the one being fixed."""
+
+    def _app(self, trusted_proxy_hops):
+        app = Starlette(routes=[Route(p, _ok) for p in ("/mcp",)])
+        app.add_middleware(
+            ApiKeyAuthMiddleware,
+            session_factory=_explode,
+            protected_path="/mcp",
+            # per_minute=60/burst=1, not per_minute=0 (which denies
+            # unconditionally regardless of key -- see
+            # TestZeroPerMinuteAlwaysDenies): burst=1 with a slow refill
+            # still lets exactly one request through per distinct key, so
+            # the SECOND request against the same resolved key is what
+            # reveals whether two requests shared a bucket.
+            auth_rate_limiter=RateLimiter(per_minute=60, burst=1),
+            read_rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+            trusted_proxy_hops=trusted_proxy_hops,
+        )
+        return app
+
+    async def test_two_distinct_forwarded_clients_get_independent_buckets(self):
+        transport = httpx.ASGITransport(app=self._app(trusted_proxy_hops=1))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            first = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.1"})
+            second = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.2"})
+        assert first.status_code == 401  # burst of 1: reaches the header check, which fails
+        assert second.status_code == 401, "a distinct forwarded client must not inherit an exhausted bucket"
+
+    async def test_the_same_forwarded_client_shares_one_bucket(self):
+        transport = httpx.ASGITransport(app=self._app(trusted_proxy_hops=1))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            first = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.1"})
+            second = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.1"})
+        assert first.status_code == 401
+        assert second.status_code == 429  # same resolved key, bucket exhausted
+
+    async def test_default_zero_hops_ignores_the_header_entirely(self):
+        """The exact pre-fix behavior, and the default for every deployment
+        that has not explicitly opted in: two requests differing only by a
+        client-supplied X-Forwarded-For must still collide into the one
+        request.client.host bucket ASGITransport gives every call here."""
+        transport = httpx.ASGITransport(app=self._app(trusted_proxy_hops=0))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            first = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.1"})
+            second = await c.get("/mcp", headers={"X-Forwarded-For": "203.0.113.2"})
+        assert first.status_code == 401
+        assert second.status_code == 429, "hops=0 must never be swayed by a client-supplied header"
+
+
 class TestZeroPerMinuteAlwaysDenies:
     """per_minute<=0 must mean "deny every request", not "allow an initial
     burst of `burst` free requests per distinct key forever" -- a token

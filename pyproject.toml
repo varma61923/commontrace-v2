@@ -57,6 +57,18 @@ hub-sync = [
     "mcp>=2.0,<3.0",
     "httpx>=0.27.0",
 ]
+# `commontrace serve` -- the LOCAL store over MCP stdio
+# (commontrace/mcp_server.py), for agents that cannot run a shell.
+#
+# Separate from hub-sync even though both need the same SDK, because they are
+# different decisions: hub-sync attaches you to someone's Hub over the
+# network, this serves your own store on your own machine and never opens a
+# socket. An installer who wants agent-native access to their local memory
+# should not have to install the Hub client to get it, and vice versa.
+# No httpx: stdio has no HTTP.
+serve = [
+    "mcp>=2.0,<3.0",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4,<1.0",
@@ -67,6 +79,13 @@ dev = [
     # thing to try -- got an immediate collection failure with nothing in
     # this extra explaining why.
     "pytest-asyncio>=0.23",
+    # tests/test_mcp_server.py drives the local MCP server, including one test
+    # that spawns `commontrace serve` as a real subprocess and speaks MCP to
+    # it -- the only thing that proves stdout stays clean enough to carry the
+    # JSON-RPC framing. Without the SDK those tests skip, which is the right
+    # behaviour for a bare install and the wrong one for a contributor who
+    # just ran `pip install -e ".[dev]"` and believes the suite is green.
+    "mcp>=2.0,<3.0",
 ]
 
 [project.urls]

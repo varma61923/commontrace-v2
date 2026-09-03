@@ -11,10 +11,16 @@ This repo ships two things:
 1. **The `commontrace` CLI** (`pip install -e .`) — client-installable, works with
    any agent fleet (code, support, sales, HR, marketing, ...), and can wire a local
    store into Claude Code, Cursor, Devin, Windsurf, or any generic MCP client. It
-   also bridges to the **CommonTrace Hub** (a self-hostable, cross-org shared trace
+   also bridges to the **CommonTrace Hub** (a self-hostable, multi-tenant trace
    store reachable over MCP — `search_traces`, `contribute_trace`, `get_trace`,
-   `vote_trace`, `amend_trace`, `list_tags`; server implementation and setup in
-   [`hub/`](hub/README.md), not a hosted service run by this project).
+   `vote_trace`, `amend_trace`, `list_tags`, `fleet_outcomes` to ask whether
+   your fleet's numbers have actually improved, `holdout_assign`/
+   `record_occasion_outcome` to prove it causally, plus an optional Knowledge
+   Base — `commons_overlap`, `commons_search` to consult it, `submit_kb_entry`/
+   `list_my_kb_submissions` to propose an entry for operator review; server
+   implementation and setup in [`hub/`](hub/README.md), not a hosted service
+   run by this project). Every org's own traces stay private to that org; no
+   org's data is ever exposed to another org.
 2. **A reference implementation for coding agents** (`SKILL.md`) — the
    double-review pipeline (**Implementer A** + independent **Reviewer B**, iterating
    until the task passes) that this whole protocol was distilled from. One profile
@@ -30,17 +36,18 @@ MCP, which all of the above already support natively.
 ## Table of Contents
 
 1. [Quick Start — CLI (any agent type)](#quick-start--cli-any-agent-type)
-2. [Quick Start — Code Agent reference profile](#quick-start--code-agent-reference-profile)
-3. [How the Reference Pipeline Works](#how-it-works)
-4. [Architecture](#architecture)
-5. [Configuration](#configuration)
-6. [Memory System](#memory-system)
-7. [Benchmark](#benchmark)
-8. [Outcome Metrics](#outcome-metrics)
-9. [The Cross-Org Commons](#the-cross-org-commons)
-10. [Deploying to Production](#deploying-to-production)
-11. [File Layout](#file-layout)
-12. [Requirements](#requirements)
+2. [Quick Start — Agents with no terminal (MCP)](#quick-start--agents-with-no-terminal-mcp)
+3. [Quick Start — Code Agent reference profile](#quick-start--code-agent-reference-profile)
+4. [How the Reference Pipeline Works](#how-it-works)
+5. [Architecture](#architecture)
+6. [Configuration](#configuration)
+7. [Memory System](#memory-system)
+8. [Benchmark](#benchmark)
+9. [Outcome Metrics](#outcome-metrics)
+10. [The CommonTrace Knowledge Base](#the-commontrace-knowledge-base)
+11. [Deploying to Production](#deploying-to-production)
+12. [File Layout](#file-layout)
+13. [Requirements](#requirements)
 
 ---
 
@@ -118,14 +125,24 @@ unescaped tool list leaked quotes into a JSON string field) for both `cursor` an
 
 ```bash
 commontrace capture --title "..." --context "..." --solution "..." --tags a,b --agent-type support
+# --agent-id identifies WHICH agent, not what kind -- a fleet of 25 support agents
+# shares one --agent-type, so this is what makes the fleet countable (and is what a
+# Hub plan's agent limit is metered on). Optional; omitting it is never an error.
+commontrace capture --title "..." --context "..." --solution "..." \
+  --agent-type support --agent-id support-worker-7
 commontrace lesson new --slug lesson_x --description "..." --domain escalation \
   --agent-type support --applies-when "..." --do-not-apply-when "..." --importance 4 \
   --importance-rationale "..."
-commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json
+# `lesson new` scaffolds at status=review, like `distill` does: fill in the
+# Rule/Why/How-to-apply sections, then `commontrace lesson approve lesson_x`.
+# Only an approved lesson is retrieved, counted as coverage, or pushed to a Hub.
+commontrace lesson validate      # checks against protocol/schemas/lesson.schema.json,
+                                  # and fails an ACTIVE lesson still full of template text
 commontrace trace validate       # checks against protocol/schemas/trace.schema.json
 commontrace sync                 # push active lessons + pull search results, if a Hub is configured
 commontrace sync --push          # push only
 commontrace sync --pull --query "..." --tags a,b   # pull only
+commontrace sync --push-traces   # push captured traces + outcome data too (opt-in, off by default)
 ```
 
 `sync` needs `COMMONTRACE_HUB_URL` + `COMMONTRACE_HUB_API_KEY` (env vars or
@@ -154,6 +171,43 @@ approve`. Traces already referenced by an existing lesson's `source_traces`
 are skipped on the next run, so re-running `distill` doesn't keep
 re-proposing patterns someone already curated.
 
+**A candidate arrives with its evidence, grouped.** Writing the rule is the
+expensive step in this whole pipeline, so the proposal carries what you need
+to write it — the situation *and* what actually resolved it, with repeats
+collapsed and counted:
+
+```markdown
+## Why
+12 traces show this pattern. Grouped, they say:
+
+**The situation**
+- (12 of 12) Customer scheduled a large CSV export and received a zero-byte file with no error in the UI.
+
+**What worked**
+- (12 of 12) The export exceeded the worker memory ceiling and was OOM-killed without surfacing. Re-ran with date chunking.
+```
+
+The case worth having is the other one. When a cluster has several distinct
+resolutions, all of them are listed and the candidate is flagged:
+
+> Note: 3 different resolutions for the same symptom. That usually means
+> this is more than one problem — consider splitting the candidate, or
+> narrowing `applies_when` until it covers only one.
+
+One symptom with three root causes, written up as a single rule, produces a
+lesson that fires on cases it cannot help. Nothing surfaced that before.
+
+**`approve` refuses a lesson that is still template text.** A candidate
+arrives with `applies_when`, the Rule, and the counter-examples all written
+as `TODO: ...`; approving it as-is would activate a lesson that teaches the
+fleet nothing, and an agent injects whatever it is given. Such a lesson
+would also be counted as coverage by `commontrace taxonomy`/`pilot` (making
+a real gap read as "Gaps: 0") and published to every agent by `sync --push`.
+So `approve` names the unfilled sections and stops; `--force` overrides it
+and says so; `lesson validate` fails an *active* lesson in that state; and
+`sync --push` will not publish one. Fill it in first — that editing pass is
+the curation step, not a formality.
+
 ### 6 — Measure what another fleet's lessons would be worth to you
 
 ```bash
@@ -162,8 +216,9 @@ commontrace overlap report --ours acme.json --theirs partner.json
 ```
 
 Answers *"of the failures we keep hitting, how many has another fleet
-already solved?"* — the quantity the cross-org value proposition depends on
-and which has never been measured (see [`STRATEGY.md`](STRATEGY.md)).
+already solved?"* for two fleets who have agreed to compare notes directly
+— distinct from the CommonTrace Knowledge Base below, which has no
+fleet-to-fleet data flow at all (see [`STRATEGY.md`](STRATEGY.md)).
 Neither side sends the other any lesson or trace text; only MinHash
 signatures are exchanged.
 
@@ -212,8 +267,9 @@ commontrace query "..." --experiment --occasion-id task-4711   # withhold at ran
 # ...do the task...
 commontrace capture --title "..." --context "..." --solution "..." \
     --agent-type code --occasion-id task-4711 --resolved        # same id: this is the join
-commontrace experiment                  # causal effect per lesson
-commontrace experiment --strict         # non-zero exit if a lesson significantly HURTS
+commontrace experiment --plan --occasions 500   # design it FIRST: what rate answers this?
+commontrace experiment                  # causal effect per lesson, validity checked first
+commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if the run is not valid
 ```
 
 **Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
@@ -259,9 +315,96 @@ Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 outcome data behind the outcome metrics (§ [Outcome Metrics](#outcome-metrics)
 below) — all optional, all additive to the base capture.
 
+### 10 — Run the pilot as one command: map, measure, and a yes/no
+
+```bash
+commontrace taxonomy      # "Map the issues": a structured map of the failure patterns found
+commontrace impact        # Impact Dashboard: errors avoided, lessons reused, value generated/saved
+commontrace pilot         # all of the above + baseline-vs-current resolution rate + a yes/no gate
+commontrace pilot --html  # a self-contained report written to memory/benchmark_reports/
+```
+
+`taxonomy` reuses `distill`'s clustering but never writes anything and does
+not exclude traces an existing lesson already covers — it shows the whole
+map, marking each recurring pattern **covered** (an active lesson references
+it) or a **gap**. `impact` counts errors avoided and lessons reused directly
+from the same retrieval evidence `reliability` reads (correlational, exactly
+like `reliability`'s `lift`); a dollar total is only ever computed from a
+`--cost-per-1k-tokens`/`--value-per-error-avoided` rate you supply — omit
+both and it reports the measured counts with no dollar figure attached,
+matching [the Plans section below](#plans-and-what-they-actually-enforce)'s
+"no currency appears anywhere in this repository." `pilot` bundles both plus
+`bench --pilot`'s resolution-rate delta into one report, and its yes/no gate
+is deliberately conservative: a causal result from `commontrace experiment`
+(§9 above) always outranks a correlational one, and correlational data alone
+never earns an outright yes — see PILOT.md.
+
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.
+
+---
+
+## Quick Start — Agents with no terminal (MCP)
+
+Everything above is a CLI, which quietly restricts CommonTrace to agents that
+can run a shell. Most cannot: a support agent inside a helpdesk, a sales agent
+inside a CRM, an ops agent inside a runbook tool. The Hub has spoken MCP since
+it existed; the **local store now does too**.
+
+```bash
+commontrace install --target claude-code   # writes commontrace.local.mcp.json
+```
+
+That file is the MCP entry — merge it into your agent platform's config:
+
+```json
+{
+  "mcpServers": {
+    "commontrace-local": {
+      "command": "commontrace",
+      "args": ["serve", "--dest", "/abs/path/to/your/store"]
+    }
+  }
+}
+```
+
+The agent then has the whole protocol as tools:
+
+| Tool | What the agent does with it |
+| --- | --- |
+| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. |
+| `capture(...)` | Record what happened, with the outcome fields (`resolved`, `tokens_used`, …). Same `occasion_id` joins it back to the retrieval. |
+| `propose_lessons()` | Cluster repeated failures into candidates. |
+| `draft_lesson(slug, rule, why, …)` | Write a candidate's content, over as many calls as it takes. |
+| `approve_lesson(slug)` | Activate it, so retrieval starts injecting it. |
+| `reject_lesson(slug, reason)` | Archive one that should not become a lesson. |
+| `list_lessons` / `get_lesson` / `store_status` | Read the store, and see which recurring patterns still have no lesson. |
+
+Two things about this are deliberate.
+
+**There is no authentication, because there is no boundary to authenticate.**
+The client spawns this process and talks to it over its own stdin/stdout —
+no port, no listener, nothing for another program on the machine to connect
+to. It reads and writes `memory/` with exactly the permissions of the agent
+that launched it, which already had them. That is the opposite of the Hub,
+which is multi-tenant and network-reachable and therefore authenticated on
+every call.
+
+**An agent can approve its own lesson, but the gate is real.**
+`approve_lesson` refuses a lesson that still contains scaffolding (an active
+lesson is injected into every later retrieval *verbatim*, so a rule still
+reading `TODO:` teaches the fleet nothing and displaces a real one), and it
+records **who** approved it, so an agent-approved lesson stays distinguishable
+from a human-approved one. Where a person must be in the loop,
+`commontrace serve --no-approval` removes the tool entirely — absent from the
+listing, not present and refusing, so the agent never plans around a call it
+cannot make.
+
+Nothing here reimplements ranking, holdout assignment, or the approval guard —
+it calls the same functions `commontrace query` and `commontrace lesson
+approve` do, so a fleet's shell-capable and shell-less agents read the same
+memory and land in the same experiment arms.
 
 ---
 
@@ -471,23 +614,87 @@ correlational answer on a specific lesson, see `commontrace experiment`
 
 ---
 
-## The Cross-Org Commons
+## The CommonTrace Knowledge Base
 
-Everything above compounds a fleet's experience *for that fleet*. The
-commons is the opt-in exception: a shared corpus where one org's solved
-substrate failure can save another org from rediscovering it at full cost.
+Everything above is the on-prem, self-learning fleet: a fleet's own
+experience compounds *for that fleet*, on its own infrastructure, and no
+other customer ever reads it. The Knowledge Base is a separate, optional
+layer next to it — closer to a vendor-maintained Stack Overflow or wiki
+than to a shared corpus between customers.
 
-The line it draws is deliberately narrow:
+There is no org-to-org sharing anywhere in this system, and that is a
+deliberate, load-bearing property, not an oversight:
 
-> **Substrate failures are shared. Business logic stays private.**
+> **No customer's own trace is ever visible to another customer, and no
+> customer's trace ever enters the Knowledge Base as itself — only as
+> content an operator has explicitly reviewed and republished.**
 
-"Stripe webhook handlers need idempotency keys" is not a trade secret, and
-every fleet on earth rediscovers it independently. Your pricing rules,
-escalation policy, and qualification criteria are yours and always should
-be. CommonTrace cannot tell those apart — that judgment is yours, made
-explicitly per trace and recorded.
+The Knowledge Base is a single corpus the *operator* authors and curates —
+substrate knowledge ("Stripe webhook handlers need idempotency keys",
+"React 19 hydrates `Date` differently than 18") that isn't anyone's trade
+secret, shipped and maintained the way a vendor maintains documentation.
+`hub/manage.py commons-seed` (bulk load) and `approve-submission` (one
+community proposal at a time — see "Propose an entry" below) are the only
+two things that ever write to it, both operator-run; no customer-facing
+tool can. `commons_access` (a plan setting) makes consulting it optional
+per org, and `HUB_COMMONS_ENABLED=false` removes it from the deployment
+entirely — see [`hub/DEPLOYMENT.md`](hub/DEPLOYMENT.md) for the single-org
+deployment mode that needs neither.
 
-### Ask what you'd gain, before contributing anything
+An earlier design routed this as org-to-org sharing instead (customer A
+opts a trace in, customer B's queries can match it). That design is
+retired: it has an adverse-selection problem with no fix (why would an org
+contribute knowledge that might help a competitor?), and it doesn't make
+sense in the first place — orgs do not share their IP and data with each
+other, so a design that asked them to was solving the wrong problem.
+
+### Ask the Knowledge Base what it already knows
+
+```bash
+commontrace commons ask "customer charged twice for one order"
+```
+
+```
+## 1. Payment webhook delivered more than once
+*similarity 0.125 · trust 0.50 · code*
+
+**When it happens:** The payment provider re-delivers a webhook after a non-2xx
+or a timeout, so the handler runs twice and the customer is charged twice
+
+**Solution:** Persist the provider's event id and check it before any side
+effect. Make the handler idempotent at the write, not at the entry point.
+```
+
+This is the lookup — *"has anyone already solved this?"* — and it is a
+different question from the coverage percentage below, with a different
+answer shape and a different trade.
+
+Note the similarity on that result: **0.125, well under the 0.30 coverage
+threshold.** `commons report` scores that same failure as
+**uncovered**, because a number you quote to a customer must not
+over-claim. The knowledge was there the whole time; the meter was built to
+say no when unsure. Ranking the same signatures instead of thresholding
+them recovers it:
+
+| | Recall@1 | @5 | @10 | Failure text sent? |
+|---|---|---|---|---|
+| `commons report` (thresholded) | 10.9% | — | — | No |
+| **`commons ask` (ranked)** | **89.1%** | **95.7%** | **100%** | **No** |
+
+Measured on 46 held-out failures written in on-call vocabulary
+(`python commons/eval/search_modes.py`, recorded in
+[`commons/eval/RESULTS.md`](commons/eval/RESULTS.md)). Your question is
+MinHashed locally exactly as `sign` does it — **no failure text leaves your
+machine for either command.**
+
+**Results are candidates to judge, never coverage.** On the same
+evaluation, a failure the Knowledge Base does *not* contain still comes back with
+a non-empty list 100% of the time, and the true/absent score distributions
+overlap. That is fine for a ranked list someone skims — a weak match costs
+a glance — and it is exactly why the coverage figure keeps its threshold
+and stays a separate command. Do not derive a percentage from `ask`.
+
+### Ask what you'd gain, before adopting anything
 
 ```bash
 commontrace commons sign --out failures.json      # local; signatures only
@@ -495,7 +702,7 @@ commontrace commons report --signatures failures.json
 ```
 
 ```
-**2 of 3** of your recurring failures (67%) have already been solved by another fleet.
+**2 of 3** of your recurring failures (67%) are already solved in the CommonTrace Knowledge Base.
 
 ### Postgres connection pool exhausted under retry storm
 - Matches your `c9afa48d-761` at similarity 0.6406
@@ -504,8 +711,9 @@ commontrace commons report --signatures failures.json
 
 `sign` MinHashes your recurring failures locally — **no failure text leaves
 your machine**, and text cannot be reconstructed from a signature. What
-comes back is drawn only from traces whose owners explicitly shared them.
-You do not need to contribute anything to ask.
+comes back is drawn only from the operator-curated Knowledge Base — never
+from another customer's own traces, because no customer's trace is ever in
+that corpus. There is nothing to contribute in order to ask.
 
 Stated plainly, because it matters: MinHash is not a cryptographic privacy
 guarantee. Someone who can already guess a candidate string can test
@@ -515,7 +723,7 @@ assumption.
 
 ### Evaluate before adopting anything
 
-The commons thesis is one empirical claim — that a meaningful share of what
+The Knowledge Base thesis is one empirical claim — that a meaningful share of what
 your fleet keeps hitting is *substrate* failure someone else already
 solved. Testing it should not require adopting CommonTrace first, so it
 doesn't:
@@ -544,51 +752,408 @@ A low number here is weak evidence: the matcher is lexical and misses most
 failures worded differently from the corpus. A *high* number is strong
 evidence, since false positives measured 0%.
 
-### Contribute
-
-```bash
-commontrace commons contribute --tags stripe,webhooks     # previews, shares nothing
-commontrace commons contribute --tags stripe,webhooks --confirm
-commontrace commons unshare <trace_id>                    # withdraw
-```
-
-Contribution is opt-in, previewed, and revocable. It refuses to run without
-an explicit `--tags`/`--query` narrowing rather than defaulting to
-everything you own.
-
-**Treat sharing as publication, not a revocable ACL.** Withdrawal stops
-future matches; it cannot retract what another org already retrieved.
-
 ### What is guaranteed
 
 | Property | How |
 |---|---|
-| Private by default | `shared_with_commons` is false unless you set it; nothing shares implicitly |
-| You can only share what you own | Org-scoped lookup, 404-shaped for a foreign id so it can't confirm one exists |
-| Quarantined traces can't enter | Refused — that would propagate exactly what quarantine contains |
-| Your own traces don't inflate your number | The corpus excludes your rows: the question is what you'd *gain* |
-| Ordinary reads are unaffected | All six original tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
+| No customer trace ever enters the Knowledge Base without an operator's own decision | Only `hub/manage.py commons-seed` (bulk) and `approve-submission` (one community submission at a time) write `commons_source='seed'` rows — both operator-run, neither reachable from a customer's own API key |
+| The guarantee holds even against a hypothetical bug | `commons_overlap`/`commons_search` filter on `commons_source == "seed"` explicitly, not merely on the absence of a sharing tool |
+| Proposing is not publishing | `submit_kb_entry` writes to a separate table no commons query ever reads; it stays there, invisible to every other org, unless an operator's `approve-submission` accepts it |
+| Quarantined content can't enter | Refused at seed time — that would propagate exactly what quarantine contains |
+| Your own traces don't inflate your coverage number | The corpus excludes your rows: the question is what the Knowledge Base already knows, not what you told it |
+| Ordinary reads are unaffected | All six org-scoped tools stay org-scoped; `hub/tests/test_tenant_isolation.py` passes unchanged |
+| Consulting it is optional | `commons_access` (plan setting) per org, `HUB_COMMONS_ENABLED=false` for the whole deployment |
+| No number of downvotes can delete the operator's content | Voting changes an entry's `standing`, which shrinks this product's own claims (dropped from coverage, ranked last) and never removes anything. Withdrawal is an operator action — `hub/tests/test_kb_standing.py:TestVotesNeverRetract` |
 
-### Why contributing is worth it
-
-A commons where contribution is pure altruism fills with low-value filler —
-the standard reason these plays fail. So the value a contributor *delivers*
-is measured: every time a shared trace covers another fleet's recurring
-failure, that trace's `commons_hits` increments.
+### Propose an entry
 
 ```bash
-python -m hub.manage commons-value    # per org: what it shared, what that delivered
-python -m hub.manage commons-stats    # how many DISTINCT orgs contribute
+commontrace commons submit \
+  --title "Postgres connection pool exhausted under retry storm" \
+  --context "a dependency outage triggers a retry storm that saturates the pool" \
+  --solution "bound retries with jittered backoff; set pool_timeout so callers fail fast" \
+  --tags postgres,retries \
+  --rationale "substrate connection-pool behavior, not our business logic"
+commontrace commons submissions               # check status
 ```
 
-`commons-value` is the honest denominator for pricing or revenue share, and
-it is what makes contributing a position rather than a favour.
+This is closer to posting a Stack Overflow answer than to sharing your own
+incident history: write it up as generalized substrate knowledge, not as
+your specific outage. **Nothing is published by `submit`.** It creates a
+row an operator reviews later (`hub/manage.py list-submissions` /
+`approve-submission` / `reject-submission`); until decided, it is invisible
+to every other org, including your own coverage numbers.
+
+An **accepted** submission becomes a normal Knowledge Base entry — owned
+by the operator, not by you, exactly like a seeded one — and permanently
+raises your org's Knowledge Base query allowance by
+`plans.SUBMISSION_ACCEPTANCE_CREDIT` (25 by default; an operator can grant
+a different amount per submission). A **rejected or still-pending** one
+earns nothing.
+
+That "earns nothing until accepted" rule is the entire fix for the problem
+an earlier, retired design had (§3 in `STRATEGY.md`): a credit for the act
+of *sharing* rewards volume, and an org keeps its best lessons while
+farming credit with filler. A credit for *acceptance* rewards quality
+instead, because filler gets rejected. It does not make the underlying
+incentive to withhold your best material disappear — nothing could — but
+what accumulates is self-selected for being worth a human's time to
+publish, the same as an actual Stack Overflow answer or wiki edit.
+
+### Is the Knowledge Base actually earning its query traffic?
+
+The operator-curated model has its own failure mode: a corpus nobody wrote
+carefully fills with entries that never match anything real. So content
+quality is measured, not assumed — every time an entry covers a real
+recurring failure, that entry's `commons_hits` increments:
+
+```bash
+python -m hub.manage kb-stats    # entry count, hits, adoption, dead entries,
+                                  # standing breakdown, and the submission
+                                  # funnel: pending/approved/rejected
+```
+
+`kb-stats` is a content-quality report, not a vanity metric: it flags
+entries that have never matched anything after real query volume (the
+honest signal that they need rewriting or removal) and reports the
+submission funnel so an operator can tell whether the review queue itself
+needs attention, separately from whether its output is any good.
+
+### Is it actually working for you?
+
+Every trace you capture can carry an `outcome` — was the task resolved, did
+it escalate, was it a repeat of a failure you'd already hit, what did it
+cost — and `outcome.baseline: true` marks traces from a window *before*
+lessons were being injected. The Hub compares the two:
+
+```bash
+# via the MCP tool your agents already have
+fleet_outcomes()                          # optionally: agent_type="support"
+```
+
+You get resolution, repeated-error, escalation and frustration rates for
+both windows with the delta, a 95% confidence interval, a p-value, and a
+Benjamini-Hochberg correction across the four metrics. Reads only your own
+traces, and is not metered.
+
+**It is an observed change, not a causal effect, and it says so on every
+response.** `baseline` is a time window, so a model upgrade or a shift in
+your task mix is mixed in with anything CommonTrace contributed. For a
+claim that survives "what else changed that quarter?", run the randomized
+holdout (`commontrace experiment`) — it withholds lessons at random, so
+the arms differ only by the treatment.
+
+Three things it deliberately will not do for you:
+
+- **Quote whichever of four metrics happened to look good.** The
+  correction is applied across all of them.
+- **Let a small sample read as "no effect".** Every inconclusive row
+  reports the minimum effect that many observations could have detected.
+- **Only return good news.** A significant move in the wrong direction is
+  reported as `worsened`, at the same prominence as a win.
+
+### Proving it, rather than observing it
+
+`fleet_outcomes` above compares your fleet to its own past. That is useful
+and it is *not causal* — a model upgrade or a shift in your task mix sits
+in the same window. The randomized holdout removes that objection by
+construction:
+
+```bash
+# an operator starts one for your org
+python -m hub.manage start-experiment <org_id> 0.2    # withhold 20%
+```
+
+Your agents then ask before injecting, and report afterwards — over MCP
+(`holdout_assign` / `record_occasion_outcome`), or from a shell:
+
+```bash
+commontrace prove assign ticket-8821 <trace-id> <trace-id> ...
+#   INJECT   a1b2...        <- use these
+#   WITHHOLD c3d4...        <- deliberately keep these back
+commontrace prove record ticket-8821 --succeeded
+```
+
+```bash
+commontrace prove outcomes        # what the experiment has established
+```
+
+Traces under `withhold` are deliberately kept back, so your fleet
+generates its own control arm. The comparison is then two arms of the same
+fleet in the same window, differing only by whether the memory was
+injected — which is what makes it survive "what else changed that
+quarter?".
+
+What comes back is per-lesson: effect size, 95% CI, p-value with a
+multiple-comparisons correction across lessons, and an explicit
+`UNDERPOWERED` verdict so "cannot answer yet" never reads as "no effect".
+`HURTS` is a first-class result — and it is the one correlational scoring
+structurally cannot produce, because a lesson retrieved often *because* it
+fires on hard tasks looks good by retrieval count and bad by outcome.
+
+**The cost is real and bounded:** the withheld fraction gets a worse
+product on purpose. That is the price of knowing whether the product works
+at all. Nothing turns it on by default.
+
+### Design the pilot before you run it
+
+The expensive, silent failure is a pilot that reaches its last day and says
+*not enough data yet*. The occasions are spent, the window is gone, and the
+only fix had to be applied on day one.
+
+```bash
+commontrace experiment --plan --occasions 240 --detect 0.15   # size it
+commontrace experiment --configure --rate 0.5                 # then set it
+```
+```
+To detect an effect of 15% against a 78% baseline at 80% power:
+- 119 observations in EACH arm.
+- At a 10% holdout that is 1,190 occasions.
+
+240 occasions can answer this, but not at 10%. Set the holdout rate to 50%.
+```
+
+The arithmetic nobody does in their head: **at a 10% holdout only one
+occasion in ten lands in the control arm, so a run reaches an answer about
+ten times slower than its occasion count suggests.** The plan reads your own
+observed baseline, names the rate your budget needs, and says plainly when no
+rate can answer it at all — which is the most useful thing it can tell you,
+and it is worth knowing before the window rather than after.
+
+It also states the cost rather than selling the upside alone: a wider holdout
+means that share of the work runs without its memory while the experiment is
+live.
+
+`--configure` writes the rate to the store, and **every retriever reads it** —
+`commontrace query --experiment` and the MCP `retrieve` tool alike, so the two
+cannot drift apart. Changing the rate **starts a fresh randomization**: since
+assignment is `hash(lesson, occasion, salt) < rate`, a new rate re-randomizes
+every occasion, and pooling the assignments from before and after would let
+one occasion sit in both arms. The salt rotates so that is explicit — the
+report scopes to the current run and names the earlier one rather than mixing
+them (`--salt <salt>` reads it).
+
+**"No measurable effect" is reserved for a sample that could have detected
+one.** Clearing the per-arm floor is a condition for running the test, not
+evidence the test could see anything — at 10 observations per arm the minimum
+detectable effect is 61 percentage points. A null from a design that could not
+have seen a 10-point change is reported as `UNDERPOWERED`, because that is
+what it is. A *significant* result at small n keeps its verdict: power governs
+how to read a null, not a finding.
+
+### Auditing the instrument
+
+An effect size is worth what it survives, and the first question a
+data-science function asks is not "what was the p-value" — it is **"how do
+you know that number isn't an artifact of who got measured?"**
+
+Every report now answers that before it shows a number.
+
+The estimate is computed only on occasions that got an outcome recorded.
+Dropping the rest is the right handling — an agent that crashed before
+reporting is missing data, and scoring it as a failure would penalise the
+arm that crashed more — but it is unbiased **only if both arms lose
+outcomes at the same rate**. They have a specific reason not to: the
+withheld arm is, by construction, the one working without its memory, so it
+is the arm more likely to run long, escalate, or be abandoned before anyone
+writes up how it went. The treatment effect leaks into who gets measured.
+
+Here is what that costs, from this repo's own test suite — a fleet of 600
+occasions where the lesson does **nothing**, both arms succeeding at exactly
+50%, with the single asymmetry that a withheld occasion which failed often
+never gets reported:
+
+| | |
+|---|---|
+| True effect | **0.0%** |
+| Reported without the audit | **HURTS, −12.6%** |
+| 95% CI | **[−20.8%, −4.4%]** — does not contain zero |
+| p | **0.003**, significant, adequately powered |
+
+It does not error, return empty, or read as underpowered. It reads as a
+clean finding pointing the wrong way about a lesson that was fine — and
+because `HURTS` is a first-class result here, a customer would have retired
+it.
+
+Five checks now run before any effect is shown, on both tiers:
+
+| Check | Catches |
+|---|---|
+| **Differential attrition** | One arm being less likely to get an outcome recorded — and it reports the *direction*, because which arm loses data decides which way the number is wrong |
+| **Arm balance** | A realized holdout share far from the configured rate. Assignment is a deterministic hash, so this is not luck |
+| **Mid-run re-randomization** | A changed salt or rate, which silently makes the log two experiments pooled into one comparison |
+| **Conflicting arms** | One (lesson, occasion) counted as evidence for *and* against the same lesson |
+| **Outcome variation** | An outcome nothing can fail, which yields a difference of exactly zero and reads as a confident null |
+
+Alongside them, a **power projection**: how far each lesson is from being
+answerable, and roughly when at the current rate. `UNDERPOWERED` on day 30
+is a spent pilot; the same fact on day 3 is a holdout rate you can still
+change. The control arm almost always binds, and the reason is arithmetic —
+at a 10% holdout it takes ~100 occasions to put 10 in the control, so a run
+answers about ten times slower than its occasion count suggests. The report
+says so, and names the rate that fixes it.
+
+**And the treatment has to hold still, too.** A lesson is a file, and
+`lesson approve`, a text editor and an agent calling `draft_lesson` all
+rewrite it in place. Edit one on day 10 of a 30-day run and the occasions
+before and after were treated with different instructions — pooled into one
+arm, reported as one effect, for a treatment that is an average of two.
+
+So a lesson now has a **revision**: a short digest over exactly the fields an
+agent receives. Every assignment records which revision it was made against,
+every effect is reported as `lesson_x @ a3f9c1d2` rather than against a
+mutable name, and a lesson that moved mid-run is flagged with both revisions
+in the order they happened:
+
+```bash
+commontrace lesson history lesson_backoff
+#   (new)        -> d5503396812b   by cli:alice,  initial
+#   d5503396812b -> cab6c7f1707c   by mcp:agent,  widened after three more traces
+```
+
+The digest covers what an agent *reads* and nothing else — `uses` and
+`last_hit` change on every single retrieval, so hashing them would flag every
+experiment inside a week, which is the false positive that teaches people to
+ignore a validity report. Every content change is journaled append-only with
+who changed it and why, so *what instruction was this fleet following on
+March 4th, who approved it, and what did withholding it do* is a question
+with an answer.
+
+Three things it will not do:
+
+- **It will not correct the estimate.** Nothing can recover an outcome that
+  was never recorded, so a compromised run gets a refusal to report a
+  number, not a repaired one. `--strict` fails it.
+- **It cannot detect contamination.** An agent that uses a lesson it was
+  told to withhold leaves no trace and biases the effect toward zero. That
+  is honoured by the client or not at all — and every report says so, out
+  loud, because silence would read as coverage.
+- **It will not treat a clean result as proof.** These catch the failures
+  that leave a trace in the assignment log. That set is not everything, and
+  the report says which is which rather than only listing problems: a
+  caller cannot distinguish "checked, clean" from "not checked" when only
+  failures appear.
+
+## Your team's console
+
+Everything above is a CLI or an MCP tool. The person who approves the renewal
+is neither of those, so the Hub serves a console at `/app` scoped to one
+organisation by its own API key:
+
+| Page | What it answers |
+| --- | --- |
+| **Overview** | How much memory this fleet has, how many agents it runs, and how often a search comes back with nothing |
+| **Proof** | Is the memory working — with **"can this be trusted?" rendered above the effect sizes**, not in a footnote under them |
+| **Memory** | The corpus, searched the way the agents search it, showing which terms matched and which were too common to discriminate |
+| **Knowledge Base** | Proposals sent, consultations used, credit earned |
+
+```bash
+HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+# unset, and no /app route exists at all
+```
+
+Four properties, each ruling something out:
+
+- **It writes no queries of its own.** Every number comes from a function
+  that already takes and filters on `org_id`. A cross-tenant leak is the
+  worst failure this product has available, so the isolation argument rests
+  on the one set of filters the tenant-isolation suite already exercises.
+- **It is read-only.** Everything you could change from a browser alters
+  either a measurement or a shared corpus, and both already have audited,
+  authenticated paths. That is also why there are no CSRF tokens: there is
+  no state-changing request for a forged one to trigger.
+- **Revoking a key ends the browser sessions it opened**, checked on every
+  request. Revocation that leaves a session alive for another eight hours is
+  a false belief about the state of a credential.
+- **When validity is COMPROMISED the effect sizes are withheld, not
+  caveated.** On a page read in a renewal conversation, a number on screen
+  gets quoted and the note beneath it does not travel with it.
+
+It is separate from the operator console at `/admin`, in audience, in auth,
+and in blast radius — and it is gated on a different secret, because one
+value that both authenticates the vendor and signs customer sessions means
+one leak compromises both.
+
+---
+
+### What it was worth
+
+An effect size is a percentage. A renewal conversation is about a quantity.
+
+```bash
+commontrace experiment --value-per-occasion 24
+```
+```
+**+67 occasions** went differently because of this memory, over the measured
+window (95% CI +37 to +98).
+
+At the 24.00 per resolved occasion you supplied, that is **+1,616**.
+```
+
+For every memory whose causal effect the holdout has *established*, that is
+`effect × times injected` — how many more occasions went well because it
+existed, carrying the confidence interval through. On the Hub it is the
+`value_delivered` tool and a section on your console's Proof page.
+
+**The count is measured here; the rate is yours.** This repository attaches no
+currency to anything. You say what one resolved occasion is worth to your
+organisation; nothing about that is stored.
+
+Three rules, and the third is the one that makes the number worth quoting:
+
+- **A compromised experiment produces no figure at all** — not a hedged one.
+  If a named mechanism is biasing the effects it biases every value computed
+  from them, and a value report is precisely where a caveat gets separated
+  from the number it qualifies.
+- **An underpowered memory contributes nothing.** Measured on a real run: one
+  reporting +30% on 90 occasions, never established, would have added a
+  phantom +27. That is how a null becomes a sales figure.
+- **Memories measured as HURTING are subtracted, not dropped.** A figure that
+  sums only the winners is a brochure. The whole claim here is that this will
+  tell you when its own memory is making things worse — a number that quietly
+  excludes those retracts the claim in the one document where it is being
+  cashed.
+
+### When an answer stops being right
+
+Seeding and submissions both answer "how does content get in". Neither
+answers what happens when the world moves and an entry stops being true —
+and a curated corpus that only grows is one that decays. Every Knowledge
+Base entry therefore carries a **standing**, computed from signals the
+system was already collecting:
+
+| Standing | Meaning |
+|---|---|
+| `disputed` | At least three fleets voted and a majority reported it did not work |
+| `stale` | The entry declared a review date when it was written, and it has passed |
+| `established` | Corroborated by enough fleets to be more than the author's confidence |
+| `unproven` | In the corpus, not yet judged — where every entry starts |
+
+You give that signal with `vote_trace` (`down` plus a `feedback_tag` of
+`outdated`, `wrong`, or `security_concern`). What it changes:
+`commons_overlap` stops counting a disputed entry as coverage — a wrong
+answer is not a solved failure — and reports it separately under
+`disputed_matches` instead, so a coverage number never moves without you
+being able to see why. `commons ask` still shows the entry, ranked last
+and labelled, because a contested answer plus the warning beats no answer.
+
+**Votes inform; the operator decides.** No vote count withdraws anything.
+The strongest automatic effect is a smaller coverage claim and a worse
+rank — both of which make this product's own numbers more conservative,
+never less. Withdrawing an entry is a human action
+(`python -m hub.manage kb-retract`, reversible with `kb-restore`).
+
+For an operator, that feedback is what makes curating a corpus scale past
+what anyone could re-read: `kb-review` lists the entries that need a
+decision — security flags first, then disputed, then past their review
+date, then never-matched — each ordered by how much traffic it affects. So
+review cost tracks the *error rate*, not the corpus size.
 
 ### Plans, and what they actually enforce
 
-Measuring value is half a business model. The other half is the server
-refusing the request that exceeds the plan, and that is implemented rather
-than described — `hub/plans.py`, enforced in `hub/crud.py`.
+A plan is only real if the server refuses the request that exceeds it, and
+that is implemented rather than described — `hub/plans.py`, enforced in
+`hub/crud.py`.
 
 Two things are metered, chosen so neither can charge for something the
 customer did not get:
@@ -596,34 +1161,52 @@ customer did not get:
 | | `free` | `team` | `scale` |
 |---|---|---|---|
 | Traces stored | 1,000 | 50,000 | unlimited |
-| Commons queries / month | 20 | 1,000 | 25,000 |
+| Knowledge Base queries / month | 20 | 1,000 | 25,000 |
+| Active agents | 5 | 25 | unlimited |
 
-Storage is real cost and grows monotonically. **Commons queries are the
-metered unit** because that is the only call whose value comes from *other
-orgs'* contributions — everything else an org does is with its own data,
-and charging per query against your own memory is rent, not price. Purging
-frees storage allowance, so the deletion right in `DATA_RETENTION.md` is
-not a right in name only.
+Storage is real cost and grows monotonically. **Knowledge Base queries are
+the metered unit** because that is the only call whose value comes from
+content the org did not itself produce — everything else an org does is
+with its own data, and charging per query against your own memory is rent,
+not price. Purging frees storage allowance, so the deletion right in
+`DATA_RETENTION.md` is not a right in name only. The flat plan grant above
+is the floor, not the ceiling — see "Propose an entry" for the one way an
+org can permanently raise it, by having a Knowledge Base submission
+accepted rather than by the act of submitting.
 
-**Contributing earns allowance, mechanically.** Every time a trace you
-shared covers another fleet's failure, you get 25 more commons queries this
-period:
+**Active agents** is the expansion axis, and it is metered on `Trace.agent_id`
+— *which* agent produced a trace, as opposed to `agent_type`, which is what
+*kind* it is. A fleet of 25 support agents shares one `agent_type`, so only
+`agent_id` can answer how many agents a fleet actually runs (see
+[`commontrace capture --agent-id`](#4--capture-experience-and-curate-lessons)).
+Three properties of the count are deliberate:
 
-```
-allowance = plan grant + delivered hits × 25
-```
+- **It counts agents active in a trailing 30-day window, not all-time.** An
+  all-time count can only rise: it could never show a fleet shrinking, and it
+  would bill for an agent that ran once and was decommissioned. Retiring an
+  agent frees its slot, for the same reason purging frees storage.
+- **The cap blocks expansion, never operation.** An org at its limit keeps
+  serving every agent it already runs; only registering a *new* agent is
+  refused. A commercial limit must not become a production outage, so
+  lowering an org's plan below its current fleet size never breaks that
+  fleet either — the overage surfaces in `manage usage` for a human.
+- **It is a floor, not a total, when `agent_id` is missing.** Traces from a
+  client that sends no `agent_id` are never rejected (that would break every
+  client written before this existed) but they all collapse into one
+  `unattributed` agent. `manage usage` marks those orgs with a trailing `+`
+  rather than quoting the number as exact.
 
-Note what is credited: hits **delivered**, not traces **shared**. Sharing
-is free and trivial to fake in bulk; a hit requires that someone else's
-real failure matched, at the shipped threshold, against a corpus that
-excludes your own rows. It cannot be self-dealt — which is why crediting
-hits is the mechanism and crediting shares would *be* the filler problem.
+The earning mechanic that exists is narrow and deliberate: an *accepted*
+Knowledge Base submission adds a permanent, one-time bonus
+(`Organization.bonus_commons_queries`) on top of the plan's flat grant.
+Nothing else moves this number — not submitting, not how much you submit,
+not how many queries you run.
 
 ```bash
-commontrace commons usage                      # what you have, what you earned
+commontrace commons usage                      # what you have, what you've used
 python -m hub.manage set-plan <org_id> team    # operator: move an org
 python -m hub.manage usage                     # operator: every org's meter
-python -m hub.manage revenue                   # billable orgs: consumed vs delivered
+python -m hub.manage revenue                   # billable orgs: consumption of both metered resources
 ```
 
 Exceeding a limit returns `entitlement_exceeded` — deliberately *not*
@@ -643,14 +1226,16 @@ This implements the entitlement, not the invoice. Payment, tax, dunning,
 refunds and disputes belong to a billing system, and printing a dollar
 figure computed from a hardcoded rate would read as revenue reporting while
 being arithmetic on a number nobody agreed to. `manage revenue` prints the
-denominator a price should be argued from — per paying org, how much they
-consumed from the commons versus how much they delivered to it.
+denominator a price should be argued from — per paying org, real
+consumption of storage and Knowledge Base queries. There is no "delivered"
+side to net against: customers do not contribute to what they consume in
+this model, so consumption is the whole number, not one side of a ledger.
 
 ### The cold start
 
-An empty commons returns 0% to every prospect — by construction, not as a
-finding — so nobody sees value and nobody contributes. A starter corpus of
-public substrate knowledge ships in the repository to break that:
+An empty Knowledge Base returns 0% to every prospect — by construction, not
+as a finding — so a starter corpus of public substrate knowledge ships in
+the repository to break that:
 
 ```bash
 python -m hub.manage commons-seed commons/seed/substrate-v1.jsonl <operator_org_id>
@@ -671,13 +1256,12 @@ What it is *not* is a coverage claim. What fraction of a real fleet's
 failures this corpus covers is measured separately, on held-out data, in
 `commons/eval/` — see [Measuring coverage honestly](#measuring-coverage-honestly).
 
-Seeded rows are marked `commons_source='seed'` and are reported **separately
-everywhere it matters**. They answer real queries and deliver real value —
-but they never count toward "how many orgs contribute", because that number
-is the one that says whether a network effect exists, and an operator
-seeding its own corpus is not evidence of one. `commons-stats` says so in
-those words, and warns when one org dominates: a large corpus from a single
-contributor is one fleet's memory with extra steps.
+Seeded rows are marked `commons_source='seed'` — the only value any
+Knowledge Base query will ever match against, so this is also the security
+boundary, not just a label. `kb-stats` reports which entries are actually
+answering real queries and which have never matched anything, so the
+operator can tell curated substrate knowledge apart from filler that reads
+well but never helps.
 
 ### Measuring coverage honestly
 
@@ -702,11 +1286,11 @@ several chosen as near misses). At the shipped 0.30 threshold:
 
 Read plainly, and it is not the flattering result:
 
-**The number a fleet sees is a floor, not an estimate.** When the commons
-genuinely contains a fleet's failure and the fleet describes it in its own
-words, the matcher finds it about one time in nine. A prospect who sees 5%
-should conclude the commons covers *at least* 5% of their problems, not
-about 5%.
+**The number a fleet sees is a floor, not an estimate.** When the Knowledge
+Base genuinely contains a fleet's failure and the fleet describes it in its
+own words, the matcher finds it about one time in nine. A prospect who sees
+5% should conclude the Knowledge Base covers *at least* 5% of their
+problems, not about 5%.
 
 **What it does match, it matches correctly.** Every match landed on the
 exact record it was written against, and not one absent failure was
@@ -795,7 +1379,7 @@ tests, not left to convention:
 | Health checks | `/healthz` (liveness, no DB dependency — a database blip must not trigger a restart storm) and `/readyz` (readiness, real query). |
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
-| Data deletion | `manage.py purge-trace` / `purge-org` perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
+| Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
 
 Before putting a client's data on it, work through the security checklist in
@@ -828,8 +1412,13 @@ commontrace-v2/
       lesson.schema.json       — Local governance wrapper (importance, applies_when, status)
   commontrace/                 — The `commontrace` CLI (pip-installable client)
     cli.py, paths.py, frontmatter.py, trace_io.py, validate.py, templates.py, hub_client.py,
-    distill.py (Curator clustering), retrieval.py (lexical fallback ranker), import_data.py
-    commands/                  — init, install, capture, import, trace, distill, lesson, query, index, bench, sync, doctor
+    distill.py (Curator clustering), retrieval.py (lexical fallback ranker), import_data.py,
+    reliability.py + evidence_io.py (lesson scoring/contradictions), experiment.py (causal
+    holdout), taxonomy.py + impact.py + pilot.py (the 30-day pilot's three leave-behinds),
+    report_html.py (shared HTML shell for taxonomy/impact/pilot --html)
+    commands/                  — init, install, capture, import, trace, distill, lesson, query,
+                                  index, bench, reliability, experiment, taxonomy, impact, pilot,
+                                  sync, doctor
     schemas/                   — bundled copy of protocol/schemas/*.json (works without a repo checkout)
   hub/                          — The Hub server (self-hosted; see hub/README.md to run one)
   pyproject.toml               — packaging config for the `commontrace` CLI. Currently

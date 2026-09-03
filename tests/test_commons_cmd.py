@@ -1,4 +1,5 @@
-"""Tests for `commontrace commons` — the client half of the cross-org commons.
+"""Tests for `commontrace commons` — the client half of the CommonTrace
+Knowledge Base.
 
 The property that matters most here is that this client and hub/commons.py
 sign the *same text the same way*. If they drift, nothing raises:
@@ -145,82 +146,122 @@ class TestSignCommandWritesSignaturesOnly:
         assert "no recurring failures" in capsys.readouterr().err.lower()
 
 
-class TestContributeIsSafeByDefault:
-    """Sharing is effectively publication -- withdrawal stops future
-    matches but cannot retract what another org already retrieved. So the
-    bulk path must never share without an explicit, informed instruction.
-    """
+class TestUsageShowsBonus:
+    def _args(self, **over):
+        base = dict(hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base.update(over)
+        return type("A", (), base)()
+
+    def _usage(self, bonus=0):
+        return {
+            "plan": "free", "period": "2026-01",
+            "commons_queries": {
+                "used": 3, "allowance": 20 + bonus, "remaining": 17 + bonus,
+                "bonus_from_accepted_submissions": bonus,
+            },
+            "traces": {"used": 1, "limit": 1000},
+        }
+
+    def test_no_bonus_line_when_nothing_earned(self, capsys, monkeypatch):
+        async def fake_usage(hub, key):
+            return self._usage(bonus=0)
+
+        monkeypatch.setattr(commons_cmd.hub_client, "account_usage", fake_usage)
+        assert commons_cmd.run_usage(self._args()) == 0
+        assert "earned via accepted" not in capsys.readouterr().out
+
+    def test_bonus_line_shown_when_something_was_earned(self, capsys, monkeypatch):
+        async def fake_usage(hub, key):
+            return self._usage(bonus=25)
+
+        monkeypatch.setattr(commons_cmd.hub_client, "account_usage", fake_usage)
+        assert commons_cmd.run_usage(self._args()) == 0
+        assert "25 earned via accepted `commons submit` proposals" in capsys.readouterr().out
+
+
+class TestSubmit:
+    """`commons submit` -- proposes a Knowledge Base entry for operator
+    review. Nothing about this command publishes anything; it just calls
+    the Hub's submit_kb_entry tool and reports the pending status back."""
 
     def _args(self, **over):
         base = dict(
-            tags="", query="", limit=50, rationale="", confirm=False,
+            title="Stripe webhooks retry", context_text="duplicate delivery on 500",
+            solution_text="use an idempotency key", tags="stripe,webhooks", agent_type="code",
+            rationale="substrate, not our business logic",
             hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test",
         )
         base.update(over)
         return type("A", (), base)()
 
-    def test_refuses_an_unnarrowed_selection(self, capsys, monkeypatch):
-        """No tags and no query would mean 'every trace you own'."""
-        called = []
-        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool",
-                            lambda *a, **k: called.append(a))
-        assert commons_cmd.run_contribute(self._args()) == 1
-        assert "refusing" in capsys.readouterr().err.lower()
-        assert called == [], "must not have contacted the Hub at all"
+    def test_submits_with_parsed_tags_and_reports_pending_status(self, capsys, monkeypatch):
+        captured = {}
 
-    def test_preview_lists_candidates_but_shares_nothing(self, capsys, monkeypatch):
-        async def fake_call(hub, key, tool, args):
-            assert tool == "search_traces"
-            return {"traces": [
-                {"id": "aaaaaaaa-1111", "title": "Stripe webhook retries",
-                 "tags": ["stripe"], "shared_with_commons": False},
-                {"id": "bbbbbbbb-2222", "title": "CUDA grid limit",
-                 "tags": ["cuda"], "shared_with_commons": False},
-            ], "has_more": False}
+        async def fake_submit(hub, key, **kwargs):
+            captured.update(kwargs)
+            return {"id": "sub-123", "status": "pending"}
 
-        shared = []
-        async def fake_share(*a, **k):
-            shared.append(a)
-            return {"id": "x"}
+        monkeypatch.setattr(commons_cmd.hub_client, "submit_kb_entry", fake_submit)
 
-        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
-        monkeypatch.setattr(commons_cmd.hub_client, "share_trace", fake_share)
+        assert commons_cmd.run_submit(self._args()) == 0
+        assert captured["tags"] == ["stripe", "webhooks"]
+        assert captured["title"] == "Stripe webhooks retry"
+        assert captured["rationale"] == "substrate, not our business logic"
 
-        assert commons_cmd.run_contribute(self._args(tags="stripe,cuda")) == 0
         out = capsys.readouterr().out
-        assert "Stripe webhook retries" in out
-        assert "PREVIEW ONLY" in out
-        assert shared == [], "preview must not share anything"
+        assert "sub-123" in out
+        assert "review" in out.lower()
+        assert "Nothing is published yet" in out
 
-    def test_confirm_shares_only_the_unshared_ones(self, capsys, monkeypatch):
-        async def fake_call(hub, key, tool, args):
-            return {"traces": [
-                {"id": "aaaaaaaa-1111", "title": "New", "tags": ["stripe"],
-                 "shared_with_commons": False},
-                {"id": "cccccccc-3333", "title": "Already in commons",
-                 "tags": ["stripe"], "shared_with_commons": True},
-            ], "has_more": False}
+    def test_a_hub_error_is_reported_not_raised(self, capsys, monkeypatch):
+        async def fake_submit(hub, key, **kwargs):
+            raise commons_cmd.hub_client.HubConnectionError("submit_kb_entry failed: invalid_request")
 
-        shared = []
-        async def fake_share(hub, key, tid, rationale=""):
-            shared.append(tid)
-            return {"id": tid}
+        monkeypatch.setattr(commons_cmd.hub_client, "submit_kb_entry", fake_submit)
+        assert commons_cmd.run_submit(self._args()) == 1
+        assert "invalid_request" in capsys.readouterr().err
 
-        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
-        monkeypatch.setattr(commons_cmd.hub_client, "share_trace", fake_share)
 
-        assert commons_cmd.run_contribute(self._args(tags="stripe", confirm=True)) == 0
-        assert shared == ["aaaaaaaa-1111"], "already-shared traces must be skipped"
+class TestSubmissions:
+    def _args(self, **over):
+        base = dict(limit=None, json=False, hub_url="http://hub.invalid/mcp", hub_api_key="ct_live_test")
+        base.update(over)
+        return type("A", (), base)()
 
-    def test_nothing_to_share_is_reported_cleanly(self, capsys, monkeypatch):
-        async def fake_call(hub, key, tool, args):
-            return {"traces": [
-                {"id": "cccccccc-3333", "title": "Already", "tags": ["stripe"],
-                 "shared_with_commons": True},
-            ], "has_more": False}
-        monkeypatch.setattr(commons_cmd.hub_client, "_call_tool", fake_call)
-        assert commons_cmd.run_contribute(self._args(tags="stripe", confirm=True)) == 0
-        assert "nothing new to share" in capsys.readouterr().out.lower()
+    def test_no_submissions_is_reported_cleanly(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": []}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args()) == 0
+        assert "no submissions yet" in capsys.readouterr().out.lower()
+
+    def test_renders_status_for_each_submission(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": [
+                {"id": "s1", "status": "pending", "created_at": "2026-01-01T00:00:00+00:00",
+                 "title": "A"},
+                {"id": "s2", "status": "approved", "created_at": "2026-01-02T00:00:00+00:00",
+                 "title": "B", "credit_awarded": 25},
+                {"id": "s3", "status": "rejected", "created_at": "2026-01-03T00:00:00+00:00",
+                 "title": "C", "rejection_reason": "too generic"},
+            ]}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args()) == 0
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "+25 Knowledge Base queries credited" in out
+        assert "too generic" in out
+
+    def test_json_flag_emits_raw_json(self, capsys, monkeypatch):
+        async def fake_list(hub, key, limit=None):
+            return {"submissions": [{"id": "s1", "status": "pending"}]}
+
+        monkeypatch.setattr(commons_cmd.hub_client, "list_my_kb_submissions", fake_list)
+        assert commons_cmd.run_submissions(self._args(json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["submissions"][0]["id"] == "s1"
 
 
 class TestRender:
@@ -239,9 +280,9 @@ class TestRender:
             "n_failures": 1, "n_covered": 0, "covered_fraction": 0.0,
             "n_commons_traces": 0, "threshold": 0.3,
             "by_agent_type": {}, "matches": [],
-            "note": "No other org has contributed to the commons yet.",
+            "note": "The Knowledge Base has no entries yet, so this measures nothing.",
         })
-        assert "No other org has contributed" in rendered
+        assert "Knowledge Base has no entries" in rendered
 
     def test_matches_include_the_solution(self):
         rendered = commons_cmd._render({
@@ -256,6 +297,102 @@ class TestRender:
         })
         assert "Stripe webhook" in rendered
         assert "Use an idempotency key" in rendered
+
+    def test_disputed_matches_are_shown_and_marked_as_not_counted(self):
+        """A coverage figure that fell because the field found an answer
+        wrong is a different event from one that fell because the corpus
+        shrank. A report that shows only the number hides the difference."""
+        rendered = commons_cmd._render({
+            "n_failures": 1, "n_covered": 0, "covered_fraction": 0.0,
+            "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {},
+            "matches": [],
+            "disputed_matches": [{
+                "failure_label": "f1", "similarity": 0.62, "agent_type": "code",
+                "tags": ["react"],
+                "trace": {
+                    "title": "React 18 hydration workaround",
+                    "solution_text": "Suppress the warning",
+                    "vote_count": 6,
+                    "standing": "disputed",
+                },
+            }],
+            "note": "",
+        })
+        assert "disputed" in rendered.lower()
+        assert "React 18 hydration workaround" in rendered
+        assert "6 fleet(s)" in rendered
+        assert "not counted above" in rendered.lower()
+
+    def test_a_report_with_no_disputed_matches_says_nothing_about_them(self):
+        """The section is evidence of a problem, so an absent problem must
+        not print a heading suggesting there is one."""
+        rendered = commons_cmd._render({
+            "n_failures": 1, "n_covered": 1, "covered_fraction": 1.0,
+            "n_commons_traces": 1, "threshold": 0.3, "by_agent_type": {"code": 1},
+            "matches": [], "note": "",
+        })
+        assert "disputed" not in rendered.lower()
+
+
+class TestRenderCandidates:
+    """`commons ask` output. Unlike the coverage report, this one SHOWS
+    disputed entries in the ordinary results (ranked last) -- so the
+    warning has to travel with the entry, or a reader takes a contested
+    answer for a corroborated one."""
+
+    @staticmethod
+    def _result(standing, vote_count=6, trust=0.17):
+        return {
+            "n_candidates": 1, "n_commons_traces": 4, "n_commons_traces_total": 4,
+            "corpus_truncated": False, "note": "candidates, not coverage",
+            "candidates": [{
+                "rank": 1, "similarity": 0.42, "commons_hits": 3,
+                "trace": {
+                    "title": "React 18 hydration workaround",
+                    "context_text": "SSR mismatch",
+                    "solution_text": "Suppress the warning",
+                    "tags": ["react"], "agent_type": "code",
+                    "trust": trust, "vote_count": vote_count, "standing": standing,
+                },
+            }],
+        }
+
+    def test_a_disputed_candidate_carries_a_warning(self):
+        rendered = commons_cmd._render_candidates(self._result("disputed"), "hydration error")
+        assert "Disputed" in rendered
+        assert "did not work" in rendered
+        assert "Suppress the warning" in rendered
+
+    def test_a_stale_candidate_says_it_is_overdue_not_wrong(self):
+        rendered = commons_cmd._render_candidates(
+            self._result("stale", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "review date" in rendered
+        assert "Disputed" not in rendered
+
+    def test_an_ordinary_candidate_gets_no_warning(self):
+        rendered = commons_cmd._render_candidates(
+            self._result("unproven", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "Disputed" not in rendered
+        assert "review date" not in rendered
+
+    def test_trust_is_shown_with_its_denominator(self):
+        """0.00 from one downvote and 0.00 from twelve are the same number
+        and completely different facts."""
+        rendered = commons_cmd._render_candidates(
+            self._result("disputed", vote_count=12, trust=0.0), "hydration error"
+        )
+        assert "trust 0.00 from 12 fleet(s)" in rendered
+
+    def test_trust_is_hidden_entirely_when_nobody_has_voted(self):
+        """0.5 with no votes is a column default, not a measurement, and
+        printing it as one invites a reader to average it with real
+        scores."""
+        rendered = commons_cmd._render_candidates(
+            self._result("unproven", vote_count=0, trust=0.5), "hydration error"
+        )
+        assert "trust" not in rendered
 
 
 # --- Evaluating without adopting first ---------------------------------

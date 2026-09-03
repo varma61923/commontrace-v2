@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 import glob
-import json
 import os
 import sys
 
-from commontrace import experiment, frontmatter, paths, retrieval
+from commontrace import frontmatter, holdout_io, paths, retrieval
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
 
@@ -51,8 +50,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Identifier for this decision, used to join the holdout assignment to its "
         "outcome later. Must match the episode `name` or trace `id` you record afterwards.",
     )
-    p.add_argument("--holdout-rate", type=float, default=experiment.DEFAULT_HOLDOUT_RATE)
-    p.add_argument("--experiment-salt", default="default")
+    # Default None, resolved against the STORE's configured experiment at run
+    # time (_apply_holdout). A flag defaulting to a module constant is how the
+    # two retrieval surfaces came to disagree: `query` used 10% while the same
+    # fleet's agents retrieved over MCP at 10% from a different constant, and
+    # any operator who set one and not the other pooled two randomizations
+    # into one comparison. Passing either flag explicitly still overrides,
+    # which is what a one-off experiment needs.
+    p.add_argument("--holdout-rate", type=float, default=None)
+    p.add_argument("--experiment-salt", default=None)
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -76,43 +82,35 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
 
 
 def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set[str]:
-    """Decide which of the matching lessons to withhold, and log it.
+    """Thin wrapper over holdout_io.assign_and_log -- see that function.
 
-    The log records *eligibility*: every lesson here matched the task, and
-    was then either injected or deliberately withheld. That distinction is
-    what makes the later comparison causal rather than confounded, so it is
-    written at decision time and never reconstructed.
+    The body used to live here, which meant any second retriever (the MCP
+    server an agent talks to, for one) would have had to reimplement arm
+    assignment. Two implementations of a randomized assignment is two
+    chances to bias the causal number this whole experiment exists to
+    produce, so there is now exactly one.
     """
-    withheld = {
-        slug for slug in slugs
-        if experiment.is_held_out(slug, args.occasion_id, args.holdout_rate, args.experiment_salt)
-    }
+    rate, salt = _effective_holdout(args, root)
+    return holdout_io.assign_and_log(
+        root, slugs, occasion_id=args.occasion_id, rate=rate, salt=salt,
+    )
 
-    from commontrace.commands.experiment_cmd import holdout_log_path
 
-    path = holdout_log_path(root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # Locked, and flushed inside the lock. O_APPEND makes a single write()
-    # atomic, but Python buffers: a fleet whose agents retrieve concurrently
-    # writes more than one buffer's worth, and a flush boundary can land
-    # mid-line. The corrupted line is then dropped when the log is read --
-    # and a DROPPED OBSERVATION IS NOT NEUTRAL. It removes one arm's data
-    # point from a randomized comparison, which biases the causal number
-    # this whole experiment exists to produce. Cheap to prevent, expensive
-    # and near-impossible to detect after the fact.
-    with frontmatter.locked(path):
-        with open(path, "a", encoding="utf-8") as fh:
-            for slug in slugs:
-                fh.write(json.dumps({
-                    "occasion_id": args.occasion_id,
-                    "lesson": slug,
-                    "injected": slug not in withheld,
-                    "rate": args.holdout_rate,
-                    "salt": args.experiment_salt,
-                }) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-    return withheld
+def _effective_holdout(args: argparse.Namespace, root: str) -> tuple[float, str]:
+    """The rate and salt this run assigns with.
+
+    One resolver, used by the assignment and by every line that reports what
+    it did. Two of those lines used to read `args.holdout_rate` directly,
+    which was fine while the flag defaulted to a constant and became a crash
+    the moment it defaulted to "whatever the store is configured for" -- and
+    would have been a quietly WRONG printed rate if the None had happened to
+    format.
+    """
+    config = holdout_io.load_config(root)
+    return (
+        config.rate if args.holdout_rate is None else args.holdout_rate,
+        config.salt if args.experiment_salt is None else args.experiment_salt,
+    )
 
 
 def _slug_of_semantic_line(line: str) -> str | None:
@@ -168,7 +166,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     if args.experiment:
         print(
             f"\n[commontrace] experiment: {len(ranked) - len(withheld)} injected, "
-            f"{len(withheld)} withheld at {args.holdout_rate:.0%} for occasion "
+            f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
             f"{args.occasion_id!r}. Record the outcome under that id, then run "
             "`commontrace experiment`."
         )
@@ -249,7 +247,7 @@ def run(args: argparse.Namespace) -> int:
             print(line)
     print(
         f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
-        f"{len(withheld)} withheld at {args.holdout_rate:.0%} for occasion "
+        f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
         f"{args.occasion_id!r}. Record the outcome under that id, then run "
         "`commontrace experiment`."
     )

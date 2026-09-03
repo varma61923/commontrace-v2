@@ -93,7 +93,7 @@ explicit approval gate before anything reaches a live decision, matching the
 | Tier | Transport | Scope | Reference impl |
 |---|---|---|---|
 | **Local** | Flat files (Markdown + YAML frontmatter) | One fleet, one repo/org | `memory/lessons/` (any `agent_type`), `memory/traces/` (generic `Trace` capture, any `agent_type`), `memory/episodes/` (code-review profile's run log) |
-| **Hub** | MCP (`mcp__commontrace__*` tools: `search_traces`, `contribute_trace`, `get_trace`, `vote_trace`, `amend_trace`, `list_tags`) | Cross-org, cross-fleet, cross-agent-vendor | CommonTrace Hub (already in production) |
+| **Hub** | MCP (`mcp__commontrace__*` tools, grouped in §5.1) | Cross-org, cross-fleet, cross-agent-vendor | CommonTrace Hub (already in production) |
 
 A client only has to implement **Local** to be protocol-conformant. Hub
 conformance is additive: `commontrace sync` (see the CLI, §8) promotes local
@@ -102,6 +102,49 @@ search results back into the local store as candidate lessons awaiting
 validation. Nothing about the local schema had to change to make this work —
 that convergence is the point of aligning `Trace` with the live Hub shape in
 §3 instead of inventing a parallel one.
+
+### 5.1 Hub tool surface
+
+The Hub tier's tool surface has grown past the five `Trace` CRUD calls named
+in §3. Every tool below is scoped to the calling org's own data unless its
+description says otherwise; none exposes one org's traces to another. The
+surface falls into five groups:
+
+- **Trace CRUD** — `search_traces`, `get_trace`, `contribute_trace`,
+  `vote_trace`, and `amend_trace` (the five tools named in §3), plus
+  `list_tags` and `delete_trace`, which permanently removes one of the
+  org's own traces along with every trace in its amendment chain. The only
+  irreversible call in this group.
+- **Pilot measurement** (§11) — `fleet_outcomes` computes the five pilot
+  metrics for an org's own before/after `outcome.baseline` window, alongside
+  a causal estimate drawn from any randomized holdout the org is running;
+  `value_delivered` turns an already-established causal effect into a count
+  (and, given a rate, a monetary figure) of occasions a memory actually
+  changed the outcome. `holdout_assign` and `record_occasion_outcome` are
+  the two halves of running that holdout: the first decides, per occasion,
+  which eligible traces to inject and which to deliberately withhold and
+  records the decision; the second reports how the occasion concluded so
+  the two arms — injected vs. withheld — can later be compared.
+- **Org deletion** — `request_account_deletion` and
+  `confirm_account_deletion` together erase an org's entire Hub presence
+  (every trace, vote, and credential) irreversibly; `cancel_account_deletion`
+  stands the request down at any point before confirmation. Deletion is
+  deliberately split into a request/confirm pair with a mandatory delay
+  between them, never a single call, so one compromised credential cannot
+  destroy an org's whole history before anyone has a chance to notice and
+  cancel it.
+- **Shared substrate knowledge base** *(deployment-optional)* —
+  `commons_search` looks up ranked candidate answers to one failure;
+  `commons_overlap` reports the fraction of many failures the knowledge
+  base already covers. Both query a curated store of general-purpose
+  failure/solution knowledge that is never populated from any org's own
+  traces. `submit_kb_entry` proposes a new entry to it — published only
+  after independent review, never automatically — and
+  `list_my_kb_submissions` checks the status of an org's own proposals. A
+  deployment may omit this group entirely; where it does, none of these
+  four tools are advertised at all.
+- **Plan & usage** — `account_usage` reports what an org's plan entitles it
+  to and what it has used in the current period.
 
 ## 6. Roles (generalized)
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+from datetime import datetime, timedelta, timezone
+
 import pytest
+from sqlalchemy import select
 
 from hub import auth
 from hub.db import session_scope
-from hub.models import Organization
+from hub.models import ApiKey, Organization
 
 pytestmark = pytest.mark.asyncio
 
@@ -140,11 +145,237 @@ async def test_raw_key_is_never_persisted_verbatim(session_factory, config):
     async with session_scope(session_factory) as session:
         issued = await auth.issue_api_key(session, org_id)
 
-    from sqlalchemy import select
-
-    from hub.models import ApiKey
-
     async with session_scope(session_factory) as session:
         row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
     assert issued.raw_key not in row.key_hash
     assert row.key_hash.startswith("$argon2")
+
+
+# --- expiry --------------------------------------------------------------
+
+
+async def test_expires_days_must_be_positive(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        with pytest.raises(ValueError):
+            await auth.issue_api_key(session, org_id, expires_days=0)
+        with pytest.raises(ValueError):
+            await auth.issue_api_key(session, org_id, expires_days=-5)
+
+
+async def test_non_expiring_key_by_default(session_factory, config):
+    """expires_days=None (the default, unchanged) issues a key that keeps
+    verifying indefinitely -- expires_at stays NULL, not some far-future
+    sentinel a caller could accidentally compare against."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.expires_at is None
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is not None
+
+
+async def test_expired_key_no_longer_verifies(session_factory, config):
+    """verify_api_key's `candidate.expires_at <= now` check, exercised
+    against a real expired row rather than trusted from the comment above
+    it -- an expired key must read exactly like an invalid one (None, not
+    an exception, and no distinguishing detail)."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id, expires_days=1)
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is None
+
+
+async def test_key_expiring_in_the_future_still_verifies(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id, expires_days=30)
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is not None
+    assert resolved.org_id == org_id
+
+
+async def test_rotate_key_carries_forward_the_expiry_policy(session_factory, config):
+    """rotate_api_key's docstring claims a key issued to expire in N days
+    rotates into another ~N-day key rather than silently becoming
+    non-expiring. Checked against the actual computed expires_at, with a
+    day of slack for the round-trip through total_seconds()/86400."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        original = await auth.issue_api_key(session, org_id, expires_days=90)
+
+    async with session_scope(session_factory) as session:
+        rotated = await auth.rotate_api_key(session, original.key_id)
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == rotated.key_id))).scalar_one()
+
+    assert row.expires_at is not None
+    expected = datetime.now(timezone.utc) + timedelta(days=90)
+    assert abs((row.expires_at - expected).total_seconds()) < 86400
+
+
+# --- last_used_at throttling ----------------------------------------------
+
+
+async def test_last_used_at_is_set_on_first_verification(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.last_used_at is None
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.last_used_at is not None
+
+
+async def test_last_used_at_is_not_rewritten_within_the_throttle_interval(session_factory, config):
+    """Verified against the actual DB row, not just "no exception": a hot
+    key must not pay for an UPDATE on every single authenticated request
+    (see auth.py's write-throttling rationale) -- a second verification a
+    moment later must leave the timestamp exactly as the first call set
+    it."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+        first_seen = row.last_used_at
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.last_used_at == first_seen
+
+
+async def test_last_used_at_is_refreshed_after_the_throttle_interval(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+        stale = datetime.now(timezone.utc) - auth._LAST_USED_AT_UPDATE_INTERVAL - timedelta(seconds=1)
+        row.last_used_at = stale
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.last_used_at > stale
+
+
+# --- prefix collisions -----------------------------------------------------
+
+
+async def test_two_keys_sharing_a_prefix_are_both_individually_reachable(session_factory, config):
+    """key_prefix is only the first 12 chars of the raw key, so two issued
+    keys can (rarely, but for real, since it's a random suffix) share one --
+    verify_api_key's candidate loop must try every row with that prefix, not
+    just the first one the SELECT happens to return, or a live prefix
+    collision would make an org's real key stop authenticating the moment
+    it collided with someone else's.
+
+    Constructs the collision directly (an ApiKey row whose key_prefix and
+    key_hash both genuinely correspond to a second, distinct raw key) rather
+    than just editing the prefix column, so this exercises the real
+    multiple-candidates-per-prefix path, not a row that no longer matches
+    its own supposed raw key."""
+    org_id_a = await _make_org(session_factory)
+    org_id_b = await _make_org(session_factory)
+
+    async with session_scope(session_factory) as session:
+        issued_a = await auth.issue_api_key(session, org_id_a)
+
+    prefix = issued_a.raw_key[: auth._PREFIX_LEN]
+    raw_key_b = prefix + "distinct-suffix-" + "z" * 24  # same prefix, different secret
+    key_hash_b = auth._hasher.hash(raw_key_b)
+
+    async with session_scope(session_factory) as session:
+        session.add(ApiKey(org_id=org_id_b, key_prefix=prefix, key_hash=key_hash_b))
+
+    async with session_scope(session_factory) as session:
+        candidates = (
+            await session.execute(select(ApiKey).where(ApiKey.key_prefix == prefix))
+        ).scalars().all()
+    assert len(candidates) == 2, "test setup didn't actually create a prefix collision"
+
+    async with session_scope(session_factory) as session:
+        resolved_a = await auth.verify_api_key(session, issued_a.raw_key)
+        resolved_b = await auth.verify_api_key(session, raw_key_b)
+
+    assert resolved_a is not None and resolved_a.org_id == org_id_a
+    assert resolved_b is not None and resolved_b.org_id == org_id_b
+
+
+# --- revocation race window -------------------------------------------------
+
+
+async def test_revocation_landing_during_a_slow_verify_still_denies_it(session_factory, config, monkeypatch):
+    """auth.py's comment on the fresh-revocation-reread describes an
+    operator's revoke_api_key landing WHILE this request's slow argon2
+    verify() is still in flight -- the initial `revoked_at IS NULL` SELECT
+    already passed, and the in-memory `candidate` has no way to see a commit
+    that happens after it was loaded, so verify_api_key re-reads revoked_at
+    fresh, after verify() returns, rather than trusting `candidate`.
+
+    Exercised for real rather than trusted from the comment: verify() is
+    blocked with a real threading.Event while running on its actual
+    to_thread worker thread (the same offloading production uses), the key
+    is revoked from a separate session while it's stuck there, and only
+    then released -- so this proves the recheck reads the committed
+    revocation, not just that revoking before starting a fresh verify call
+    denies it (test_revoked_key_no_longer_verifies already covers that
+    simpler, non-overlapping case)."""
+    from argon2 import PasswordHasher
+
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    verify_started = threading.Event()
+    release_verify = threading.Event()
+    real_verify = PasswordHasher.verify
+
+    def _blocking_verify(self, hash_, key):
+        verify_started.set()
+        assert release_verify.wait(timeout=5), "test setup never released verify() -- test itself is broken"
+        return real_verify(self, hash_, key)
+
+    monkeypatch.setattr(PasswordHasher, "verify", _blocking_verify)
+
+    async def _do_verify():
+        async with session_scope(session_factory) as session:
+            return await auth.verify_api_key(session, issued.raw_key)
+
+    verify_task = asyncio.ensure_future(_do_verify())
+    assert await asyncio.to_thread(verify_started.wait, 5), "verify() never reached the blocking point"
+
+    # The key is revoked here, from a separate session, while verify_task is
+    # still parked inside the (mocked) argon2 call above -- the exact window
+    # the fresh reread exists to close.
+    async with session_scope(session_factory) as session:
+        await auth.revoke_api_key(session, issued.key_id)
+
+    release_verify.set()
+    resolved = await verify_task
+    assert resolved is None, "revocation landing mid-verify() was not honored -- the race window is open"

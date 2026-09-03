@@ -44,16 +44,18 @@ apply to it and needs to be re-verified against that system.
 
 | Table (`hub/models.py`) | Contents |
 |---|---|
-| `organizations` | Org id + display name. |
+| `organizations` | Org id + display name. Plus, while a self-service whole-account deletion is pending: a hashed confirmation token and its request/expiry timestamps (never the raw token -- see §3). |
 | `api_keys` | Argon2 hash of each org's API key (never the raw key), a non-secret lookup prefix, issuance/revocation/last-used timestamps. |
-| `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). |
+| `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). For Knowledge Base entries only: `commons_votes`/`commons_review_after` (standing inputs) and, once an operator withdraws one, `commons_retracted_at`/`commons_retraction_reason` — see §5 on why a retracted entry is retained rather than deleted. |
 | `votes` | Up/down votes + optional feedback, per (trace, org). |
 | `trace_relations` | AMENDS/SUPERSEDED_BY edges created by `amend_trace`. |
+| `kb_submissions` | An org's proposed Knowledge Base entries (title, context_text, solution_text, tags, agent_type, rationale) plus `org_id`, `status` (pending/approved/rejected), reviewer identity and timestamp, and -- once decided -- `resulting_trace_id`/`credit_awarded`. Never read by `commons_overlap`/`commons_search`; see `hub/models.py:KnowledgeBaseSubmission`. |
 
 Every read path is scoped to the calling org's own `org_id` at the query
 layer (`hub/crud.py`); see `hub/README.md`'s "Tenant isolation vs. the
-cross-org commons pitch" for why cross-org visibility is not yet automatic
-even though the product's positioning describes cross-org learning.
+CommonTrace Knowledge Base" for the one deliberate exception (an
+optional, operator-curated corpus, never another customer's own data, and
+never a customer's own submission either unless an operator republishes it).
 
 ## 2. How long data is kept
 
@@ -67,7 +69,7 @@ even though the product's positioning describes cross-org learning.
   in `traces`/`votes`/`api_keys` persists until explicitly deleted. What
   "indefinitely" *should* mean for a real deployment holding paying
   customers' data (30 days after contract end? 1 year? never, until asked?)
-  is a business decision — see §4.
+  is a business decision this document does not make.
 
 ## 3. How an org requests deletion
 
@@ -76,91 +78,117 @@ even though the product's positioning describes cross-org learning.
   kept outside those files.
 - **Hub tier (`hub/`):** revoking an org's access is implemented
   (`python -m hub.manage revoke-key <key_id>` — see `hub/README.md`).
-  Permanently deleting data is also implemented, at the operator-CLI level:
-  `python -m hub.manage purge-trace <trace_id>` and `purge-org <org_id>`
-  (the latter cascades to that org's `api_keys`/`traces`/`votes` via FK
-  `ondelete=CASCADE`; both clean up any `trace_relations` row that would
-  otherwise dangle). `purge-trace` also walks and deletes the trace's
-  entire amendment chain (every trace it supersedes and every trace that
-  supersedes it) rather than just the one id given: `amend_trace` creates
-  a new row that carries most of the original's content forward, so a
-  purge scoped to a single link in that chain would leave the same
-  content sitting in its neighbors. Both are irreversible and require the same
-  database-access trust level as every other `hub/manage.py` command —
-  there is still **no self-service or API-level deletion path**: none of
-  the six Hub MCP tools (`search_traces`, `contribute_trace`, `get_trace`,
-  `vote_trace`, `amend_trace`, `list_tags`) includes a `delete_trace` or
-  `forget_org` operation, and an org's own API key cannot delete anything.
-  That's a deliberate scope boundary, not an oversight: letting a single
-  API key wipe an org's entire history with no confirmation step is a real
-  feature with its own authorization design questions this pass didn't
-  make (see `hub/README.md`'s Operator CLI section).
+  Permanently deleting data is implemented at two trust levels:
 
-## 4. What happens to lessons already derived from an org's contributed traces
+  1. **Self-service, an org's own API key** (`commontrace account
+     delete-trace <id>` / `delete_trace` MCP tool): deletes one trace and
+     its entire amendment chain, immediately. **Whole-account deletion**
+     (`commontrace account request-deletion` then `confirm-deletion
+     <token>` / `request_account_deletion` + `confirm_account_deletion`
+     MCP tools) is two calls, not one: `request_account_deletion` deletes
+     nothing and only returns a one-time confirmation token plus a
+     mandatory minimum wait (`crud.DELETION_GRACE_SECONDS`, 5 minutes)
+     before `confirm_account_deletion` will accept it — specifically so a
+     single compromised API key cannot wipe an org's entire history with
+     no window for anyone to notice. `cancel_account_deletion` stands a
+     pending request down, no token required. See
+     `hub/crud.py:request_org_deletion` and `hub/README.md`'s
+     "Self-service deletion" section.
+  2. **Operator-CLI, database-access trust level**
+     (`python -m hub.manage purge-trace <trace_id>` /
+     `purge-org <org_id>`): the same operations, for when an org has lost
+     its own keys or an operator needs to act without one. `purge-org`
+     cascades to that org's `api_keys`/`traces`/`votes`/`kb_submissions`
+     via FK `ondelete=CASCADE`; both this and self-service deletion clean
+     up any `trace_relations` row that would otherwise dangle, and both
+     walk and delete a trace's entire amendment chain (every trace it
+     supersedes and every trace that supersedes it) rather than just the
+     one id given — `amend_trace` creates a new row that carries most of
+     the original's content forward, so scoping a purge to a single link
+     in that chain would leave the same content sitting in its neighbors.
 
-This is the hardest question and is explicitly **not** answered here, because
-it is a business/legal decision, not an engineering one:
+  Both trust levels are irreversible, with no soft-delete and no undo.
 
-> If organization A contributes a trace to the Hub, and organization B's
-> agent later reads a lesson that was distilled (possibly by an automated
-> Curator, possibly by a human) from that trace, and organization A then
-> requests deletion — what happens to:
-> 1. The original trace (straightforward: delete it).
-> 2. The lesson text derived from it, now potentially embedded in B's
->    (and every other org's) local `memory/lessons/` files, already
->    downloaded and possibly acted on.
-> 3. Any lesson that merged information from multiple orgs' traces, where
->    "delete this org's contribution" isn't a clean subtraction.
+## 4. Does deleting an org's trace ever have to reach into another org's data?
 
-**This needs a decision from whoever owns commercial/legal terms with
-Hub-contributing organizations before a customer's data is allowed to flow
-into a cross-org "commons."** Candidate positions (not a recommendation,
-just the shape of the choice) range from "traces are deletable, lessons
-already derived and distributed are not retroactively recalled" (like an
-open-source contribution model) to "lessons must be re-derivable/
-re-validatable without deleted source traces, with a grace/quarantine
-period." Flagging this, not deciding it, is the point of this section.
+**No, and that is by design rather than a gap left open.** An earlier
+design considered letting one org opt a trace into a shared corpus other
+orgs' queries could match against — which would have raised exactly the
+hard question this section used to pose (org A deletes a trace; org B
+already downloaded a lesson derived from it; now what?). That design is
+retired before ever shipping to a real deployment. See
+`hub/commons.py`'s module docstring and `hub/plans.py` "why there is no
+org-to-org sharing here" for the full reasoning: it does not make sense
+for orgs to share their IP and data with each other, and doing so has an
+adverse-selection problem with no fix.
 
-Note on current scope: `hub/`'s six original read paths remain strictly
-org-scoped (see §1 and `hub/README.md`). The cross-org scenario above is
-now reachable in exactly one way, and only by explicit choice — the
-**opt-in commons**:
+What exists instead is the **CommonTrace Knowledge Base**: a single corpus
+the *operator* authors and curates, either directly (`hub/manage.py
+commons-seed`) or by accepting a community proposal
+(`approve-submission`). No customer-facing tool can write a
+`commons_source == "seed"` row, and no customer's own trace is ever
+directly in it — `commons_overlap`/`commons_search` filter explicitly on
+that column, which only those two operator-run paths ever set.
+Consequently:
 
-- A trace becomes cross-org visible **only** when its owning org calls
-  `share_trace` on it. Default is private; nothing sets the flag
-  implicitly; quarantined traces are refused.
-- The org records a `shared_rationale` at share time. That text is stored
-  so a reviewer can later audit what an org believed it was sharing and
-  why.
-- `unshare_trace` withdraws it, and clears the stored MinHash signature so
-  it stops matching other orgs' queries immediately.
-- The only cross-org query, `commons_overlap`, filters on
-  `shared_with_commons AND NOT quarantined` and excludes the caller's own
-  rows.
-
-**What an org should understand before sharing.** A shared trace's full
-content — title, context, solution, tags — can be returned to another org
-whose recurring failure matches it. That is the point of contributing, but
-it is irreversible in the ordinary sense: withdrawal stops *future*
-matches, and cannot retract what another org already retrieved and may have
-copied into its own store. Share substrate, not business logic, and treat
-the decision as publication rather than as a revocable ACL.
-
-Deletion interacts with this correctly by construction: `purge-trace` and
-`purge-org` hard-delete the row, which removes it from the commons corpus
-along with everything else. There is no separate commons copy to miss.
+- Deleting an org's own trace (`purge-trace`/`purge-org`) is a clean, local
+  operation exactly as described in §1–3. There is no other org's
+  `memory/lessons/` file that could have derived anything from it, because
+  no other org's tooling — and no Knowledge Base query — ever saw it.
+- A `submit_kb_entry` proposal is a separate row (`kb_submissions`, §1)
+  from the moment it is created, not a promoted `Trace` — deleting an
+  org's traces never touches its submissions, and vice versa.
+- The only content any org's query can ever draw on beyond its own data is
+  what the operator wrote or approved into the Knowledge Base. Withdrawing
+  a Knowledge Base entry is an operator decision, not a customer deletion
+  request, and `python -m hub.manage kb-retract` is how it is made
+  (`kb-restore` reverses it, `kb-review` lists what is worth looking at).
+  Because the content is the operator's own, withdrawing an entry raises
+  none of the questions §3 answers about customer data — nothing cascades
+  and no other org's store is affected. Correcting an entry *in place*
+  still has no command; see §5.
+- `vote_trace` lets any org vote on a Knowledge Base entry (feedback on
+  the operator's content), and that vote is retained the same way any
+  other row is (§2). It is never a customer's own trace data crossing an
+  org boundary.
 
 ## 5. Related open questions for whoever operates a `hub/` deployment
 
-- `hub/` still has no API/self-service data-deletion path (§3) — operator-CLI
-  purge is implemented (`purge-trace`/`purge-org`), but an org cannot delete
-  its own data via its own API key. Deciding whether/how to expose that
-  (a `delete_trace`/`forget_org` MCP tool, with what confirmation/
-  authorization step) needs to happen before this document can state a real
-  self-service deletion SLA.
+- ~~`hub/` still has no API/self-service data-deletion path~~ **Resolved:**
+  `delete_trace` (immediate, self-service) and `request_account_deletion` /
+  `confirm_account_deletion` (two-call, mandatory delay, self-service) now
+  exist alongside the operator-CLI `purge-trace`/`purge-org` path (§3).
+  What remains open: this document does not commit to a deletion-request
+  **SLA** (how quickly must a request be honored, in what jurisdiction) --
+  the mechanism exists and is instant once called, but "instant when
+  called" is an engineering fact, not a contractual one, and only whoever
+  operates a real deployment can make that commitment.
 - Where would a real deployment's Postgres actually be hosted, under what
   jurisdiction, and with what backup/retention configuration? Nothing in
   `hub/` prescribes this — it is deploy-target-specific and unset in
   `hub/.env.example`.
-- §4's cross-org deletion question needs an answer before (not after) the
-  "opt-in commons" milestone in `hub/README.md` ships.
+- An org has no way to withdraw a `submit_kb_entry` proposal once sent --
+  only an operator's `approve-submission`/`reject-submission` decides it.
+  A pending submission is never visible to anyone but the submitting org
+  and the operator either way (§1), so the exposure this would address is
+  narrow, but a "you can always take back what you have not published
+  yet" self-service path is a reasonable expectation nothing here
+  currently meets.
+- ~~There is no CLI command to correct or remove a single Knowledge Base
+  entry after `commons-seed` has loaded it~~ **Resolved:**
+  `python -m hub.manage kb-retract <trace_id> [reason]` withdraws one
+  entry (and `kb-restore` reverses it), with `kb-review` listing which
+  entries an operator should be looking at. Note what retraction is and
+  is not, since this document is about retention: it sets
+  `Trace.commons_retracted_at`, which removes the entry from every
+  Knowledge Base read path, and **retains** the row, its votes, and its
+  hit history — deliberately, because "how many fleets did we serve this
+  to before we pulled it" is answerable only from that data. It is
+  un-publishing, not deletion. `purge-trace` remains the deletion path
+  (§3), and nothing about retraction changes §4's answer: a Knowledge
+  Base entry is the operator's own content, so withdrawing one never
+  reaches into any customer's data.
+  What remains open: there is still no command to *correct* an entry in
+  place. The workflow is retract-and-reseed, which changes the trace id
+  and resets `commons_hits`, so an entry's delivered-value history does
+  not survive an edit.

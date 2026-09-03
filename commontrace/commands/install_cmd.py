@@ -5,12 +5,32 @@ import json
 import os
 import shutil
 
-from commontrace import paths
+from commontrace import mcp_tools, paths
 
 TARGETS = ["claude-code", "cursor", "devin", "windsurf", "generic-mcp", "generic"]
 
+# The Hub's full tool surface, advertised in the generated MCP config so a
+# reader knows what they are connecting to. Kept in sync with hub/smoke.py's
+# EXPECTED_TOOLS by hub/tests/test_install_template_surface.py -- this list
+# had drifted to the original six while the Hub kept growing, so a
+# customer running `commontrace install` was told the Hub could do a third
+# of what it does. Restated here rather than imported because this is the
+# CLIENT package: it installs with PyYAML alone, and hub/ needs SQLAlchemy,
+# asyncpg and a database.
 _HUB_TOOLS = [
+    # the six protocol tools
     "search_traces", "contribute_trace", "get_trace", "vote_trace", "amend_trace", "list_tags",
+    # measurement: is this working, did the memory cause it, and what was
+    # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
+    "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
+    "value_delivered",
+    # entitlements
+    "account_usage",
+    # self-service deletion
+    "delete_trace", "request_account_deletion", "confirm_account_deletion",
+    "cancel_account_deletion",
+    # the optional Knowledge Base (absent when HUB_COMMONS_ENABLED=false)
+    "commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions",
 ]
 
 _GENERIC_POINTER_SKILL = """---
@@ -32,6 +52,62 @@ install. This agent should instead:
 3. After acting: capture what happened as a `Trace` (`commontrace capture`
    or `contribute_trace` on the Hub), and periodically distill repeated
    patterns into `Lesson`s (`commontrace lesson new`).
+
+## Measuring whether any of this helps
+
+The pipeline above is worth nothing if the memory does not improve
+outcomes, and only a randomized holdout can establish that it does --
+correlational signals (retrieval counts, votes) cannot distinguish a
+lesson that helps from one that merely fires on hard tasks.
+
+Both tiers support it, and in both the agent's job is the same: honour
+what is withheld, and report how the task went.
+
+**Hub tier.** Pass your own `occasion_id` to `search_traces`. If an
+operator has started an experiment, the response carries a `holdout`
+block:
+
+    search_traces(query="...", occasion_id="ticket-8821")
+      -> {"traces": [...],
+          "holdout": {"withhold": ["<trace-id>", ...]}}
+
+**Do not use any trace listed under `holdout.withhold` on that occasion.**
+Using one anyway does not raise an error -- it silently moves the occasion
+into the treated arm and biases the measured effect toward zero. Then,
+when the task finishes:
+
+    record_occasion_outcome(occasion_id="ticket-8821", succeeded=true)
+
+With no experiment running, no `holdout` block appears and nothing
+changes.
+
+**Local tier.** This tier speaks MCP too, so a shell is not required:
+if the `commontrace-local` server is attached (see
+`commontrace.local.mcp.json`, written by `commontrace install`), call
+
+    retrieve(task="...", occasion_id="ticket-8821")
+      -> {"lessons": [...], "withheld": [...]}
+
+and honour `withheld` exactly as you honour the Hub's `holdout.withhold`
+above, then `capture(occasion_id="ticket-8821", resolved=true)`.
+
+From a shell the same thing is `commontrace query --experiment
+--occasion-id <id>` and `commontrace capture --occasion-id <id>`. Both
+surfaces share one arm-assignment implementation, so an occasion gets the
+same arm whichever one you use.
+
+Report an outcome for EVERY occasion you retrieved against, including
+the ones that were abandoned or escalated. Skipping the ones that went
+badly is the failure that biases the result most: the withheld arm is
+the one working without its memory, so it is the arm that runs long and
+gets abandoned. Both readers audit for this and refuse to report an
+effect when they find it, so an incomplete write-up produces no number
+rather than a wrong one.
+
+Read the result with `commontrace prove outcomes` (Hub) or
+`commontrace experiment` (local). A lesson can come back as `HURTS`;
+that is the point -- provided the validity section above it says the run
+is sound.
 """
 
 
@@ -66,6 +142,49 @@ def _hub_mcp_example() -> str:
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 
 
+def _local_mcp_config(root: str) -> str:
+    """The stdio MCP entry that attaches an agent to THIS machine's store.
+
+    Distinct from _hub_mcp_example above, and both are usually wanted: the Hub
+    is the shared knowledge base over HTTP, this is the fleet's own memory on
+    this machine over stdio. An agent with only the Hub entry can search what
+    other people published and cannot read or write a single one of its own
+    lessons.
+
+    Written with a real, absolute `--dest`, not a relative one: an MCP client
+    launches the server as a subprocess with a working directory of its own
+    choosing, so a relative root resolves somewhere else -- usually to a new,
+    empty store, which fails by silently having no lessons rather than by
+    erroring.
+    """
+    tools = ", ".join(mcp_tools.LOCAL_TOOLS)
+    doc = {
+        "_comment": (
+            "Merge the 'commontrace-local' entry into your agent platform's MCP config. "
+            f"Tool surface: [{tools}]. This attaches the agent to the store at "
+            f"{root} on this machine, over stdio -- there is no network listener, no "
+            "endpoint and no credential, so unlike the Hub template this file is safe to "
+            "commit. Add --no-approval to the args if activating a lesson must go "
+            "through a person."
+        ),
+        "mcpServers": {
+            "commontrace-local": {
+                "command": "commontrace",
+                "args": ["serve", "--dest", root],
+            }
+        },
+    }
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def _write_local_mcp(dest: str, root: str) -> str:
+    path = os.path.join(dest, "commontrace.local.mcp.json")
+    _write(path, _local_mcp_config(root))
+    print(f"  Agent-native access to this store: merge {path} into your MCP config")
+    print("  (that is what lets an agent with no terminal use its own memory).")
+    return path
+
+
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "install",
@@ -77,9 +196,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _find_skill_md(root: str, dest: str) -> str | None:
+    # cwd first, then `root` (paths.resolve_root(), which honors
+    # COMMONTRACE_ROOT/JUSTDOIT_ROOT): `install` is normally run from
+    # inside the commontrace checkout that actually has SKILL.md, but an
+    # operator with COMMONTRACE_ROOT exported to point at their OWN active
+    # store (e.g. a wrapper script that always sets it) and running
+    # `install --dest /some/other/project` from a plain shell got THAT
+    # unrelated store's SKILL.md silently, instead of the one next to the
+    # command actually being run.
     candidates = [
-        os.path.join(root, "SKILL.md"),
         os.path.join(os.getcwd(), "SKILL.md"),
+        os.path.join(root, "SKILL.md"),
         os.path.join(dest, "SKILL.md"),
     ]
     for c in candidates:
@@ -150,6 +277,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             _write(out, _GENERIC_POINTER_SKILL)
         print("  Invoke with: /commontrace <task description + success criteria>")
+        _write_local_mcp(dest, root)
 
     elif args.target == "devin":
         out = os.path.join(dest, ".devin", "skills", "commontrace", "SKILL.md")
@@ -175,6 +303,7 @@ def run(args: argparse.Namespace) -> int:
         _write(example, _hub_mcp_example())
         print(f"  To connect to the Hub: merge {example} into .cursor/mcp.json")
         _print_hub_credential_warning(example)
+        _write_local_mcp(dest, root)
 
     elif args.target == "windsurf":
         out = os.path.join(dest, ".windsurf", "rules", "commontrace.md")
@@ -186,6 +315,7 @@ def run(args: argparse.Namespace) -> int:
             "finishing, capture what happened with `commontrace capture`. "
             "Spec: protocol/PROTOCOL.md.\n",
         )
+        _write_local_mcp(dest, root)
 
     elif args.target == "generic-mcp":
         example = os.path.join(dest, "commontrace.hub.mcp.json.example")
@@ -193,6 +323,7 @@ def run(args: argparse.Namespace) -> int:
         print("  Any MCP-capable agent (OpenAI Agents SDK, custom orchestrators, etc.)")
         print(f"  can attach to the Hub by merging {example} into its MCP client config.")
         _print_hub_credential_warning(example)
+        _write_local_mcp(dest, root)
 
     else:  # generic
         out = os.path.join(dest, "COMMONTRACE.md")

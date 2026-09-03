@@ -279,6 +279,35 @@ class TestFrontmatterMalformedInput:
         assert fm == {}
         assert body.strip() == "body"
 
+    def test_a_plain_markdown_file_with_no_frontmatter_at_all_is_not_an_error(self, tmp_path):
+        """A file that never starts with `---` (an ordinary note, a README, a
+        file `commontrace` didn't write) must read as {} + the whole file as
+        body -- not raise, since nothing about this is malformed frontmatter,
+        there simply isn't any."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "plain.md"
+        path.write_text("# Just a heading\n\nSome text, no frontmatter here.\n", encoding="utf-8")
+        fm, body = frontmatter.read(str(path))
+        assert fm == {}
+        assert body == "# Just a heading\n\nSome text, no frontmatter here.\n"
+
+    def test_an_opening_delimiter_with_no_closing_one_is_treated_as_no_frontmatter(self, tmp_path):
+        """A file that starts with `---` but is truncated or was never
+        finished (a partial write outside frontmatter.write()'s atomic path,
+        a user typing `---` at the top of a plain note) has fewer than 2
+        delimiter lines -- read() must fall back to "no frontmatter" rather
+        than raise or hang trying to find a closing delimiter that isn't
+        there."""
+        from commontrace import frontmatter
+
+        path = tmp_path / "truncated.md"
+        content = "---\ntitle: unfinished\nthe rest of this file never got a closing delimiter\n"
+        path.write_text(content, encoding="utf-8")
+        fm, body = frontmatter.read(str(path))
+        assert fm == {}
+        assert body == content
+
 
 class TestFrontmatterRejectsYamlAnchorsAndAliases:
     """SafeLoader ("safe" = no arbitrary Python object construction) still

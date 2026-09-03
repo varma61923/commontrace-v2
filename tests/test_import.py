@@ -153,6 +153,30 @@ class TestImportCommand:
         assert written == []
         assert "--dry-run" in capsys.readouterr().out
 
+    def test_every_row_skipped_returns_nonzero_not_success(self, store, tmp_path, capsys):
+        """[BUG-CLI-03]: n_rejected (schema-invalid rows) already made this
+        return 1, but a row missing every required field is *skipped*
+        before it ever reaches schema validation -- n_rejected stayed 0,
+        so a file where literally every row was unusable still exited 0.
+        A CI/CD ingestion pipeline checking $? cannot tell that apart from
+        a real success."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        jsonl_path = tmp_path / "export.jsonl"
+        jsonl_path.write_text('{"unrelated_field": "no usable columns here"}\n', encoding="utf-8")
+        capsys.readouterr()
+        rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dest", str(store)])
+        assert rc == 1
+        traces_dir = store / "memory" / "traces"
+        assert [f for f in os.listdir(traces_dir) if f != "README.md"] == []
+
+    def test_every_row_skipped_in_dry_run_also_returns_nonzero(self, store, tmp_path, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        jsonl_path = tmp_path / "export.jsonl"
+        jsonl_path.write_text('{"unrelated_field": "no usable columns here"}\n', encoding="utf-8")
+        capsys.readouterr()
+        rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dry-run", "--dest", str(store)])
+        assert rc == 1
+
     def test_missing_file_fails_cleanly(self, store, capsys):
         main(["init", "--agent-type", "support", "--dest", str(store)])
         capsys.readouterr()

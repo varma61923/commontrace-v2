@@ -5,6 +5,15 @@ per-org memory measurably cause better outcomes on this fleet's own work?**
 Every other link in that case is downstream of the answer. This is how to
 run it.
 
+**Want the bundled version of everything below?** `commontrace pilot` runs
+all three steps in one command — map the issues into a taxonomy, check how
+far the reinforcement loop below has progressed, and measure what changed
+(baseline-vs-current resolution rate plus the Impact Dashboard) — and ends
+in a yes/no gate that prefers the causal result from this page whenever one
+exists. See `commontrace pilot --help`, or `commontrace taxonomy` /
+`commontrace impact` for the two report halves on their own. It does not
+replace the loop below; it reports on where the loop currently stands.
+
 It is a randomized controlled experiment, not a before/after comparison,
 and the difference is the whole point. Every other number this repo
 produces — including `reliability`'s `lift` — is correlational, and the
@@ -137,8 +146,10 @@ downstream.
 
 It says nothing about links 3–5: whether value compounds faster than cost
 to serve, whether the product survives agent platforms bundling memory, or
-whether a cross-org commons has real overlap. Those need their own
-evidence, and §13 names the test for each.
+whether an operator-curated Knowledge Base is worth the ongoing curation
+cost (STRATEGY.md §14–15 — a funded editorial commitment plus a reviewed
+community-submission channel, neither one a cross-org network effect).
+Those need their own evidence, and §13 names the test for each.
 
 The instrument has been validated against a synthetic effect — seeded at
 +45%, recovered as +43% with a 95% CI of [+23%, +64%] — so the statistics

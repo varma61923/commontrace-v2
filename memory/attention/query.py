@@ -47,6 +47,12 @@ _TRUSTED_MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
 # \r is allowed so CRLF content parses too.
 _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
+# Kept identical to build_index.py's own _SLUG_RE -- see that module's
+# comment. A `name` containing a `|` would otherwise corrupt this module's
+# own `|`-delimited retrieval brief (both the cosine-ranked lines and the
+# missing_from_index "importance floor override" lines below).
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 # ---------------------------------------------------------------------------
 # Path configuration — provider-agnostic
 #
@@ -130,7 +136,7 @@ def load_importances() -> "tuple[dict[str, int], int]":
         if frontmatter.get("status", "active") != "active":
             continue
         slug = frontmatter.get("name")
-        if not slug:
+        if not slug or not _SLUG_RE.match(str(slug)):
             continue
         try:
             out[str(slug)] = int(frontmatter.get("importance", 3))
@@ -153,23 +159,121 @@ def _append_telemetry(record, path=None):
     always append, never truncate existing history. A telemetry write failure (e.g.
     read-only filesystem) must never break the actual retrieval it's instrumenting, so
     failures are reported to stderr and swallowed rather than raised.
+
+    Rotation (getsize -> os.replace) and the append that follows are guarded by
+    commontrace.frontmatter.locked(): without it, two concurrent query.py invocations
+    (a multi-agent fleet, or several parallel Alpha calls) can race the check-then-act
+    rotation -- one process's os.replace() can swap the file out from under another
+    that already decided not to rotate, so that process's append lands in the freshly
+    rotated `.1` file instead of a fresh `path`, or raises FileNotFoundError against an
+    inode that no longer exists at that name. The lock is degrade-only (see
+    frontmatter.locked's own docstring): on a platform with neither fcntl nor msvcrt it
+    is a no-op, same as everywhere else this module is used, rather than a reason a
+    telemetry write -- or the retrieval it's instrumenting -- ever fails outright.
     """
     path = path or TELEMETRY_PATH
     try:
+        from commontrace.frontmatter import locked
+    except Exception:  # noqa: BLE001 - standalone use, any import problem
+        import contextlib
+        locked = lambda _p: contextlib.nullcontext()  # noqa: E731
+    try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
-            # Keep exactly one prior generation, the simplest form of
-            # logrotate's own default behavior -- overwrites any previous
-            # .1 rather than accumulating .1, .2, .3, ... forever, which
-            # would just move the unbounded-growth problem sideways.
-            try:
-                os.replace(path, path + ".1")
-            except OSError:
-                pass
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record) + "\n")
+        with locked(path):
+            if os.path.exists(path) and os.path.getsize(path) >= _TELEMETRY_MAX_BYTES:
+                # Keep exactly one prior generation, the simplest form of
+                # logrotate's own default behavior -- overwrites any previous
+                # .1 rather than accumulating .1, .2, .3, ... forever, which
+                # would just move the unbounded-growth problem sideways.
+                try:
+                    os.replace(path, path + ".1")
+                except OSError:
+                    pass
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
     except OSError as exc:
         print(f"[WARN] Failed to write Alpha telemetry to {path}: {exc}", file=sys.stderr)
+
+
+def check_staleness(
+    index_path: str,
+    lessons_dir: str,
+    indexed_slugs: "set[str]",
+    active_slugs: "set[str]",
+):
+    """Return a list of human-readable reasons the on-disk index may no longer match the
+    current lesson store, or [] if it looks current.
+
+    build_index.py already refuses a no-op rebuild once either signal below fires, but
+    that check only runs when someone *remembers* to invoke build_index.py again. Nothing
+    previously stopped `query.py` itself from silently ranking against embeddings that no
+    longer reflect what is on disk -- edit a lesson's wording (same slug, so the
+    importance-floor override above never notices) and every subsequent query keeps
+    scoring the *old* text with no signal anything is wrong. Two independent signals,
+    mirroring build_index.py's own freshness check:
+      1. slug set: the active lesson slugs on disk differ from what got embedded --
+         catches deletions/renames/status changes that don't necessarily advance any
+         *surviving* file's mtime.
+      2. mtime: an ACTIVE lesson file (add or edit) is newer than the index file itself
+         (a same-slug edit -- reworded rule/applies_when -- that signal 1 can't see).
+         Deliberately excludes archived/malformed lessons so touching one of *those*
+         doesn't manufacture a false warning: only a file newer than the index is even
+         opened and frontmatter-parsed, so on the common already-fresh path (nothing
+         postdates the index) this reads nothing and costs one glob + a stat per file --
+         no full second frontmatter-parse pass duplicating load_importances()'s.
+    Best-effort throughout: an unreadable index_path, lessons_dir, or individual lesson
+    file just drops out of the signal it would have fed rather than raising -- staleness
+    detection must never itself break retrieval.
+    """
+    reasons: list[str] = []
+
+    added = active_slugs - indexed_slugs
+    removed = indexed_slugs - active_slugs
+    if added:
+        reasons.append(
+            f"{len(added)} active lesson(s) not embedded in the index: {', '.join(sorted(added))}"
+        )
+    if removed:
+        reasons.append(
+            f"{len(removed)} embedded slug(s) no longer active on disk: {', '.join(sorted(removed))}"
+        )
+
+    try:
+        index_mtime = os.path.getmtime(index_path)
+    except OSError:
+        index_mtime = None
+    if index_mtime is not None:
+        newest_active_mtime = 0.0
+        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+            if os.path.basename(path) == "lesson_template.md":
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime <= index_mtime:
+                continue  # can't raise newest_active_mtime past index_mtime either way
+            try:
+                with open(path, "r", encoding="utf-8-sig") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            delims = list(_DELIM_RE.finditer(content))
+            if len(delims) < 2:
+                continue
+            try:
+                frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
+            except yaml.YAMLError:
+                continue
+            if not isinstance(frontmatter, dict):
+                continue
+            if frontmatter.get("status", "active") != "active":
+                continue
+            newest_active_mtime = max(newest_active_mtime, mtime)
+        if newest_active_mtime > index_mtime:
+            reasons.append("an active lesson file was modified after the index was last built")
+
+    return reasons
 
 
 def _positive_int(raw: str) -> int:
@@ -292,9 +396,22 @@ def main() -> int:
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
 
-    # Top-K by cosine (descending)
+    # Loaded here, once, and reused below for the top-K filter as well as the
+    # importance-floor override -- load_importances() only walks currently
+    # ACTIVE lesson files on disk, so this is also the authoritative "is this
+    # index slug still active" set.
+    importances, n_frontmatters_parsed = load_importances()
+
+    # Top-K by cosine (descending), active lessons only. index.npz keeps a
+    # row for every lesson it was built from; a lesson archived (or deleted
+    # from disk) since the last build_index.py run still has a row and a
+    # cosine score, but it is not in `importances` (load_importances() skips
+    # non-active lessons) -- without this filter it could still take a
+    # top-K slot from a lesson that is actually active, surfacing as
+    # `lesson_x | cosine=0.9xx | importance=0` in the brief.
     order = np.argsort(scores)[::-1]
-    top_k_idx = list(order[: args.top_k])
+    active_order = [idx for idx in order if str(slugs[idx]) in importances]
+    top_k_idx = list(active_order[: args.top_k])
 
     # Safety override: include all active lessons with importance >= floor. This must
     # check every lesson currently on disk (`importances`, from load_importances()), not
@@ -302,12 +419,17 @@ def main() -> int:
     # last `build_index.py` run exists on disk but not in the index, so iterating only the
     # index's own slugs silently breaks this script's own documented safety guarantee for
     # exactly the lessons most likely to need it (freshly-authored critical rules).
-    importances, n_frontmatters_parsed = load_importances()
+    indexed_slugs = {str(s) for s in slugs}
     floor = args.include_importance_floor
     missing_from_index = []
-    if floor is not None:
+    # importance is schema-bounded to [1, 5] (protocol/schemas/lesson.schema.json),
+    # so floor <= 0 can never exclude anything on its own merits -- every lesson's
+    # `importances.get(slug, 0) >= floor` is trivially true, which silently promoted
+    # the ENTIRE lesson store into the brief instead of the intended top-K. Treated
+    # as "override disabled" instead, since that is the only sentinel value below the
+    # valid range and there was previously no way to disable the override at all.
+    if floor is not None and floor > 0:
         existing = set(top_k_idx)
-        indexed_slugs = {str(s) for s in slugs}
         for i, slug in enumerate(slugs):
             if i in existing:
                 continue
@@ -318,11 +440,28 @@ def main() -> int:
             if imp >= floor and slug not in indexed_slugs:
                 missing_from_index.append((slug, imp))
 
+    override_desc = f"+ importance>={floor} override" if floor is not None and floor > 0 else "override disabled"
+
+    # General staleness check (independent of the importance floor above): catches an
+    # edited-but-not-renamed lesson, a below-floor addition/removal, or a forgotten
+    # rebuild after any lesson-store change. See check_staleness()'s docstring.
+    stale_reasons = check_staleness(
+        INDEX_PATH, LESSONS_DIR, indexed_slugs, set(importances.keys())
+    )
+
     brief_lines = [
-        f"# Top-{args.top_k} retrieval (+ importance>={floor} override)",
+        f"# Top-{args.top_k} retrieval ({override_desc})",
         f"# Index: {n_lessons} lessons, model={model_name}",
         f"# Query: {args.query!r}",
     ]
+    if stale_reasons:
+        brief_lines.append(f"# WARNING: index may be stale -- {'; '.join(stale_reasons)}")
+        print(
+            f"[WARN] {INDEX_PATH} may be stale -- {'; '.join(stale_reasons)}. "
+            "Cosine scores below may not reflect current lesson content. Rebuild: "
+            "python memory/attention/build_index.py --force",
+            file=sys.stderr,
+        )
     if missing_from_index:
         print(
             f"# WARNING: {len(missing_from_index)} importance>={floor} lesson(s) not yet in "
@@ -350,11 +489,15 @@ def main() -> int:
     estimated_tokens = len(brief_text.split()) * 1.3
     _append_telemetry(
         {
-            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            # UTC, not a naive local timestamp: PROTOCOL.md specifies ISO-8601 UTC
+            # everywhere, and a naive local time cannot be sorted or compared across
+            # multi-agent runners in different timezones.
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "latency_ms": elapsed_ms,
             "n_frontmatters_parsed": n_frontmatters_parsed,
             "n_candidates_surfaced": len(top_k_idx),
             "n_missing_from_index": len(missing_from_index),
+            "index_stale": bool(stale_reasons),
             "estimated_tokens": estimated_tokens,
             "top_k": args.top_k,
             "query_chars": len(args.query),

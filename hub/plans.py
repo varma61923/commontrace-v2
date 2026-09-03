@@ -15,31 +15,76 @@ something the customer did not get:
   give back what it cost would be a deletion right in name only.
 
 * `commons_queries_per_month` -- how many times the org may ask the
-  commons the coverage question. This is the metered unit because it is
-  the only call whose value comes from *other people's* contributions;
-  everything else an org does is with its own data, and charging per query
-  against your own memory is rent, not price.
+  CommonTrace Knowledge Base a question. This is metered separately from
+  storage because it is the one call that reads content this org did not
+  write: an operator-maintained corpus of substrate knowledge (public
+  protocol semantics, vendor documentation, standards -- see
+  `commons/seed/substrate-v1.jsonl`), not this org's own memory. Charging
+  per query against your own memory would be rent, not price; this is
+  metered because it is a genuinely separate resource.
 
-WHY CONTRIBUTION EARNS ALLOWANCE
---------------------------------
-A knowledge commons where contributing is pure altruism fills with filler
-and dies -- the standard failure mode, and the one STRATEGY.md §3 names.
-`commons-value` already measures the thing that makes contribution
-non-altruistic: `Trace.commons_hits`, the number of times an org's shared
-knowledge actually covered someone else's failure. Measuring it and then
-not paying for it would be the same mistake in a nicer shirt.
+* `max_agents` -- how many distinct agents an org may have ACTIVE at once.
+  This is the expansion axis: STRATEGY.md §12.2 argues value here compounds
+  with agents per fleet, tasks over time, and fleets per customer, and
+  §12.6 concludes the variable to run on is "agents under management, not
+  logos". A metric nobody counts cannot be run on, so it is counted here.
 
-So the allowance is `plan grant + delivered hits x QUERY_CREDIT_PER_HIT`.
-An org that puts real knowledge in pays less, mechanically, without anyone
-negotiating. Note carefully what is credited: hits DELIVERED, not traces
-SHARED. Sharing is free to do and easy to fake -- an org could dump ten
-thousand junk traces in an afternoon. A hit requires that someone else's
-genuine failure matched, at the shipped threshold, against a corpus that
-excludes the sharer's own rows. It cannot be self-dealt.
+  Two properties of the count are deliberate and are the whole design:
 
-Seeded rows are excluded from crediting for the same reason they are
-excluded from the network-effect metric: the operator crediting itself for
-its own primer is circular (hub/manage.py:commons_seed).
+  1. It is ACTIVE agents in a trailing window (ACTIVE_AGENT_WINDOW_DAYS),
+     not distinct agents all-time. An all-time count only ever grows: it
+     cannot show a fleet shrinking, so it cannot show churn, and it would
+     bill a customer forever for an agent they ran once and decommissioned.
+     That is the same defect the storage limit already avoids by counting
+     live rows so purging frees allowance -- a number that can only go up
+     is a vanity metric, not a meter.
+
+  2. It is enforced at NEW-agent registration, never on every write. See
+     hub/crud.py:_reserve_agent_slot. An org sitting exactly at its cap
+     must keep serving its existing fleet; refusing their writes would turn
+     a commercial limit into a production outage, which is never the right
+     failure mode for infrastructure the customer is running live traffic
+     through. Hitting the cap blocks EXPANSION, not OPERATION.
+
+WHY THERE IS NO ORG-TO-ORG SHARING HERE
+----------------------------------------
+An earlier design routed the Knowledge Base through customer contribution:
+an org could opt a trace of its own into a pool other orgs' queries could
+match against, and earned extra query allowance for every hit that
+delivered. That is a peer-to-peer commons, and it has a fatal problem
+STRATEGY.md §3 already named and never solved: **adverse selection**. Why
+would an org contribute knowledge that helps a competitor? The naive
+answer ("reciprocity") fails because the most valuable lessons are the
+most proprietary -- contribution stays voluntary, orgs contribute their
+generic lessons and withhold their good ones, and the corpus fills with
+filler. And it asks a customer to trust that their own trace text, however
+"substrate-only" they judge it, will never leak anything competitively
+sensitive to another org reading it.
+
+There is no version of that trade a customer should take, so it is not
+offered. What replaced it: the Knowledge Base is authored and curated by
+the operator alone (`hub/manage.py:commons_seed`, `Trace.commons_source ==
+"seed"`) -- the same relationship a team has to Stack Overflow or an
+internal wiki, not to a competitor's support queue. No customer trace ever
+becomes visible to another customer. `commons_access` is the one thing a
+plan controls: whether this org may consult that corpus at all. Nothing
+about using it costs another org anything or requires them to have shared
+first, because there is no "them" to share with.
+
+WHY `bonus_commons_queries` IS NOT THE SAME MISTAKE TWICE
+----------------------------------------------------------
+An org may still propose a Knowledge Base entry
+(`hub/crud.py:submit_kb_entry`), and an accepted one still raises that
+org's allowance (`Organization.bonus_commons_queries`, added below). The
+difference from the retired design is where the credit attaches: not to
+the act of contributing, but to an operator's deliberate acceptance of it
+(`hub/manage.py:review_kb_submission`). A rejected or ignored submission
+earns nothing, so the adverse-selection failure this section just
+described -- contribute generic filler, collect the reward -- is not
+available here: filler gets rejected. What survives review is
+self-selected the same way a Stack Overflow answer or a Wikipedia edit
+is, not by a customer's incentive to withhold anything competitively
+sensitive.
 
 WHAT THIS FILE DOES NOT DO
 --------------------------
@@ -53,13 +98,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# One delivered hit -- someone else's failure genuinely covered by this
-# org's shared knowledge -- is worth this many commons queries. Set so a
-# modestly useful contributor on the free plan stops needing to think about
-# the limit at all, while a non-contributor still meets it. It is a policy
-# number, not a measurement, and it is the one dial in this file that an
-# operator should expect to turn.
-QUERY_CREDIT_PER_HIT = 25
+# How recently an agent must have written a trace to count as "under
+# management". A policy number, and the second dial in this file.
+#
+# 30 days because it is the shortest window that survives an agent which
+# runs on a monthly cadence (a billing-close reconciliation agent, a
+# monthly report generator). Too short and a real, paid-for agent silently
+# drops out of the count between runs, which reads as churn that did not
+# happen; too long and a decommissioned agent keeps being billed, which is
+# the all-time-count defect this window exists to avoid.
+ACTIVE_AGENT_WINDOW_DAYS = 30
+
+# Traces written by a client that sent no agent_id are attributed to this
+# single sentinel agent per org.
+#
+# The alternative designs are both worse. Rejecting the write breaks every
+# client that predates agent identity, for a metering concern the customer
+# did not ask for. Counting such traces as zero agents makes the meter
+# trivially avoidable by omitting one field, which is not a meter.
+#
+# Counting them as exactly ONE agent per org is backward compatible and
+# cannot be gamed downward -- but it is also a FLOOR, not a measurement:
+# an unknown number of real agents hides behind it. Every surface that
+# reports the count therefore reports the unattributed trace count beside
+# it (hub/crud.py:agents_under_management), so nobody -- operator or
+# customer -- reads a floor as a total. Same discipline as the commons
+# coverage number, which is published as a floor for the same reason.
+UNATTRIBUTED_AGENT_ID = "unattributed"
 
 # The name every org gets until someone says otherwise. Chosen so that
 # forgetting to set a plan fails closed into the *smallest* entitlement
@@ -67,6 +132,13 @@ QUERY_CREDIT_PER_HIT = 25
 DEFAULT_PLAN = "free"
 
 UNLIMITED = -1
+
+# What one accepted KnowledgeBaseSubmission permanently adds to an org's
+# monthly Knowledge Base query allowance. A flat amount, not scaled by
+# anything the submitter controls (length, tag count, self-reported
+# effort) -- the only lever that should move this number is an operator
+# judging the content worth publishing, once, at review time.
+SUBMISSION_ACCEPTANCE_CREDIT = 25
 
 
 @dataclass(frozen=True)
@@ -80,6 +152,14 @@ class Plan:
     commons_queries_per_month: int
     commons_access: bool
     summary: str
+    # Defaulted so that a Plan built ad hoc (only tests do this, to pin one
+    # specific cap) does not accidentally enforce an agent limit it was not
+    # written to test. The fail-closed guarantee this file cares about lives
+    # in get(), which resolves every real plan through PLANS -- and
+    # TestEveryPlanSetsMaxAgents asserts every entry there sets this
+    # explicitly, so the permissive default can never silently reach a
+    # customer.
+    max_agents: int = -1  # UNLIMITED; defined below, referenced by value here
 
 
 PLANS: dict[str, Plan] = {
@@ -87,36 +167,113 @@ PLANS: dict[str, Plan] = {
         name="free",
         max_traces=1_000,
         commons_queries_per_month=20,
+        # 5 agents: an individual developer's fleet. Deliberately a real
+        # working limit rather than 1 -- the product's own thesis is that
+        # lessons compound ACROSS agents, so a tier that permits a single
+        # agent cannot demonstrate the thing being sold.
+        max_agents=5,
         commons_access=True,
-        summary="Evaluate on real memory. Commons access included, because a "
-                "commons nobody may query cannot demonstrate that it works.",
+        summary="Evaluate on real memory, with Knowledge Base access included -- an "
+                "on-ramp nobody can try requires nothing to demonstrate its value.",
     ),
     "team": Plan(
         name="team",
         max_traces=50_000,
         commons_queries_per_month=1_000,
+        max_agents=25,
         commons_access=True,
-        summary="A fleet's working memory plus routine commons coverage checks.",
+        summary="A fleet's working memory plus routine Knowledge Base lookups.",
     ),
     "scale": Plan(
         name="scale",
         max_traces=UNLIMITED,
         commons_queries_per_month=25_000,
+        max_agents=UNLIMITED,
         commons_access=True,
-        summary="Unmetered storage; commons queries still metered, because "
-                "they consume other orgs' contributions rather than your own.",
+        summary="Unmetered storage; Knowledge Base queries still metered, because "
+                "that corpus is a separate resource from this org's own memory.",
     ),
-    # Not a customer plan. The org that owns seeded rows must be able to
-    # load a corpus larger than any paid tier without that looking like
-    # revenue, and must never be billed for priming its own commons.
+    # Not a customer plan. The org that owns the operator-curated Knowledge
+    # Base content must be able to write to it without that looking like
+    # a customer's own storage usage or query volume.
     "operator": Plan(
         name="operator",
         max_traces=UNLIMITED,
         commons_queries_per_month=UNLIMITED,
+        max_agents=UNLIMITED,
         commons_access=True,
         summary="Operator-internal. Not for sale; excluded from revenue reporting.",
     ),
 }
+
+# --- The pricing shape (STRATEGY.md §24) -------------------------------------
+#
+# §13.1 states the identity this business runs on -- revenue is AGENTS UNDER
+# MANAGEMENT x price per agent per year -- and says the shape it permits
+# (many agents cheap, or few agents expensive) is exactly what nobody in this
+# repository knows. §11.5 then declines to encode a price, on the correct
+# ground that a price is a claim about value and the only value this product
+# can defend is measured effect on the customer's own data.
+#
+# Both were right, and together they left the entitlement model gating on
+# `max_traces`, `max_agents` and `commons_queries_per_month`: SEATS AND
+# VOLUME, which is the denominator §11.5 itself identifies as wrong here.
+#
+# `commontrace/value.py` now computes the right denominator: occasions
+# improved, causally, from established effects only. So the shape can be
+# stated without inventing a number.
+#
+# THE SHAPE: a per-agent platform fee (predictable, covers cost-to-serve,
+# which §18 measured) PLUS a share of measured value delivered, capped.
+#
+# VALUE_CAPTURE_SHARE is the share. It is a ratio, not a currency, which is
+# the distinction §11.5's argument actually turns on: what a resolved
+# occasion is worth is the customer's number and is never stored here; what
+# fraction of proven improvement this product charges for is OURS, and
+# refusing to state it does not protect anyone -- it just leaves every
+# conversation to be had from scratch.
+#
+# 20% because it has to survive the customer doing the arithmetic. At a
+# fifth, the measured surplus is unambiguously theirs, which is the only
+# version of value-based pricing that renews; at a half it becomes a
+# negotiation about the measurement itself, and the measurement is the
+# product.
+VALUE_CAPTURE_SHARE = 0.20
+
+# The share is charged ONLY on effects the holdout established. A quarter
+# whose experiment came back COMPROMISED, or whose memories were all
+# underpowered, bills the platform fee and nothing else
+# (commontrace/value.py refuses to produce a figure in exactly those cases,
+# and billable_value below inherits that refusal rather than re-deciding it).
+#
+# That is a real commercial commitment and it is the point: it makes the
+# vendor's incentive to keep the instrument honest structural rather than
+# stated. A vendor paid on measured value has every reason to weaken the
+# validity checks; a vendor whose own revenue is gated by those checks
+# cannot weaken them without also being unable to bill.
+VALUE_BILLED_ONLY_ON_ESTABLISHED_EFFECTS = True
+
+
+def billable_value(value_report, share: float = VALUE_CAPTURE_SHARE) -> float | None:
+    """The value-linked component, or None when there is nothing to bill on.
+
+    Takes a `commontrace.value.ValueReport`. Returns None -- not zero -- when
+    the report is not readable, because "we could not measure this quarter"
+    and "we measured it and it was worth nothing" are different facts and
+    only one of them is an argument about the product.
+
+    Negative is possible and is returned as-is. If the memory measurably made
+    things worse, the value-linked component is negative, and a pricing model
+    that floors it at zero is one that cannot lose -- which is the same thing
+    as one that never proved anything.
+    """
+    if value_report is None or not getattr(value_report, "readable", False):
+        return None
+    money = value_report.money
+    if money is None:
+        return None
+    return money * share
+
 
 BILLABLE_PLANS = ("team", "scale")
 
@@ -152,11 +309,18 @@ def get(plan_name: str | None) -> Plan:
     return PLANS.get((plan_name or "").strip().lower() or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])
 
 
-def query_allowance(plan: Plan, delivered_hits: int) -> int:
-    """Monthly commons-query allowance, including earned credit."""
+def query_allowance(plan: Plan, bonus: int = 0) -> int:
+    """Monthly Knowledge Base query allowance: the plan's flat grant, plus
+    whatever this org has permanently earned via accepted Knowledge Base
+    submissions (`Organization.bonus_commons_queries`).
+
+    An already-unlimited plan stays unlimited -- adding a finite bonus to
+    UNLIMITED would produce a large but finite number, which is a silent
+    downgrade dressed up as a reward.
+    """
     if plan.commons_queries_per_month == UNLIMITED:
         return UNLIMITED
-    return plan.commons_queries_per_month + max(0, int(delivered_hits)) * QUERY_CREDIT_PER_HIT
+    return plan.commons_queries_per_month + max(bonus, 0)
 
 
 def within(limit: int, used: int) -> bool:

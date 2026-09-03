@@ -300,6 +300,104 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
     assert result is False
 
 
+async def _submit_via_cli_path(session_factory, config, org_id, title="t"):
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        return await crud.submit_kb_entry(
+            session, org_id, config, rate_limiter,
+            title=title, context_text="c", solution_text="s", rationale="r", actor="test",
+        )
+
+
+class TestSubmissionReviewCommands:
+    """hub/manage.py's operator wrappers around crud.review_kb_submission --
+    the trust-tier-gated surface a community submission actually goes
+    through to become Knowledge Base content."""
+
+    async def test_list_submissions_reports_none_cleanly(self, session_factory, capsys):
+        await manage.list_submissions(session_factory=session_factory)
+        assert "no submissions" in capsys.readouterr().out
+
+    async def test_list_submissions_shows_a_pending_one(self, session_factory, config, two_orgs, capsys):
+        await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        await manage.list_submissions(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "'Stripe retries'" in out
+
+    async def test_list_submissions_rejects_a_bad_status_filter(self, session_factory, capsys):
+        result = await manage.list_submissions("bogus", session_factory=session_factory)
+        assert "must be one of" in capsys.readouterr().err
+        assert result is False
+
+    async def test_list_submissions_with_a_valid_status_filter(self, session_factory, config, two_orgs, capsys):
+        """A valid status ("pending", not the default None) exercises
+        crud.py:list_kb_submissions's own WHERE-clause filter, distinct
+        from the unfiltered full-history listing the test above covers."""
+        await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        await manage.list_submissions("pending", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "status=pending" in out
+        assert "'Stripe retries'" in out
+
+    async def test_approve_submission_publishes_and_credits(self, session_factory, config, two_orgs, capsys):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"], title="Stripe retries")
+        result = await manage.approve_submission(s["id"], two_orgs["org_b"], session_factory=session_factory)
+        assert result is True
+        out = capsys.readouterr().out
+        assert "approved" in out
+        assert "new Knowledge Base entry" in out
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == crud.plans.SUBMISSION_ACCEPTANCE_CREDIT
+
+    async def test_approve_submission_with_an_explicit_credit(self, session_factory, config, two_orgs):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        await manage.approve_submission(s["id"], two_orgs["org_b"], "42", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 42
+
+    async def test_approve_submission_unknown_operator_org_reports_error(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        result = await manage.approve_submission(
+            s["id"], "00000000-0000-0000-0000-000000000000", session_factory=session_factory,
+        )
+        assert "no such organization" in capsys.readouterr().err
+        assert result is False
+
+    async def test_approve_submission_unknown_submission_id_reports_error(
+        self, session_factory, two_orgs, capsys
+    ):
+        result = await manage.approve_submission(
+            "00000000-0000-0000-0000-000000000000", two_orgs["org_a"], session_factory=session_factory,
+        )
+        assert "no PENDING submission" in capsys.readouterr().err
+        assert result is False
+
+    async def test_reject_submission_records_reason_and_awards_nothing(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        result = await manage.reject_submission(s["id"], "too generic", session_factory=session_factory)
+        assert result is True
+        assert "rejected" in capsys.readouterr().out
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 0
+
+    async def test_reject_submission_unknown_id_reports_error(self, session_factory, capsys):
+        result = await manage.reject_submission(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory,
+        )
+        assert "no PENDING submission" in capsys.readouterr().err
+        assert result is False
+
+
 @pytest.mark.filterwarnings("ignore:.*is marked with '@pytest.mark.asyncio'.*:pytest.PytestWarning")
 class TestPurgeRequiresConfirmation:
     """purge-trace/purge-org are irreversible (no soft-delete, no undo).
@@ -379,6 +477,8 @@ async def test_argument_count_validation():
     assert manage.main(["purge-trace"]) == 2
     assert manage.main(["purge-trace", "a", "b"]) == 2
     assert manage.main(["list-quarantined", "a", "b"]) == 2  # takes 0 or 1, not 2
+    assert manage.main(["approve-submission", "a"]) == 2  # needs a submission id AND an operator org id
+    assert manage.main(["reject-submission"]) == 2
 
 
 async def test_auth_import_is_used():
@@ -468,3 +568,175 @@ def test_main_dispatch_treats_only_false_as_failure():
     finally:
         manage._COMMANDS.clear()
         manage._COMMANDS.update(original)
+
+
+class TestRetrievalHealthReport:
+    """`manage retrieval` is the operator's view of whether search is
+    finding anything, on real fleets rather than on the synthetic corpus in
+    hub/bench_retrieval.py."""
+
+    async def test_reports_nothing_cleanly_on_an_empty_deployment(self, session_factory, capsys):
+        # Explicitly emptied rather than assumed empty: tests that drive
+        # manage.main() through HUB_DATABASE_URL create orgs on their own
+        # engine, outside this fixture's truncation, so "no orgs exist
+        # right now" is an ordering accident and not a property.
+        async with session_scope(session_factory) as session:
+            for org in (await session.execute(select(Organization))).scalars().all():
+                await session.delete(org)
+        assert await manage.retrieval(session_factory=session_factory) is True
+        assert "no organizations" in capsys.readouterr().out
+
+    async def test_a_miss_and_a_hit_are_both_visible(self, session_factory, config, two_orgs, capsys):
+        org_id = two_orgs["org_a"]
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            await crud.contribute_trace(
+                session, org_id, config, rate_limiter,
+                title="Cache stampede on expiry",
+                context_text="many workers recompute the same key at once",
+                solution_text="add jitter to the expiry",
+                tags=[], agent_type="code", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            await crud.search_traces(session, org_id, query="stampede")
+            await crud.search_traces(session, org_id, query="photosynthesis")
+
+        assert await manage.retrieval(session_factory=session_factory) is True
+        out = capsys.readouterr().out
+        assert "miss rate" in out
+        assert "50%" in out
+        # The privacy property is stated in the report itself, not only in a
+        # docstring an operator never reads.
+        assert "No query text is stored" in out
+
+    async def test_an_unknown_org_is_an_error_not_an_empty_table(self, session_factory, capsys):
+        ok = await manage.retrieval(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory
+        )
+        assert ok is False
+        assert "no such organization" in capsys.readouterr().err
+
+
+class TestPlanningTheExperimentBeforeStartingIt:
+    """`start-experiment` used to take a rate and no guidance, so an operator
+    picked one blind. The failure that produces is expensive and silent: the
+    fleet runs for a month, the report says "not enough data yet", the window
+    is spent, and the only fix -- a wider holdout -- had to be applied at the
+    start.
+
+    Planning ON the Hub rather than on paper matters because the Hub already
+    knows the numbers: this org's own retrieval volume and its own success
+    rate.
+    """
+
+    @staticmethod
+    async def _with_volume(session_factory, org_id, *, searches, resolved_rate=0.75, n=40):
+        from hub.models import Trace
+
+        async with session_scope(session_factory) as session:
+            for i in range(n):
+                session.add(Trace(
+                    org_id=org_id, title=f"password reset problem {i}",
+                    context_text="the reset email never arrived for the customer",
+                    solution_text="removed the suppression and re-sent",
+                    tags=["email"], agent_type="support",
+                    outcome={"resolved": (i / n) < resolved_rate},
+                ))
+        for _ in range(searches):
+            async with session_scope(session_factory) as session:
+                await crud.search_traces(
+                    session, org_id, query="password reset email never arrived")
+
+    async def test_it_reads_the_orgs_own_volume_and_baseline(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=30)
+        capsys.readouterr()
+
+        await manage.plan_experiment(org_id, "0.10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "from this org's own recorded outcomes" in out
+        assert "from this org's searches this period" in out
+
+    async def test_an_org_with_no_volume_assumes_the_worst(
+        self, session_factory, two_orgs, capsys
+    ):
+        """A plan built on no data must not understate the sample: 50% is
+        where the variance peaks."""
+        org_id = two_orgs["org_a"]
+        capsys.readouterr()
+        await manage.plan_experiment(org_id, "0.10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "most pessimistic" in out
+        assert "has not searched yet" in out
+
+    async def test_a_budget_no_rate_can_answer_returns_false(
+        self, session_factory, two_orgs, capsys
+    ):
+        """So an operator script can act on it, and so the exit code says
+        what the prose says."""
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=10)
+        capsys.readouterr()
+
+        ok = await manage.plan_experiment(org_id, "0.02", session_factory=session_factory)
+        assert ok is False
+        assert "cannot answer this at any holdout rate" in capsys.readouterr().out
+
+    async def test_an_explicit_window_overrides_the_observed_one(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await self._with_volume(session_factory, org_id, searches=5)
+        capsys.readouterr()
+
+        await manage.plan_experiment(org_id, "0.20", "100000",
+                                     session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "100,000" in out
+        assert "from this org's searches" not in out
+
+    @pytest.mark.parametrize("bad", ["0", "1", "1.5", "abc", "-0.2"])
+    async def test_an_impossible_target_is_refused(
+        self, session_factory, two_orgs, capsys, bad
+    ):
+        org_id = two_orgs["org_a"]
+        assert await manage.plan_experiment(
+            org_id, bad, session_factory=session_factory) is False
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert await manage.plan_experiment(
+            "00000000-0000-0000-0000-000000000000",
+            session_factory=session_factory) is False
+
+
+class TestStartExperimentWarnsAboutAnUnanswerableRate:
+    """Said at the only moment the rate can still be changed for free. An
+    operator who learns it from the report a month later has spent the
+    window, and the fix was always a one-line decision taken now.
+    """
+
+    async def test_a_rate_too_low_for_the_volume_warns(
+        self, session_factory, two_orgs, capsys
+    ):
+        org_id = two_orgs["org_a"]
+        await TestPlanningTheExperimentBeforeStartingIt._with_volume(
+            session_factory, org_id, searches=300)
+        capsys.readouterr()
+
+        assert await manage.start_experiment(org_id, "0.05", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        # It still starts: the operator's decision stands, they are told.
+        assert "experiment started" in out
+
+    async def test_an_org_with_no_volume_is_not_warned(
+        self, session_factory, two_orgs, capsys
+    ):
+        """Nothing to base a warning on, and inventing one would train
+        operators to ignore the real ones."""
+        org_id = two_orgs["org_a"]
+        capsys.readouterr()
+        assert await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
+        assert "WARNING" not in capsys.readouterr().out

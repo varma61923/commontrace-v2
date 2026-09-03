@@ -280,7 +280,12 @@ class TestAtomicWritingAndCleanup:
         """Verify build_index.py writes index atomically and cleans up tmp on failure."""
         build_index, _ = attention_modules
         index_path = tmp_path / "index.npz"
-        tmp_index_path = tmp_path / "index.npz.tmp.npz"
+        # build_index.py names its temp file via tempfile.mkstemp(prefix=...,
+        # suffix=".tmp.npz"), which inserts a random component between them
+        # (e.g. "index.npz.a1b2c3.tmp.npz") -- a hardcoded "index.npz.tmp.npz"
+        # guess never matches any file mkstemp actually creates, so asserting
+        # that exact path doesn't exist was vacuously true whether or not
+        # cleanup worked, or even ran at all. Matched by glob instead, below.
 
         # Create dummy initial index
         np.savez(str(index_path), slugs=np.array(["test"]), embeddings=np.zeros((1, 4)))
@@ -303,8 +308,10 @@ class TestAtomicWritingAndCleanup:
                 with pytest.raises(PermissionError):
                     build_index.main()
 
-        # Temporary file should be unlinked
-        assert not tmp_index_path.exists(), "Tmp index file was not cleaned up!"
+        # Temporary file should be unlinked -- glob, not a hardcoded name,
+        # since mkstemp's actual filename has a random component in it.
+        leftover = list(tmp_path.glob("*.tmp.npz"))
+        assert leftover == [], f"Temporary index files were not cleaned up: {leftover}"
         # Original index preserved
         assert index_path.exists()
 
@@ -512,9 +519,20 @@ class TestLessonSlugNormalizationAndIndexing:
         ldir = paths.lessons_dir(str(clean_store))
         lesson_file = os.path.join(ldir, "lesson_review_candidate.md")
 
-        # Set status to review
+        # Set status to review, with real content: `lesson approve` refuses a
+        # lesson still carrying `lesson new`'s scaffolding, since an active
+        # lesson is injected into agents verbatim. This test is about slug
+        # resolution, so it approves a lesson that is actually written.
         fm, body = frontmatter.read(lesson_file)
         fm["status"] = "review"
+        fm["applies_when"] = "A test asserts on wall-clock time"
+        fm["do_not_apply_when"] = "The test is deliberately measuring duration"
+        body = (
+            "## Rule\nFreeze the clock instead of sleeping.\n\n"
+            "## Why\nObserved in three flaky suites.\n\n"
+            "## How to apply\nInject a clock and assert on it.\n\n"
+            "## Counter-examples\nBenchmarks.\n"
+        )
         frontmatter.write(lesson_file, fm, body)
 
         # Approve using un-prefixed slug
@@ -562,6 +580,16 @@ class TestLessonSlugNormalizationAndIndexing:
         )
 
         ldir = paths.lessons_dir(str(clean_store))
+        # `lesson new` scaffolds at status=review; only an approved lesson is
+        # active, and iter_active_lessons reads exactly those. The glob/slug
+        # normalization under test is unchanged either way -- activate them so
+        # the assertion is about naming rather than about lifecycle.
+        for filename in ("lesson_auto_norm_1.md", "lesson_auto_norm_2.md"):
+            path = os.path.join(ldir, filename)
+            fm, body = frontmatter.read(path)
+            fm["status"] = "active"
+            frontmatter.write(path, fm, body)
+
         active_slugs = [slug for slug, _ in build_index.iter_active_lessons(ldir)]
         assert "auto_norm_1" in active_slugs
         assert "lesson_auto_norm_2" in active_slugs

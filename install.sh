@@ -28,12 +28,20 @@ PYTHON="${PYTHON:-python3}"
 # --------------------------------------------------------------------------- #
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dest)       DEST="$2"; shift 2 ;;
+    --dest)
+      # Under `set -u`, referencing $2 when the flag was the last argument
+      # (`./install.sh --dest` with nothing after it) is an unbound-variable
+      # error that aborts with a bash internal message instead of this
+      # script's own actionable one.
+      [[ $# -ge 2 ]] || { echo "[ERROR] --dest requires a path argument" >&2; exit 1; }
+      DEST="$2"; shift 2 ;;
     --dest=*)     DEST="${1#--dest=}"; shift ;;
     --in-place)   IN_PLACE=true; shift ;;
     --no-deps)    INSTALL_DEPS=false; shift ;;
     --no-index)   BUILD_INDEX=false; shift ;;
-    --python)     PYTHON="$2"; shift 2 ;;
+    --python)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --python requires a binary argument" >&2; exit 1; }
+      PYTHON="$2"; shift 2 ;;
     --python=*)   PYTHON="${1#--python=}"; shift ;;
     --help|-h)
       sed -n '2,13p' "$0"
@@ -115,7 +123,16 @@ else
     # this fallback path must clean them up explicitly too rather than
     # silently installing credentials into ${DEST}. .env.example is a
     # committed, secret-free template and is deliberately spared.
-    find "${DEST}" -name '.env' -o -name '.env.*' ! -name '.env.example' 2>/dev/null | xargs -r rm -f
+    # `-exec ... +`, not `| xargs -r`: BSD/macOS xargs has no `-r`
+    # (--no-run-if-empty) and exits with "illegal option -- r" under `set
+    # -e`, aborting the installer on exactly the platform this fallback
+    # branch's own comments say to target. `-exec rm -f {} +` needs no
+    # such flag (find simply runs nothing when nothing matches) and, unlike
+    # piping through xargs, never splits an unquoted path on whitespace --
+    # so a DEST containing a space cannot make this delete an unrelated
+    # path fragment. `\( -name '.env' -o -name '.env.*' \)` groups the OR
+    # explicitly rather than relying on find's default precedence.
+    find "${DEST}" \( -name '.env' -o -name '.env.*' \) ! -name '.env.example' -exec rm -f {} + 2>/dev/null || true
   fi
 
   echo "      Done."
@@ -135,6 +152,22 @@ if [[ "${INSTALL_DEPS}" == "true" ]]; then
       || { echo "      [WARN] pip install failed. You may need to install manually:"; \
            echo "             ${PYTHON} -m pip install -r ${REQS}"; }
   fi
+  # requirements.txt alone only satisfies the commontrace *package's*
+  # imports -- it never registers the `commontrace` console script
+  # ([project.scripts] in pyproject.toml), because that registration only
+  # happens when pip installs the package itself. Without this, every
+  # command this script's own Quick Start / summary output tells the user
+  # to run next (`commontrace bench`, `commontrace capture`, ...) fails
+  # with "command not found", even though setup otherwise "succeeded".
+  # `-e`, not a plain install: DEST is either the repo checkout itself
+  # (--in-place) or a copy of it, and package-data (schemas/*.json,
+  # reference/*.py) plus any future edits at DEST should keep working
+  # exactly like a checkout, not get frozen into a site-packages copy.
+  echo "      Installing the commontrace package (registers the 'commontrace' command) ..."
+  "${PYTHON}" -m pip install --quiet -e "${DEST}" \
+    && echo "      Done." \
+    || { echo "      [WARN] pip install -e failed. You may need to install manually:"; \
+         echo "             ${PYTHON} -m pip install -e ${DEST}"; }
 else
   echo "[2/4] Skipping dependency install (--no-deps)."
 fi

@@ -164,7 +164,90 @@ def propose_tags(cluster: Cluster, max_tags: int = 8) -> list[str]:
     return seen[:max_tags]
 
 
+def representative(cluster: Cluster) -> TraceCandidate:
+    """The trace that best stands for the whole cluster -- its medoid.
+
+    "Best" is the one whose title+context words overlap most with the rest of
+    the cluster, so it is the most typical member rather than the first one
+    the filesystem happened to return. Ties break on trace id, because a
+    proposal that changes text between two identical runs is a proposal
+    nobody can review.
+    """
+    if len(cluster.traces) == 1:
+        return cluster.traces[0]
+    tokens = [
+        (t, set(_tokenize(f"{t.title} {t.context_text}")))
+        for t in cluster.traces
+    ]
+    best, best_score = cluster.traces[0], -1.0
+    for trace, own in tokens:
+        if not own:
+            continue
+        score = sum(
+            len(own & other) / len(own | other)
+            for candidate, other in tokens
+            if candidate.id != trace.id and (own | other)
+        )
+        if score > best_score or (score == best_score and trace.id < best.id):
+            best, best_score = trace, score
+    return best
+
+
+def variants(texts: list[str], limit: int = 4) -> list[tuple[str, int]]:
+    """Distinct versions of a repeated field, most common first, with counts.
+
+    A cluster is by construction a set of SIMILAR traces, so listing all of
+    them verbatim prints the same paragraph a dozen times -- which is what a
+    proposed lesson used to do, and it made the evidence section noise
+    rather than evidence. Grouping collapses that, and the counts turn it
+    into information the reviewer needs.
+
+    The interesting case is when there is more than one variant of what
+    WORKED. That means the same symptom had different causes, and it is
+    exactly the signal that a candidate should be split or rejected rather
+    than written up as one rule -- so the variants are shown rather than the
+    most common one alone.
+
+    Grouped on normalized text (case, whitespace, trailing punctuation) so
+    two copies differing by a stray space count as one; anything differing
+    by a word is a genuine variant and stays separate.
+    """
+    groups: dict[str, tuple[str, int]] = {}
+    for text in texts:
+        cleaned = " ".join((text or "").split())
+        if not cleaned:
+            continue
+        key = cleaned.lower().rstrip(".!? ")
+        original, count = groups.get(key, (cleaned, 0))
+        groups[key] = (original, count + 1)
+    ranked = sorted(groups.values(), key=lambda pair: (-pair[1], pair[0]))
+    return ranked[:limit]
+
+
 def propose_description(cluster: Cluster) -> str:
+    """A sentence a human can read, not a bag of words.
+
+    This used to be `"Candidate: 12 traces show a repeated pattern around:
+    anywhere, byte, csv, customer, empty"` -- the cluster's shared TERMS,
+    which after stopword removal are whatever survived, in no particular
+    order. Two things were wrong with that, and both cost more than they
+    look:
+
+    1. It is what a curator reads in `commontrace lesson list`, so a store
+       with a dozen candidates was a dozen indistinguishable term lists and
+       the review queue did not get worked.
+    2. `description` is a ranked retrieval field (commontrace/retrieval.py),
+       so those tokens -- "anywhere", "byte", "customer" -- were what the
+       candidate matched on.
+
+    The medoid trace's own title is already a sentence written by a person
+    about this exact failure. Using it costs nothing and is strictly more
+    informative. It stays marked as a proposal, because it IS one: one real
+    example standing in for a cluster, which a reviewer should generalise.
+    """
     n = len(cluster.traces)
-    shared = ", ".join(cluster.shared_terms[:5]) or "(no strongly shared terms -- review carefully)"
-    return f"Candidate: {n} traces show a repeated pattern around: {shared}"
+    title = (representative(cluster).title or "").strip()
+    if not title:
+        shared = ", ".join(cluster.shared_terms[:5]) or "(no strongly shared terms)"
+        return f"Candidate ({n} traces): repeated pattern around {shared}"
+    return f"{title} — and {n - 1} more like it" if n > 1 else title

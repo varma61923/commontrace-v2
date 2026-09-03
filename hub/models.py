@@ -79,6 +79,58 @@ class Organization(Base):
     # resolves to the smallest plan, never an unlimited one -- see
     # hub/plans.py:get.
     plan: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
+    # Permanent addition to this org's monthly Knowledge Base query
+    # allowance (hub/plans.py:query_allowance), earned one
+    # hub/manage.py review-submission approval at a time -- never by the
+    # act of submitting. That is what keeps this from being the same
+    # credit-for-volume mechanic STRATEGY.md §3 already ruled out: a
+    # rejected or ignored KnowledgeBaseSubmission earns nothing, so the
+    # only way to raise this number is to write something an operator
+    # judged worth publishing.
+    bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # --- Randomized holdout configuration ------------------------------
+    #
+    # The fraction of (trace, occasion) pairs whose retrieved memory is
+    # deliberately WITHHELD, so the fleet's own outcomes can be compared
+    # against a control arm the fleet itself generated. 0.0 -- the default
+    # -- means no experiment is running and nothing is ever withheld.
+    #
+    # Held here, per org, rather than passed per call, because a fleet is
+    # many agents and an experiment is only coherent if every one of them
+    # draws from the SAME randomization. An agent that computed its own
+    # assignment with its own rate would put the same lesson in both arms
+    # on different machines, which does not fail loudly -- it quietly
+    # produces a comparison of two mixtures and an effect estimate biased
+    # toward zero.
+    holdout_rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    # Names this experiment. commontrace.experiment.is_held_out hashes it
+    # with the trace id and occasion id, so changing it reshuffles every
+    # assignment -- which is why it is written once when an experiment
+    # starts and never edited. Rotating it mid-flight silently mixes two
+    # different randomizations into one comparison, and the result looks
+    # like ordinary noise rather than like a broken experiment.
+    holdout_salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+
+    # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
+    #
+    # A two-call design, deliberately: `request_account_deletion` alone
+    # never deletes anything, it only stores a hashed confirmation token and
+    # a window during which `confirm_account_deletion` may present the raw
+    # token to actually execute the purge. This answers the question
+    # hub/README.md's Operator CLI section originally left open --
+    # "should a single compromised key be able to wipe an org's entire
+    # trace history with no confirmation step?" -- with no: a second,
+    # differently-named call is required, and it cannot succeed before
+    # `crud.DELETION_GRACE_SECONDS` has elapsed, which is deliberately long
+    # enough for an operator watching the audit log (every request is
+    # recorded there) to revoke a compromised key first via
+    # `hub.manage revoke-key`. The raw token itself is never stored, only
+    # its hash -- same pattern as ApiKey.key_hash.
+    deletion_token_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
@@ -122,6 +174,21 @@ class Trace(Base):
     solution_text: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
     agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The AGENT, as distinct from the KIND of agent above. agent_type is a
+    # category ("support", "sales", "code"): a fleet of 25 support agents
+    # shares one value, so it can never answer "how many agents does this
+    # org run" -- the variable STRATEGY.md §12.6 concludes the business
+    # should be run on, and which nothing in this system could compute
+    # before this column existed.
+    #
+    # Empty string, not NULL, for "the client did not say" -- matching
+    # profile/contributor above, and letting the migration backfill every
+    # pre-existing row with a server_default rather than leaving NULLs that
+    # every COUNT(DISTINCT ...) would then have to special-case. The
+    # counting layer maps "" to plans.UNATTRIBUTED_AGENT_ID exactly once
+    # (hub/crud.py:agents_under_management), so the magic value lives in
+    # one place instead of in every row.
+    agent_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     profile: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     extensions: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     watch_condition: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -166,27 +233,27 @@ class Trace(Base):
     # Governance / abuse-control fields, not part of the wire Trace object
     quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quarantine_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
-    # --- Cross-org commons (opt-in, explicit, revocable) -----------------
+    # --- CommonTrace Knowledge Base membership ----------------------------
     #
     # This is the ONLY field that can make a trace visible outside its owning
     # org, and it is false by default and never set implicitly. Every other
     # read path in hub/crud.py stays unconditionally scoped to the caller's
-    # own org_id regardless of this flag; the commons is a separate, additive
-    # query surface (crud.commons_overlap), not a relaxation of the existing
-    # one. hub/tests/test_tenant_isolation.py passes unchanged.
+    # own org_id regardless of this flag; the Knowledge Base is a separate,
+    # additive query surface (crud.commons_overlap, crud.commons_search),
+    # not a relaxation of the existing one. hub/tests/test_tenant_isolation.py
+    # passes unchanged.
     #
-    # The boundary being drawn is the one in STRATEGY.md §4: substrate
-    # failures are shareable ("Stripe webhooks need idempotency keys"),
-    # business logic is not (your pricing rules, your escalation policy).
-    # The Hub cannot judge that for you -- it is the contributing org's
-    # explicit call, recorded per trace, with the classification stored so
-    # the decision is auditable after the fact.
+    # In production this is set ONLY by hub/manage.py:commons_seed, on rows
+    # owned by the operator's own org -- never by a customer action, and
+    # never on a customer's own trace. `commons_source == "seed"` (below) is
+    # the field every Knowledge Base query actually filters on; this flag
+    # alone is defense-in-depth, not the boundary itself.
     shared_with_commons: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Free-text, caller-supplied justification for why this trace is
-    # substrate rather than business logic. Not validated by the Hub (it
-    # cannot be); stored so a security reviewer can audit what an org
-    # believed it was sharing and why.
+    # Free-text justification recorded at seed time for why this entry
+    # belongs in the Knowledge Base -- substrate knowledge (STRATEGY.md §4),
+    # never any customer's business logic. Stored so a reviewer can audit
+    # what the operator believed it was publishing and why.
     shared_rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     # MinHash signature of this trace's matchable text, computed once at
     # share time by commontrace.overlap. Precomputed rather than derived per
@@ -196,35 +263,84 @@ class Trace(Base):
     # trace that is not in the commons.
     commons_signature: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
 
-    # --- Commons economics -----------------------------------------------
+    # --- Knowledge Base content quality ------------------------------------
     #
-    # How many times this shared trace has actually covered ANOTHER org's
-    # recurring failure. This is the answer to the question that decides
-    # whether a knowledge commons survives contact with self-interest
-    # (STRATEGY.md §3): why would an org contribute knowledge that helps a
-    # competitor? "Because it is nice" does not hold, and a commons where
-    # contribution is undifferentiated fills with low-value filler.
+    # How many times this Knowledge Base entry has actually matched another
+    # org's recurring failure. hub/manage.py:kb_stats uses this to answer
+    # "is the Knowledge Base actually earning its query traffic" -- an entry
+    # with zero hits after real query volume is filler, not knowledge,
+    # however confident the operator was when writing it.
     #
-    # Making the value a contributor DELIVERS measurable changes that:
-    # contribution stops being altruism and becomes a position, it gives an
-    # operator a defensible basis for pricing or revenue share, and it lets
-    # the highest-value contributors be identified rather than guessed at.
-    #
-    # Deliberately a counter and not a join table of who-matched-what:
-    # the aggregate is what pricing and incentives need, while a per-match
-    # log of "org X's failure resembled org Y's trace" is a far more
-    # sensitive artifact for a marginal gain. Incremented with the same
-    # atomic in-database UPDATE the retrievals counter uses. BigInteger for
-    # the same overflow reason as retrievals/depth above.
+    # Deliberately a counter and not a join table of who-matched-what: the
+    # aggregate is what a content-quality report needs, while a per-match
+    # log of "org X's failure resembled entry Y" is a far more sensitive
+    # artifact for a marginal gain. Incremented with the same atomic
+    # in-database UPDATE the retrievals counter uses. BigInteger for the
+    # same overflow reason as retrievals/depth above.
     commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
-    # Where this commons entry came from. A commons with no contributors
-    # returns 0% coverage for everyone, which is a cold start, not a
-    # finding -- so an operator may seed it with public substrate knowledge
-    # to make the first query meaningful. That seeded content must stay
-    # DISTINGUISHABLE, or "how many orgs contribute" (the actual
-    # network-effect metric) silently counts the operator's own seeding and
-    # the number stops meaning anything. "org" | "seed".
+    # --- Knowledge Base entry standing -------------------------------------
+    #
+    # See hub/commons.py's "Entry standing" section for the model these four
+    # columns serve and for why nothing here ever removes an entry
+    # automatically. In short: growing a curated corpus and maintaining one
+    # are different problems, and only the first was built.
+    #
+    # Total votes cast on this entry, denormalized alongside `trust` by the
+    # same atomic UPDATE in hub/crud.py:vote_trace. `trust` alone cannot
+    # distinguish "every fleet that tried this said it failed" (trust 0.0,
+    # 12 votes) from "one fleet downvoted it" (trust 0.0, 1 vote), and the
+    # whole standing model turns on that difference.
+    #
+    # A counter rather than a COUNT(*) join on `votes` because both
+    # Knowledge Base queries scan up to commons.max_corpus_scan() rows per
+    # call and neither can afford a per-row aggregate -- the same reason
+    # commons_hits above is a counter. Written as an assignment, not an
+    # increment: vote_trace UPSERTs, so an org changing its vote must not
+    # add to the total, and the tally it already computes is authoritative.
+    commons_votes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+
+    # When this entry stops being trustworthy on its own schedule. NULL --
+    # the default, and correct for most entries -- means "does not expire":
+    # substrate knowledge like idempotency keys on webhook handlers is not
+    # pinned to a version and never becomes stale. Set it for knowledge that
+    # IS pinned ("React 19 hydrates Date differently than 18"), from the
+    # seed file's `review_after` field, and the entry surfaces in
+    # `hub/manage.py kb-review` once the date passes.
+    #
+    # DateTime, unlike the free-text `review_after` column further up: that
+    # one is a protocol field carrying whatever the Trace author wrote
+    # ("after the next release"), which is fine for a human reading one
+    # trace and useless for a query that has to decide what is due.
+    commons_review_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Set by `hub/manage.py kb-retract` when an operator pulls an entry.
+    # NOT a delete: the row, its votes, and its hit history stay, because
+    # "this entry was published, served N failures, and was then withdrawn
+    # for reason R" is exactly what an operator needs to keep and exactly
+    # what a DELETE destroys. Restorable via `kb-restore`.
+    #
+    # A retracted entry is invisible to every Knowledge Base read path
+    # (commons_overlap, commons_search, and vote_trace's Knowledge Base
+    # branch) -- see hub/crud.py:commons_visible, which is the single
+    # place that filter is expressed so a fourth read path cannot forget it.
+    commons_retracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    commons_retraction_reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+
+    # Where this row came from. An empty Knowledge Base returns 0% coverage
+    # for everyone, which is a cold start, not a finding -- so an operator
+    # seeds it with authored substrate knowledge to make the first query
+    # meaningful. Seeded content must stay DISTINGUISHABLE, or "how many
+    # orgs actually consult it" (hub/manage.py:kb_stats' adoption count)
+    # silently counts queries against the operator's own seeding and the
+    # number stops meaning anything. "org" | "seed" -- "seed" is the only
+    # value any Knowledge Base query (commons_overlap, commons_search,
+    # vote_trace) will ever match against; see hub/commons.py's module
+    # docstring.
     commons_source: Mapped[str] = mapped_column(String(16), default="org", nullable=False)
 
     # Full-text search vector, maintained by Postgres itself (GENERATED ...
@@ -254,17 +370,122 @@ class Trace(Base):
         # search_traces orders by created_at DESC within an org; without this
         # the ordering step sorts the whole org partition on every query.
         Index("ix_traces_org_created_at", "org_id", "created_at"),
+        # agents_under_management is COUNT(DISTINCT agent_id) over one org
+        # within a trailing time window, and it runs on the write path
+        # (_reserve_agent_slot) on every contribute_trace, not just in
+        # reporting. Leading org_id + created_at serves the equality-then-
+        # range predicate, and carrying agent_id as the third column makes
+        # the distinct step index-only rather than a heap fetch per row --
+        # which matters precisely for the largest fleets, the ones whose
+        # agent count this exists to measure.
+        Index("ix_traces_org_created_agent", "org_id", "created_at", "agent_id"),
         UniqueConstraint("org_id", "idempotency_key", name="uq_traces_org_idempotency_key"),
         # commons_overlap scans the commons corpus -- traces shared, not
-        # quarantined -- across ALL orgs. Partial index: the commons is
-        # expected to be a small minority of rows for a long time, so
-        # indexing only the shared ones keeps it tiny and keeps the scan off
-        # the main table.
+        # quarantined, not retracted -- across ALL orgs. Partial index: the
+        # commons is expected to be a small minority of rows for a long
+        # time, so indexing only the shared ones keeps it tiny and keeps the
+        # scan off the main table.
+        #
+        # The predicate tracks hub/crud.py:commons_visible exactly. A
+        # partial index only serves a query whose WHERE clause implies the
+        # index's own, so letting the two drift does not produce wrong
+        # answers -- it silently stops using the index and turns every
+        # Knowledge Base query back into a full scan of `traces`.
         Index(
             "ix_traces_commons",
             "shared_with_commons",
-            postgresql_where=text("shared_with_commons AND NOT quarantined"),
+            postgresql_where=text(
+                "shared_with_commons AND NOT quarantined AND commons_retracted_at IS NULL"
+            ),
         ),
+    )
+
+
+VALID_SUBMISSION_STATUSES = ("pending", "approved", "rejected")
+
+
+class KnowledgeBaseSubmission(Base):
+    """A customer-proposed CommonTrace Knowledge Base entry, pending
+    operator review. This is the only path by which a customer can ever
+    cause new content to enter the Knowledge Base -- and even then, only
+    indirectly. Modeled on Stack Overflow / a wiki edit queue rather than
+    the retired org-to-org `share_trace`: an org writes up a generalized
+    substrate lesson (not a live pointer into its own private trace
+    history), and hub/manage.py review-submission is the one deliberate
+    operator action that can turn an *approved* row into a new `Trace`
+    with `commons_source='seed'`.
+
+    A submission is never itself queryable by commons_overlap/
+    commons_search: it carries no `commons_signature`, lives in a separate
+    table from `Trace` entirely, and a pending or rejected submission is
+    never even read by hub/commons.py's matching code. There is no window
+    in which unreviewed content is live.
+
+    WHY REVIEW, NOT JUST OPT-IN. STRATEGY.md §3's adverse-selection
+    argument holds against ANY credit-for-contributing design where
+    contribution alone earns the credit: an org keeps its genuinely
+    valuable lessons and contributes generic filler to collect the reward.
+    Gating the credit on operator ACCEPTANCE instead changes the incentive
+    from "contribute anything" to "write something worth publishing" --
+    filler gets rejected and earns nothing, so it stops being a viable
+    strategy for extracting query allowance. This does not make the
+    underlying tension disappear (an org still has no reason to hand over
+    its most differentiated knowledge), it only means what accumulates is
+    self-selected for being non-competitive, exactly like a Stack Overflow
+    answer or a Wikipedia edit.
+    """
+
+    __tablename__ = "kb_submissions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    title: Mapped[str] = mapped_column(String(1000), nullable=False)
+    context_text: Mapped[str] = mapped_column(Text, nullable=False)
+    solution_text: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
+    agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Caller-supplied justification for why this is substrate knowledge,
+    # not business logic -- the same judgment hub/manage.py:commons_seed
+    # already requires of the operator, asked of the proposer up front so
+    # an operator working through a review queue has a starting point
+    # instead of raw text alone.
+    rationale: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    rejection_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    # Set only on approval. Not a ForeignKey, for the same reason
+    # Trace.supersedes_trace_id is not one: a later purge-trace on the
+    # resulting entry must not be blocked by this row referencing it.
+    resulting_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    # What review-submission actually granted. Recorded on the submission
+    # itself (not just added to the org's running total) so an audit of
+    # "why does this org have N bonus queries" is answerable from this
+    # table alone, without reconstructing it from AuditLogEntry summaries.
+    credit_awarded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Idempotency, identical in shape and purpose to Trace's -- a client
+    # that timed out waiting for a submit_kb_entry response must be able to
+    # retry with the same key rather than double-submitting.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')", name="ck_kb_submissions_status"
+        ),
+        Index("ix_kb_submissions_org_created_at", "org_id", "created_at"),
+        # The operator review queue lists pending submissions across ALL
+        # orgs -- a partial index keyed on the status Postgres will
+        # actually be asked to filter on keeps that query cheap regardless
+        # of how large the approved/rejected history grows.
+        Index("ix_kb_submissions_pending", "status", postgresql_where=text("status = 'pending'")),
+        UniqueConstraint("org_id", "idempotency_key", name="uq_kb_submissions_org_idempotency_key"),
     )
 
 
@@ -309,6 +530,109 @@ class Vote(Base):
         # One org casts at most one standing vote per trace; a repeat vote
         # updates the existing row instead of accumulating duplicates.
         UniqueConstraint("trace_id", "org_id", name="uq_votes_trace_org"),
+    )
+
+
+class HoldoutObservation(Base):
+    """One occasion on which one trace was ELIGIBLE to be injected, which
+    arm it landed in, and whether the task succeeded.
+
+    This is the only structure in the Hub that supports a CAUSAL claim.
+    `hub/outcomes.py` compares a fleet against its own past, which cannot
+    separate this product's contribution from anything else that changed
+    in the same window. This compares two arms of the same fleet in the
+    same window, differing only by whether the memory was injected -- so
+    "what else changed that quarter?" has an answer, and the answer is
+    "nothing, by construction".
+
+    STRATEGY.md §11.3 names causally-measured memory as the entire moat
+    and §13.2 calls running it "the cheapest falsifier in the document",
+    to be run first. Both were true of `commontrace/experiment.py`, which
+    works against a local file store. Nothing in the Hub could do it --
+    so the falsifier could not be run on the surface where paying
+    customers actually are.
+
+    WHY `eligible` IS NOT A COLUMN
+    ------------------------------
+    commontrace/experiment.py:HoldoutObservation calls `eligible` "the
+    crucial field and the easiest thing to get wrong": the comparison is
+    only valid across occasions where the memory's activation condition
+    matched, and comparing "injected" against "every occasion it never
+    matched" reintroduces exactly the confound the holdout removes.
+
+    Here it cannot be gotten wrong, because a row only exists when the
+    Hub was asked to decide about that (trace, occasion) pair --
+    `hub/crud.py:holdout_assign` is called with traces that already
+    matched. Eligibility is the row's existence rather than a flag on it,
+    which is one fewer thing a client can report incorrectly.
+    """
+
+    __tablename__ = "holdout_observations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Not a ForeignKey, for the same reason Trace.supersedes_trace_id is
+    # not: a trace can be deleted (delete_trace, purge-trace) and a dangling
+    # FK would either block that deletion or silently erase the measurement
+    # it belongs to. An observation about a since-deleted trace is still a
+    # valid data point about the experiment that ran.
+    trace_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
+
+    # The task/attempt this decision was made for. Opaque to the Hub: the
+    # client's own identifier for one unit of work, and the key the outcome
+    # is later reported against.
+    occasion_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # Which arm. False means deliberately withheld -- the control.
+    injected: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    # NULL until the client reports how the occasion went. An observation
+    # with no outcome is excluded from the analysis rather than counted as
+    # a failure: an agent that crashed before reporting is missing data,
+    # and scoring it as a loss would bias the arm that crashed more.
+    succeeded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # Recorded so a salt change is detectable after the fact rather than
+    # silently mixing two randomizations (see Organization.holdout_salt).
+    salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+
+    # WHAT THE TRACE SAID when this arm was decided
+    # (commontrace/revision.py:revision_of_trace). `trace_id` is a stable id
+    # pointing at MUTABLE content -- amend_trace rewrites title, context and
+    # solution in place -- so an observation keyed on the id alone cannot tell
+    # whether every occasion in an arm was treated with the same text. When
+    # they were not, the pooled effect describes a treatment that is an
+    # average of two, one of which no longer exists.
+    #
+    # Same defect `salt` above exists to catch, one level down: there the
+    # randomization could change silently, here the thing being randomized
+    # could.
+    #
+    # Nullable, and never backfilled: for rows written before this column
+    # existed, what the trace said at assignment time is unrecoverable.
+    # `integrity.check_treatment_stability` reports those as unchecked, which
+    # is the honest answer -- stamping today's digest on them would assert
+    # stability on exactly the runs where nobody can know.
+    trace_revision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # One decision per (trace, occasion) per experiment. Without this a
+        # client retrying an assign call would create a second row -- and
+        # since assignment is deterministic both rows land in the same arm,
+        # so the duplicate would not look wrong, it would just silently
+        # double that occasion's weight in the result.
+        UniqueConstraint(
+            "org_id", "salt", "trace_id", "occasion_id", name="uq_holdout_org_salt_trace_occasion"
+        ),
+        # record_occasion_outcome updates every row for one occasion.
+        Index("ix_holdout_org_occasion", "org_id", "occasion_id"),
+        # The analysis reads one org's resolved observations for one salt.
+        Index("ix_holdout_org_salt", "org_id", "salt"),
     )
 
 

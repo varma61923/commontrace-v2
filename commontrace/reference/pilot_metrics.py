@@ -102,7 +102,13 @@ def compute_bucket(traces):
 
 
 def split_baseline(traces):
-    baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline")]
+    # `is True`, not truthiness: trace.schema.json's `baseline` is a bool
+    # field, but a hand-edited trace is free to write `baseline: "false"`
+    # (a non-empty string, which is truthy in Python) and truthiness alone
+    # would misclassify that trace as baseline data -- silently mixing a
+    # CURRENT trace into the pre-CommonTrace baseline bucket it explicitly
+    # says it is not.
+    baseline = [t for t in traces if isinstance(t.get("outcome"), dict) and t["outcome"].get("baseline") is True]
     # Identity, not equality. `t not in baseline` is an O(n) dict comparison
     # per trace -- O(n^2) overall with a full field-by-field compare at each
     # step -- and it is correct today only because load_traces happens to set
@@ -114,10 +120,25 @@ def split_baseline(traces):
     return baseline, current
 
 
-def _pct_delta(before, after):
-    """Relative change from before -> after, as a signed fraction (e.g. -0.53 = -53%)."""
-    if before is None or after is None or before == 0:
+def _pct_delta(before, after, bounded_rate=False):
+    """Relative change from before -> after, as a signed fraction (e.g. -0.53 = -53%).
+
+    A true relative change from a zero baseline is undefined (division by
+    zero) for an unbounded quantity like avg_tokens_used -- "0 -> 500
+    tokens" has no meaningful percentage, so that case stays None/"N/A".
+    `bounded_rate=True` is for the four [0, 1] rate metrics specifically
+    (resolution_rate and friends): a genuine 0% -> positive-% improvement
+    is the maximal positive signal a bounded rate can report, exactly like
+    commontrace/commands/pilot_cmd.py's identical handling for the same
+    metric family -- without this, `commontrace bench --pilot` reported
+    "N/A" for a 0% -> 80% resolution-rate improvement while `commontrace
+    pilot` reported "+100%" for the identical underlying numbers, out of
+    the same trace store.
+    """
+    if before is None or after is None:
         return None
+    if before == 0:
+        return (1.0 if after > 0 else 0.0) if bounded_rate else None
     return (after - before) / before
 
 
@@ -172,7 +193,7 @@ def render_markdown(report):
             b = baseline[key]["value"]
             c = current[key]["value"]
             fmt = fmt_pct if kind == "pct" else fmt_num
-            delta = _pct_delta(b, c)
+            delta = _pct_delta(b, c, bounded_rate=(kind == "pct"))
             out.append(f"| {label} | {fmt(b)} | {fmt(c)} | {fmt_delta(delta)} |")
         out.append("")
         out.append(

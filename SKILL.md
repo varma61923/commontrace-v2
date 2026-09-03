@@ -96,6 +96,46 @@ For tasks whose measurable scope is **< 20 lines modified and < 3 files touched*
 
 Spawn a fresh sub-agent **Alpha** asynchronously. Alpha is **read-only** on memory — it does not touch anything else.
 
+**If a randomized holdout is running, Alpha honours it.** This is the
+only way anyone — including you — can establish that this memory pipeline
+helps rather than merely correlates with success; a lesson that fires on
+the hardest tasks looks good by retrieval count and may be making outcomes
+worse. Retrieval is where the decision belongs, because it is the only
+point that knows which lessons were *eligible*, and eligibility is what
+makes the later comparison causal rather than confounded.
+
+- **Local memory, over MCP:** if the `commontrace-local` server is attached,
+  `retrieve(task, occasion_id="<id>")` withholds and logs in one step and
+  returns the withheld lessons under `withheld`; `capture(occasion_id="<id>",
+  resolved=...)` joins the outcome back. No shell needed.
+- **Local memory, from a shell:** `commontrace query --experiment
+  --occasion-id <id>` does the same, and `commontrace capture --occasion-id
+  <id>` joins the outcome back. Both surfaces share one arm-assignment
+  implementation, so an occasion gets the same arm either way.
+- **Hub memory:** pass `occasion_id` to `search_traces`. If an experiment
+  is running the response carries `holdout.withhold`; **exclude those
+  traces from the brief**. After the task, call
+  `record_occasion_outcome(occasion_id, succeeded)`.
+
+Using a withheld lesson anyway does not raise an error. It silently moves
+that occasion into the treated arm, biasing the measured effect toward
+zero — so this is a rule Alpha has to follow deliberately, not one the
+tooling can enforce afterwards. It is also the one validity failure nothing
+downstream can detect: it leaves no trace in the assignment record.
+
+**Report an outcome for every occasion you retrieved against — including
+the ones that were abandoned or escalated.** Skipping the ones that went
+badly is not a small omission; it is the failure that biases the result
+most, because the withheld arm is the one working without its memory and
+therefore the one that runs long and gets abandoned. `commontrace
+experiment` now audits for exactly this and refuses to report an effect
+when it finds it, so an incomplete write-up does not produce a wrong
+number — it produces no number.
+
+Read the result with `commontrace prove outcomes` (Hub) or `commontrace
+experiment` (local); a lesson coming back as `HURTS` is the point, not a
+failure — provided the validity section above it says the run is sound.
+
 **Alpha brief (self-contained template, copy verbatim)**:
 
 ```
@@ -156,6 +196,10 @@ Format note: `cosine: 0.XX` is the score returned by `query.py` at step 0 (put `
 
 ### Confidence
 HIGH | MEDIUM | LOW | NONE
+
+### Withheld by the holdout (if an experiment is running)
+[Slugs/trace ids the holdout told you NOT to use on this occasion, and therefore
+absent from "Applicable lessons" above. Empty when no experiment is running.]
 
 ### Lessons consulted (for traceability)
 [Complete list of slugs consulted, even those not selected — useful for retrieval audit. Mention importance in parentheses, cosine if available, and flag "needs calibration" if importance is absent.]

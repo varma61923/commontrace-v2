@@ -61,6 +61,18 @@ services:
       # non-loopback bind; put a TLS-terminating reverse proxy in front for
       # anything beyond local evaluation, per hub/DEPLOYMENT.md.
       HUB_ALLOW_INSECURE_HTTP: "true"
+      # Overridable via the shell environment `docker compose up` is run
+      # from, defaulting to exactly the values hub/config.py itself ships
+      # with -- a plain `docker compose up` with nothing set behaves
+      # identically to before these lines existed. Exists so CI's
+      # docker-compose job can widen the auth-attempt/read-rate-limit
+      # headroom for its own smoke check's traffic (see .github/workflows/
+      # ci.yml) without changing what this file documents a real deployment
+      # gets by default.
+      HUB_AUTH_ATTEMPTS_PER_MINUTE: ${HUB_AUTH_ATTEMPTS_PER_MINUTE:-60}
+      HUB_AUTH_ATTEMPTS_BURST: ${HUB_AUTH_ATTEMPTS_BURST:-20}
+      HUB_READ_RATE_LIMIT_PER_MINUTE: ${HUB_READ_RATE_LIMIT_PER_MINUTE:-300}
+      HUB_READ_RATE_LIMIT_BURST: ${HUB_READ_RATE_LIMIT_BURST:-60}
     ports:
       # Loopback-only: nothing outside this host can reach the Hub directly.
       # A reverse proxy on the same host (or same private network) is the

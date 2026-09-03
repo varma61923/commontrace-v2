@@ -429,8 +429,20 @@ def load_episodes(n=None):
     file that failed to parse (non-dict frontmatter, or empty) -- previously
     dropped by a bare `if fm:` with no warning and no count anywhere, so a
     quality-gated CI run (`bench --strict`) silently shrank its metric
-    denominators without anyone seeing the report change shape."""
-    paths = sorted(glob.glob(os.path.join(BASE_DIR, "episodes", "2*.md")))
+    denominators without anyone seeing the report change shape.
+
+    Matches every `*.md` under episodes/ except the two known non-episode
+    files, not just ones beginning with a year digit ("2*.md"): the
+    date-prefixed name (`f"{date}_{slug}_{id}.md"`) is what capture/trace
+    tooling writes, but an episode file is explicitly meant to be
+    hand-editable, and a "2*.md"-only glob made a custom-named or
+    hand-renamed episode invisible to this function entirely -- not even
+    reaching the skipped_paths accounting above, which exists specifically
+    so a shrinking denominator is never silent."""
+    paths = sorted(
+        p for p in glob.glob(os.path.join(BASE_DIR, "episodes", "*.md"))
+        if os.path.basename(p) not in ("episode_template.md", "README.md")
+    )
     if n is not None and n > 0:
         paths = paths[-n:]
     episodes = []
@@ -525,7 +537,13 @@ def compute_transfer_gap(episodes, lessons):
     def resolve_project(slug):
         if slug in episode_project:
             return episode_project[slug]
-        path = os.path.join(BASE_DIR, "episodes", f"{slug}.md")
+        # [BUG-BENCH-03]: source_episodes entries have historically been
+        # written both ways (a bare slug, or the ".md"-suffixed filename) --
+        # `f"{slug}.md"` on an already-suffixed value produced
+        # "name.md.md", which never exists on disk, so a well-sourced
+        # lesson still misresolved as untraceable.
+        clean_slug = slug[:-3] if slug.endswith(".md") else slug
+        path = os.path.join(BASE_DIR, "episodes", f"{clean_slug}.md")
         if os.path.exists(path):
             with open(path, encoding="utf-8-sig") as fh:
                 fm = parse_frontmatter(fh.read())
@@ -541,7 +559,17 @@ def compute_transfer_gap(episodes, lessons):
             lesson = lessons.get(hit_slug)
             if not lesson:
                 continue
-            src_episodes = lesson.get("source_episodes") or []
+            # `source_traces` first: it is the CURRENT field name
+            # (lesson.schema.json), and templates.lesson_frontmatter --
+            # the only place any lesson's provenance is actually written,
+            # for every agent_type -- always populates it and always
+            # leaves the deprecated `source_episodes` alias at `[]`.
+            # Checking only `source_episodes` (the old name) meant every
+            # lesson written by the current `lesson new`/`distill`
+            # tooling read back as having NO source at all, so this
+            # metric silently reported ~100% untraceable regardless of
+            # how well-sourced the lessons actually were.
+            src_episodes = lesson.get("source_traces") or lesson.get("source_episodes") or []
             if not src_episodes:
                 untraceable += 1
                 continue
@@ -613,10 +641,20 @@ def compute_extras(episodes, lessons):
         i = ep.get("importance")
         imp_episodes[i] = imp_episodes.get(i, 0) + 1
 
-    # Coverage by domain
+    # Coverage by domain. `or "?"`, not `.get("domain", "?")`: the default
+    # only applies when the KEY is absent, so a hand-edited `domain:` (key
+    # present, value None) yielded a None key in this dict. `str(d)`, not
+    # the raw value: this file's own measure_performance.py-level parser
+    # (unlike commontrace/frontmatter.py's _StrictBoolLoader) applies plain
+    # YAML 1.1 rules, so `domain: NO`/`domain: on` parse as bool and
+    # `domain: 2026` parses as int -- any of which, mixed with the more
+    # common string domains, made render_markdown's
+    # `sorted(extras["domain_coverage"].keys())` raise TypeError comparing
+    # incompatible types, taking down `commontrace bench` for the whole
+    # store over one malformed lesson.
     domain_coverage = {}
     for lesson in lessons.values():
-        d = lesson.get("domain", "?")
+        d = str(lesson.get("domain") or "?")
         domain_coverage[d] = domain_coverage.get(d, 0) + 1
 
     return {
@@ -673,6 +711,40 @@ def compute_alerts(report, thresholds):
                 f"Unimodal importance distribution: {max_count}/{total_imp} lessons "
                 f"({ratio:.1%}) at importance {max_level!r} — threshold {unimodal_threshold:.0%} "
                 f"— rubric may be miscalibrated"
+            )
+
+    # The three thresholds that used to be parsed and ignored. Each fires
+    # only when the operator actually passed it, so an existing run's alert
+    # list is unchanged.
+    lexical_threshold = thresholds.get("lexical")
+    lexical = report.get("lexical_duplicates")
+    if lexical_threshold is not None and lexical and lexical["pairs"]:
+        worst = lexical["pairs"][0]
+        alerts.append(
+            f"{len(lexical['pairs'])} near-duplicate lesson pair(s) at lexical similarity "
+            f">= {lexical_threshold:.0%} (worst: {worst['a']} / {worst['b']} at "
+            f"{worst['score']:.0%}) — duplicates split retrieval between them"
+        )
+
+    freshness_threshold = thresholds.get("freshness")
+    freshness = report.get("freshness", {})
+    if freshness_threshold is not None and freshness.get("value") is not None:
+        if freshness["value"] < freshness_threshold:
+            alerts.append(
+                f"freshness {freshness['value']:.1%} < threshold {freshness_threshold:.1%} "
+                f"— only {freshness['value']:.1%} of lessons were hit in the last "
+                f"{freshness.get('window_days', FRESHNESS_WINDOW_DAYS)} days; the corpus "
+                f"may have stopped tracking the work"
+            )
+
+    composite_threshold = thresholds.get("composite")
+    composite = report.get("composite", {})
+    if composite_threshold is not None and composite.get("value") is not None:
+        if composite["value"] < composite_threshold:
+            components = ", ".join(f"{k}={v:.0%}" for k, v in composite.get("components", {}).items())
+            alerts.append(
+                f"composite health {composite['value']:.1%} < threshold "
+                f"{composite_threshold:.1%} ({components or 'no components'})"
             )
     return alerts
 
@@ -778,16 +850,31 @@ def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOL
         return {"available": False, "message": f"Failed to load {path}: {exc}"}
 
     n = len(slugs)
-    if n < 2 or embeddings.shape[0] != n:
+    # embeddings.ndim != 2, not just the row-count check: a 1D array (e.g.
+    # `n` embedding rows collapsed by a prior bug, or a hand-crafted
+    # index.npz) can still satisfy `embeddings.shape[0] == n` for n == its
+    # own length, and `embeddings @ embeddings.T` on a 1D array is a scalar
+    # dot product, not a similarity matrix -- `sim[i, j]` below then raises
+    # IndexError ("too many indices for array: array is 0-dimensional")
+    # instead of the clean "no data" this function's contract promises.
+    if n < 2 or embeddings.ndim != 2 or embeddings.shape[0] != n:
         return {"available": True, "pairs": [], "n_lessons": n, "threshold": threshold}
 
     sim = embeddings @ embeddings.T
-    pairs = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            score = float(sim[i, j])
-            if score > threshold:
-                pairs.append((slugs[i], slugs[j], score))
+    # Vectorized candidate extraction, not a pure-Python double loop: the
+    # matmul above is already one C/BLAS call, but the O(n^2)/2 pairwise
+    # scan that followed it was pure Python bytecode -- for a 10k-lesson
+    # corpus that is ~50M loop iterations, multiple seconds of wall time
+    # for what triu_indices + boolean masking does in a handful of
+    # vectorized numpy calls.
+    triu_i, triu_j = np.triu_indices(n, k=1)
+    scores = sim[triu_i, triu_j]
+    mask = scores > threshold
+    idx_i, idx_j, matched_scores = triu_i[mask], triu_j[mask], scores[mask]
+    pairs = [
+        (slugs[i], slugs[j], float(s))
+        for i, j, s in zip(idx_i.tolist(), idx_j.tolist(), matched_scores.tolist())
+    ]
     pairs.sort(key=lambda t: t[2], reverse=True)
     return {"available": True, "pairs": pairs, "n_lessons": n, "threshold": threshold}
 
@@ -805,6 +892,142 @@ _TREND_METRIC_PATHS = [
     ("implicit_retrieval_permissive", ("implicit_retrieval", "permissive")),
     ("transfer_gap", ("transfer_gap", "value")),
 ]
+
+
+# --- The three thresholds that used to be accepted and ignored ----------
+#
+# `--threshold-lexical`, `--threshold-freshness` and `--threshold-composite`
+# were parsed here, forwarded by `commontrace bench`, and read by nothing:
+# a fleet could set a quality gate in CI, watch it never fire, and conclude
+# quality was fine. bench_cmd.py printed a warning saying so, with the note
+# "implement or delete them deliberately; do not leave them quiet". This is
+# the implement half.
+#
+# All three are opt-in (default None): passing none of them leaves this
+# report byte-for-byte what it was, so nothing changes for an existing run.
+
+# How recently a lesson must have been hit to count as "fresh". Ninety days
+# is a quarter -- long enough that a genuinely seasonal lesson is not
+# reported stale, short enough that a corpus nobody retrieves from any more
+# shows up within one review cycle.
+FRESHNESS_WINDOW_DAYS = 90
+
+# The metrics averaged into the composite score, each already computed
+# above and each already normalized to [0, 1] where higher is better.
+_COMPOSITE_COMPONENTS = ("lesson_quality", "implicit_retrieval", "lesson_coverage", "freshness")
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Words too common in this corpus to signal that two lessons are the same
+# lesson. Without them, every pair of lessons shares "the/a/lesson/when" and
+# the similarity floor rises for everything equally.
+_LEXICAL_STOPWORDS = frozenset("""
+a an and are as at be but by do does for from has have how if in into is it
+its not of on or that the their then there these this to was were what when
+where which while with you your
+""".split())
+
+
+def _lexical_tokens(text):
+    return {t for t in _TOKEN_RE.findall(str(text or "").lower())
+            if len(t) > 2 and t not in _LEXICAL_STOPWORDS}
+
+
+def compute_lexical_duplicates(lessons, threshold):
+    """Lesson pairs whose wording overlaps above `threshold` (Jaccard).
+
+    The no-dependency sibling of compute_semantic_duplicates: that one needs
+    the optional attention extra and reports `available: False` without it,
+    which is most installs. Near-duplicate lessons are worth finding either
+    way -- two lessons saying the same thing split the retrieval signal
+    between them and make the corpus look larger than the knowledge in it.
+
+    Recommendation only: never merges or deletes anything.
+    """
+    items = []
+    for name, fm in sorted(lessons.items()):
+        tokens = _lexical_tokens(fm.get("description")) | _lexical_tokens(fm.get("applies_when"))
+        if tokens:
+            items.append((name, tokens))
+
+    pairs = []
+    for i in range(len(items)):
+        name_a, tokens_a = items[i]
+        for j in range(i + 1, len(items)):
+            name_b, tokens_b = items[j]
+            union = tokens_a | tokens_b
+            if not union:
+                continue
+            score = len(tokens_a & tokens_b) / len(union)
+            if score >= threshold:
+                pairs.append({"a": name_a, "b": name_b, "score": round(score, 3)})
+    pairs.sort(key=lambda pair: (-pair["score"], pair["a"], pair["b"]))
+    return {"pairs": pairs, "n_lessons": len(items), "threshold": threshold}
+
+
+def _parse_last_hit(value):
+    """`last_hit` as a date, or None for "NEVER"/absent/unparseable.
+
+    Tolerant on purpose: this feeds a warning threshold, and a hand-edited
+    date in an unexpected shape should not crash the whole benchmark.
+    """
+    text = str(value or "").strip()
+    if not text or text.upper() == "NEVER":
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(text[:len("2026-01-01T00:00:00")], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def compute_freshness(lessons, now=None):
+    """(fraction of lessons hit within FRESHNESS_WINDOW_DAYS, n).
+
+    Distinct from the never-hit ratio, which counts lessons that have NEVER
+    been retrieved. A corpus can have every lesson hit at some point and
+    still be entirely stale -- that is a fleet whose memory stopped tracking
+    the work, and it is invisible to every other metric here.
+    """
+    if not lessons:
+        return None, 0
+    now = now or datetime.datetime.now()
+    cutoff = now - datetime.timedelta(days=FRESHNESS_WINDOW_DAYS)
+    fresh = 0
+    for fm in lessons.values():
+        hit = _parse_last_hit(fm.get("last_hit"))
+        if hit is not None and hit >= cutoff:
+            fresh += 1
+    return fresh / len(lessons), len(lessons)
+
+
+def compute_composite(report):
+    """One 0-1 health score, or None if nothing is measurable yet.
+
+    The mean of whichever components are available, so a store that has not
+    yet produced (say) retrieval data scores on what it does have rather
+    than reporting nothing. Reported alongside its own component list, since
+    a single number whose inputs are unstated is exactly the kind of metric
+    that gets quoted and then cannot be defended.
+    """
+    parts = {}
+    lq = report["lesson_quality"]["value"]
+    if lq is not None:
+        parts["lesson_quality"] = min(1.0, max(0.0, lq))
+    ir = report["implicit_retrieval"]["strict"]
+    if ir is not None:
+        parts["implicit_retrieval"] = min(1.0, max(0.0, ir))
+    n_lessons = report["n_lessons"]
+    if n_lessons:
+        never = len(report["extras"]["never_hit"])
+        parts["lesson_coverage"] = max(0.0, 1.0 - (never / n_lessons))
+    freshness = report.get("freshness", {}).get("value")
+    if freshness is not None:
+        parts["freshness"] = min(1.0, max(0.0, freshness))
+    if not parts:
+        return {"value": None, "components": {}}
+    ordered = {k: round(parts[k], 4) for k in _COMPOSITE_COMPONENTS if k in parts}
+    return {"value": round(sum(parts.values()) / len(parts), 4), "components": ordered}
 
 
 def _extract_metric(report, path):
@@ -1101,10 +1324,22 @@ def render_markdown(r, alerts=None):
             + "."
         )
         out.append("")
-        out.append(f"- latency p50 : {oc['latency_p50_ms']:.1f} ms")
-        out.append(f"- latency p95 : {oc['latency_p95_ms']:.1f} ms")
-        out.append(f"- tokens p50 : {oc['tokens_p50']:.0f}")
-        out.append(f"- tokens p95 : {oc['tokens_p95']:.0f}")
+        # compute_operational_cost independently tracks latency and token
+        # records (a telemetry file can have one without the other -- e.g.
+        # every line has latency_ms but none happen to carry
+        # estimated_tokens), so `available: True` does not guarantee EVERY
+        # one of these four percentiles is a number: any of them can be
+        # None. A raw f"{...:.1f}" on None raised TypeError (no __format__
+        # for NoneType), crashing `commontrace bench` on a telemetry file
+        # that was perfectly valid, just partial.
+        lat_p50 = f"{oc['latency_p50_ms']:.1f} ms" if oc.get("latency_p50_ms") is not None else "N/A"
+        lat_p95 = f"{oc['latency_p95_ms']:.1f} ms" if oc.get("latency_p95_ms") is not None else "N/A"
+        tok_p50 = f"{oc['tokens_p50']:.0f}" if oc.get("tokens_p50") is not None else "N/A"
+        tok_p95 = f"{oc['tokens_p95']:.0f}" if oc.get("tokens_p95") is not None else "N/A"
+        out.append(f"- latency p50 : {lat_p50}")
+        out.append(f"- latency p95 : {lat_p95}")
+        out.append(f"- tokens p50 : {tok_p50}")
+        out.append(f"- tokens p95 : {tok_p95}")
     out.append("")
 
     out.append("## Semantic near-duplicates (merge candidates)")
@@ -1391,17 +1626,19 @@ def main():
     parser.add_argument(
         "--threshold-lexical", type=float, default=None,
         metavar="FLOAT",
-        help="Lexical similarity threshold",
+        help="Warn when two lessons' wording overlaps at or above this Jaccard "
+             "similarity (0-1). Needs no optional dependencies, unlike --threshold-semantic.",
     )
     parser.add_argument(
         "--threshold-freshness", type=float, default=None,
         metavar="FLOAT",
-        help="Freshness threshold",
+        help=f"Warn when the fraction of lessons hit in the last {FRESHNESS_WINDOW_DAYS} days falls below this (0-1).",
     )
     parser.add_argument(
         "--threshold-composite", type=float, default=None,
         metavar="FLOAT",
-        help="Composite threshold",
+        help="Warn when the combined health score (lesson quality, retrieval, "
+             "coverage, freshness) falls below this (0-1).",
     )
     args = parser.parse_args()
     if args.json and args.html:
@@ -1438,6 +1675,15 @@ def main():
         else SEMANTIC_DUP_THRESHOLD
     )
     semantic_duplicates = compute_semantic_duplicates(threshold=dup_threshold)
+    freshness_value, freshness_n = compute_freshness(lessons, now=now)
+    # Opt-in: computed only when the operator asked for it, so a run that
+    # passes none of the three new flags produces exactly the report it did
+    # before they were implemented.
+    lexical_duplicates = (
+        compute_lexical_duplicates(lessons, args.threshold_lexical)
+        if args.threshold_lexical is not None
+        else None
+    )
 
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -1451,6 +1697,7 @@ def main():
         "extras": extras,
         "operational_cost": operational_cost,
         "semantic_duplicates": semantic_duplicates,
+        "freshness": {"value": freshness_value, "n": freshness_n, "window_days": FRESHNESS_WINDOW_DAYS},
         # Surfaced rather than silently dropped: a quality-gated CI run
         # must be able to tell "no episodes matched" from "some episodes
         # existed but failed to parse and were excluded from every metric
@@ -1461,11 +1708,20 @@ def main():
         },
     }
 
+    if lexical_duplicates is not None:
+        report["lexical_duplicates"] = lexical_duplicates
+    report["composite"] = compute_composite(report)
+
     thresholds = {
         "quality": args.threshold_quality,
         "retrieval": args.threshold_retrieval,
         "never_hit": args.threshold_never_hit,
         "unimodal": args.threshold_unimodal,
+        # None unless explicitly passed -- compute_alerts skips each of these
+        # when it is None, so an unset flag adds no alert.
+        "lexical": args.threshold_lexical,
+        "freshness": args.threshold_freshness,
+        "composite": args.threshold_composite,
     }
     alerts = compute_alerts(report, thresholds)
 

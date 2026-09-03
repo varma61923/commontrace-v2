@@ -9,6 +9,7 @@ import sys
 import uuid
 
 from commontrace import frontmatter, paths, templates, trace_io, validate
+from commontrace.frontmatter import locked
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -23,6 +24,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--agent-type", choices=paths.AGENT_TYPES, default=None,
         help="Defaults to the agent_type this store was initialized with.",
+    )
+    p.add_argument(
+        "--agent-id", default="",
+        help="WHICH agent produced this trace, as opposed to --agent-type (what KIND it is). "
+             "A fleet of 25 support agents shares one --agent-type, so only this distinguishes "
+             "them -- it is what makes 'how many agents does this fleet run' answerable, and "
+             "what a Hub plan's agent limit is enforced against. Optional; omitting it "
+             "attributes the trace to a single 'unattributed' agent for the org.",
     )
     p.add_argument("--profile", default="", help="Optional profile name (e.g. code-review)")
     p.add_argument("--dest", default=None, help="Store root (default: auto-detect / $COMMONTRACE_ROOT)")
@@ -172,57 +181,99 @@ def run(args: argparse.Namespace) -> int:
     # _outcomes_by_occasion's dict-keyed-on-id lookup depends on not
     # happening.
     title, context, solution = args.title, args.context, args.solution
-    if occasion_id:
-        existing_path = _find_trace_by_occasion(tdir, occasion_id)
+    agent_id = args.agent_id
+    outcome = _outcome_from_args(args)
+    created_at = None
+
+    # Serializes the whole find-existing -> read -> merge -> write sequence
+    # below against any OTHER process capturing under the SAME occasion id
+    # at the same time -- e.g. two agents in a fleet both attaching an
+    # outcome to the same ticket within moments of each other. Locked on a
+    # path derived from the occasion id itself, not `out_path`: the
+    # existing-file scan just below can find a DIFFERENT filename than the
+    # one already computed (a prior capture on an earlier date, or with a
+    # different title slug), so locking only after that scan would leave
+    # the scan itself -- and the window between it and the eventual write
+    # -- unprotected. Without this, two concurrent re-captures under the
+    # same occasion id (one marking --resolved, one marking --escalated)
+    # each read the SAME prior outcome dict, merge in their own one field,
+    # and whichever write() lands last wins outright: the other's outcome
+    # field is silently lost, not merged, with no error and no trace of the
+    # loss. A brand-new occasion id has no file to race over yet, but
+    # locking here still guarantees that if two processes race a FIRST
+    # capture under the same fresh occasion id, the second to acquire the
+    # lock re-scans and correctly finds (and merges into) the first one's
+    # file instead of unconditionally overwriting it.
+    lock_target = os.path.join(tdir, f".occasion-{_id_suffix(trace_id)}") if occasion_id else out_path
+    with locked(lock_target):
+        existing_path = _find_trace_by_occasion(tdir, occasion_id) if occasion_id else None
         if existing_path is not None:
             out_path = existing_path
             print(f"[commontrace] note: updating the existing trace for occasion "
                   f"{occasion_id!r}.", file=sys.stderr)
             if not args.overwrite:
-                # Preserve the historical narrative by default: re-capturing
-                # under the same occasion-id exists to attach an outcome once
-                # a task concludes (--resolved/--escalated/etc, possibly
-                # minutes or hours after the occasion was first logged), not
-                # to edit history. --title/--context/--solution are still
-                # required on every call, so without this the second call's
-                # placeholder or abbreviated text silently replaced the
-                # original trace body wholesale -- the only record of what
-                # the task actually was.
+                # Preserve the historical narrative AND every previously
+                # recorded outcome/tag/identity field by default:
+                # re-capturing under the same occasion-id exists to attach
+                # an outcome once a task concludes (--resolved/--escalated/
+                # etc, possibly minutes or hours after the occasion was
+                # first logged), not to edit history. --title/--context/
+                # --solution are still required on every call, so without
+                # this the second call's placeholder or abbreviated text
+                # silently replaced the original trace body wholesale.
+                # Likewise outcome/tags/agent_id/created_at were being
+                # unconditionally overwritten with this call's (often
+                # empty/default) values instead of merged -- so re-capturing
+                # a trace that already had `--tokens-used 4200 --tags
+                # linux,gcc` with only `--resolved` silently erased
+                # tokens_used, the tags, and the original creation
+                # timestamp. --overwrite exists precisely for the caller
+                # who DOES want a clean reset.
                 existing_instance, _existing_body = trace_io.read(existing_path)
                 title = existing_instance.get("title") or title
                 context = existing_instance.get("context_text") or context
                 solution = existing_instance.get("solution_text") or solution
+                if not args.tags:
+                    tags = existing_instance.get("tags") or tags
+                if not agent_id:
+                    agent_id = existing_instance.get("agent_id") or agent_id
+                outcome = {**(existing_instance.get("outcome") or {}), **outcome}
+                created_at = existing_instance.get("created_at") or None
 
-    outcome = _outcome_from_args(args)
-    agent_type = args.agent_type or paths.store_agent_type(root)
-    fm = templates.trace_frontmatter(trace_id, title, agent_type, tags, args.profile, outcome)
-    body = templates.trace_body(context, solution)
-
-    # Validate BEFORE writing, so the store is invalid-by-construction
-    # impossible rather than invalid-until-someone-audits-it. Without this,
-    # `--tokens-used -5` lands on disk, `trace validate` only flags it on a
-    # later separate run, and pilot_metrics averages the negative number in
-    # the meantime -- a wrong cost figure in a customer-facing report.
-    instance = dict(fm)
-    instance["context_text"] = context
-    instance["solution_text"] = solution
-    errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
-    if errors:
-        print(
-            "[commontrace] refusing to write an invalid trace:\n"
-            + "\n".join(f"  - {e}" for e in errors),
-            file=sys.stderr,
+        agent_type = args.agent_type or paths.store_agent_type(root)
+        fm = templates.trace_frontmatter(
+            trace_id, title, agent_type, tags, args.profile, outcome, agent_id=agent_id
         )
-        return 1
+        if created_at:
+            fm["created_at"] = created_at
+        body = templates.trace_body(context, solution)
 
-    # frontmatter.write (NamedTemporaryFile + os.replace), not a raw
-    # open("w"): a direct write leaves the file readable in a torn state for
-    # as long as it takes to flush, so anything scanning memory/traces/
-    # concurrently -- `lesson distill`, `bench`, the attention indexer --
-    # can read a truncated or zero-byte file and fail to parse it. The
-    # rename is atomic, so a reader sees either the old file or the whole
-    # new one, never a partial one.
-    frontmatter.write(out_path, fm, body)
+        # Validate BEFORE writing, so the store is invalid-by-construction
+        # impossible rather than invalid-until-someone-audits-it. Without
+        # this, `--tokens-used -5` lands on disk, `trace validate` only
+        # flags it on a later separate run, and pilot_metrics averages the
+        # negative number in the meantime -- a wrong cost figure in a
+        # customer-facing report.
+        instance = dict(fm)
+        instance["context_text"] = context
+        instance["solution_text"] = solution
+        errors = validate.validate(instance, validate.load_schema("trace.schema.json"))
+        if errors:
+            print(
+                "[commontrace] refusing to write an invalid trace:\n"
+                + "\n".join(f"  - {e}" for e in errors),
+                file=sys.stderr,
+            )
+            return 1
+
+        # frontmatter.write (NamedTemporaryFile + os.replace), not a raw
+        # open("w"): a direct write leaves the file readable in a torn state
+        # for as long as it takes to flush, so anything scanning
+        # memory/traces/ concurrently -- `lesson distill`, `bench`, the
+        # attention indexer -- can read a truncated or zero-byte file and
+        # fail to parse it. The rename is atomic, so a reader sees either
+        # the old file or the whole new one, never a partial one.
+        frontmatter.write(out_path, fm, body)
 
     print(f"[commontrace] captured trace {trace_id} -> {out_path}", file=sys.stderr)
     print(out_path)

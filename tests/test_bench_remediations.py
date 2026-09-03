@@ -300,6 +300,45 @@ class TestBenchBomHandling:
 
 
 # ==============================================================================
+# [BUG-BENCH-01] Rigid "2*.md" Episode Pattern
+# ==============================================================================
+class TestLoadEpisodesAcceptsNonYearPrefixedNames:
+    """[BUG-BENCH-01]: load_episodes() globbed "episodes/2*.md" -- matching
+    only the date-prefixed name capture/trace tooling writes. An episode
+    file is explicitly meant to be hand-editable/hand-renamable, and a
+    custom-named one (a migrated export, a manually curated example) was
+    invisible to glob() entirely -- not even reaching skipped_paths, which
+    exists specifically so a shrinking metric denominator is never silent."""
+
+    def test_a_non_year_prefixed_episode_is_loaded(self, tmp_path, monkeypatch):
+        ep_dir = tmp_path / "memory" / "episodes"
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        (ep_dir / "module-a-pipeline.md").write_text(
+            "---\nname: module_a\nverdict: CONFORM\nimportance: 3\n---\nbody\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mp, "BASE_DIR", str(tmp_path / "memory"))
+        episodes, skipped = mp.load_episodes()
+        assert [e["name"] for e in episodes] == ["module_a"]
+        assert skipped == []
+
+    def test_episode_template_and_readme_are_still_excluded(self, tmp_path, monkeypatch):
+        ep_dir = tmp_path / "memory" / "episodes"
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        (ep_dir / "2026-01-01_real.md").write_text(
+            "---\nname: real_one\nverdict: CONFORM\n---\nbody\n", encoding="utf-8"
+        )
+        (ep_dir / "episode_template.md").write_text(
+            "---\nname: TEMPLATE\n---\nbody\n", encoding="utf-8"
+        )
+        (ep_dir / "README.md").write_text("# episodes\n", encoding="utf-8")
+        monkeypatch.setattr(mp, "BASE_DIR", str(tmp_path / "memory"))
+        episodes, skipped = mp.load_episodes()
+        assert [e["name"] for e in episodes] == ["real_one"]
+        assert skipped == []
+
+
+# ==============================================================================
 # Doctor Command Directory Listing Error Resilience
 # ==============================================================================
 class TestDoctorResilience:

@@ -39,6 +39,30 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _env_int_in_range(name: str, default: int, lo: int, hi: int) -> int:
+    """`_env_int`, plus the range the value actually has to be in.
+
+    Without this, every numeric setting accepted anything an int could
+    parse and failed later, somewhere else, in a way that named neither the
+    variable nor the reason. Concretely, all of these started a process
+    that then misbehaved rather than refusing to start:
+
+      HUB_PORT=99999            -> OSError deep in uvicorn's bind
+      HUB_DB_POOL_SIZE=-1       -> a SQLAlchemy pool error on first query
+      HUB_MAX_TITLE_CHARS=-5    -> every contribute_trace rejected, no
+                                   message anywhere saying why
+      HUB_MAX_REQUEST_BODY_BYTES=0 -> every request rejected as too large
+
+    A deployment misconfiguration should fail at startup, naming the
+    variable and the bound -- the same policy HUB_DATABASE_URL already gets
+    for being absent.
+    """
+    value = _env_int(name, default)
+    if not lo <= value <= hi:
+        raise ValueError(f"{name} must be between {lo} and {hi}, got {value}")
+    return value
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -74,9 +98,38 @@ class HubConfig:
     max_tags: int = 20
     max_tag_chars: int = 64
     max_trace_bytes: int = 65_536  # serialized JSON size ceiling for one trace
-    rate_limit_per_minute: int = 20  # contribute_trace/amend_trace calls, per org
-    rate_limit_burst: int = 5
+    # Per-org write limit (contribute_trace/amend_trace/submit_kb_entry).
+    #
+    # Raised from 20/min burst 5. That default could not serve this
+    # product's own documented onboarding: `commontrace import` a fleet's
+    # existing history, then `commontrace sync --push-traces`. At 20/min a
+    # 46-trace store took over two minutes and a 1,000-trace import -- the
+    # size the import path exists for -- took the better part of an hour,
+    # while the client (before the pacing fix in
+    # commontrace/hub_client.py) simply failed most of the files instead.
+    #
+    # What this limiter is actually for, per this module's own rationale,
+    # is protecting the shared Postgres every org writes into and keeping
+    # an org's search useful to itself. Two writes per second per org
+    # serves both: it is still far below what one Postgres handles, still
+    # bounds a runaway agent to a rate an operator will notice long before
+    # it matters, and it lets the documented first-run finish in a minute
+    # rather than an hour. The burst is what a bulk push actually consumes,
+    # so it moves with it.
+    rate_limit_per_minute: int = 120  # contribute_trace/amend_trace calls, per org
+    rate_limit_burst: int = 30
     suspect_url_threshold: int = 5  # >N URLs in one submission -> quarantine
+
+    # Which RateLimiter implementation hub/abuse.py's make_*_rate_limiter()
+    # factories construct. "memory" (default) is the original in-process
+    # token bucket -- exact current behavior, so an existing deployment that
+    # never sets this env var is unaffected. "postgres" shares bucket state
+    # in a table in this same database instead, so a horizontally-scaled
+    # deployment (multiple replicas) enforces one shared limit instead of
+    # N replicas each granting their own independent allowance (hub/
+    # DEPLOYMENT.md section 6). Validated in __post_init__ below rather than
+    # left to fail confusingly wherever a factory happens to read it.
+    rate_limit_backend: str = "memory"
 
     # --- Rate limiting: every authenticated request, and auth itself ---
     #
@@ -109,8 +162,82 @@ class HubConfig:
     readyz_rate_limit_per_minute: int = 120
     readyz_rate_limit_burst: int = 30
 
+    # Every client-address-keyed rate limiter above (auth_attempts,
+    # read_rate_limit, readyz) is keyed off request.client.host by default --
+    # the peer of the actual TCP connection reaching this process. Behind
+    # ANY reverse proxy or load balancer, that is the proxy's own address for
+    # every request, which silently collapses every one of those limiters
+    # into one shared bucket across every real client (a self-inflicted DoS:
+    # one noisy client can exhaust it for everyone) -- including the Hub's
+    # own documented "loopback + sidecar TLS-terminating proxy on the same
+    # host" deployment shape (validate_transport_safety's docstring above).
+    #
+    # 0 (default) trusts nothing but request.client.host, identical to
+    # today's behavior -- safe for a deployment with no proxy in front, and
+    # the only safe default: X-Forwarded-For is an ordinary client-settable
+    # HTTP header, and blindly trusting it (e.g. always taking its first,
+    # left-most entry, as a client-authored chain could) lets any client
+    # mint a fresh rate-limit bucket per request just by sending a different
+    # spoofed IP -- turning a DoS defense into a bypass, which is worse than
+    # the collapsed-bucket problem it would be fixing.
+    #
+    # Set to the exact number of trusted reverse proxies in front of this
+    # Hub (1 for a single TLS-terminating proxy or sidecar) to resolve the
+    # client address as the value `trusted_proxy_hops` positions from the
+    # RIGHT of X-Forwarded-For instead -- the one position in the chain a
+    # trusted proxy, not an upstream client, is responsible for appending.
+    # An operator must opt in explicitly because this module cannot verify
+    # its own network topology; setting it when no such proxy exists lets a
+    # client forge its own rate-limit identity via a spoofed header.
+    trusted_proxy_hops: int = 0
+
     # --- Auth ---
     api_key_header: str = "Authorization"  # expects "Bearer <key>"
+
+    # --- Operator console (hub/admin.py) ---
+    # Empty (the default) means the /admin routes are NEVER REGISTERED --
+    # an unauthenticated prober gets a 404 from the router, not a 401 from a
+    # handler, which is the same "absent, not merely refused" property
+    # commons_enabled gives the Knowledge Base tools. A deployment that has
+    # not opted in has no console to attack.
+    #
+    # When set, this is the password half of an HTTP Basic credential (the
+    # username is ignored) compared in constant time. It is a SHARED
+    # OPERATOR SECRET, not a per-user login: treat it like the database URL,
+    # keep it in a secret store, and rotate it by changing this value and
+    # restarting. The console is read-only by design (see hub/admin.py), so
+    # the worst a leaked token buys is visibility -- which is bad enough that
+    # it belongs behind the same TLS and network controls as everything else.
+    admin_token: str = ""
+
+    # The org that Knowledge Base entries are published UNDER when an
+    # operator accepts a community submission. Never the submitting org --
+    # the same ownership rule commons_seed follows (hub/crud.py:
+    # review_kb_submission), so an accepted proposal becomes operator-owned
+    # substrate knowledge rather than one customer's content served to
+    # another.
+    #
+    # Unset means the console can still REVIEW and REJECT, but its accept
+    # action fails closed and shows the CLI command instead: publishing
+    # under the wrong org would put a customer's id on Knowledge Base
+    # content, which is the one mistake this whole boundary exists to
+    # prevent, and it is not a mistake a dropdown should be able to make.
+    operator_org_id: str = ""
+
+    # Signing secret for the CUSTOMER console's session cookies
+    # (hub/console.py). Separate from `admin_token` on purpose: that token is
+    # the operator's credential, and a value that both authenticates the
+    # vendor AND signs customer sessions means one leak compromises both
+    # surfaces at once.
+    #
+    # Unset disables the console entirely -- no /app route is registered, so a
+    # deployment that has not opted in has nothing to probe, exactly as
+    # `admin_token` gates /admin. Failing closed rather than generating an
+    # ephemeral secret is deliberate: an ephemeral one works perfectly on a
+    # single process and silently signs out every user on each deploy and
+    # every scale-out, which reads as a flaky product rather than as a
+    # missing setting.
+    console_secret: str = ""
 
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
@@ -130,21 +257,27 @@ class HubConfig:
     # loopback-bound Hub still passes the check with this left False).
     allow_insecure_http: bool = False
 
-    # --- Cross-org commons ---
+    # --- CommonTrace Knowledge Base ---
     # Off is the wrong default for this flag: existing deployments that
     # never set HUB_COMMONS_ENABLED must keep the tool surface they already
     # have, so the default preserves current behavior rather than opting
     # every install into a narrower one. Set explicitly to false for a
-    # deployment that must not expose cross-org sharing at all -- e.g. an
-    # internal-only offering with no other org's data to compare against,
-    # where the requirement is "no common knowledge" rather than merely
-    # "nobody happens to call share_trace." False removes share_trace,
-    # unshare_trace, and commons_overlap from the MCP tool surface entirely
+    # deployment that must not consult any content beyond what the fleet
+    # itself captured -- e.g. an internal-only offering with a hard
+    # requirement of "no outside knowledge", where the point is a guarantee
+    # stronger than merely "nobody happens to call commons_overlap." The
+    # Knowledge Base is already opt-in per plan (`commons_access`) and holds
+    # only operator-curated content (hub/manage.py:commons_seed, plus
+    # accepted community submissions -- see submit_kb_entry), never a
+    # customer's own traces directly -- this flag exists for deployments
+    # that want the surface gone entirely rather than merely unused. False
+    # removes commons_overlap, commons_search, submit_kb_entry, and
+    # list_my_kb_submissions from the MCP tool surface entirely
     # (hub/server.py) -- an unknown-tool error to any client that tries,
     # not a refused call -- so the property holds even if every org on the
-    # deployment forgets the commons exists. account_usage stays available
-    # either way: it reports an org's own plan and its own usage, never
-    # another org's data, so disabling the commons does not touch it.
+    # deployment forgets the Knowledge Base exists. account_usage stays
+    # available either way: it reports an org's own plan and its own usage,
+    # never Knowledge Base content, so disabling it does not touch that.
     commons_enabled: bool = True
 
     # --- Connection pool ---
@@ -160,6 +293,12 @@ class HubConfig:
     # --- Misc ---
     log_level: str = "INFO"
     extra: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.rate_limit_backend not in ("memory", "postgres"):
+            raise ValueError(
+                f"HUB_RATE_LIMIT_BACKEND must be 'memory' or 'postgres', got {self.rate_limit_backend!r}"
+            )
 
     def validate_transport_safety(self) -> None:
         """Refuse to construct a config that would serve plaintext HTTP on a
@@ -191,29 +330,34 @@ class HubConfig:
         return cls(
             database_url=database_url,
             host=os.environ.get("HUB_HOST", "127.0.0.1"),
-            port=_env_int("HUB_PORT", 8420),
+            port=_env_int_in_range("HUB_PORT", 8420, 1, 65535),
             streamable_http_path=os.environ.get("HUB_STREAMABLE_HTTP_PATH", "/mcp"),
-            max_request_body_bytes=_env_int("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576),
-            max_title_chars=_env_int("HUB_MAX_TITLE_CHARS", 500),
-            max_text_chars=_env_int("HUB_MAX_TEXT_CHARS", 20_000),
-            max_tags=_env_int("HUB_MAX_TAGS", 20),
-            max_tag_chars=_env_int("HUB_MAX_TAG_CHARS", 64),
-            max_trace_bytes=_env_int("HUB_MAX_TRACE_BYTES", 65_536),
-            rate_limit_per_minute=_env_int("HUB_RATE_LIMIT_PER_MINUTE", 20),
-            rate_limit_burst=_env_int("HUB_RATE_LIMIT_BURST", 5),
-            suspect_url_threshold=_env_int("HUB_SUSPECT_URL_THRESHOLD", 5),
-            read_rate_limit_per_minute=_env_int("HUB_READ_RATE_LIMIT_PER_MINUTE", 300),
-            read_rate_limit_burst=_env_int("HUB_READ_RATE_LIMIT_BURST", 60),
-            auth_attempts_per_minute=_env_int("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60),
-            auth_attempts_burst=_env_int("HUB_AUTH_ATTEMPTS_BURST", 20),
-            readyz_rate_limit_per_minute=_env_int("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120),
-            readyz_rate_limit_burst=_env_int("HUB_READYZ_RATE_LIMIT_BURST", 30),
+            max_request_body_bytes=_env_int_in_range("HUB_MAX_REQUEST_BODY_BYTES", 1_048_576, 1024, 64 * 1024 * 1024),
+            max_title_chars=_env_int_in_range("HUB_MAX_TITLE_CHARS", 500, 1, 100_000),
+            max_text_chars=_env_int_in_range("HUB_MAX_TEXT_CHARS", 20_000, 1, 10_000_000),
+            max_tags=_env_int_in_range("HUB_MAX_TAGS", 20, 1, 1000),
+            max_tag_chars=_env_int_in_range("HUB_MAX_TAG_CHARS", 64, 1, 10_000),
+            max_trace_bytes=_env_int_in_range("HUB_MAX_TRACE_BYTES", 65_536, 1024, 64 * 1024 * 1024),
+            rate_limit_per_minute=_env_int_in_range("HUB_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
+            rate_limit_burst=_env_int_in_range("HUB_RATE_LIMIT_BURST", 30, 0, 1_000_000),
+            suspect_url_threshold=_env_int_in_range("HUB_SUSPECT_URL_THRESHOLD", 5, 0, 10_000),
+            rate_limit_backend=os.environ.get("HUB_RATE_LIMIT_BACKEND", "memory"),
+            read_rate_limit_per_minute=_env_int_in_range("HUB_READ_RATE_LIMIT_PER_MINUTE", 300, 0, 10_000_000),
+            read_rate_limit_burst=_env_int_in_range("HUB_READ_RATE_LIMIT_BURST", 60, 0, 1_000_000),
+            auth_attempts_per_minute=_env_int_in_range("HUB_AUTH_ATTEMPTS_PER_MINUTE", 60, 0, 10_000_000),
+            auth_attempts_burst=_env_int_in_range("HUB_AUTH_ATTEMPTS_BURST", 20, 0, 1_000_000),
+            readyz_rate_limit_per_minute=_env_int_in_range("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
+            readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
+            trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
+            admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
+            operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
+            console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
-            db_pool_size=_env_int("HUB_DB_POOL_SIZE", 10),
-            db_max_overflow=_env_int("HUB_DB_MAX_OVERFLOW", 5),
-            db_pool_timeout=_env_int("HUB_DB_POOL_TIMEOUT", 30),
-            db_pool_recycle=_env_int("HUB_DB_POOL_RECYCLE", 1800),
-            graceful_shutdown_seconds=_env_int("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30),
+            db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
+            db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),
+            db_pool_timeout=_env_int_in_range("HUB_DB_POOL_TIMEOUT", 30, 1, 3600),
+            db_pool_recycle=_env_int_in_range("HUB_DB_POOL_RECYCLE", 1800, -1, 86_400),
+            graceful_shutdown_seconds=_env_int_in_range("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30, 0, 3600),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )

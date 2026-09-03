@@ -159,6 +159,34 @@ class TestRefusalsAreActionable:
             failure_import.read_failures(p)
         assert "title" in str(exc.value) and "owner" in str(exc.value)
 
+    def test_a_field_over_the_csv_size_limit_is_a_clean_error_not_a_raw_csv_error(self, tmp_path):
+        """[BUG-CLI-02]: csv.Error is not a ValueError subclass, so it was
+        not caught by read_failures' own except tuple, nor by
+        commontrace/cli.py's top-level (OSError, ValueError, KeyError) --
+        a real incident postmortem or a large embedded stack trace in one
+        CSV field crashed with a raw traceback instead of a clean refusal.
+        The module-level fix raises the field limit far past what a real
+        export needs (so this in practice almost never fires), but the
+        exception handling itself must still be correct on the day it does
+        -- reproduced here by lowering the limit back down within the test,
+        independent of the module-level default."""
+        import csv
+
+        old_limit = csv.field_size_limit()
+        csv.field_size_limit(128)
+        try:
+            oversized = "x" * 1000
+            p = _write(tmp_path, "a.csv", f"title,description\nok,{oversized}\n")
+            with pytest.raises(failure_import.FailureImportError):
+                failure_import.read_failures(p)
+        finally:
+            csv.field_size_limit(old_limit)
+
+    def test_the_module_level_limit_is_raised_well_past_the_stdlib_default(self):
+        import csv
+
+        assert csv.field_size_limit() > 131072
+
 
 class TestBracketPrefixedLogFallsBackToLines:
     """A `.log`/`.txt` (or extension-less) file of log lines that happen to

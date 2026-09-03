@@ -4,13 +4,26 @@ import argparse
 import datetime
 import glob
 import os
-import re
 import sys
 
-from commontrace import frontmatter, paths, templates, validate
+from commontrace import frontmatter, lesson_io, paths, templates, validate
 from commontrace.commands._format import cell, read_or_warn
 
-_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+def _actor() -> str:
+    """Who made this change, for the revision journal.
+
+    Best-effort and clearly labelled as such. The point is not authentication
+    -- a local store has no identity to authenticate against -- it is that a
+    later reader can tell a person's edit apart from `distill`'s or an
+    agent's when asking what changed the instruction the fleet follows.
+    """
+    import getpass
+
+    try:
+        return f"cli:{getpass.getuser()}"
+    except Exception:  # noqa: BLE001 - no passwd entry in a container
+        return "cli"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -51,6 +64,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     ap.add_argument("slug")
     ap.add_argument("--rationale", default="", help="One sentence recorded in the lesson body.")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding. "
+             "Refused by default -- an active lesson is injected into agents verbatim.",
+    )
     ap.add_argument("--dest", default=None)
     ap.set_defaults(func=run_approve)
 
@@ -62,6 +81,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rj.add_argument("--reason", required=True, help="Why this candidate was rejected -- recorded in the lesson body.")
     rj.add_argument("--dest", default=None)
     rj.set_defaults(func=run_reject)
+
+    hist = sub.add_parser(
+        "history",
+        help="What this lesson has said over time, and who changed it.",
+        description=(
+            "A lesson's content is the treatment in any experiment measuring it, so "
+            "an effect size is about a specific revision, not about a slug. This is "
+            "how you recover which -- and it is what makes `commontrace experiment`'s "
+            "'edited mid-run' finding actionable rather than merely alarming."
+        ),
+    )
+    hist.add_argument("slug", help="Lesson slug (e.g. lesson_retry_backoff)")
+    hist.add_argument("--dest", default=None)
+    hist.set_defaults(func=run_history)
 
 
 def run_new(args: argparse.Namespace) -> int:
@@ -93,9 +126,30 @@ def run_new(args: argparse.Namespace) -> int:
         importance=args.importance,
         importance_rationale=args.importance_rationale,
         source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
+        # Scaffolded at `review`, not `active`.
+        #
+        # `lesson new` writes a body that is entirely template text
+        # ("## Rule\n[1 actionable sentence]"). Creating that at status
+        # `active` made it live the instant it was scaffolded: retrievable by
+        # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
+        # published to the whole fleet by `sync --push` -- all before a single
+        # word of it had been written.
+        #
+        # It also bypassed the one control the protocol defines for exactly
+        # this: run_approve's own docstring says a lesson "is only ever
+        # activated by an explicit human/Validator call to this command,
+        # never automatically by whatever proposed it". `commontrace distill`
+        # already honours that by writing candidates at `review`; this path
+        # was the inconsistent one.
+        status="review",
     )
-    frontmatter.write(out_path, fm, templates.lesson_body())
+    lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
+                           actor=_actor(), reason="scaffolded by `lesson new`")
     print(f"[commontrace] created {out_path}")
+    print(
+        f"  Written at status=review. Fill in the Rule/Why/How-to-apply sections, then:\n"
+        f"    commontrace lesson approve {args.slug}"
+    )
     return 0
 
 
@@ -120,8 +174,25 @@ def run_validate(args: argparse.Namespace) -> int:
     for path in _iter_lesson_paths(root, args.path):
         n_checked += 1
         try:
-            fm, _ = frontmatter.read(path)
+            fm, body = frontmatter.read(path)
             errors = validate.validate(fm, schema)
+            # Schema-valid is not the same as fit to inject. An ACTIVE lesson
+            # is retrieved and fed to agents verbatim, counted as coverage by
+            # `taxonomy`/`pilot`, and pushed to the Hub by `sync` -- so one
+            # still full of "TODO:" scaffolding is a defect this command
+            # exists to catch, and it used to report it as "valid".
+            #
+            # Scoped to active lessons on purpose: a `status: review`
+            # candidate is SUPPOSED to carry placeholders (that is what
+            # `commontrace distill` writes and what a human is being asked to
+            # fill in), so flagging those would make the check noise.
+            if fm.get("status") == "active":
+                unfilled = templates.unfilled_placeholders(fm, body)
+                if unfilled:
+                    errors = list(errors) + [
+                        f"active lesson still contains unedited scaffolding in "
+                        f"{', '.join(unfilled)} -- it would be injected into agents as-is"
+                    ]
         except (frontmatter.FrontmatterError, OSError, UnicodeDecodeError) as exc:
             errors = [str(exc)]
         if errors:
@@ -135,18 +206,10 @@ def run_validate(args: argparse.Namespace) -> int:
     return 1 if n_failed else 0
 
 
-def _resolve_lesson_path(root: str, slug: str) -> str | None:
-    if not _SLUG_RE.match(slug):
-        return None
-    ldir = paths.lessons_dir(root)
-    filename = f"{slug}.md" if slug.startswith("lesson_") else f"lesson_{slug}.md"
-    path = os.path.join(ldir, filename)
-    if os.path.isfile(path):
-        return path
-    legacy_path = os.path.join(ldir, f"{slug}.md")
-    if os.path.isfile(legacy_path):
-        return legacy_path
-    return None
+# Re-exported from commontrace.lesson_io, which owns the one definition now
+# that the MCP server and the holdout logger resolve slugs too.
+_resolve_lesson_path = lesson_io.lesson_path
+_SLUG_RE = lesson_io.SLUG_RE
 
 
 def _append_body_note(body: str, heading: str, text: str) -> str:
@@ -176,10 +239,33 @@ def run_approve(args: argparse.Namespace) -> int:
             )
             return 1
 
+        unfilled = templates.unfilled_placeholders(fm, body)
+        if unfilled and not args.force:
+            print(
+                f"[commontrace] refusing to approve {args.slug}: it still contains "
+                f"unedited scaffolding in {', '.join(unfilled)}.\n"
+                "  Approving activates a lesson for retrieval and injection -- an\n"
+                "  agent injects whatever it is given, so a lesson whose rule is\n"
+                "  still 'TODO: ...' teaches the fleet nothing and displaces a real\n"
+                "  one. It would also be counted as coverage by `commontrace\n"
+                "  taxonomy`/`pilot` and pushed to the Hub by `commontrace sync`.\n"
+                f"  Edit {path} first, or pass --force if this really is the\n"
+                "  intended content.",
+                file=sys.stderr,
+            )
+            return 1
+
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
-        frontmatter.write(path, fm, body)
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+                               reason=args.rationale or "approved")
+    if unfilled:
+        print(
+            f"[commontrace] warning: approved {args.slug} with --force while "
+            f"{', '.join(unfilled)} still contain unedited scaffolding.",
+            file=sys.stderr,
+        )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
     return 0
 
@@ -203,7 +289,8 @@ def run_reject(args: argparse.Namespace) -> int:
 
         fm["status"] = "archived"
         body = _append_body_note(body, "Rejected", args.reason)
-        frontmatter.write(path, fm, body)
+        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+                               reason=args.reason)
     print(f"[commontrace] rejected {args.slug} (status: review -> archived)")
     return 0
 
@@ -231,4 +318,42 @@ def run_list(args: argparse.Namespace) -> int:
             f"status={cell(fm.get('status')):8s} "
             f"{fm.get('description') or ''}"
         )
+    return 0
+
+
+def run_history(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    records = lesson_io.history(root, args.slug)
+    path = lesson_io.lesson_path(root, args.slug)
+    now = lesson_io.current_revision(path) if path else None
+
+    if not records:
+        # Distinguished carefully. "No lesson" and "a lesson with no recorded
+        # history" are different facts, and the second is the ordinary state
+        # of every lesson written before the journal existed -- reporting it
+        # as the first would send someone looking for a missing file.
+        if path is None:
+            print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+            return 1
+        print(f"[commontrace] {args.slug} is at revision {now}, with no recorded history.")
+        print("  Changes are journaled from the first write through `lesson new`, "
+              "`lesson approve`, `distill` or the MCP tools.")
+        return 0
+
+    print(f"# {args.slug}")
+    print()
+    print(f"Currently at **{now}**, {len(records)} recorded change(s).")
+    print()
+    for record in records:
+        arrow = f"{record.get('from') or '(new)'} -> {record.get('to')}"
+        print(f"- `{arrow}`  {record.get('at', '')}")
+        print(f"    by {record.get('actor', 'unknown')}"
+              + (f", status {record['status']}" if record.get("status") else ""))
+        if record.get("reason"):
+            print(f"    {record['reason']}")
+    print()
+    print("_An effect size from `commontrace experiment` is about the revision that was "
+          "on disk while the assignments were made, not about the slug. A lesson edited "
+          "during a run makes the two arms measure different treatments, which the "
+          "validity section of that report calls out._")
     return 0

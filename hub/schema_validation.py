@@ -33,8 +33,22 @@ class SchemaValidationError(ValueError):
         super().__init__(f"{schema_name}: {'; '.join(errors)}")
 
 
+_ALLOWED_SCHEMA_FILENAMES = frozenset({"trace.schema.json", "lesson.schema.json"})
+
+
 @cache
 def _load_schema(filename: str) -> dict:
+    # Every current caller passes one of the two literals in
+    # _ALLOWED_SCHEMA_FILENAMES (validate_trace/validate_lesson below) --
+    # `filename` is never derived from a request or any other untrusted
+    # input today. Checked anyway, before it ever reaches a filesystem
+    # path: a future caller passing something else through would otherwise
+    # have no signal that this function was never meant to resolve an
+    # arbitrary name, matching how every other read path in this Hub
+    # enforces a boundary rather than relying on the absence of a caller
+    # that could cross it.
+    if filename not in _ALLOWED_SCHEMA_FILENAMES:
+        raise ValueError(f"unrecognized protocol schema name: {filename!r}")
     path = _SCHEMAS_DIR / filename
     if not path.is_file():
         raise FileNotFoundError(

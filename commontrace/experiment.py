@@ -64,6 +64,28 @@ DEFAULT_HOLDOUT_RATE = 0.10
 # not "no effect found", which people read as evidence of absence.
 DEFAULT_MIN_ARM = 10
 
+# The smallest effect worth calling a result, and the reason NO_MEASURABLE_EFFECT
+# is not reported the moment DEFAULT_MIN_ARM is met.
+#
+# `min_arm` is a floor on running the test at all, not a power criterion, and
+# treating it as one produced the defect this constant exists to fix. At 10
+# observations per arm against a 60% baseline the MINIMUM DETECTABLE EFFECT is
+# 61 percentage points. Any run clearing that floor and finding nothing got the
+# verdict NO_MEASURABLE_EFFECT -- which a customer reads as "the memory does
+# not work" -- when the honest statement is "this design could not have seen
+# anything short of a 61-point swing."
+#
+# Measured on a full 240-occasion pilot with a real +25pp effect seeded in: the
+# report came back NO_MEASURABLE_EFFECT for the one lesson that cleared the
+# floor and "not enough data yet" for the other two. The product's central
+# claim, answered wrongly, by its own default configuration.
+#
+# 10 points is a PRODUCT judgement rather than a statistical constant: it is
+# roughly the smallest change in a fleet's resolution rate anyone would act on.
+# It is configurable (`experiment --detect`), and the number is always printed
+# beside the verdict so nobody has to take it on faith.
+DEFAULT_PRACTICAL_EFFECT = 0.10
+
 _Z_95 = 1.959963984540054
 _Z_80_POWER = 0.8416212335729143  # one-sided z for 80% power
 
@@ -118,6 +140,27 @@ def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
+def _check_success_count(s: int, n: int, label: str) -> None:
+    """Both callers below feed s/n straight into a square root of
+    (rate * (1 - rate)); a rate outside [0, 1] -- which s > n or a negative
+    s produces -- can make that argument negative, crashing with a raw
+    `ValueError: math domain error` from deep inside math.sqrt rather than
+    one that names what was actually wrong with the input. Every current
+    caller (hub/outcomes.py's Tally, commontrace/experiment.py's own
+    holdout aggregation) computes s/n from a COUNT(*)-style aggregate, so
+    0 <= s <= n always holds in practice -- this is a guard against a
+    future caller or a hand-built test value, not a reachable path today.
+    Raising rather than silently returning a "no effect" result is
+    deliberate: an s > n means the CALLER's counting is broken, and a
+    plausible-looking p-value from broken input is a worse failure mode
+    than a loud one.
+    """
+    if s < 0 or n < 0:
+        raise ValueError(f"{label} success/total counts must not be negative, got s={s}, n={n}")
+    if s > n:
+        raise ValueError(f"{label} success count ({s}) cannot exceed its total count ({n})")
+
+
 def two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> tuple[float, float]:
     """Two-tailed z-test for a difference in proportions.
 
@@ -129,6 +172,8 @@ def two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> tuple[float, floa
     """
     if n1 <= 0 or n2 <= 0:
         return 0.0, 1.0
+    _check_success_count(s1, n1, "arm 1")
+    _check_success_count(s2, n2, "arm 2")
     p1, p2 = s1 / n1, s2 / n2
     p_pool = (s1 + s2) / (n1 + n2)
     if p_pool in (0.0, 1.0):
@@ -144,6 +189,8 @@ def diff_confidence_interval(s1: int, n1: int, s2: int, n2: int, z: float = _Z_9
     """Unpooled 95% CI for (p1 - p2)."""
     if n1 <= 0 or n2 <= 0:
         return (0.0, 0.0)
+    _check_success_count(s1, n1, "arm 1")
+    _check_success_count(s2, n2, "arm 2")
     p1, p2 = s1 / n1, s2 / n2
     se = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
     delta = p1 - p2
@@ -211,6 +258,131 @@ def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.
     return (_Z_95 + _z_for_power(power)) * math.sqrt(2 * baseline * (1 - baseline) / n_per_arm)
 
 
+def required_n_per_arm(effect: float, baseline: float, power: float = 0.80) -> int:
+    """Observations needed IN EACH ARM to detect `effect`. The inverse of
+    `minimum_detectable_effect`, and algebraically its exact inverse rather
+    than a search, so the two can never disagree about the same design.
+    """
+    if not (0 < baseline < 1) or effect <= 0:
+        raise ValueError("effect must be > 0 and baseline strictly between 0 and 1")
+    z = _Z_95 + _z_for_power(power)
+    return max(1, math.ceil(2 * baseline * (1 - baseline) * (z / effect) ** 2))
+
+
+@dataclass(frozen=True)
+class Design:
+    """What it takes to answer the question, worked out BEFORE the run."""
+
+    effect: float
+    baseline: float
+    power: float
+    n_per_arm: int
+    occasions_needed: int
+    rate_used: float
+    rate_for_budget: float | None
+    occasions_budget: int | None
+    verdict: str
+
+
+def plan(
+    effect: float = DEFAULT_PRACTICAL_EFFECT,
+    baseline: float = 0.5,
+    rate: float = DEFAULT_HOLDOUT_RATE,
+    power: float = 0.80,
+    occasions_budget: int | None = None,
+) -> Design:
+    """Design the experiment before running it.
+
+    This exists because the failure it prevents is expensive and silent: a
+    fleet runs a 30-day pilot at the default holdout rate, and the report at
+    the end says "not enough data yet". The occasions are spent, the window is
+    gone, and the only fix -- a wider holdout -- had to be applied on day 0.
+
+    The arithmetic nobody does in their head: at a 10% holdout, only one
+    occasion in ten lands in the control arm, so a run reaches an answer about
+    TEN TIMES slower than its occasion count suggests. Detecting a 10-point
+    effect against a 60% baseline needs ~376 control observations, which is
+    ~3,760 occasions at 10% and ~750 at 50%.
+
+    `rate_for_budget` answers the question a customer actually has -- "I will
+    see about N occasions in this window; what rate do I need?" -- and is None
+    when no budget can answer it, which is itself the finding.
+    """
+    n_per_arm = required_n_per_arm(effect, baseline, power)
+    # The control arm is the binding one at any rate below 50%, and both arms
+    # must reach n_per_arm, so the requirement is set by whichever is smaller.
+    smaller_share = min(rate, 1.0 - rate)
+    occasions_needed = math.ceil(n_per_arm / smaller_share) if smaller_share > 0 else 0
+
+    rate_for_budget = None
+    verdict = "ok"
+    if occasions_budget:
+        # The share each arm needs of the budget; feasible only if both arms
+        # can reach n_per_arm inside it, i.e. the budget is at least 2x.
+        needed_share = n_per_arm / occasions_budget
+        if needed_share > 0.5:
+            verdict = "infeasible"
+        else:
+            rate_for_budget = round(needed_share, 4)
+            verdict = "ok" if needed_share <= rate else "raise_rate"
+
+    return Design(
+        effect=effect, baseline=baseline, power=power, n_per_arm=n_per_arm,
+        occasions_needed=occasions_needed, rate_used=rate,
+        rate_for_budget=rate_for_budget, occasions_budget=occasions_budget,
+        verdict=verdict,
+    )
+
+
+def render_plan(design: Design) -> str:
+    lines = [
+        "# Experiment design",
+        "",
+        f"To detect an effect of **{design.effect:.0%}** against a **{design.baseline:.0%}** "
+        f"baseline at {design.power:.0%} power:",
+        "",
+        f"- **{design.n_per_arm:,} observations in EACH arm.**",
+        f"- At a {design.rate_used:.0%} holdout that is **{design.occasions_needed:,} "
+        "occasions**, because only that share of them lands in the control arm.",
+        "",
+    ]
+    if design.occasions_budget:
+        budget = design.occasions_budget
+        if design.verdict == "infeasible":
+            lines += [
+                f"**{budget:,} occasions cannot answer this at any holdout rate.** Even a "
+                f"50/50 split gives {budget // 2:,} per arm against the {design.n_per_arm:,} "
+                "needed. Either accept a larger effect as the thing you are testing for, "
+                "or run for longer — no rate recovers this.",
+                "",
+            ]
+        elif design.verdict == "raise_rate":
+            lines += [
+                f"**{budget:,} occasions can answer this, but not at {design.rate_used:.0%}.** "
+                f"Set the holdout rate to **{design.rate_for_budget:.0%}** or higher.",
+                "",
+                "The cost is real and worth stating plainly: that share of the work runs "
+                "without its memory for the length of the experiment. That is the price of "
+                "an answer, and it is cheaper than a spent pilot that concludes nothing.",
+                "",
+            ]
+        else:
+            lines += [
+                f"**{budget:,} occasions is enough at {design.rate_used:.0%}.** "
+                f"A rate of {design.rate_for_budget:.0%} would just reach it, so the "
+                "configured rate has margin.",
+                "",
+            ]
+    lines += [
+        "---",
+        "",
+        "Run this before the pilot, not after. The failure it prevents is silent: a run "
+        "at too low a rate produces a report that says 'not enough data yet' on the last "
+        "day, and the only fix had to be applied on the first.",
+    ]
+    return "\n".join(lines)
+
+
 # --- Analysis ---------------------------------------------------------------
 
 
@@ -257,8 +429,15 @@ def analyze(
     observations: list[HoldoutObservation],
     min_arm: int = DEFAULT_MIN_ARM,
     alpha: float = 0.05,
+    detectable: float = DEFAULT_PRACTICAL_EFFECT,
 ) -> list[CausalEffect]:
-    """Estimate each lesson's causal effect from its holdout arms."""
+    """Estimate each lesson's causal effect from its holdout arms.
+
+    `detectable` is the smallest effect worth calling a result. A null from a
+    design that could not have detected it is reported as UNDERPOWERED rather
+    than as NO_MEASURABLE_EFFECT -- see DEFAULT_PRACTICAL_EFFECT for why the
+    `min_arm` floor alone was not enough, and what it cost.
+    """
     by_lesson: dict[str, list[HoldoutObservation]] = {}
     for obs in observations:
         by_lesson.setdefault(obs.lesson_slug, []).append(obs)
@@ -270,9 +449,14 @@ def analyze(
         staged.append((slug, sum(r.succeeded for r in inj), len(inj),
                        sum(r.succeeded for r in wit), len(wit)))
 
-    # p-values only from adequately-powered comparisons; underpowered ones
+    # p-values only from comparisons that met the floor; ones that did not
     # must not enter the FDR correction, where they would inflate m and
     # weaken every genuine result.
+    #
+    # The floor, deliberately, and not the `detectable` gate below: m must be
+    # the number of tests actually RUN. A comparison whose null is later
+    # relabelled UNDERPOWERED was still tested, and dropping it from the
+    # correction after seeing its p-value would make m depend on the results.
     testable = [s for s in staged if s[2] >= min_arm and s[4] >= min_arm]
     p_values = [two_proportion_test(s[1], s[2], s[3], s[4])[1] for s in testable]
     significance = benjamini_hochberg(p_values, alpha=alpha)
@@ -305,12 +489,30 @@ def analyze(
                     "Outcomes are WORSE when this is injected. Correlational scoring "
                     "cannot see this -- only the holdout can.",
                 )
+            elif mde is None or mde > detectable:
+                # A NULL from an underpowered design is not a finding, and this
+                # is the asymmetry that makes the distinction correct rather
+                # than cautious: a SIGNIFICANT result at small n is still a
+                # detection (the branches above keep it), but a null only means
+                # "no effect" if the design could have seen one. Reported here
+                # as UNDERPOWERED, which is what it is.
+                verdict = VERDICT_UNDERPOWERED
+                seen = f"~{mde:.0%}" if mde is not None else "no effect at all"
+                note = (
+                    f"{n_inj} injected / {n_wit} withheld clears the {min_arm}-per-arm "
+                    f"floor, but this design could only have detected {seen} or larger, "
+                    f"against a target of {detectable:.0%}. Finding nothing here is "
+                    "'cannot answer yet', not 'no effect' -- widen the holdout rate or "
+                    "keep accruing."
+                )
             else:
                 verdict = VERDICT_NO_EFFECT
-                note = "No effect distinguishable from noise"
-                if mde is not None:
-                    note += f"; this sample could only have detected an effect of ~{mde:.0%} or larger"
-                note += "."
+                note = (
+                    "No effect distinguishable from noise, on a sample that could have "
+                    f"detected ~{mde:.0%} -- which is smaller than the {detectable:.0%} "
+                    "worth acting on, so this is evidence of absence rather than absence "
+                    "of evidence."
+                )
 
         out.append(
             CausalEffect(

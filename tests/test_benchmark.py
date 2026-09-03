@@ -213,6 +213,35 @@ class TestTransferGap:
         assert val == pytest.approx(1.0)
         assert total == 1
 
+    def test_a_md_suffixed_source_episode_entry_still_resolves(self, tmp_memory):
+        """[BUG-BENCH-03]: source_episodes has historically been written
+        both as a bare slug and as the ".md"-suffixed filename.
+        resolve_project() used to always append ".md" unconditionally, so
+        an already-suffixed entry produced "ep_a.md.md" -- a path that
+        never exists -- and a well-sourced lesson misresolved as
+        untraceable purely because of how its source was spelled."""
+        write_lesson(tmp_memory, "lesson_bar", source_episodes=["ep_a.md"], uses=1)
+        write_episode(tmp_memory, "ep_a", project="proj-a")
+
+        episodes = [
+            {"name": "ep_b", "project": "proj-a", "lessons_hit": ["lesson_bar"]},
+        ]
+        lessons = {
+            "lesson_bar": {
+                "source_episodes": ["ep_a.md"],
+                "_path": str(tmp_memory / "lessons" / "lesson_bar.md"),
+            }
+        }
+        old_base = bm.BASE_DIR
+        bm.BASE_DIR = str(tmp_memory)
+        try:
+            val, total, untraceable = bm.compute_transfer_gap(episodes, lessons)
+        finally:
+            bm.BASE_DIR = old_base
+        assert untraceable == 0
+        assert total == 1
+        assert val == pytest.approx(0.0)  # same project (proj-a) -- not cross-project
+
     def test_untraceable_hit(self):
         """Lesson with no source_episodes → hit is untraceable."""
         episodes = [{"name": "ep_x", "project": "p", "lessons_hit": ["lesson_baz"]}]

@@ -279,6 +279,20 @@ class TestLessonApproveReject:
         path = store / "memory" / "lessons" / "lesson_candidate_test.md"
         fm, body = frontmatter.read(str(path))
         fm["status"] = "review"
+        # A real, written lesson -- `lesson new` scaffolds every one of these
+        # fields with a placeholder, and `lesson approve` now refuses to
+        # activate a lesson still carrying them (an active lesson is injected
+        # into agents verbatim). These tests are about the status transition
+        # and slug resolution, so they approve the thing an operator would
+        # actually be approving.
+        fm["applies_when"] = "A refund retry returns HTTP 409 from the gateway"
+        fm["do_not_apply_when"] = "The original charge was never authorized"
+        body = (
+            "## Rule\nReuse the original charge's idempotency key on the retry.\n\n"
+            "## Why\nObserved across six refund incidents.\n\n"
+            "## How to apply\nRead the key from the first charge, resend it.\n\n"
+            "## Counter-examples\nDoes not apply to disputes.\n"
+        )
         frontmatter.write(str(path), fm, body)
         return path
 
@@ -325,3 +339,156 @@ class TestLessonApproveReject:
         capsys.readouterr()
         rc = main(["lesson", "approve", "../../etc/passwd", "--dest", str(store)])
         assert rc == 1
+
+
+class TestACandidateCarriesItsEvidence:
+    """The throughput limit on this whole product is how expensive a lesson is
+    to write, and a proposal used to make it as expensive as possible: one
+    line per trace, context only, with a UUID on each -- so a 12-trace cluster
+    printed the same paragraph twelve times and the SOLUTION TEXT, the one
+    thing anyone needs in order to write the Rule, appeared nowhere.
+
+    Coverage stays low because curating is expensive; retrieval returns
+    nothing because coverage is low; the experiment stays underpowered
+    because there is nothing to measure. This is the top of that chain.
+    """
+
+    @staticmethod
+    def _cluster(n=6, context="A large CSV export returned a zero-byte file with no error.",
+                 solutions=None):
+        from commontrace import distill
+
+        solutions = solutions or ["The worker was OOM-killed silently. Re-ran with date chunking."]
+        return distill.Cluster(
+            traces=[
+                distill.TraceCandidate(
+                    id=f"t{i}", path=f"/x/t{i}.md",
+                    title="Export job silently produces an empty file",
+                    context_text=context, solution_text=solutions[i % len(solutions)],
+                    tags=["exports"], agent_type="support",
+                )
+                for i in range(n)
+            ],
+            shared_terms=("csv", "empty", "export"),
+        )
+
+    def _body(self, cluster) -> str:
+        from commontrace.commands.distill_cmd import _candidate_body
+
+        return "\n".join(_candidate_body(cluster))
+
+    def test_what_worked_is_in_the_candidate(self):
+        """Writing a lesson used to mean opening every source trace to find
+        what had actually resolved it."""
+        body = self._body(self._cluster())
+        assert "**What worked**" in body
+        assert "Re-ran with date chunking" in body
+
+    def test_repeated_evidence_is_collapsed_with_counts(self):
+        body = self._body(self._cluster(n=12))
+        assert body.count("zero-byte file") == 1
+        assert "(12 of 12)" in body
+
+    def test_divergent_solutions_are_all_shown_and_flagged(self):
+        """The signal that matters most: one symptom with several different
+        resolutions is more than one problem, and writing it up as a single
+        rule produces a lesson that fires on cases it cannot help."""
+        body = self._body(self._cluster(n=9, solutions=[
+            "Their IdP clock had drifted; synced NTP.",
+            "The ACS URL pointed at our old domain; updated it.",
+            "A SameSite policy blocked the session cookie; set it to None; Secure.",
+        ]))
+        assert "3 different resolutions" in body
+        assert "consider splitting" in body
+        for fragment in ("synced NTP", "ACS URL", "SameSite"):
+            assert fragment in body
+
+    def test_a_single_resolution_is_not_flagged(self):
+        assert "different resolutions" not in self._body(self._cluster())
+
+    def test_the_judgement_fields_stay_as_scaffolding(self):
+        """Proposing better evidence is honest; proposing the conclusion is
+        not. Filling `applies_when` or the Rule from a term-frequency count
+        would push fabricated text past the guard that exists to stop exactly
+        that."""
+        from commontrace import templates
+
+        body = self._body(self._cluster())
+        assert body.count("TODO:") >= 3
+        assert templates.unfilled_placeholders({}, body)
+
+    def test_variants_beyond_the_cap_are_counted_not_dropped(self):
+        body = self._body(self._cluster(
+            n=8, solutions=[f"Distinct resolution number {i}." for i in range(8)]))
+        assert "further variant(s)" in body
+
+
+class TestTheProposedDescriptionIsReadable:
+    """`description` is both what a curator reads in `lesson list` and a
+    ranked retrieval field. It used to be the cluster's shared TERMS -- so a
+    store with a dozen candidates was a dozen indistinguishable word lists,
+    and the candidate matched queries on tokens like "anywhere" and "byte".
+    """
+
+    @staticmethod
+    def _cluster(titles):
+        from commontrace import distill
+
+        return distill.Cluster(
+            traces=[
+                distill.TraceCandidate(
+                    id=f"t{i}", path=f"/x/t{i}.md", title=title,
+                    context_text="Customer reported the reset email never arrived.",
+                    solution_text="Removed the address from the suppression list.",
+                    tags=["email"], agent_type="support",
+                )
+                for i, title in enumerate(titles)
+            ],
+            shared_terms=("email", "reset"),
+        )
+
+    def test_it_is_a_sentence_not_a_word_list(self):
+        from commontrace import distill
+
+        cluster = self._cluster(["Password reset email never arrived"] * 4)
+        description = distill.propose_description(cluster)
+        assert description.startswith("Password reset email never arrived")
+        assert "repeated pattern around" not in description
+
+    def test_it_says_how_many_it_stands_for(self):
+        from commontrace import distill
+
+        assert "and 3 more like it" in distill.propose_description(
+            self._cluster(["Password reset email never arrived"] * 4))
+
+    def test_a_single_trace_needs_no_suffix(self):
+        from commontrace import distill
+
+        assert distill.propose_description(self._cluster(["Only one"])) == "Only one"
+
+    def test_it_is_deterministic(self):
+        """A proposal that changes text between two identical runs is one
+        nobody can review."""
+        from commontrace import distill
+
+        cluster = self._cluster(["Alpha problem", "Beta problem", "Gamma problem"])
+        assert len({distill.propose_description(cluster) for _ in range(10)}) == 1
+
+    def test_it_picks_the_most_typical_trace_not_the_first(self):
+        """The medoid, so an outlier that happens to sort first does not get
+        to name the whole cluster."""
+        from commontrace import distill
+
+        cluster = self._cluster([
+            "An unrelated outlier about billing invoices",
+            "Password reset email never arrived",
+            "Password reset email never arrived for a customer",
+            "Password reset email never arrived again",
+        ])
+        assert "Password reset" in distill.representative(cluster).title
+
+    def test_it_falls_back_when_there_is_no_title(self):
+        from commontrace import distill
+
+        description = distill.propose_description(self._cluster(["", ""]))
+        assert "repeated pattern" in description

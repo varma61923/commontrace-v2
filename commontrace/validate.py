@@ -1,7 +1,7 @@
 """Minimal JSON Schema (draft 2020-12 subset) validator.
 
 Deliberately small: covers exactly what protocol/schemas/*.json use
-(type, required, enum, minLength, minimum/maximum, items) so `commontrace`
+(type, required, enum, minLength/maxLength, minimum/maximum, items) so `commontrace`
 doesn't pull in a full `jsonschema` dependency just to validate two schemas.
 Not a general-purpose validator — do not extend the schemas beyond this
 subset without extending this file too.
@@ -74,7 +74,7 @@ _SUPPORTED_KEYWORDS = frozenset({
     # structural
     "type", "properties", "required", "items",
     # constraints this file implements
-    "enum", "minLength", "minimum", "maximum",
+    "enum", "minLength", "maxLength", "minimum", "maximum",
     # descriptive only -- no runtime effect, safe to ignore
     "$schema", "$id", "title", "description", "default", "examples",
 })
@@ -175,6 +175,14 @@ def _validate_value(label: str, value: Any, schema: dict) -> list[str]:
     if isinstance(value, str):
         if "minLength" in schema and len(value) < schema["minLength"]:
             errors.append(f"'{label}': string shorter than minLength={schema['minLength']}")
+        # Enforced locally so an over-long value fails at `capture`/`trace
+        # validate` time rather than surviving on disk and being rejected by
+        # the Hub at `sync` time, which is both later and further from the
+        # person who can fix it. The Hub enforces the same bound server-side
+        # (hub/crud.py:contribute_trace) because a local check is a courtesy,
+        # never a guarantee about what an arbitrary client sends.
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"'{label}': string longer than maxLength={schema['maxLength']}")
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "minimum" in schema and value < schema["minimum"]:

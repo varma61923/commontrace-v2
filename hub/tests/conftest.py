@@ -5,25 +5,65 @@ import os
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory
 from hub.models import Base
 
+# This default matches the Postgres role/db this project's own dev sandbox
+# provisions out of the box, so hub tests "just work" there with no extra
+# setup -- CI and hub/README.md's documented local workflow both set
+# HUB_TEST_DATABASE_URL explicitly and override it.
 TEST_DATABASE_URL = os.environ.get(
     "HUB_TEST_DATABASE_URL",
     "postgresql+asyncpg://commontrace_dev:devpassword@localhost:5432/commontrace_hub_test",
 )
 
+# Memoized across the whole test session: _skip_if_no_db() runs on every
+# test that needs the `config`/`_schema` fixtures (hundreds of them), and a
+# real connection attempt each time would add real per-test latency for no
+# benefit once the first attempt has already answered the question.
+_db_reachable: bool | None = None
 
-def _skip_if_no_db():
+
+async def _skip_if_no_db() -> None:
+    """Skip cleanly when Postgres is not actually reachable at
+    TEST_DATABASE_URL -- not just when the env var happens to be unset.
+
+    A bare `if not TEST_DATABASE_URL` can never be true: the module-level
+    default above is a non-empty string, so this promised-but-never-taken
+    skip path meant any environment without a Postgres matching that exact
+    hardcoded default (a plain contributor laptop, a lightweight sandbox
+    without this project's specific dev provisioning) failed every hub
+    test with a raw ConnectionRefusedError deep in fixture setup instead of
+    the clean, actionable skip this function's own name promises. A real
+    (short-timeout) connection attempt is what actually answers "is there a
+    db" -- the string being non-empty never did.
+    """
+    global _db_reachable
     if not TEST_DATABASE_URL:
         pytest.skip("HUB_TEST_DATABASE_URL not set; Hub tests need a real Postgres instance")
+    if _db_reachable is None:
+        probe_engine = create_async_engine(TEST_DATABASE_URL, connect_args={"timeout": 3})
+        try:
+            async with probe_engine.connect():
+                pass
+            _db_reachable = True
+        except Exception:  # noqa: BLE001 - any failure means "not reachable", not a crash here
+            _db_reachable = False
+        finally:
+            await probe_engine.dispose()
+    if not _db_reachable:
+        pytest.skip(
+            f"Cannot reach Postgres at the configured HUB_TEST_DATABASE_URL "
+            f"({TEST_DATABASE_URL!r}); Hub tests need a real, reachable Postgres instance."
+        )
 
 
 @pytest_asyncio.fixture
 async def config() -> HubConfig:
-    _skip_if_no_db()
+    await _skip_if_no_db()
     return HubConfig(database_url=TEST_DATABASE_URL, rate_limit_per_minute=1_000_000, rate_limit_burst=1_000_000)
 
 
@@ -42,7 +82,7 @@ async def _schema():
     CI (see .github/workflows/ci.yml) -- so a model change that nobody wrote
     a migration for still gets caught, just by a different check.
     """
-    _skip_if_no_db()
+    await _skip_if_no_db()
     engine = make_engine(HubConfig(database_url=TEST_DATABASE_URL))
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

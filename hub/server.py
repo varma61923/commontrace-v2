@@ -17,6 +17,7 @@ example.
 from __future__ import annotations
 
 import logging
+import math
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.applications import Starlette
@@ -26,7 +27,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, commons, crud, plans
+from hub import auth, commons, crud, observability, plans
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -34,8 +35,11 @@ from hub.abuse import (
     make_auth_rate_limiter,
     make_rate_limiter,
     make_read_rate_limiter,
+    resolve_client_key,
 )
+from hub.admin import add_admin_routes
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
+from hub.console import add_console_routes
 from hub.db import session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
@@ -83,12 +87,17 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         protected_path: str,
         auth_rate_limiter: RateLimiter,
         read_rate_limiter: RateLimiter,
+        trusted_proxy_hops: int = 0,
     ):
         super().__init__(app)
         self._session_factory = session_factory
         self._protected_path = protected_path
         self._auth_rate_limiter = auth_rate_limiter
         self._read_rate_limiter = read_rate_limiter
+        # See HubConfig.trusted_proxy_hops's docstring: 0 (default) means
+        # "trust only request.client.host", identical to this middleware's
+        # behavior before this parameter existed.
+        self._trusted_proxy_hops = trusted_proxy_hops
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -101,9 +110,10 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
-        client_key = request.client.host if request.client else "unknown"
-        if not self._auth_rate_limiter.allow(client_key):
-            return JSONResponse({"error": "rate_limited", "detail": "too many auth attempts"}, status_code=429)
+        client_key = resolve_client_key(request, self._trusted_proxy_hops)
+        allowed, retry_after = self._auth_rate_limiter.check(client_key)
+        if not allowed:
+            return _rate_limited_response("too many auth attempts", retry_after)
 
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
@@ -121,8 +131,33 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             # hub/auth.py:verify_api_key for why they must be indistinguishable.
             return JSONResponse({"error": "invalid, revoked, or expired API key"}, status_code=401)
 
-        if not self._read_rate_limiter.allow(authenticated.org_id):
-            return JSONResponse({"error": "rate_limited", "detail": "too many requests"}, status_code=429)
+        # The credential verified, so refund the auth-attempt token spent
+        # above. That limiter's job is bounding Argon2 CPU forced by
+        # credentials that DON'T verify; charging the ones that do made it
+        # the binding constraint on legitimate bulk traffic (a bulk push is
+        # hundreds of successful authentications from one address, against a
+        # 60/min budget) while doing nothing extra against an attacker, who
+        # by definition never reaches this line. Valid callers are governed
+        # by the per-org read limiter immediately below -- authenticated,
+        # accountable, and metered, which is the right instrument for them.
+        self._auth_rate_limiter.refund(client_key)
+
+        # A DELETE on the MCP path is the client tearing its session down.
+        # It runs no tool, reads no row, and costs the server less than the
+        # 429 body refusing it would -- while refusing it makes an otherwise
+        # SUCCESSFUL command print "Session termination failed: 429" from
+        # inside the MCP SDK, which is what a user sees and reasonably reads
+        # as "my run failed". It is also self-defeating: the client stops
+        # waiting either way, so the only effect is that the server keeps
+        # the session state it was being asked to release.
+        #
+        # Still authenticated (above), so this is not an unauthenticated
+        # hole: only a caller holding a valid key for this org can reach it,
+        # and it cannot be used to do any work.
+        if request.method != "DELETE":
+            allowed, retry_after = self._read_rate_limiter.check(authenticated.org_id)
+            if not allowed:
+                return _rate_limited_response("too many requests", retry_after)
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
@@ -133,11 +168,49 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             auth.current_actor.reset(actor_token)
 
 
+def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
+    """A 429 that says WHEN to come back.
+
+    Without `Retry-After` a refused client can only guess, and a client
+    guessing short against a limiter that is already saying no turns one
+    burst into a sustained stampede -- measured on this project's own CLI,
+    a bulk `commontrace sync --push-traces` drove 114 rejected requests
+    where the honest answer was "wait about two seconds". The header is the
+    standard, machine-readable way to say that, and
+    commontrace/hub_client.py now paces its whole batch off it.
+
+    Rounded UP to a whole second: `Retry-After` is defined in integer
+    seconds, and rounding down would advertise a moment at which the bucket
+    provably still has no token, inviting exactly the extra rejected
+    request this exists to prevent. Floored at 1 for the same reason.
+    """
+    return JSONResponse(
+        {"error": "rate_limited", "detail": detail, "retry_after": max(1, math.ceil(retry_after))},
+        status_code=429,
+        headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+    )
+
+
 def _error_response(exc: Exception) -> dict:
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
-        return {"error": "rate_limited", "detail": str(exc)}
+        # `retry_after` for the same reason the HTTP 429s carry the header:
+        # this limiter's shipped default (20 writes/minute) means a client
+        # pushing a backlog is refused as a matter of course, and a refusal
+        # that does not say when to come back leaves it guessing -- which,
+        # measured on this project's own `sync --push-traces`, is how a
+        # recoverable wait turned into a permanent per-file error.
+        # Counted here as well as at the HTTP layer: a write-limit refusal
+        # is returned INSIDE a 200 MCP response, so the middleware's
+        # status-code counter never sees it. Without this the metric would
+        # under-report exactly the limiter most likely to be misconfigured.
+        observability.METRICS.observe_rate_limited("write")
+        body = {"error": "rate_limited", "detail": str(exc)}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            body["retry_after"] = max(1, math.ceil(retry_after))
+        return body
     if isinstance(exc, crud.IdempotencyKeyConflict):
         return {"error": "conflict", "detail": str(exc)}
     if isinstance(exc, plans.EntitlementExceeded):
@@ -157,6 +230,12 @@ def _error_response(exc: Exception) -> dict:
         }
     if isinstance(exc, commons.CommonsInputError):
         return {"error": "invalid_request", "detail": str(exc)}
+    if isinstance(exc, crud.DeletionNotReady):
+        # Distinct from invalid_request: the request itself is well-formed,
+        # it is just too early, expired, or token-mismatched -- a client
+        # should surface this to a human, not treat it as a bug to fix and
+        # retry immediately.
+        return {"error": "deletion_not_ready", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -177,12 +256,24 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         instructions=(
             "CommonTrace Hub. search_traces/get_trace/list_tags read; contribute_trace "
             "writes a new trace; vote_trace/amend_trace act on an existing one; "
+            "delete_trace permanently removes one of your own (irreversible); "
             "account_usage reports your plan and usage. All operations are scoped to "
-            "your organization's own traces (hub/README.md 'Tenant isolation'). "
-            + ("share_trace/unshare_trace/commons_overlap add opt-in cross-org sharing "
-               "on top of that."
+            "your organization's own traces (hub/README.md 'Tenant isolation') -- "
+            "there is no tool anywhere on this server that exposes one organization's "
+            "traces to another. request_account_deletion/confirm_account_deletion/"
+            "cancel_account_deletion delete your ENTIRE organization -- two calls with "
+            "a mandatory delay between them, by design; see request_account_deletion's "
+            "own description before calling it. "
+            + ("commons_overlap/commons_search additionally let you consult the "
+               "CommonTrace Knowledge Base: commons_search looks up ranked candidate "
+               "answers to one failure, commons_overlap reports the conservative "
+               "coverage fraction across many. submit_kb_entry proposes a new entry "
+               "for operator review (list_my_kb_submissions checks status) -- an "
+               "accepted proposal raises your Knowledge Base query allowance, but "
+               "nothing you submit is published, or visible to any other org, until "
+               "an operator accepts it."
                if config.commons_enabled else
-               "This deployment has HUB_COMMONS_ENABLED=false: no cross-org sharing "
+               "This deployment has HUB_COMMONS_ENABLED=false: no Knowledge Base "
                "tools exist on this server.")
         ),
     )
@@ -193,18 +284,60 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         tags: list[str] | None = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
         offset: int = 0,
+        occasion_id: str = "",
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
-        Returns {"traces": [...], "limit", "offset", "has_more"}. Page by
-        re-calling with offset += limit while has_more is true.
+        Describe the task you are about to attempt, in your own words and in
+        a full sentence -- that is the query shape this is built for. Terms
+        are OR-ed and the results are ranked, so a trace that matches part
+        of your description still comes back; you do not need to guess the
+        wording the trace was written in.
+
+        Returns {"traces": [...], "limit", "offset", "has_more", "terms",
+        "terms_ignored"}. Page by re-calling with offset += limit while
+        has_more is true.
+
+        `terms` is what your query reduced to after stemming and stopword
+        removal, and `terms_ignored` lists the terms that were NOT used
+        because they appear in too much of your corpus to distinguish one
+        trace from another. Between them, an empty result is readable
+        instead of ambiguous: no `terms` means nothing searchable was asked,
+        every term in `terms_ignored` means the words you used are ones
+        nearly all your traces contain (try a more specific one), and terms
+        present with neither condition means your corpus genuinely has no
+        match yet.
+
+        Pass `occasion_id` -- your own identifier for the task you are
+        about to do -- and, IF an operator has started a randomized
+        holdout for your org, the response also carries a `holdout` block
+        naming which of the returned traces you must NOT use on this
+        occasion. Every trace is still returned either way, so this never
+        changes what search finds; it only tells you which results are in
+        the control arm. Report the result afterwards with
+        `record_occasion_outcome(occasion_id, succeeded)`.
+
+        Omit `occasion_id`, or run with no experiment configured, and the
+        behaviour is exactly as before -- no `holdout` block, nothing
+        recorded.
+
+        Honouring `holdout.withhold` is the whole experiment: using a
+        withheld trace anyway does not fail loudly, it moves that occasion
+        into the treated arm without the record saying so, which biases the
+        measured effect toward zero.
         """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
-                return await crud.search_traces(
+                result = await crud.search_traces(
                     session, org_id, query=query, tags=tags, limit=limit, offset=offset
                 )
+                if occasion_id:
+                    result["holdout"] = await crud.holdout_for_results(
+                        session, org_id, result["traces"], occasion_id,
+                        actor=auth.get_current_actor(),
+                    )
+                return result
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
             return _error_response(exc)
 
@@ -215,6 +348,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         solution_text: str,
         tags: list[str] | None = None,
         agent_type: str = "",
+        agent_id: str = "",
+        outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
         """Contribute a new trace. Returns its id and quarantine status.
@@ -225,6 +360,26 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         result instead of creating a duplicate trace. Reusing a key with a
         different payload is rejected as a conflict rather than silently
         returning the wrong trace.
+
+        `agent_id` identifies WHICH agent produced this trace, as opposed to
+        `agent_type`, which is the kind of agent it is ("support", "code").
+        A fleet of 25 support agents shares one agent_type, so only agent_id
+        can answer how many agents an org runs -- the number its plan's
+        agent limit is enforced against. Optional and backward compatible:
+        omitting it attributes the trace to a single 'unattributed' agent
+        for that org, which is never refused but also cannot be counted
+        precisely, so the org's reported agent count becomes a floor.
+
+        `outcome` is this incident's eventual disposition, if already known
+        -- an object with any of: `resolved`, `escalated`, `repeated_error`,
+        `frustration_signal` (booleans), `tokens_used`/`llm_calls`
+        (non-negative numbers), `baseline` (boolean, marks a trace captured
+        before lessons were being injected). `fleet_outcomes` is the only
+        way this Hub can answer "is this working?", and it can only answer
+        it for outcomes actually reported here. Often not known yet at
+        contribution time -- amend_trace accepts the same parameter, MERGED
+        into whatever this call already set, to attach or update it once
+        the task concludes.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -239,6 +394,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     solution_text=solution_text,
                     tags=tags,
                     agent_type=agent_type,
+                    agent_id=agent_id,
+                    outcome=outcome,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,
                 )
@@ -284,9 +441,28 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         context_text: str | None = None,
         solution_text: str | None = None,
         tags: list[str] | None = None,
+        outcome: dict | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         """Create a new trace that supersedes `id`, carrying forward any
-        field not explicitly overridden."""
+        field not explicitly overridden.
+
+        `outcome` (same shape as contribute_trace's) is MERGED into the
+        original's outcome rather than replaced, since an incident's
+        resolution is often only known after the fact: contribute_trace
+        with none, then amend_trace with `{"resolved": true}` once the task
+        concludes, then perhaps another amend_trace with `{"tokens_used":
+        800}` -- each call layers in what it knows without erasing what an
+        earlier call already attached.
+
+        Pass a client-generated `idempotency_key` (e.g. a UUID minted once
+        per logical amendment) to make retries after a lost/timed-out
+        response safe: retrying with the same key returns the original
+        amendment instead of forking the supersession chain. Reusing a key
+        with a different `id` or different field overrides (including a
+        different `outcome`) is rejected as a conflict rather than silently
+        returning the wrong trace.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
@@ -300,7 +476,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     context_text=context_text,
                     solution_text=solution_text,
                     tags=tags,
+                    outcome=outcome,
                     actor=auth.get_current_actor(),
+                    idempotency_key=idempotency_key,
                 )
             if amended is None:
                 return {"error": "not_found", "detail": f"no trace with id {id}"}
@@ -319,58 +497,245 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    # --- Cross-org commons (opt-in), gated by HUB_COMMONS_ENABLED --------
+    @mcp.tool()
+    async def fleet_outcomes(agent_type: str = "") -> dict:
+        """Has your fleet's agent performance changed since your baseline
+        window? Compares the outcomes recorded on your own traces
+        (resolution, repeated-error, escalation and frustration rates, plus
+        token/call cost) between traces marked `outcome.baseline: true` and
+        everything since, with confidence intervals, a Benjamini-Hochberg
+        correction across the metrics, and a minimum detectable effect on
+        every inconclusive result so a small sample cannot be misread as
+        "no effect".
+
+        Reads only your own traces. Not metered.
+
+        IMPORTANT, and returned with every response: this is an OBSERVED
+        change, not a causal effect. `baseline` marks a time window, so
+        anything else that changed between the windows is confounded with
+        this product's contribution. For a causal claim, run the randomized
+        holdout (`commontrace experiment`), which withholds lessons at
+        random so the arms differ only by the treatment.
+
+        The causal estimate comes back under `causal`, and inside it
+        `causal.integrity` says whether the sample it was computed on can
+        support it. READ THAT BEFORE THE EFFECT SIZES. It is not a
+        formality: the estimate is computed only on occasions that got an
+        outcome reported, which is unbiased only when both arms report at
+        the same rate -- and the withheld arm, by construction the one
+        working without its memory, is the one more likely to run long or
+        be abandoned before anyone reports. When that happens the result
+        does not look empty or underpowered; it looks like a confident,
+        well-powered, significant effect with a tight interval.
+        `causal.integrity.effects_readable` is false when a named mechanism
+        is biasing it, and `causal.integrity.projections` says how far each
+        trace is from being answerable at all.
+
+        Optionally narrow to one `agent_type`."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                report = await crud.fleet_outcomes(session, org_id, agent_type=agent_type)
+                # The causal instrument, returned alongside the
+                # observational one rather than in a separate tool: a
+                # reader who sees only the before/after number has no way
+                # to know a stronger answer was available, and the whole
+                # point of the distinction is that it be visible.
+                report["causal"] = await crud.causal_effects(session, org_id)
+                return report
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def value_delivered(value_per_occasion: float = 0.0) -> dict:
+        """What your fleet's memory has been worth, causally, in occasions.
+
+        Not a usage number and not a correlational one. For each memory whose
+        causal effect the running holdout has actually established, this is
+        `effect x times injected` -- how many more occasions went well BECAUSE
+        that memory existed -- carried through with its confidence interval.
+
+        Three rules make it a measurement rather than a brochure, and you
+        should check all three before quoting it:
+
+        - A COMPROMISED experiment returns no figure at all. Not a hedged one.
+          If a named mechanism is biasing the effects, it biases every value
+          computed from them, and a value report is exactly where a caveat
+          gets separated from the number.
+        - An UNDERPOWERED memory contributes nothing. Its effect was not
+          established, and multiplying it by a volume produces a large number
+          with no evidence under it.
+        - Memories measured as HURTING are SUBTRACTED, not dropped.
+
+        `value_per_occasion` is yours: pass what one resolved occasion is worth
+        to your organisation and the response carries the money too. Pass
+        nothing and you get the count. No price is stored anywhere -- this
+        product ships the quantity and takes the rate from you.
+
+        Reads only your own data. Not metered."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.value_delivered(
+                    session, org_id,
+                    value_per_occasion=(value_per_occasion or None),
+                )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def holdout_assign(trace_ids: list, occasion_id: str) -> dict:
+        """Randomized holdout: for each trace eligible on this occasion,
+        decide whether to inject it or deliberately withhold it, and record
+        the decision so the two arms can later be compared.
+
+        This is the only way to get a CAUSAL answer about whether your
+        memory is helping. `fleet_outcomes` compares your fleet against its
+        own past, which cannot separate this product's effect from anything
+        else that changed. Here the two arms are the same fleet in the same
+        window, differing only by whether the memory was injected.
+
+        `occasion_id` is your own identifier for one unit of work, and it
+        is the key you later report the result against. Safe to retry: the
+        arms are a deterministic hash, so a repeat call returns the same
+        answer and records nothing new.
+
+        **Traces returned under `withhold` must not be used on this
+        occasion.** Using one anyway does not fail loudly -- it moves that
+        occasion into the treated arm without the record saying so, which
+        biases the measured effect toward zero.
+
+        Requires an operator to have started an experiment for your org."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.holdout_assign(
+                    session, org_id, list(trace_ids), occasion_id,
+                    actor=auth.get_current_actor(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def record_occasion_outcome(occasion_id: str, succeeded: bool) -> dict:
+        """Report how an occasion went, closing the loop on every holdout
+        decision made for it.
+
+        The outcome belongs to the TASK, not to any one memory, so this
+        resolves both arms at once. Only the first report for an occasion
+        counts -- a later one is ignored rather than allowed to flip a
+        result already counted."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.record_occasion_outcome(
+                    session, org_id, occasion_id, succeeded, actor=auth.get_current_actor(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    # --- Self-service deletion --------------------------------------------
+    #
+    # delete_trace is immediate and org-scoped, same trust level as every
+    # other write tool above. Whole-account deletion is split into two
+    # differently-named calls with a mandatory delay between them
+    # (crud.request_org_deletion's docstring) precisely because a single
+    # call here would let one compromised API key wipe an org's entire
+    # history irreversibly with no window for anyone to notice.
+
+    @mcp.tool()
+    async def delete_trace(id: str) -> dict:
+        """Permanently delete one of your own traces, and every trace in
+        its amendment chain (so an amended-and-superseded copy of the same
+        content cannot survive the original being deleted). Irreversible.
+        Not found (including a trace id belonging to another org) reports
+        not_found, never a permission error."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                deleted = await crud.delete_trace(session, org_id, id, actor=auth.get_current_actor())
+            if not deleted:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return {"id": id, "deleted": True}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def request_account_deletion() -> dict:
+        """Start permanently deleting YOUR ENTIRE ORGANIZATION -- every
+        trace, vote, api key, and Knowledge Base submission. Deletes
+        NOTHING by itself.
+
+        Returns a one-time confirmation_token and confirm_not_before /
+        expires_at timestamps. Call confirm_account_deletion with that
+        token, no sooner than confirm_not_before, to actually delete
+        everything -- irreversibly. Call cancel_account_deletion at any
+        time before then to stand down.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.request_org_deletion(session, org_id, actor=auth.get_current_actor())
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def cancel_account_deletion() -> dict:
+        """Cancel a pending request_account_deletion request. Needs no
+        token -- any valid API key for this org may call it, since
+        cancelling is a safety action, not a destructive one."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                cancelled = await crud.cancel_org_deletion(session, org_id, actor=auth.get_current_actor())
+            return {"cancelled": cancelled}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
+    async def confirm_account_deletion(confirmation_token: str) -> dict:
+        """The second call: permanently deletes this organization and
+        everything scoped to it. Irreversible. Fails with
+        'deletion_not_ready' if called too soon after
+        request_account_deletion, with an expired or mismatched token, or
+        with no pending request at all.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                await crud.confirm_org_deletion(
+                    session, org_id, confirmation_token, actor=auth.get_current_actor(),
+                )
+            return {"deleted": True}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    # --- CommonTrace Knowledge Base (opt-in), gated by HUB_COMMONS_ENABLED
     #
     # `if config.commons_enabled:` around the @mcp.tool() registrations
     # themselves, not a check inside each handler -- a disabled deployment
     # must not even LIST these tools. A client that tries gets the MCP
     # framework's own "unknown tool" error, which holds even if an org
-    # forgets the commons exists; a per-call refusal only holds if every
-    # caller remembers to check first. account_usage is intentionally
+    # forgets the Knowledge Base exists; a per-call refusal only holds if
+    # every caller remembers to check first. account_usage is intentionally
     # outside this block: it reports an org's own plan and its own usage,
-    # never another org's data, so disabling the commons does not disable it.
+    # never Knowledge Base content, so disabling it does not disable that.
+    #
+    # There is no share_trace/unshare_trace tool here, and there never will
+    # be: an org's own trace can never be promoted directly into the
+    # Knowledge Base by anything an org's own API key can call. See
+    # hub/plans.py "why there is no org-to-org sharing here" -- letting one
+    # customer's data become visible to another was the design this module
+    # used to have, and it was retired on purpose.
+    #
+    # submit_kb_entry below is not that tool reborn: it writes a
+    # KnowledgeBaseSubmission row (a table entirely separate from Trace),
+    # which is invisible to every read path in this file until
+    # hub/manage.py review-submission -- an operator-trust-level action, not
+    # an MCP tool -- deliberately accepts it. See hub/crud.py's "Knowledge
+    # Base community submissions" section and
+    # hub/models.py:KnowledgeBaseSubmission.
     if config.commons_enabled:
-
-        @mcp.tool()
-        async def share_trace(id: str, rationale: str = "") -> dict:
-            """Contribute one of your own traces to the cross-org commons.
-
-            Opt-in and revocable. Only share SUBSTRATE failures -- things like
-            "this API needs an idempotency key" or "this library changed its
-            default" -- that every fleet rediscovers at full cost and nobody
-            considers proprietary. Do NOT share business logic: pricing rules,
-            escalation policy, qualification criteria. The Hub cannot make that
-            judgment for you, so `rationale` records why you decided this trace
-            is substrate.
-
-            Once shared, this trace's full content becomes visible to other orgs
-            whose recurring failures it matches. Withdraw it with unshare_trace.
-            """
-            try:
-                org_id = auth.get_current_org_id()
-                async with session_scope(session_factory) as session:
-                    result = await crud.share_trace(
-                        session, org_id, id, rationale=rationale, actor=auth.get_current_actor()
-                    )
-                if result is None:
-                    return {"error": "not_found", "detail": f"no trace with id {id}"}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _error_response(exc)
-
-        @mcp.tool()
-        async def unshare_trace(id: str) -> dict:
-            """Withdraw one of your traces from the cross-org commons. It stops
-            matching other orgs' queries immediately."""
-            try:
-                org_id = auth.get_current_org_id()
-                async with session_scope(session_factory) as session:
-                    result = await crud.unshare_trace(session, org_id, id, actor=auth.get_current_actor())
-                if result is None:
-                    return {"error": "not_found", "detail": f"no trace with id {id}"}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return _error_response(exc)
 
         @mcp.tool()
         async def commons_overlap(
@@ -380,16 +745,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             agent_type: str = "",
         ) -> dict:
             """Of the recurring failures your fleet keeps hitting, what fraction
-            has some *other* fleet already solved?
+            does the CommonTrace Knowledge Base already solve?
+
+            The Knowledge Base is authored and curated by the operator -- public
+            substrate knowledge, never another customer's data. There is no
+            sharing to do first: nothing you submit is ever added to it, and
+            nothing here can expose your fleet's traces to anyone else.
 
             Send MinHash signatures of your own failures -- generated locally by
             `commontrace commons sign`, so no failure text ever leaves your
             machine. Each entry is {"label": str, "signature": [int, ...]}.
-
-            You do not have to contribute anything to ask this. What comes back
-            is drawn only from traces whose owners explicitly shared them, and
-            your own traces are excluded from the corpus so the number reflects
-            what you'd actually *gain* rather than counting your own work.
             """
             try:
                 org_id = auth.get_current_org_id()
@@ -402,16 +767,105 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
+        @mcp.tool()
+        async def commons_search(
+            query_signature: list[int] | None = None,
+            limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
+            agent_type: str = "",
+        ) -> dict:
+            """Ask the CommonTrace Knowledge Base what it already knows about
+            ONE failure, and get back ranked candidate answers with their
+            solutions -- like searching a wiki, not a peer's ticket queue.
+
+            This is the lookup: "has anyone solved this?". `commons_overlap`
+            answers the different, quotable question "what FRACTION of my
+            failures are solved" and buys 0% false positives with a threshold
+            that discards about nine of every ten real answers. This tool
+            ranks instead, and finds the right record 89.1% of the time at
+            rank 1 and 100% within the top 10 on the held-out evaluation
+            (commons/eval/RESULTS.md).
+
+            Send one MinHash signature, generated locally by `commontrace
+            commons sign` -- no failure text leaves your machine. What comes
+            back is drawn only from the operator-curated Knowledge Base,
+            never from another customer's traces.
+
+            Results are CANDIDATES TO JUDGE, never coverage: a failure the
+            Knowledge Base does not contain still returns a non-empty list
+            every time. Do not derive a percentage from this tool -- that is
+            what commons_overlap is for.
+            """
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return await crud.commons_search(
+                        session, org_id, query_signature or [],
+                        limit=limit, agent_type=agent_type,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
+        @mcp.tool()
+        async def submit_kb_entry(
+            title: str,
+            context_text: str,
+            solution_text: str,
+            tags: list[str] | None = None,
+            agent_type: str = "",
+            rationale: str = "",
+            idempotency_key: str | None = None,
+        ) -> dict:
+            """Propose an entry for the CommonTrace Knowledge Base -- like
+            posting an answer to a shared wiki, not sharing your own trace
+            history. Nothing is published by this call.
+
+            Write it as generalized substrate knowledge ("Stripe webhook
+            handlers need idempotency keys"), not as your own incident with
+            its specifics -- `rationale` should say why this is substrate
+            rather than your business logic. An operator reviews every
+            submission before anything is published
+            (`hub/manage.py review-submission`); check status with
+            `list_my_kb_submissions`. An accepted submission permanently
+            raises your org's Knowledge Base query allowance -- a rejected
+            or still-pending one earns nothing.
+
+            Pass a client-generated `idempotency_key` to make a retry after
+            a lost response safe, exactly like `contribute_trace`.
+            """
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return await crud.submit_kb_entry(
+                        session, org_id, config, rate_limiter,
+                        title=title, context_text=context_text, solution_text=solution_text,
+                        tags=tags, agent_type=agent_type, rationale=rationale,
+                        actor=auth.get_current_actor(), idempotency_key=idempotency_key,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
+        @mcp.tool()
+        async def list_my_kb_submissions(limit: int = 50) -> dict:
+            """Your org's own Knowledge Base submissions and their review
+            status ('pending', 'approved', or 'rejected'). Never shows
+            another org's submissions, and a submission of yours is never
+            visible to another org either, reviewed or not -- an approved
+            one is visible to other orgs only as an ordinary Knowledge Base
+            entry, with no link back to this row or to your org."""
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return {"submissions": await crud.list_my_kb_submissions(session, org_id, limit=limit)}
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
     @mcp.tool()
     async def account_usage() -> dict:
         """What your plan entitles you to, and what you have used this period.
 
-        Free to call and does not consume a commons query -- a meter that
-        charges you for reading the meter is a support ticket waiting to
-        happen. `commons_queries.earned` is allowance you did not pay for:
-        every time a trace you shared covers another fleet's failure, your
-        allowance grows. That is the whole reason contributing is worth
-        doing rather than a favour you do for strangers.
+        Free to call and does not consume a Knowledge Base query -- a meter
+        that charges you for reading the meter is a support ticket waiting
+        to happen.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -432,12 +886,39 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         max_request_body_size=config.max_request_body_bytes,
     )
 
+    # Registered only when an operator token is configured -- see
+    # HubConfig.admin_token. With none set there is no /admin route at all,
+    # so a deployment that has not opted in has no console to probe.
+    if config.admin_token:
+        add_admin_routes(
+            inner_app,
+            session_factory,
+            admin_token=config.admin_token,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            commons_enabled=config.commons_enabled,
+            operator_org_id=config.operator_org_id,
+        )
+
+    # The customer-facing console, gated on its own secret. Distinct from the
+    # operator console above in audience, auth and blast radius: that one is
+    # cross-tenant and moderates; this one is scoped to a single org by a
+    # signed session and cannot change any state at all.
+    if config.console_secret:
+        add_console_routes(
+            inner_app,
+            session_factory,
+            console_secret=config.console_secret,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            commons_enabled=config.commons_enabled,
+        )
+
     add_health_routes(
         inner_app,
         session_factory,
         readyz_rate_limiter=RateLimiter(
             per_minute=config.readyz_rate_limit_per_minute, burst=config.readyz_rate_limit_burst
         ),
+        trusted_proxy_hops=config.trusted_proxy_hops,
     )
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
@@ -445,6 +926,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         protected_path=config.streamable_http_path,
         auth_rate_limiter=make_auth_rate_limiter(config),
         read_rate_limiter=make_read_rate_limiter(config),
+        trusted_proxy_hops=config.trusted_proxy_hops,
     )
     # Added last => outermost: a request id exists (and the request gets
     # logged) even for calls the auth middleware rejects with a 401.

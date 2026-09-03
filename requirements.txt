@@ -9,5 +9,5 @@ sentence-transformers>=6.0.0,<7.0   # pulls torch CPU automatically
 transformers>=5.5.0,<7.0   # capped alongside sentence-transformers -- see pyproject.toml's [attention] extra
 PyYAML>=6.0,<7.0
 
-# Benchmark (benchmark/measure_performance.py):
+# Benchmark (commontrace/reference/measure_performance.py):
 # PyYAML listed above; all other deps are stdlib (argparse, glob, json, re, datetime, os, sys)

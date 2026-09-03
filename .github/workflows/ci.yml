@@ -65,6 +65,19 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      # A pure-stdlib AST check (no DB, no heavy deps -- see its own
+      # docstring), so it belongs in the fast job that runs on every push
+      # rather than waiting on test-hub's Postgres-backed job to give the
+      # same feedback minutes later. --noconftest: hub/tests/conftest.py
+      # (loaded automatically for anything under hub/tests/, regardless of
+      # which specific file is targeted) imports sqlalchemy at module
+      # level, which this job's core `.[dev]` install never pulls in --
+      # this test itself needs none of that conftest's fixtures, so skip
+      # loading it rather than installing hub/'s whole dependency stack
+      # just to satisfy an import this test doesn't use.
+      - name: Hub server image allowlist stays in sync with hub/'s imports
+        run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
+
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
     # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI
@@ -120,6 +133,38 @@ jobs:
           # without `alembic revision --autogenerate`.
           python -m alembic -c hub/alembic.ini check
 
+      # 7c4a1d92e5b8 and 8f2b40c17ade each build a CONCURRENTLY index inside
+      # its own op.get_context().autocommit_block() -- which unconditionally
+      # commits whatever transaction precedes it, so that migration's
+      # add_column(s) (and, for 8f2b40c17ade, its backfill UPDATE) are
+      # committed for good the instant the block is entered, independent of
+      # whether the index build that follows ever finishes. A process killed
+      # mid-build (deploy timeout, OOM, an operator's Ctrl-C) then leaves
+      # alembic_version stuck one revision behind with those columns already
+      # present -- exactly the state simulated below by hand -- and a plain
+      # retry must self-heal rather than fail with a duplicate-column error.
+      - name: Verify an interrupted CONCURRENTLY-index migration can be retried
+        env:
+          HUB_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_migrations_retry
+          PGPASSWORD: commontrace
+        run: |
+          createdb -h localhost -U commontrace commontrace_migrations_retry
+
+          python -m alembic -c hub/alembic.ini upgrade 40d3f29cbb24
+          psql -h localhost -U commontrace -d commontrace_migrations_retry \
+            -c "ALTER TABLE traces ADD COLUMN agent_id VARCHAR(128) NOT NULL DEFAULT '';"
+          python -m alembic -c hub/alembic.ini upgrade head
+
+          python -m alembic -c hub/alembic.ini downgrade 3c3adaa53a71
+          psql -h localhost -U commontrace -d commontrace_migrations_retry -c "
+            ALTER TABLE traces ADD COLUMN commons_votes BIGINT NOT NULL DEFAULT 0;
+            ALTER TABLE traces ADD COLUMN commons_review_after TIMESTAMPTZ;
+            ALTER TABLE traces ADD COLUMN commons_retracted_at TIMESTAMPTZ;
+            ALTER TABLE traces ADD COLUMN commons_retraction_reason VARCHAR(200) NOT NULL DEFAULT '';
+          "
+          python -m alembic -c hub/alembic.ini upgrade head
+          python -m alembic -c hub/alembic.ini check
+
       - name: Run Hub tests (including test_tenant_isolation.py)
         run: python -m pytest hub/tests/ -q
 
@@ -163,14 +208,25 @@ jobs:
       # pinned-file pattern hub/requirements.txt already uses below.
       - name: pip-audit -- commontrace's own declared dependencies
         run: |
-          cat > /tmp/commontrace-audit-requirements.txt <<'REQS'
-          PyYAML>=6.0,<7.0
-          numpy>=1.24,<3.0
-          sentence-transformers>=6.0,<7.0
-          transformers>=5.5.0
-          mcp>=2.0,<3.0
-          httpx
-          REQS
+          # Read straight from pyproject.toml's own [project.dependencies]
+          # and [project.optional-dependencies], instead of a hand-typed
+          # copy of them: the copy had already drifted from the real
+          # bounds (e.g. an unconstrained `httpx`/`transformers` here vs.
+          # `httpx>=0.27.0`/`transformers>=5.5.0,<7.0` actually declared),
+          # so tightening or loosening a real dependency bound silently
+          # stopped being reflected in what this step audits. Reading the
+          # single source of truth at run time makes that drift structurally
+          # impossible instead of relying on someone remembering to update
+          # both places in lockstep.
+          python - <<'PY' > /tmp/commontrace-audit-requirements.txt
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]
+          deps = list(project.get("dependencies", []))
+          for extra_deps in project.get("optional-dependencies", {}).values():
+              deps.extend(extra_deps)
+          print("\n".join(deps))
+          PY
           pip-audit -r /tmp/commontrace-audit-requirements.txt
 
       - name: pip-audit -- the Hub server's pinned dependencies
@@ -249,6 +305,25 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Bring up the documented stack
+        env:
+          # The smoke check a few steps down issues its own real traffic
+          # from one source address: the primary org's round trip (tool
+          # listing, contribute, search x2, get, vote, amend x2, list_tags,
+          # account_usage) plus the second org's tenant-isolation round
+          # (initialize, get/vote/amend, commons_overlap) -- close enough to
+          # the documented default HUB_AUTH_ATTEMPTS_BURST=20 that this job
+          # has hit it directly (reproduced: a live CI run returned 429 on
+          # commons_overlap and on session termination from exactly this
+          # traffic). Widened here ONLY, via docker-compose.yml's
+          # ${VAR:-default} overrides, so this job verifies the deployment
+          # path works rather than fighting its own smoke check's request
+          # volume -- a real deployment run with `docker compose up` and
+          # nothing set in its environment still gets the tighter documented
+          # defaults unchanged.
+          HUB_AUTH_ATTEMPTS_PER_MINUTE: "600"
+          HUB_AUTH_ATTEMPTS_BURST: "200"
+          HUB_READ_RATE_LIMIT_PER_MINUTE: "3000"
+          HUB_READ_RATE_LIMIT_BURST: "600"
         run: |
           docker compose up -d --build
           echo "--- services ---"
@@ -306,10 +381,17 @@ jobs:
           # Two keys, so the tenant-isolation checks actually run rather than
           # being skipped -- isolation is the property worth proving before a
           # customer's data lands in a deployment.
+          # --keep: the restart step below asserts traces SURVIVE a restart,
+          # and needs some to survive. hub.smoke deletes what it wrote by
+          # default (so wiring it into a deploy gate does not accumulate
+          # residue in a real org), which would otherwise leave nothing for
+          # that check to be about. The default path is exercised by its own
+          # step further down.
           python -m hub.smoke \
             --url http://127.0.0.1:8420/mcp \
             --api-key "$KEY_A" \
-            --other-api-key "$KEY_B"
+            --other-api-key "$KEY_B" \
+            --keep
 
       - name: The stack survives a restart with its data intact
         run: |
@@ -320,8 +402,27 @@ jobs:
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8420/readyz >/dev/null && break; sleep 2; done
           after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
           test "$before" = "$after" || { echo "trace count changed across restart: $before -> $after"; exit 1; }
-          test "$after" -gt 0 || { echo "expected traces to exist after the smoke run"; exit 1; }
+          test "$after" -gt 0 || { echo "expected traces to exist after the --keep smoke run"; exit 1; }
           echo "$after trace(s) survived the restart"
+
+      - name: hub.smoke cleans up after itself by default
+        env:
+          KEY_A: ${{ steps.provision.outputs.key_a }}
+        run: |
+          # The shipped default. Section 12 tells operators this check is
+          # safe to run against production, which invites putting it in a
+          # deploy gate -- so every run leaving two un-quarantined traces
+          # behind would slowly fill a real org's corpus with the check's
+          # own residue, where real agent searches return it and it counts
+          # against the org's plan storage.
+          before=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          python -m hub.smoke --url http://127.0.0.1:8420/mcp --api-key "$KEY_A"
+          after=$(docker compose exec -T db psql -U commontrace -d commontrace_hub -tAc 'SELECT count(*) FROM traces')
+          test "$before" = "$after" || {
+            echo "hub.smoke left $((after - before)) trace(s) behind; it must clean up unless --keep is passed"
+            exit 1
+          }
+          echo "smoke run left no residue ($after trace(s), unchanged)"
 
       - name: Logs are structured JSON, and carry no secrets
         run: |
