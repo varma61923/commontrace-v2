@@ -67,6 +67,7 @@ hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quara
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
+hub/console.py         read-only customer console at /app (off unless HUB_CONSOLE_SECRET is set)
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
@@ -124,6 +125,36 @@ org against its plan, key state and expiry, quarantined traces, retrieval
 miss rate, audit history and the Knowledge Base queue — and for anything
 that changes state it shows the `hub.manage` command rather than doing it.
 That is deliberate: see `hub/admin.py`.
+
+Set `HUB_CONSOLE_SECRET` to also serve a second, **read-only** console at
+`/app` — not for you, for your **customers** (unset means these routes do
+not exist either, same as `/admin`). Where the operator console is
+cross-tenant and moderates, this one is scoped to a single organization
+and cannot change any state at all. A customer signs in with the same API
+key their agents already authenticate with; the Hub verifies it once and
+never stores it, then hands back a signed, `HttpOnly` session cookie
+scoped to that org, checked against the key's live/revoked state on every
+request — so revoking a key ends the browser sessions it opened, not just
+future MCP calls. From there they get four pages, all reading through the
+same `org_id`-scoped functions in `hub/crud.py` as every other Hub
+surface, rather than a second set of queries to keep tenant-isolated: an
+overview of what their fleet has captured and how it sits against plan; a
+proof page where the randomized holdout's validity verdict renders
+*above* the effect sizes it qualifies, because a report that leads with a
+significant number and caveats it underneath is how a broken one gets
+quoted; their own corpus, searched the way their agents search it; and
+their Knowledge Base proposals and the query credit those proposals
+earned. Everything that changes state — capturing a trace, running the
+experiment, proposing to the Knowledge Base — still goes through MCP or
+the CLI, where it is authenticated and audited; the console being
+strictly read-only is also why it carries no CSRF token, since there is
+no state-changing request left for a forged one to trigger. See
+`hub/console.py`'s module docstring for the rest of that reasoning.
+`HUB_CONSOLE_SECRET` is deliberately a separate value from
+`HUB_ADMIN_TOKEN`, too — one is your operator credential, the other signs
+customer sessions, and collapsing them into one secret would mean a
+single leak compromises both surfaces at once (see
+[DEPLOYMENT.md](DEPLOYMENT.md)).
 
 ### Running the tests
 
