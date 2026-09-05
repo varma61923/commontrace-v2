@@ -59,11 +59,14 @@ def _load_pilot_metrics(root: str, agent_type: str | None) -> dict | None:
     if rc != 0:
         return None
     try:
-        return json.loads(out)
+        data = json.loads(out)
+        # pilot_metrics.py now emits {"error": ...} JSON (not plain text) when there is
+        # no outcome data. Treat that as "no baseline yet" -- same as before the JSON fix.
+        if isinstance(data, dict) and "error" in data:
+            return None
+        return data
     except json.JSONDecodeError:
-        # pilot_metrics.py prints a plain-text "no traces" notice (not JSON)
-        # and exits 0 when the store has no outcome data at all -- that is
-        # "no baseline yet", not a failure of this command.
+        # Legacy fallback: plain-text "no traces" notice exits 0 but isn't JSON.
         return None
 
 
