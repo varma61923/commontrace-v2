@@ -691,6 +691,25 @@ class TestReviewQueue:
             assert len(await crud.kb_review_queue(session, limit=0)) == 1
             assert len(await crud.kb_review_queue(session, limit="nonsense")) == 4
 
+    async def test_count_kb_review_queue_is_the_true_total_not_the_capped_length(
+        self, session_factory, orgs
+    ):
+        """The admin Knowledge Base page's 'needs attention' tile used to
+        read `len(kb_review_queue(limit=_MAX_ROWS))`, which silently reads
+        as a total and stops matching the real queue size the moment it
+        exceeds `_MAX_ROWS` -- the exact defect the overview page's
+        traces/quarantined/keys tiles had for fleet-wide org counts.
+        `count_kb_review_queue` must report every entry needing attention,
+        independent of whatever `limit` a caller passes to the bounded
+        list."""
+        for i in range(4):
+            await _seed(session_factory, orgs["operator"], f"entry {i}")
+        async with session_scope(session_factory) as session:
+            capped = await crud.kb_review_queue(session, limit=2)
+            total = await crud.count_kb_review_queue(session)
+        assert len(capped) == 2
+        assert total == 4
+
 
 # --- 7. The operator CLI ------------------------------------------------
 

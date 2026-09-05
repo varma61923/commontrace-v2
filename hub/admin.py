@@ -371,9 +371,18 @@ async def _overview(session) -> dict:
         "orgs": rows,
         "total_orgs": total_orgs,
         "truncated": total_orgs > len(rows),
-        "total_traces": sum(r["traces"] for r in rows),
-        "total_quarantined": sum(r["quarantined"] for r in rows),
-        "total_keys": sum(r["active_keys"] for r in rows),
+        # Summed from the *_by_org dicts, not `rows`: those group-by queries
+        # are already unrestricted across every org (no `orgs` join, no
+        # _MAX_ROWS on them), so they hold the true fleet-wide counts. `rows`
+        # covers only the first _MAX_ROWS organizations by name -- summing
+        # from it silently undercounted these three tiles the moment an
+        # operator had more than _MAX_ROWS organizations, with no truncation
+        # notice near the tiles to say so (the one that exists is below the
+        # per-org table, nowhere near the top-line summary an operator scans
+        # first).
+        "total_traces": sum(traces_by_org.values()),
+        "total_quarantined": sum(quarantined_by_org.values()),
+        "total_keys": sum(keys_by_org.values()),
         "total_votes": int(await session.scalar(select(func.count()).select_from(Vote)) or 0),
     }
 
@@ -445,6 +454,10 @@ async def _kb_data(session) -> dict:
         "tags": list(s.tags or []), "agent_type": s.agent_type,
         "rationale": s.rationale, "created_at": _iso(s.created_at),
     } for s in rows]
+    pending_total = int(await session.scalar(
+        select(func.count()).select_from(KnowledgeBaseSubmission)
+        .where(KnowledgeBaseSubmission.status == "pending")
+    ) or 0)
 
     retracted_rows = (await session.execute(
         select(Trace)
@@ -456,11 +469,23 @@ async def _kb_data(session) -> dict:
         "id": t.id, "title": t.title,
         "reason": t.commons_retraction_reason, "at": t.commons_retracted_at,
     } for t in retracted_rows]
+    retracted_total = int(await session.scalar(
+        select(func.count()).select_from(Trace)
+        .where(Trace.commons_source == "seed", Trace.commons_retracted_at.isnot(None))
+    ) or 0)
 
     return {
         "corpus": corpus, "hits": hits, "consuming_orgs": consuming,
-        "pending": pending, "retracted": retracted,
+        "pending": pending, "pending_total": pending_total,
+        "retracted": retracted, "retracted_total": retracted_total,
+        # A summary tile from the CAPPED lists above (len(pending)) would
+        # silently read as a total and stop matching the actual queue size
+        # past _MAX_ROWS, exactly like the overview page's fleet-wide tiles
+        # once did (see _overview's fix) -- count_kb_review_queue is the
+        # true, unbounded count behind the same classification `queue`
+        # (bounded, for the table below) already uses.
         "queue": await crud.kb_review_queue(session, limit=_MAX_ROWS),
+        "queue_total": await crud.count_kb_review_queue(session),
     }
 
 
@@ -647,14 +672,17 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
     """
     corpus, hits = data["corpus"], data["hits"]
     pending, queue, retracted = data["pending"], data["queue"], data["retracted"]
+    pending_total = data.get("pending_total", len(pending))
+    queue_total = data.get("queue_total", len(queue))
+    retracted_total = data.get("retracted_total", len(retracted))
 
     tiles = "".join([
         _tile("published entries", _num(corpus)),
         _tile("answers delivered", _num(hits)),
         _tile("orgs consulting", _num(data["consuming_orgs"])),
-        _tile("awaiting review", _num(len(pending)), "warn" if pending else ""),
-        _tile("needs attention", _num(len(queue)), "warn" if queue else ""),
-        _tile("retracted", _num(len(retracted))),
+        _tile("awaiting review", _num(pending_total), "warn" if pending_total else ""),
+        _tile("needs attention", _num(queue_total), "warn" if queue_total else ""),
+        _tile("retracted", _num(retracted_total)),
     ])
 
     exchange = (
@@ -715,6 +743,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                 f'<div class="acts">{accept}{reject}</div></article>'
             )
         pending_html = f'<div class="cards">{"".join(cards)}</div>'
+        if pending_total > len(pending):
+            pending_html += (f'<p class="empty">Showing the {len(pending)} oldest, of '
+                             f'{_num(pending_total)} total awaiting review.</p>')
     else:
         pending_html = ('<p class="empty">No proposals waiting. Orgs propose entries with '
                         '<code>commontrace commons submit</code>.</p>')
@@ -738,6 +769,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
         queue_html = ('<div class="scroll"><table><thead><tr><th>Entry</th>'
                       '<th>Why it is listed</th><th>Answers given</th><th>Action</th>'
                       f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+        if queue_total > len(queue):
+            queue_html += (f'<p class="empty">Showing the first {len(queue)} entries, worst first, '
+                           f'of {_num(queue_total)} total.</p>')
     else:
         queue_html = '<p class="empty">Nothing published needs a decision right now.</p>'
 
@@ -758,6 +792,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
         retracted_html = ('<div class="scroll"><table><thead><tr><th>Entry</th><th>Reason</th>'
                           '<th>Withdrawn</th><th>Action</th></tr></thead>'
                           f'<tbody>{"".join(rows)}</tbody></table></div>')
+        if retracted_total > len(retracted):
+            retracted_html += (f'<p class="empty">Showing the {len(retracted)} most recently '
+                               f'withdrawn, of {_num(retracted_total)} total.</p>')
     else:
         retracted_html = '<p class="empty">Nothing is currently withdrawn.</p>'
 

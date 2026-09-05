@@ -2955,7 +2955,25 @@ async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
     Retracted entries are absent: they are already dealt with.
     """
     limit = _clamp_int(limit, 1, 500, 50)
+    queue = await _kb_review_queue_full(session)
+    return queue[:limit]
 
+
+async def count_kb_review_queue(session: AsyncSession) -> int:
+    """The true size of kb_review_queue's list, uncapped by `limit` --
+    for a summary tile, which must not read as a total when it is actually
+    `min(true_count, limit)`. Shares _kb_review_queue_full with
+    kb_review_queue itself rather than re-deriving the four-bucket
+    classification a second way that could silently drift from it."""
+    return len(await _kb_review_queue_full(session))
+
+
+async def _kb_review_queue_full(session: AsyncSession) -> list[dict]:
+    """Every entry needing review, worst first, with no `limit` applied --
+    see kb_review_queue's docstring for the four-bucket classification this
+    implements. Split out so kb_review_queue (bounded, for actually listing
+    entries) and count_kb_review_queue (a true count, for a summary tile)
+    can't disagree about what counts as "needs attention"."""
     rows = (
         await session.execute(
             select(Trace).where(*commons_visible()).order_by(Trace.commons_hits.desc())
@@ -3016,7 +3034,7 @@ async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
     # `rows` is already hits-descending, and Python's sort is stable, so
     # sorting on the bucket alone preserves that ordering within each one.
     queue.sort(key=lambda item: order[item["bucket"]])
-    return queue[:limit]
+    return queue
 
 
 # --- The CommonTrace Knowledge Base (opt-in, operator-curated) ---------

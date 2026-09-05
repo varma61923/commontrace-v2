@@ -32,10 +32,14 @@ deleting the files (or the repo) is deletion.
 ### Hub tier (implemented in `hub/`; not currently deployed anywhere)
 
 A real Hub server now exists in this repository (`hub/`, see
-`hub/README.md`), exposing the six MCP tools `protocol/PROTOCOL.md` §5
-describes (`search_traces`, `contribute_trace`, `get_trace`, `vote_trace`,
-`amend_trace`, `list_tags`) over Postgres, with an `org_id` on every trace
-row. What follows describes what that codebase actually does — it is not a
+`hub/README.md`), exposing the tool surface `protocol/PROTOCOL.md` §5
+describes — the original six `Trace`-CRUD calls (`search_traces`,
+`contribute_trace`, `get_trace`, `vote_trace`, `amend_trace`, `list_tags`)
+plus everything `hub/README.md`'s own "What it is" section lists beyond
+them (self-service/whole-account deletion, the Knowledge Base, plan usage,
+fleet outcomes, the randomized holdout, and the causal value it produces)
+— over Postgres, with an `org_id` on every trace row. What follows describes
+what that codebase actually does — it is not a
 claim that any particular deployment of it exists or holds real customer
 data today. If/when an operator deploys `hub/`, this section is the accurate
 description of that deployment's storage and isolation behavior; if a

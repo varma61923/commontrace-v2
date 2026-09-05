@@ -332,6 +332,61 @@ class TestOneSessionSeesOneOrg:
         assert "THEIRS-acme-secret" not in response.text
 
 
+class TestMemoryPagination:
+    """search_traces has supported `offset`/`has_more` since the fix for
+    the product's own core retrieval defect (hub/crud.py:search_traces's
+    docstring) -- but this page used to call it with no offset and never
+    read `has_more` back, so a corpus with more than 50 matches showed
+    exactly 50 rows with no indication more existed and no link to reach
+    them."""
+
+    async def test_more_than_a_page_of_matches_offers_a_next_link(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            for i in range(55):
+                session.add(Trace(
+                    org_id=org_id, title=f"widget failure {i}",
+                    context_text="a distinctive phrase about widgets", solution_text="s",
+                    tags=[], agent_type="support",
+                ))
+
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            first_page = await client.get(
+                f"{console.CONSOLE_PATH}/memory", params={"q": "distinctive widgets"})
+            assert "Older" in first_page.text
+            assert "Newer" not in first_page.text
+
+            second_page = await client.get(
+                f"{console.CONSOLE_PATH}/memory",
+                params={"q": "distinctive widgets", "offset": 50},
+            )
+        assert "Newer" in second_page.text
+        # 55 rows at 50/page: the second page holds the remaining 5, so
+        # there is nothing further to page to.
+        assert "Older" not in second_page.text
+
+    async def test_a_single_page_of_matches_offers_no_pagination_links(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=org_id, title="one widget failure",
+                context_text="a distinctive phrase about widgets", solution_text="s",
+                tags=[], agent_type="support",
+            ))
+
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/memory", params={"q": "distinctive widgets"})
+        assert "Older" not in response.text
+        assert "Newer" not in response.text
+
+
 # --- Read-only --------------------------------------------------------------
 
 
@@ -378,6 +433,48 @@ class TestCustomerContentIsEscaped:
             response = await client.get(
                 f"{console.CONSOLE_PATH}/memory", params={"q": '"><script>alert(1)</script>'})
         assert "<script>alert(1)" not in response.text
+
+
+class TestTheKBPageShowsWhyASubmissionWasDeclined:
+    async def test_a_rejection_reason_reaches_the_page(self, session_factory, org_and_key, config):
+        """`_render_kb` used to read `s.get('reviewer_note')`, a key
+        `_submission_to_wire` never produces -- the field is named
+        `rejection_reason` there. The lookup always came back `None`, so
+        this column silently rendered '—' for every declined proposal,
+        no matter what an operator actually typed as the reason."""
+        from hub import crud
+        from hub.abuse import make_rate_limiter
+        from hub.models import KnowledgeBaseSubmission
+
+        org_id, raw_key = org_and_key
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            submission = await crud.submit_kb_entry(
+                session, org_id, config, rate_limiter,
+                title="t", context_text="c", solution_text="s",
+                tags=[], agent_type="code", rationale="substrate knowledge",
+            )
+        async with session_scope(session_factory) as session:
+            other_org = Organization(name="Operator Org")
+            session.add(other_org)
+            await session.flush()
+            operator_org_id = other_org.id
+        async with session_scope(session_factory) as session:
+            await crud.review_kb_submission(
+                session, submission["id"], "reject", operator_org_id, reviewer="op",
+                rejection_reason="this is your own business logic, not substrate knowledge",
+            )
+        # Sanity check the row actually holds what the test expects, under
+        # the field name production code actually uses -- so a future rename
+        # of BOTH sides together can't make this test pass for the wrong reason.
+        async with session_scope(session_factory) as session:
+            row = await session.get(KnowledgeBaseSubmission, submission["id"])
+            assert row.rejection_reason == "this is your own business logic, not substrate knowledge"
+
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            text = (await client.get(f"{console.CONSOLE_PATH}/kb")).text
+        assert "this is your own business logic, not substrate knowledge" in text
 
 
 # --- The pages themselves ---------------------------------------------------
