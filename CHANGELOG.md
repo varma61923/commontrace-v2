@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`experiment_status` (the MCP tool) reintroduced a bug this file already
+  recorded as fixed once.** The CLI's `commontrace experiment` scopes its
+  report to the store's *current* randomization (salt) — changing the
+  holdout rate rotates the salt on purpose, and pooling assignments from
+  two randomizations lets one occasion sit in opposite arms, which
+  `integrity.check_assignment_drift` correctly flags as COMPROMISED. The
+  MCP tool added later for the same report never got that scoping: it read
+  every assignment ever logged, so an operator who followed the documented
+  workflow (`experiment --configure` to widen a holdout) would see the CLI
+  report a clean, running experiment while an agent calling
+  `experiment_status` on the identical store saw COMPROMISED — two
+  surfaces disagreeing about the same store. The scoping logic is now a
+  shared `experiment_cmd.scope_to_current_salt()` both callers use, so the
+  two cannot drift apart again the same way. `tests/test_mcp_server.py`
+  drives this over a real MCP call, not just the underlying function.
+
+- **`amendment_chain()` walked a trace's amendment lineage with one
+  database round trip per link.** `hub/crud.py`'s BFS issued one query per
+  level of the chain, and nothing capped how deep a chain gets — repeated
+  `amend_trace` calls on the same trace is this codebase's own documented
+  curation pattern ("each attaching whatever became known since"). Reachable
+  via the customer-facing `delete_trace` MCP tool (not just the
+  operator-only `purge_trace`), so an org that built one very deep chain
+  could make a self-service delete hold a pooled database connection open
+  for thousands of sequential round trips. Replaced with a single query —
+  two independently-recursive CTEs (one per link direction, unioned), since
+  Postgres allows a recursive term to self-reference at most once and a
+  single bidirectional recursive term is rejected outright
+  (`InvalidRecursionError`, caught by running this against a real Postgres
+  16 instance, not just a compiled-SQL read). `hub/tests/test_manage.py`
+  asserts a 30-deep chain still costs at most two queries and returns the
+  exact right id set.
+
+- **A working, user-facing local flag had its value silently dropped at
+  the Hub sync boundary.** `commontrace capture --profile <name>` has
+  populated `Trace.profile` on disk since the schema was written, and the
+  Hub already modeled the column, read it back on every `get_trace`/
+  `search_traces`, and correctly carried it forward on every `amend_trace`
+  call — but `contribute_trace`, the only place a NEW trace is ever
+  created, had no parameter for it at all. A captured trace's `--profile`
+  value therefore vanished the moment `commontrace sync --push-traces`
+  sent it to a Hub, with no error anywhere. `contribute_trace` now accepts
+  `profile`, validated the same way every other free-text field is
+  (`reject_unstorable_text`, a length check against the column's actual
+  `String(128)` width) and folded into the idempotency hash only when set,
+  so every existing caller (including `submit_kb_entry`, which never
+  passes it) keeps hashing exactly as before. `hub_client.py`'s trace-push
+  path now forwards it. `extensions`/`watch_condition`/`review_after`
+  — the other three fields `amend_trace` already carries forward
+  unconditionally — stay at their contribute-time defaults: nothing
+  anywhere populates them yet, unlike `profile`, and `extensions` being an
+  open `additionalProperties: true` object needs its own validation pass
+  (a NUL byte or lone surrogate nested inside a JSONB value fails at
+  INSERT the same way a flat string column does) before it can safely
+  accept arbitrary customer JSON. 7 new tests in
+  `hub/tests/test_profile_input.py` and `tests/test_hub_client.py`.
+
+- **A customer could never learn why an operator declined their Knowledge
+  Base proposal.** `hub/console.py`'s "Note" column read
+  `s.get('reviewer_note')`, a key `crud._submission_to_wire` never
+  produces — the field is named `rejection_reason` there. The lookup
+  always returned `None`, so the column rendered "—" unconditionally, no
+  matter what an operator actually typed as the reason.
+
+- **The admin overview's fleet-wide tiles silently undercounted past 200
+  organizations.** `traces_by_org`/`quarantined_by_org`/`keys_by_org` in
+  `hub/admin.py:_overview` are already unrestricted, fleet-wide `GROUP BY`
+  aggregates — but `total_traces`/`total_quarantined`/`total_keys` were
+  summed from `rows`, the per-org table capped at the first `_MAX_ROWS`
+  (200) organizations by name. Past 200 orgs, the three top-line tiles an
+  operator scans first would quietly stop matching reality, with no
+  truncation notice anywhere near them (the one that exists sits below the
+  per-org table). Fixed by summing the already-complete aggregate dicts
+  directly. The admin Knowledge Base page had the identical defect on its
+  "awaiting review"/"needs attention"/"retracted" tiles, taken from lists
+  capped the same way; `kb_review_queue`'s four-bucket classification is
+  now split into a shared, unbounded `_kb_review_queue_full` so a new
+  `count_kb_review_queue` can report the true total without a second,
+  potentially-drifting reimplementation of the same buckets. All four
+  affected sections now carry a truncation notice when the rendered list
+  is shorter than the true count.
+
+- **The customer-facing memory-search page had no way to reach a result
+  past the 50th.** `search_traces` has returned `offset`/`has_more`
+  since the fix for this product's own core retrieval defect (its own
+  docstring), but `hub/console.py`'s `/memory` route called it with no
+  offset and never read `has_more` back — a corpus with more than 50
+  matches showed exactly 50 rows with no indication more existed and no
+  control to page further. Wired through to Newer/Older links.
+
+- **Doc drift**: `hub/README.md`'s tool listing said "Twelve more are
+  Hub-specific," omitting `value_delivered` — the tool implementing this
+  product's actual pricing mechanism (`STRATEGY.md` §11.5) — from both the
+  prose and the count. `README.md`'s local MCP tool table omitted
+  `experiment_status`. `DATA_RETENTION.md` still described the Hub as
+  exposing "the six MCP tools," a claim its own later section already
+  contradicted (and the Hub's real surface has grown well past that).
+
+### Changed
+
+- **`revision.py:same_treatment()`** had zero callers anywhere in the
+  repository, including tests. Removed rather than left unreachable.
+- **`HubConfig.api_key_header`** was defined but never read from the
+  environment and never consulted by the auth middleware, which hardcodes
+  `"Authorization"` everywhere — a config field that silently did nothing
+  no matter what it was set to. Removed.
+
+All of the above verified against a real Postgres 16 instance (not
+SQLite/mocks): the full suite (2057 CLI + Hub tests) passes, plus 16 new
+regression tests covering each fix, and a security review of the complete
+diff found no newly-introduced vulnerability.
+
 ### Added
 
 - **The causal instrument and the commercial number were never connected —
