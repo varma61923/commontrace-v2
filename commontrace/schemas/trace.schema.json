@@ -166,6 +166,21 @@
         }
       },
       "default": {}
+    },
+    "shared_with_commons": {
+      "type": "boolean",
+      "description": "True if this trace has been seeded into or shared with the CommonTrace Knowledge Base.",
+      "default": false
+    },
+    "quarantined": {
+      "type": "boolean",
+      "description": "True if this trace is quarantined and excluded from general search.",
+      "default": false
+    },
+    "quarantine_reason": {
+      "type": ["string", "null"],
+      "description": "Reason why the trace was quarantined, or null if not quarantined.",
+      "default": null
     }
   }
 }

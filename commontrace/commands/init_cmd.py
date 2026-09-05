@@ -32,8 +32,34 @@ def run(args: argparse.Namespace) -> int:
     else:
         os.makedirs(lessons, exist_ok=True)
         os.makedirs(traces, exist_ok=True)
+        attention = os.path.join(mem, "attention")
+        os.makedirs(attention, exist_ok=True)
         if args.agent_type == "code":
             os.makedirs(paths.episodes_dir(root), exist_ok=True)
+
+        attention_readme = os.path.join(attention, "README.md")
+        if not os.path.exists(attention_readme):
+            with open(attention_readme, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "# memory/attention/ — semantic retrieval\n\n"
+                    "Contains the semantic embedding index (`index.npz`) used by "
+                    "`commontrace query` and `memory/attention/query.py`.\n"
+                )
+        try:
+            import numpy as np
+            index_file = os.path.join(attention, "index.npz")
+            if not os.path.exists(index_file):
+                np.savez(
+                    index_file,
+                    slugs=np.array([], dtype=str),
+                    embeddings=np.zeros((0, 768), dtype=np.float32),
+                    model_name="multi-qa-mpnet-base-dot-v1",
+                    encoded_field="description+domain+tags+applies_when+do_not_apply_when+rule",
+                    timestamp="",
+                    n_lessons=0,
+                )
+        except Exception:
+            pass
 
         with open(os.path.join(lessons, "lesson_template.md"), "w", encoding="utf-8", newline="\n") as fh:
             fm = templates.lesson_frontmatter(

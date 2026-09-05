@@ -22,7 +22,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--solution", required=True, help="What worked")
     p.add_argument("--tags", default="", help="Comma-separated tags")
     p.add_argument(
-        "--agent-type", choices=paths.AGENT_TYPES, default=None,
+        "--agent-type", default=None,
         help="Defaults to the agent_type this store was initialized with.",
     )
     p.add_argument(
@@ -129,6 +129,15 @@ def _find_trace_by_occasion(tdir: str, occasion_id: str) -> str | None:
     -- both the date and the slug can differ between two captures under the
     SAME occasion id (a later day, a refined title), so matching on the
     computed path alone misses a file that is very much already there."""
+    suffix = _id_suffix(occasion_id)
+    for path in sorted(glob.glob(os.path.join(tdir, f"*_{suffix}.md"))):
+        try:
+            fm, _ = frontmatter.read(path)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(fm.get("id", "")) == occasion_id:
+            return path
+
     for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         try:
             fm, _ = frontmatter.read(path)

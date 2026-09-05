@@ -59,6 +59,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     # which is what a one-off experiment needs.
     p.add_argument("--holdout-rate", type=float, default=None)
     p.add_argument("--experiment-salt", default=None)
+    p.add_argument(
+        "--include-importance-floor",
+        type=int,
+        default=None,
+        help="Always include lessons with importance >= this floor (safety override, default: 4 in semantic retriever).",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -201,6 +207,8 @@ def run(args: argparse.Namespace) -> int:
         "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view."
     )
     script_args = [args.task, "--top-k", str(args.top_k)]
+    if args.include_importance_floor is not None:
+        script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
     script_path = os.path.join("memory", "attention", "query.py")
 
     if not args.experiment:

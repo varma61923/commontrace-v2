@@ -10,6 +10,18 @@ from commontrace import evidence_io, paths, taxonomy
 from commontrace.commands._traces import load_trace_candidates
 
 
+def _similarity_threshold(value: str) -> float:
+    try:
+        threshold = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number, got {value!r}") from None
+    if not (0 < threshold <= 1):
+        raise argparse.ArgumentTypeError(
+            f"must be > 0 and <= 1 (similarity range), got {threshold}"
+        )
+    return threshold
+
+
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         "taxonomy",
@@ -18,7 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "lessons from the gaps it finds).",
     )
     p.add_argument("--agent-type", default=None, help="Only consider traces of this agent_type.")
-    p.add_argument("--similarity-threshold", type=float, default=0.3)
+    p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
     p.add_argument("--min-cluster-size", type=int, default=2)
     p.add_argument("--json", action="store_true")
     p.add_argument("--html", action="store_true", help="Write HTML to memory/benchmark_reports/")

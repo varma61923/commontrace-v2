@@ -511,12 +511,22 @@ class _SharedPgPool:
         self.loop = asyncio.new_event_loop()
         self.pool = None
         self._init_error: BaseException | None = None
+        self._stop_event = threading.Event()
         ready = threading.Event()
         self._thread = threading.Thread(
             target=self._run, args=(dsn, ready), name="hub-ratelimit-pg", daemon=True
         )
         self._thread.start()
         if not ready.wait(timeout=_POOL_STARTUP_TIMEOUT_SECONDS):
+            self._stop_event.set()
+            def _cancel_and_stop():
+                for task in asyncio.all_tasks(self.loop):
+                    task.cancel()
+                self.loop.stop()
+            try:
+                self.loop.call_soon_threadsafe(_cancel_and_stop)
+            except RuntimeError:
+                pass
             raise TimeoutError(
                 f"timed out after {_POOL_STARTUP_TIMEOUT_SECONDS}s waiting for the "
                 "HUB_RATE_LIMIT_BACKEND=postgres connection pool to start"
@@ -539,13 +549,24 @@ class _SharedPgPool:
         except BaseException as exc:  # noqa: BLE001 - surfaced to __init__ via self._init_error
             self._init_error = exc
             ready.set()
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()
+            return
+        if self._stop_event.is_set():
+            if self.pool is not None:
+                try:
+                    self.loop.run_until_complete(self.pool.close())
+                except Exception:
+                    pass
+            if not self.loop.is_closed():
+                self.loop.close()
             return
         ready.set()
         try:
             self.loop.run_forever()
         finally:
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()
 
     async def _setup(self, asyncpg, dsn: str):
         pool = await asyncpg.create_pool(dsn, min_size=self._POOL_MIN_SIZE, max_size=self._POOL_MAX_SIZE)

@@ -85,6 +85,14 @@ ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule"
 _RULE_RE = re.compile(r"^##[ \t]*Rule[ \t]*\r?\n(.*?)(?=\n##[ \t]|\Z)", re.DOTALL | re.MULTILINE | re.IGNORECASE)
 
 
+def _safe_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+
 def extract_rule(body: str) -> str:
     """Extract the ## Rule section content from a lesson body (between ## Rule and next ##).
 
@@ -270,9 +278,9 @@ def main() -> int:
         # it on the very next run with "Model mismatch ... rebuild the index" -- a
         # loop this same staleness check should have caught instead of deferring to
         # query.py's stricter, later checks.
-        index_mtime = os.path.getmtime(INDEX_PATH)
+        index_mtime = _safe_mtime(INDEX_PATH)
         newest_lesson = max(
-            (os.path.getmtime(p) for p in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))),
+            (_safe_mtime(p) for p in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))),
             default=0.0,
         )
         try:

@@ -53,8 +53,11 @@ def load_traces(root=None, agent_type=None):
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
         if os.path.basename(p) == "README.md":
             continue
-        with open(p, encoding="utf-8-sig") as fh:
-            fm = mp.parse_frontmatter(fh.read())
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                fm = mp.parse_frontmatter(fh.read())
+        except OSError:
+            continue
         if not fm:
             continue
         if agent_type and fm.get("agent_type") != agent_type:
@@ -240,7 +243,12 @@ def main():
     traces = load_traces(root, args.agent_type)
 
     if not traces:
-        print("No traces with outcome data found. Run `commontrace capture` with outcome flags first.")
+        if args.json:
+            import json
+            print(json.dumps({"error": "no_traces",
+                              "message": "No traces with outcome data found. Run `commontrace capture` with outcome flags first."}))
+        else:
+            print("No traces with outcome data found. Run `commontrace capture` with outcome flags first.")
         sys.exit(0)
 
     baseline_traces, current_traces = split_baseline(traces)

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import sys
 
 from commontrace import (
+    distill,
     evidence_io,
     experiment,
     impact,
@@ -15,6 +17,7 @@ from commontrace import (
     pilot,
     reliability,
     taxonomy,
+    trace_io,
 )
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
@@ -64,6 +67,20 @@ def _load_pilot_metrics(root: str, agent_type: str | None) -> dict | None:
         return None
 
 
+def _load_traces(root: str) -> list[tuple[str, dict]]:
+    tdir = paths.traces_dir(root)
+    traces: list[tuple[str, dict]] = []
+    for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
+        if os.path.basename(path) == "README.md":
+            continue
+        try:
+            instance, _ = trace_io.read(path)
+            traces.append((path, instance))
+        except Exception:
+            continue
+    return traces
+
+
 def run(args: argparse.Namespace) -> int:
     if args.json and args.html:
         print("[commontrace] --json and --html are mutually exclusive.", file=sys.stderr)
@@ -71,7 +88,25 @@ def run(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
 
-    trace_candidates = load_trace_candidates(root, args.agent_type)
+    raw_traces = _load_traces(root)
+    all_instances = [inst for _, inst in raw_traces]
+    trace_instances = [
+        inst for _, inst in raw_traces
+        if not args.agent_type or inst.get("agent_type") == args.agent_type
+    ]
+    trace_candidates = [
+        distill.TraceCandidate(
+            id=inst["id"],
+            path=path,
+            title=inst.get("title", ""),
+            context_text=inst.get("context_text", ""),
+            solution_text=inst.get("solution_text", ""),
+            tags=[str(t) for t in inst.get("tags", []) if t is not None] if isinstance(inst.get("tags"), (list, tuple)) else [],
+            agent_type=inst.get("agent_type", ""),
+        )
+        for path, inst in raw_traces
+        if inst.get("id") and (not args.agent_type or inst.get("agent_type") == args.agent_type)
+    ]
     lessons = evidence_io.load_active_lessons(root)
     tax = taxonomy.build_taxonomy(
         trace_candidates, lessons,
@@ -79,8 +114,7 @@ def run(args: argparse.Namespace) -> int:
         min_cluster_size=args.min_cluster_size,
     )
 
-    evidence = evidence_io.load_evidence(root)
-    trace_instances = load_trace_instances(root, args.agent_type)
+    evidence = evidence_io.load_evidence(root, traces=all_instances)
     impact_report = impact.compute_impact(
         evidence, trace_instances,
         cost_per_1k_tokens=args.cost_per_1k_tokens,

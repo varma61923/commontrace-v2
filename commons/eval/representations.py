@@ -62,7 +62,7 @@ HERE = Path(__file__).resolve().parent
 NUM_PERM = commons.COMMONS_NUM_PERM
 THRESHOLD = commons.DEFAULT_COMMONS_THRESHOLD
 
-_WORD = re.compile(r"[a-z0-9]+")
+_WORD = re.compile(r"\w+", re.UNICODE)
 
 
 # --- Candidate token representations ------------------------------------

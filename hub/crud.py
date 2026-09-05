@@ -799,7 +799,7 @@ async def search_traces(
     if traces:
         await session.execute(
             update(Trace)
-            .where(Trace.id.in_([t.id for t in traces]))
+            .where(Trace.org_id == org_id, Trace.id.in_([t.id for t in traces]))
             .values(retrievals=Trace.retrievals + 1)
         )
     return {
@@ -1696,6 +1696,7 @@ async def amend_trace(
         "solution_text": resolved_solution,
         "tags": resolved_tags,
         "agent_type": original.agent_type,
+        "profile": original.profile,
     }
     validate_trace(wire)
     validate_size(wire, config)

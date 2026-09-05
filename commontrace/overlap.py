@@ -51,6 +51,11 @@ import re
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 # Signature length. Standard error of the Jaccard estimate is ~1/sqrt(k),
 # so 128 permutations gives ~8.8% -- fine for "is the overlap 5% or 40%?",
 # which is the decision this exists to inform. Raise it if you ever need to
@@ -172,6 +177,10 @@ def estimate_jaccard(sig_a: list[int], sig_b: list[int]) -> float:
     """Fraction of agreeing positions == unbiased Jaccard estimate."""
     if not sig_a or not sig_b or len(sig_a) != len(sig_b):
         raise ValueError("signatures must be non-empty and the same length")
+    if np is not None:
+        arr_a = np.asarray(sig_a)
+        arr_b = np.asarray(sig_b)
+        return float(np.equal(arr_a, arr_b).mean())
     return sum(1 for x, y in zip(sig_a, sig_b) if x == y) / len(sig_a)
 
 

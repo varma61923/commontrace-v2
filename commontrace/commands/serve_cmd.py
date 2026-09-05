@@ -18,7 +18,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Expose the local store as an MCP server on stdin/stdout, so an agent "
             "with no terminal can retrieve, capture, and curate its own memory. "
-            "Run by the MCP client, not by hand -- `commontrace install --mcp` "
+            "Run by the MCP client, not by hand -- `commontrace install --target generic-mcp` "
             "writes the config entry that launches it."
         ),
     )

@@ -162,6 +162,9 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     return fm, body
 
 
+_DIR_MODE_CACHE: dict[str, int] = {}
+
+
 def _new_file_mode(target_dir: str) -> int:
     """The mode a brand-new file would get under the current process
     umask -- without the os.umask(0) / os.umask(restore) round-trip this
@@ -174,11 +177,19 @@ def _new_file_mode(target_dir: str) -> int:
     Instead, ask the kernel to apply the umask to a throwaway file: a
     single open() with O_CREAT combines the requested mode with the
     umask atomically, with no shared process state mutated in between.
+    Cached per directory to avoid redundant probe file churn on every write.
     """
+    resolved_dir = os.path.abspath(target_dir)
+    cached = _DIR_MODE_CACHE.get(resolved_dir)
+    if cached is not None:
+        return cached
+
     probe_path = os.path.join(target_dir, f".commontrace-umask-probe-{uuid.uuid4().hex}")
     fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
-        return stat.S_IMODE(os.fstat(fd).st_mode)
+        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        _DIR_MODE_CACHE[resolved_dir] = mode
+        return mode
     finally:
         os.close(fd)
         os.unlink(probe_path)

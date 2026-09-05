@@ -99,16 +99,30 @@ def _load_frontmatter(fm_text: str):
     return yaml.load(fm_text, Loader=_StrictBoolLoader)  # nosec B506
 
 
-def load_importances() -> "tuple[dict[str, int], int]":
+class ImportancesResult(tuple):
+    newest_active_mtime: float
+
+    def __new__(cls, importances: dict[str, int], n_parsed: int, newest_active_mtime: float = 0.0):
+        obj = super().__new__(cls, (importances, n_parsed))
+        obj.newest_active_mtime = newest_active_mtime
+        return obj
+
+
+def load_importances(return_mtimes: bool = False) -> tuple:
     """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
     n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
     template) whose frontmatter was successfully parsed, active or not, for Alpha
     operational-cost telemetry (how many frontmatters retrieval had to read)."""
     out: dict[str, int] = {}
     n_parsed = 0
+    newest_active_mtime = 0.0
     for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0.0
         try:
             with open(path, "r", encoding="utf-8-sig") as fh:
                 content = fh.read()
@@ -138,11 +152,14 @@ def load_importances() -> "tuple[dict[str, int], int]":
         slug = frontmatter.get("name")
         if not slug or not _SLUG_RE.match(str(slug)):
             continue
+        newest_active_mtime = max(newest_active_mtime, mtime)
         try:
             out[str(slug)] = int(frontmatter.get("importance", 3))
         except (TypeError, ValueError):
             out[str(slug)] = 3
-    return out, n_parsed
+    if return_mtimes:
+        return out, n_parsed, newest_active_mtime
+    return ImportancesResult(out, n_parsed, newest_active_mtime)
 
 
 # Each record here is small, fixed-shape operational-cost metadata (see the
@@ -200,6 +217,7 @@ def check_staleness(
     lessons_dir: str,
     indexed_slugs: "set[str]",
     active_slugs: "set[str]",
+    newest_active_mtime: "float | None" = None,
 ):
     """Return a list of human-readable reasons the on-disk index may no longer match the
     current lesson store, or [] if it looks current.
@@ -243,35 +261,39 @@ def check_staleness(
     except OSError:
         index_mtime = None
     if index_mtime is not None:
-        newest_active_mtime = 0.0
-        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
-            if os.path.basename(path) == "lesson_template.md":
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if mtime <= index_mtime:
-                continue  # can't raise newest_active_mtime past index_mtime either way
-            try:
-                with open(path, "r", encoding="utf-8-sig") as fh:
-                    content = fh.read()
-            except OSError:
-                continue
-            delims = list(_DELIM_RE.finditer(content))
-            if len(delims) < 2:
-                continue
-            try:
-                frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
-            except yaml.YAMLError:
-                continue
-            if not isinstance(frontmatter, dict):
-                continue
-            if frontmatter.get("status", "active") != "active":
-                continue
-            newest_active_mtime = max(newest_active_mtime, mtime)
-        if newest_active_mtime > index_mtime:
-            reasons.append("an active lesson file was modified after the index was last built")
+        if newest_active_mtime is not None:
+            if newest_active_mtime > index_mtime:
+                reasons.append("an active lesson file was modified after the index was last built")
+        else:
+            newest_active = 0.0
+            for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+                if os.path.basename(path) == "lesson_template.md":
+                    continue
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if mtime <= index_mtime:
+                    continue  # can't raise newest_active past index_mtime either way
+                try:
+                    with open(path, "r", encoding="utf-8-sig") as fh:
+                        content = fh.read()
+                except OSError:
+                    continue
+                delims = list(_DELIM_RE.finditer(content))
+                if len(delims) < 2:
+                    continue
+                try:
+                    frontmatter = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
+                except yaml.YAMLError:
+                    continue
+                if not isinstance(frontmatter, dict):
+                    continue
+                if frontmatter.get("status", "active") != "active":
+                    continue
+                newest_active = max(newest_active, mtime)
+            if newest_active > index_mtime:
+                reasons.append("an active lesson file was modified after the index was last built")
 
     return reasons
 
@@ -400,7 +422,8 @@ def main() -> int:
     # importance-floor override -- load_importances() only walks currently
     # ACTIVE lesson files on disk, so this is also the authoritative "is this
     # index slug still active" set.
-    importances, n_frontmatters_parsed = load_importances()
+    importances_res = load_importances()
+    importances, n_frontmatters_parsed = importances_res
 
     # Top-K by cosine (descending), active lessons only. index.npz keeps a
     # row for every lesson it was built from; a lesson archived (or deleted
@@ -446,7 +469,11 @@ def main() -> int:
     # edited-but-not-renamed lesson, a below-floor addition/removal, or a forgotten
     # rebuild after any lesson-store change. See check_staleness()'s docstring.
     stale_reasons = check_staleness(
-        INDEX_PATH, LESSONS_DIR, indexed_slugs, set(importances.keys())
+        INDEX_PATH,
+        LESSONS_DIR,
+        indexed_slugs,
+        set(importances.keys()),
+        newest_active_mtime=getattr(importances_res, "newest_active_mtime", None),
     )
 
     brief_lines = [

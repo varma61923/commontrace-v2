@@ -1043,30 +1043,44 @@ def persist_report(clean_report, ts=None):
     """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json.
     Returns the path written. `ts` (a datetime) lets callers reuse the same instant used
     to build the report's own `timestamp` field, so filenames and content agree.
+
+    Atomic: writes to a .tmp file then os.replace() so a concurrent reader never
+    sees a partial file, and a crash mid-write leaves a .tmp orphan rather than
+    corrupting the real report.
     """
+    import tempfile
     ts = ts or datetime.datetime.now()
     out_dir = _reports_dir()
     os.makedirs(out_dir, exist_ok=True)
     # Microseconds, not just seconds: two `bench` runs within the same
     # second (a scripted loop, two CI jobs landing close together) produced
-    # the identical filename at second resolution, and the second run's
-    # `open(path, "w")` silently overwrote the first's report with no
-    # warning -- an entire benchmark run's history lost, and load_stored_reports'
-    # diff/history trend silently missing an entry it never knew existed.
-    # Microseconds sort in the same chronological order this format already
-    # relies on (a fixed-width, zero-padded numeric suffix), so this changes
-    # nothing about how load_stored_reports orders reports.
+    # the identical filename at second resolution.
     base = ts.strftime("%Y-%m-%d_%H%M%S_%f")
     path = os.path.join(out_dir, f"{base}.json")
     # Belt and braces: even microsecond resolution is not a hard guarantee
-    # on every platform/clock. Fall back to a numeric suffix rather than
-    # ever silently overwriting an existing report.
+    # on every platform/clock. Fall back to a numeric suffix.
+    # Use zero-padded 4-digit suffix so collision files sort AFTER the base
+    # file (e.g. "base_0001.json" > "base.json" in ASCII order, whereas the
+    # former "-1" suffix sorts BEFORE "." and corrupted chronological order).
     suffix = 1
     while os.path.exists(path):
-        path = os.path.join(out_dir, f"{base}-{suffix}.json")
+        path = os.path.join(out_dir, f"{base}_{suffix:04d}.json")
         suffix += 1
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(clean_report, fh, indent=2, default=str)
+    # Atomic write: serialise to a sibling .tmp file, then rename into place.
+    # os.replace is atomic on POSIX (and best-effort on Windows). A crash
+    # between write and replace leaves a harmless orphan .tmp; it never
+    # corrupts an existing .json.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            json.dump(clean_report, fh, indent=2, default=str)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -1401,7 +1415,7 @@ def _md_to_html_fragment(md_text):
         # Escape raw content FIRST so arbitrary frontmatter text (project names, lesson
         # titles, etc.) containing <, >, or & can't inject markup into the report --
         # markdown syntax chars (*, `, _) aren't HTML-special so escaping first is safe.
-        text = html.escape(text, quote=False)
+        text = html.escape(text, quote=True)
         # bold **...** or __...__
         text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
         text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
@@ -1660,7 +1674,11 @@ def main():
     lessons, skipped_lessons = load_lessons()
 
     if not episodes:
-        print("Not enough episodes to compute. Run /commontrace a few times first.")
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "not_enough_episodes",
+                              "message": "Not enough episodes to compute. Run /commontrace a few times first."}))
+        else:
+            print("Not enough episodes to compute. Run /commontrace a few times first.")
         sys.exit(0)
 
     now = datetime.datetime.now()
@@ -1732,13 +1750,30 @@ def main():
     if args.json:
         print(json.dumps(clean_report, indent=2, default=str))
     elif args.html:
+        import tempfile
         md = render_markdown(report, alerts)
         html_report = render_html(md, report["timestamp"], alerts)
         out_dir = _reports_dir()
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{now.strftime('%Y-%m-%d_%H%M%S')}.html")
-        with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(html_report)
+        # Microsecond precision + zero-padded collision suffix, consistent with
+        # persist_report's JSON naming so reports pair cleanly by timestamp.
+        html_base = now.strftime("%Y-%m-%d_%H%M%S_%f")
+        out_path = os.path.join(out_dir, f"{html_base}.html")
+        html_suffix = 1
+        while os.path.exists(out_path):
+            out_path = os.path.join(out_dir, f"{html_base}_{html_suffix:04d}.html")
+            html_suffix += 1
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".html.tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(html_report)
+            os.replace(tmp_path, out_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         print(f"HTML report written: {out_path}")
         if alerts:
             print("\nAlerts:")

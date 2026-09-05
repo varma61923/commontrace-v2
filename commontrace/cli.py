@@ -117,7 +117,15 @@ def main(argv: list[str] | None = None) -> int:
         # 130 is the shell convention for SIGINT; a traceback here is noise.
         print("\n[commontrace] interrupted.", file=sys.stderr)
         return 130
-    except (OSError, ValueError, KeyError, csv.Error) as exc:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        csv.Error,
+        TypeError,
+        IndexError,
+        AttributeError,
+    ) as exc:
         # Operational errors a user can cause with a bad argument or a
         # corrupt file: a malformed JSON signature file, a directory passed
         # where a file was meant, a missing key in someone else's export.
