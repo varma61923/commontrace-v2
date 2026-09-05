@@ -778,6 +778,26 @@ class TestManageCommands:
         assert "retracted:" in out
         assert live  # the surviving entry is the one counted above
 
+    async def test_kb_stats_needs_review_counts_all_four_kb_review_buckets(
+        self, session_factory, orgs, capsys
+    ):
+        """`kb-review` lists FOUR buckets needing attention: urgent
+        (security-flagged), disputed, stale, and never_hit. `kb_stats`'s
+        "needs review" hint used to be computed as
+        `standings[disputed] + standings[stale]` -- `standing_of()` has no
+        "urgent" or "never_hit" value at all, so a security-flagged entry
+        or one that has never matched anything was invisible to this
+        summary even while `kb-review` itself listed it first. Neither
+        entry seeded below is disputed or stale, so the old computation
+        would have reported 0 and suppressed the hint entirely."""
+        urgent = await _seed(session_factory, orgs["operator"], "urgent entry", hits=1)
+        await _vote(session_factory, orgs["cust-a"], urgent, "down", feedback_tag="security_concern")
+        await _seed(session_factory, orgs["operator"], "never hit", hits=0)
+
+        await manage.kb_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "`kb-review` lists the 2 entry(ies) needing a decision." in out
+
 
 # --- 8. commons_seed's review_after field -------------------------------
 

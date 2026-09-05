@@ -407,6 +407,23 @@ class TestSubmissionReviewCommands:
             org = await session.get(Organization, two_orgs["org_a"])
         assert org.bonus_commons_queries == 42
 
+    async def test_approve_submission_reports_the_clamped_credit_not_the_raw_input(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        """review_kb_submission clamps `credit` to [0, 2**63-1] before
+        writing it -- the operator-facing message must describe what was
+        actually written to the database, not the raw --credit argument,
+        or a negative (or absurdly large) value reads as granted when it
+        was silently bounded to something else."""
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        await manage.approve_submission(s["id"], two_orgs["org_b"], "-50", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "credited 0 bonus" in out
+        assert "-50" not in out
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 0
+
     async def test_approve_submission_unknown_operator_org_reports_error(
         self, session_factory, config, two_orgs, capsys
     ):
@@ -515,6 +532,25 @@ class TestPurgeRequiresConfirmation:
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "y")  # not the exact word "yes"
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "aborted" in err
+
+    def test_ctrl_d_at_the_prompt_aborts_cleanly_instead_of_crashing(self, config, monkeypatch, capsys):
+        """Ctrl-D at an interactive prompt raises EOFError from input() --
+        an entirely ordinary way to bail out, not an error condition.
+        Uncaught, this reached the operator as a raw Python traceback
+        instead of the same clean 'aborted' message every other way of
+        saying no already gets, and nothing destructive had happened yet
+        at the point it was raised."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+
+        def _raise_eof(prompt):
+            raise EOFError()
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
         assert exit_code == 2
         err = capsys.readouterr().err

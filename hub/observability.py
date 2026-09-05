@@ -203,10 +203,16 @@ class Metrics:
         # The path is bucketed to the routes this app actually serves, so a
         # client cannot inflate cardinality by requesting /aaaa, /aaab, ...
         # -- an unbounded label set is the classic way a metrics endpoint
-        # becomes the outage.
+        # becomes the outage. `method` needs the identical treatment: an
+        # HTTP method is only constrained by RFC 7230's `token` grammar, so
+        # an unauthenticated caller hitting any nonexistent path (a cheap
+        # 404, gated by no rate limiter -- ApiKeyAuthMiddleware only meters
+        # the MCP path) could otherwise grow this process-lifetime,
+        # never-evicted dict without bound just by varying the verb string.
+        method_bucket = method if method in _KNOWN_METHODS else "OTHER"
         bucket = path if path in _KNOWN_PATHS else "other"
         with self._lock:
-            key = (method, bucket, status)
+            key = (method_bucket, bucket, status)
             self._requests[key] = self._requests.get(key, 0) + 1
             self._duration_sum_ms[bucket] = self._duration_sum_ms.get(bucket, 0.0) + duration_ms
 
@@ -245,6 +251,14 @@ class Metrics:
 
 
 _KNOWN_PATHS = frozenset({"/mcp", "/healthz", "/readyz", "/metrics"})
+
+# The standard HTTP methods any route on this app could plausibly receive
+# from a real client (GET/POST for most routes, DELETE for MCP session
+# teardown, HEAD/OPTIONS/PUT/PATCH from a generic client or proxy probing
+# capabilities) -- not an allowlist of what's actually wired to a handler,
+# just the bound on the label set `path` already gets for the identical
+# cardinality reason.
+_KNOWN_METHODS = frozenset({"GET", "POST", "DELETE", "HEAD", "OPTIONS", "PUT", "PATCH"})
 
 # One process-wide instance: middleware and route handlers are constructed at
 # different points in build_app, and threading a shared object through both
