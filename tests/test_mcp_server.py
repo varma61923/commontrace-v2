@@ -299,6 +299,12 @@ def test_experiment_status_scopes_to_the_current_randomization(server, store):
     assert out["running"] is True
     assert out["n_assignments"] == 20, "pooled the old salt's assignments in"
     assert out["excluded_other_randomization"] == 20
+    # The current salt's own rate (50%), not a blend with the old salt's
+    # default 10% -- (20*0.1 + 20*0.5)/40 = 0.3 is what an unscoped average
+    # over every logged assignment would report. `holdout_rate` used to be
+    # read from `_load()`'s unscoped average, computed before the scoping
+    # above ran, even though n_assignments/effects were already scoped.
+    assert out["holdout_rate"] == 0.5, "blended the old salt's rate in"
 
 
 # --- capture -------------------------------------------------------------
@@ -367,6 +373,31 @@ def test_propose_writes_candidates_the_rest_of_the_tooling_can_resolve(server, s
 def test_propose_on_an_empty_store_is_an_answer_not_an_error(server):
     out = call(server, "propose_lessons")
     assert out["ok"] and out["candidates"] == [] and out["note"]
+
+
+def test_propose_rejects_a_degenerate_similarity_cleanly(server, store):
+    """`similarity<=0` makes `distill.find_clusters` merge the WHOLE store
+    into one cluster (a deliberate, documented library behavior --
+    tests/test_distill.py exercises it directly) and then makes
+    `representative()`'s O(k^2) medoid search run over that single giant
+    cluster instead of the small near-duplicate groups it is sized for. An
+    agent passing similarity=0 to this customer-facing tool should get a
+    clean rejection, not an expensive scan and not a crash. This also
+    covers a second, adjacent bug the fix for the first one exposed:
+    argparse's `type=` validator calling sys.exit() on a bad value used to
+    propagate a bare SystemExit out of `_run_cli` -- uncaught by every
+    caller's `except Exception` -- instead of becoming this tool's normal
+    {"ok": false} contract."""
+    _capture_pattern(server)
+    out = call(server, "propose_lessons", similarity=0)
+    assert out["ok"] is False
+    assert "similarity" in out["error"].lower()
+
+
+def test_propose_rejects_a_similarity_above_one(server):
+    out = call(server, "propose_lessons", similarity=1.5)
+    assert out["ok"] is False
+    assert "similarity" in out["error"].lower()
 
 
 def test_draft_can_fill_a_lesson_in_over_several_calls(server):

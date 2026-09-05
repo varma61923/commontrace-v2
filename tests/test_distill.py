@@ -144,6 +144,29 @@ class TestDistillCommand:
         assert main(["distill", "--dest", str(store)]) == 0
         assert "nothing to distill" in capsys.readouterr().out
 
+    def test_a_degenerate_similarity_threshold_is_rejected_not_run(self, store, capsys):
+        """similarity<=0 makes find_clusters merge the whole store into one
+        cluster (a deliberate library behavior other tests exercise
+        directly) and then makes the O(k^2) medoid search after it run over
+        that single giant cluster. Rejected at the CLI argument-parsing
+        boundary -- the same value passed to the MCP `propose_lessons` tool
+        is rejected for the identical reason, since both route through this
+        parser."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        capsys.readouterr()
+        with pytest.raises(SystemExit) as exc:
+            main(["distill", "--dest", str(store), "--similarity-threshold", "0"])
+        assert exc.value.code != 0
+        assert "similarity" in capsys.readouterr().err.lower()
+
+    def test_a_similarity_threshold_above_one_is_rejected(self, store, capsys):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        capsys.readouterr()
+        with pytest.raises(SystemExit) as exc:
+            main(["distill", "--dest", str(store), "--similarity-threshold", "1.5"])
+        assert exc.value.code != 0
+        assert "similarity" in capsys.readouterr().err.lower()
+
     def test_writes_a_review_status_candidate_lesson_from_a_repeated_pattern(self, store, capsys):
         main(["init", "--agent-type", "support", "--dest", str(store)])
         for i in range(3):

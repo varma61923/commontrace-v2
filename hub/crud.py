@@ -2106,9 +2106,29 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     beside it say how far each trace is from an answer.
     """
     org = await session.get(Organization, org_id)
+    # A Core column-select, not `select(HoldoutObservation)`: the latter
+    # hydrates a full mapped ORM entity per row (identity map, instrumented
+    # attributes) for every one of what can be hundreds of thousands of rows
+    # under a long-running experiment, and every field it hydrates beyond the
+    # seven read below is wasted work. Measured on a live Postgres at 200k
+    # rows: ORM instantiation alone (sqlalchemy.orm.loading) accounted for
+    # roughly 60% of a 12-SECOND call -- a customer-facing MCP tool
+    # (fleet_outcomes/value_delivered) that a fleet doing ordinary retrieval
+    # volume reaches within months, not an edge case. Selecting only the
+    # columns this function actually reads returns lightweight Row tuples
+    # instead, with no change to what is computed: same rows, same fields,
+    # same downstream Assignment objects.
     rows = (
         await session.execute(
-            select(HoldoutObservation).where(
+            select(
+                HoldoutObservation.trace_id,
+                HoldoutObservation.occasion_id,
+                HoldoutObservation.injected,
+                HoldoutObservation.succeeded,
+                HoldoutObservation.salt,
+                HoldoutObservation.created_at,
+                HoldoutObservation.trace_revision,
+            ).where(
                 HoldoutObservation.org_id == org_id,
                 # Scoped to the CURRENT experiment. Observations from an
                 # earlier salt were drawn from a different randomization
@@ -2134,7 +2154,8 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 # of them, which is the only way that check can exist.
             )
         )
-    ).scalars().all()
+    ).all()  # plain Row tuples (named attribute access below), not `.scalars()`
+    # -- there is no single-entity column to scalar-ize; this selects seven.
 
     assignments = [
         integrity.Assignment(

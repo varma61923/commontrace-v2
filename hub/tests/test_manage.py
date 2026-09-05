@@ -58,6 +58,31 @@ class TestCreateOrgWarnsOnDuplicateName:
         assert count == 2
 
 
+async def test_list_orgs_attributes_active_key_counts_correctly(session_factory, config, two_orgs, capsys):
+    """Regression test for switching from one ApiKey query per org (in the
+    loop) to a single grouped query looked up by org_id -- pins that a
+    batched count doesn't get mixed up between orgs, which is the real risk
+    a refactor like this introduces. org_a gets 2 active keys and 1 revoked
+    (which must not count), org_b gets 1; a bug that summed instead of
+    grouped, or grouped by the wrong key, would show up as wrong per-org
+    numbers here even though the total across both is right either way."""
+    async with session_scope(session_factory) as session:
+        await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        revoked = await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        await auth.revoke_api_key(session, revoked.key_id)
+        await auth.issue_api_key(session, two_orgs["org_b"], expires_days=90)
+
+    capsys.readouterr()
+    await manage.list_orgs(session_factory=session_factory)
+    out = capsys.readouterr().out
+    for line in out.splitlines():
+        if two_orgs["org_a"] in line:
+            assert "active_keys=2" in line, line
+        elif two_orgs["org_b"] in line:
+            assert "active_keys=1" in line, line
+
+
 async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
     await manage.stats(session_factory=session_factory)
     out = capsys.readouterr().out

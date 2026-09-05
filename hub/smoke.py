@@ -40,10 +40,6 @@ from hub import plans
 SMOKE_TAG = "commontrace-smoke"
 
 
-class CheckFailed(Exception):
-    """A smoke check did not hold. The message says which property broke."""
-
-
 def _content(result):
     """MCP tool results arrive as structured content or as a JSON text block."""
     structured = getattr(result, "structured_content", None)

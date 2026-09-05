@@ -228,11 +228,23 @@ async def list_orgs(session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         orgs = (await session.execute(select(Organization))).scalars().all()
+        # One grouped query for every org's active-key count, not one query
+        # per org in the loop below -- the same fix hub/admin.py:_overview
+        # already applies to its own per-org tiles, for the identical
+        # reason: an operator with hundreds of tenants should not pay
+        # hundreds of round trips to load a report they run routinely.
+        keys_by_org = dict(
+            (
+                await session.execute(
+                    select(ApiKey.org_id, func.count())
+                    .where(ApiKey.revoked_at.is_(None))
+                    .group_by(ApiKey.org_id)
+                )
+            ).all()
+        )
         for org in orgs:
-            n_keys = (
-                await session.execute(select(ApiKey).where(ApiKey.org_id == org.id, ApiKey.revoked_at.is_(None)))
-            ).scalars().all()
-            print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={len(n_keys)}")
+            n_keys = keys_by_org.get(org.id, 0)
+            print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={n_keys}")
 
 
 async def stats(session_factory=None) -> None:

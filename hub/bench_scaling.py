@@ -184,6 +184,55 @@ async def _seed(session, org_id: str, n: int, start: int) -> None:
     )
 
 
+async def _seed_holdout(session, org_id: str, salt: str, n: int, start: int) -> None:
+    """Bulk-insert n HoldoutObservation rows under one org/salt -- the
+    growth dimension hub/crud.py:causal_effects (and value_delivered, which
+    calls it) actually scales with. It has nothing to do with an org's
+    trace count -- _seed above grows a different table entirely -- which is
+    exactly why causal_effects/value_delivered were absent from this file
+    before: the only sweep here grew traces, so a probe added to it would
+    have measured a flat line regardless of whether causal_effects itself
+    scaled, for having nothing to do with the axis being varied.
+
+    Raw INSERT ... SELECT over generate_series, matching _seed's own
+    reasoning: building n HoldoutObservation ORM objects in Python to
+    measure how fast Postgres (and the read path under test) handles them
+    would spend most of the runtime on the part that is not under test.
+    injected/succeeded are deterministic functions of i (i % 2, i % 3),
+    not real randomness, for the same reproducibility reason every other
+    modulo-based field in _seed's INSERT is.
+    """
+    # 40 distinct synthetic "lesson" ids sharing the observation pool,
+    # matching a real experiment's shape (many occasions per lesson, not
+    # one row per lesson) -- generated once per call, not per row, and
+    # passed as a bound array the same way _seed passes its title-fragment
+    # array, rather than derived from `i` in SQL (an id built by
+    # concatenating org_id with a suffix is not a valid uuid to cast).
+    lesson_ids = [str(uuid.uuid4()) for _ in range(40)]
+    await session.execute(
+        text(
+            """
+            INSERT INTO holdout_observations (
+                id, org_id, trace_id, occasion_id, injected, succeeded, salt, created_at
+            )
+            SELECT
+                gen_random_uuid(), :org_id,
+                CAST((CAST(:lesson_ids AS text[]))[1 + (i % 40)] AS uuid),
+                'occ-' || i,
+                (i % 2) = 0,
+                (i % 3) <> 0,
+                :salt,
+                now() - (i || ' seconds')::interval
+            FROM generate_series(CAST(:start AS bigint), CAST(:end AS bigint)) AS i
+            """
+        ),
+        {
+            "org_id": org_id, "salt": salt, "start": start, "end": start + n - 1,
+            "lesson_ids": lesson_ids,
+        },
+    )
+
+
 async def _time(fn, reps: int = REPS) -> float:
     """Median wall-clock milliseconds over `reps` runs, after one warm-up.
 
@@ -210,8 +259,9 @@ async def run(sizes: list[int], as_json: bool) -> int:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
 
+    holdout_salt = f"{bench_db_marker}-salt"
     async with session_scope(session_factory) as session:
-        org = Organization(name=bench_db_marker)
+        org = Organization(name=bench_db_marker, holdout_rate=0.1, holdout_salt=holdout_salt)
         session.add(org)
         await session.flush()
         org_id = org.id
@@ -269,6 +319,14 @@ async def run(sizes: list[int], as_json: bool) -> int:
             "entitlements": lambda: crud.entitlements(session, org_id),
             "agents_under_management": lambda: crud.agents_under_management(session, org_id),
             "fleet_outcomes": lambda: crud.fleet_outcomes(session, org_id),
+            # Grows with HoldoutObservation count, not trace count -- see
+            # _seed_holdout's docstring for why these were absent from this
+            # file before: a probe measured against the wrong growth axis
+            # reports a flat line regardless of how the read path actually
+            # scales. value_delivered calls causal_effects internally, so
+            # its curve is that same cost plus a constant.
+            "causal_effects": lambda: crud.causal_effects(session, org_id),
+            "value_delivered": lambda: crud.value_delivered(session, org_id),
         }
 
     results: dict[str, dict[int, float]] = {}
@@ -276,6 +334,12 @@ async def run(sizes: list[int], as_json: bool) -> int:
     for target in sizes:
         async with session_scope(session_factory) as session:
             await _seed(session, org_id, target - seeded, seeded + 1)
+            # Grown in lockstep with the trace corpus, under the same
+            # `target` sizes -- a separate table and a separate growth axis
+            # (see _seed_holdout's docstring), but reusing the same size
+            # sweep keeps one report answering both questions instead of
+            # requiring two separate runs.
+            await _seed_holdout(session, org_id, holdout_salt, target - seeded, seeded + 1)
         seeded = target
         # ANALYZE so the planner's row estimates match reality at this size.
         # Without it the planner keeps stale statistics and may choose a
@@ -283,6 +347,7 @@ async def run(sizes: list[int], as_json: bool) -> int:
         # measured curve an artifact of stale stats rather than of size.
         async with engine.begin() as conn:
             await conn.execute(text("ANALYZE traces"))
+            await conn.execute(text("ANALYZE holdout_observations"))
 
         async with session_scope(session_factory) as session:
             for name, fn in (await probes(session)).items():

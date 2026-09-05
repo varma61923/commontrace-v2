@@ -402,7 +402,15 @@ def run(args: argparse.Namespace) -> int:
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),
         n_lessons=len({o.lesson_slug for o in obs}),
-        holdout_rate=rate,
+        # NOT `rate` from `_load()` above -- that is an average over
+        # `all_rows`, every randomization ever logged, computed before
+        # scoping happened. `n_assignments`/`effects`/`report` are all
+        # correctly scoped to `rows` (the current salt only), so a rate
+        # blended across old and new randomizations would be exactly the
+        # "two quantities in one report, only one of them scoped" defect
+        # this file's own salt-scoping fix exists to prevent -- one field
+        # over. `rows` is non-empty here (guarded by `n_lines == 0` above).
+        holdout_rate=sum(r.rate for r in rows) / len(rows),
         effects=effects,
     )
 

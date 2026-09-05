@@ -159,11 +159,25 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     parser = argparse.ArgumentParser(prog="commontrace")
     subparsers = parser.add_subparsers(dest="command", required=True)
     module.add_parser(subparsers)
-    args = parser.parse_args([command, *argv])
 
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = args.func(args)
+    # parse_args itself, not just args.func(args), needs to be inside the
+    # redirect AND inside the SystemExit guard: an argparse `type=` validator
+    # that rejects its input (e.g. distill_cmd.py's --similarity-threshold
+    # range check) makes argparse print a usage/error message and call
+    # parser.exit() -> sys.exit(2), the same as the shell CLI's normal
+    # invalid-argument path. SystemExit is a BaseException, not an Exception,
+    # so it passed straight through every caller's `except Exception` here --
+    # reproduced live: it printed the error to this PROCESS's real stderr
+    # (parse_args ran outside the redirect) and then propagated out of the
+    # MCP tool call entirely, rather than becoming this function's normal
+    # (rc, out, err) contract every other failure already uses.
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            args = parser.parse_args([command, *argv])
+            rc = args.func(args)
+    except SystemExit as exc:
+        rc = exc.code if isinstance(exc.code, int) else 2
     return int(rc or 0), out.getvalue(), err.getvalue()
 
 
@@ -757,7 +771,16 @@ def build_server(root: str, *, allow_approval: bool = True):
         effects = experiment.analyze(observations)
         return _ok(
             running=True,
-            holdout_rate=rate,
+            # NOT `rate` from `_load()` above -- that is an average over
+            # `all_rows`, every randomization ever logged, computed before
+            # the scoping just above happened. Everything else returned here
+            # (n_assignments/effects/report) is scoped to `rows` (the
+            # current salt only); a rate blended across old and new
+            # randomizations would silently disagree with them, the exact
+            # class of bug this tool's own salt-scoping fix exists to
+            # prevent -- one field over. `rows` is non-empty here (guarded
+            # by `if not rows` above).
+            holdout_rate=sum(r.rate for r in rows) / len(rows),
             n_assignments=report.n_assignments,
             n_resolved=report.n_resolved,
             corrupt_lines=corrupt,
