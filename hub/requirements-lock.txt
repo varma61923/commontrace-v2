@@ -1,0 +1,94 @@
+# Full transitive-dependency lock for the Hub server image, closing the gap
+# hub/requirements.txt's own header names: "This still isn't full
+# transitive-dependency reproducibility... treat that as a known follow-up."
+#
+# hub/requirements.txt is the source of truth for DIRECT dependencies and
+# the reasoning behind each pin (CVE floors, exact-version behavioral
+# dependencies, etc.) -- keep editing that file when a direct dependency
+# changes. This file additionally pins every INDIRECT dependency actually
+# resolved underneath those, as a pip constraints file, so the exact same
+# 40-package set installs every time rather than whatever the latest
+# compatible transitive versions happen to be on the day of a build.
+#
+# That is not a theoretical gap: `mcp==2.0.0` requires `httpx2` (a distinct
+# package from the `httpx` this Hub's own code uses directly in
+# hub/smoke.py / commontrace/hub_client.py -- both are legitimate, official
+# packages from the same original authors, not a typosquat) and
+# `starlette>=0.27`. Neither is pinned anywhere in hub/requirements.txt, so
+# an unconstrained install resolves whatever `mcp` currently allows -- on
+# the day this file was generated, `httpx2==2.12.0` and `starlette==1.6.0`,
+# neither of which existed when this Hub was first built against `mcp`'s
+# streamable-HTTP transport. A future, wider-ranging `mcp` release could
+# just as easily resolve something that quietly changes behavior this
+# Hub's own tests never exercised against.
+#
+# SCOPE: generated on Python 3.12.3, matching the Dockerfile's
+# `python:3.12-slim` base -- this is the Hub's actual shipped runtime, and
+# where full reproducibility matters most (a build today and a rebuild of
+# the identical tag next quarter should install byte-identical wheels).
+# Deliberately NOT wired into CI's hub-tests job, which tests against
+# Python 3.10/3.11/3.12 unconstrained on purpose (see .github/workflows'
+# own matrix) -- transitive resolution genuinely differs by interpreter
+# version (Python 3.10 additionally pulls in `async-timeout`/
+# `exceptiongroup`/`tomli` backports and an older `rpds-py`, verified by
+# generating this same lock under 3.10), so a single constraints file
+# correct for 3.12 would be WRONG, not merely redundant, for the other two
+# -- pip would refuse to resolve, or silently miss packages those versions
+# need. If you deploy the Hub on a different Python version, regenerate
+# this file under that interpreter rather than reusing it.
+#
+# USAGE: `pip install -r hub/requirements.txt -c hub/requirements-lock.txt`
+# (the Dockerfile does this). `pip install -r hub/requirements.txt` alone
+# still works exactly as before -- this file only narrows what an
+# unconstrained resolve is otherwise free to pick, it changes nothing about
+# what's required.
+#
+# REGENERATING (after changing a direct pin in hub/requirements.txt):
+#   python3.12 -m venv /tmp/lockenv && source /tmp/lockenv/bin/activate
+#   pip install -r hub/requirements.txt
+#   pip freeze --exclude-editable > hub/requirements-lock.txt
+# then restore this header (pip freeze does not preserve comments) and run
+# the Hub test suite against the freshly resolved environment before
+# committing -- a lock file that pins an untested combination is worse than
+# no lock file, because it looks authoritative.
+
+alembic==1.19.1
+annotated-types==0.8.0
+anyio==4.15.0
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+asyncpg==0.31.0
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+cryptography==50.0.1
+greenlet==3.5.5
+h11==0.16.0
+httpcore==1.0.9
+httpcore2==2.12.0
+httpx==0.28.1
+httpx2==2.12.0
+idna==3.19
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+Mako==1.4.1
+MarkupSafe==3.0.3
+mcp==2.0.0
+mcp-types==2.0.0
+numpy==2.2.6
+opentelemetry-api==1.44.0
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+PyJWT==2.13.0
+python-multipart==0.0.32
+referencing==0.37.0
+rpds-py==2026.6.3
+SQLAlchemy==2.0.52
+sse-starlette==3.4.10
+starlette==1.6.0
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.52.4
