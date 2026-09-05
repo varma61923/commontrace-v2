@@ -191,9 +191,6 @@ class HubConfig:
     # client forge its own rate-limit identity via a spoofed header.
     trusted_proxy_hops: int = 0
 
-    # --- Auth ---
-    api_key_header: str = "Authorization"  # expects "Bearer <key>"
-
     # --- Operator console (hub/admin.py) ---
     # Empty (the default) means the /admin routes are NEVER REGISTERED --
     # an unauthenticated prober gets a 404 from the router, not a 401 from a

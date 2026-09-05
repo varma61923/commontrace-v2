@@ -153,8 +153,3 @@ def revision_of_trace(
     }
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:REVISION_LENGTH]
-
-
-def same_treatment(a: tuple[dict, str], b: tuple[dict, str]) -> bool:
-    """Would an agent read these two as the same instruction?"""
-    return revision_of(*a) == revision_of(*b)

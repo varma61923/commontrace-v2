@@ -722,13 +722,11 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         try:
             with _quiet():
-                rows, rate, corrupt = experiment_cmd._load(root)
-                report = integrity.audit(rows)
-                observations = experiment_cmd._observations(rows)
+                all_rows, rate, corrupt = experiment_cmd._load(root)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the experiment: {type(exc).__name__}: {exc}")
 
-        if not rows:
+        if not all_rows:
             return _ok(
                 running=False, integrity=None, effects=[], projections=[],
                 note="No holdout assignments yet. Pass `occasion_id` to `retrieve` and "
@@ -736,6 +734,26 @@ def build_server(root: str, *, allow_approval: bool = True):
                      "correlation.",
             )
 
+        # SCOPED TO ONE RANDOMIZATION, matching `commontrace experiment` (the CLI
+        # report) and what the Hub already does in SQL. Without this, changing
+        # the holdout rate (which rotates the salt) makes every assignment ever
+        # logged pool into one comparison, which `integrity.audit` correctly
+        # flags as COMPROMISED even when the currently-running experiment is
+        # perfectly clean -- and the CLI and this tool would then disagree
+        # about the same store.
+        rows, wanted_salt, n_other_salt = experiment_cmd.scope_to_current_salt(root, all_rows)
+        if not rows:
+            return _ok(
+                running=False, integrity=None, effects=[], projections=[],
+                note=f"{len(all_rows)} assignment(s) recorded, but none under the current "
+                     f"randomization (salt {wanted_salt!r}). They belong to an earlier "
+                     "experiment and are not pooled in -- pooling two randomizations would "
+                     "let one occasion sit in opposite arms. Start a fresh run with "
+                     "`experiment --configure`.",
+            )
+
+        report = integrity.audit(rows)
+        observations = experiment_cmd._observations(rows)
         effects = experiment.analyze(observations)
         return _ok(
             running=True,
@@ -743,6 +761,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             n_assignments=report.n_assignments,
             n_resolved=report.n_resolved,
             corrupt_lines=corrupt,
+            excluded_other_randomization=n_other_salt,
             integrity={
                 "verdict": report.verdict,
                 "effects_readable": report.readable,

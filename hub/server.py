@@ -349,6 +349,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         tags: list[str] | None = None,
         agent_type: str = "",
         agent_id: str = "",
+        profile: str = "",
         outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
@@ -380,6 +381,12 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         contribution time -- amend_trace accepts the same parameter, MERGED
         into whatever this call already set, to attach or update it once
         the task concludes.
+
+        `profile` names a domain-specific extension profile this trace
+        belongs to (protocol/schemas/trace.schema.json, e.g. "code-review"
+        for the Alpha/A/B/Omega/Lambda pipeline SKILL.md ships). Optional;
+        carried forward unchanged by every later amend_trace call on this
+        trace, the same way agent_type/agent_id are.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -395,6 +402,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     tags=tags,
                     agent_type=agent_type,
                     agent_id=agent_id,
+                    profile=profile,
                     outcome=outcome,
                     actor=auth.get_current_actor(),
                     idempotency_key=idempotency_key,

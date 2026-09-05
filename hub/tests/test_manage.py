@@ -269,6 +269,54 @@ async def test_purge_trace_unrelated_traces_survive(session_factory, config, two
     assert bystander_row is not None
 
 
+async def test_amendment_chain_is_a_bounded_number_of_round_trips(session_factory, config, two_orgs):
+    """The BFS-per-level implementation this replaced issued one query per
+    LINK in the chain -- delete_trace is a customer-reachable MCP tool
+    (unlike purge_trace, which is operator-only), and nothing caps how deep
+    a chain gets: repeated `amend_trace` calls on the same trace is this
+    codebase's own documented curation pattern ("each attaching whatever
+    became known since"). A self-service delete on a chain built that way
+    would otherwise hold a pooled connection open for one round trip per
+    amendment. The recursive-CTE replacement must cost the same small,
+    constant number of round trips regardless of chain depth -- and must
+    still return exactly the right set of ids."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        trace = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="chain-0", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    chain_ids = {trace["id"]}
+    current = trace
+    depth = 30
+    for i in range(depth):
+        async with session_scope(session_factory) as session:
+            current = await amend_trace(
+                session, two_orgs["org_a"], current["id"], config, rate_limiter,
+                title=f"chain-{i + 1}", actor="test",
+            )
+        chain_ids.add(current["id"])
+    assert len(chain_ids) == depth + 1
+
+    async with session_scope(session_factory) as session:
+        calls = 0
+        real_execute = session.execute
+
+        async def counting_execute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return await real_execute(*args, **kwargs)
+
+        session.execute = counting_execute
+        result = await crud.amendment_chain(session, trace["id"])
+
+    assert result == chain_ids
+    # One recursive CTE per link direction -- independent of `depth`, which
+    # is the property this fix exists for. The BFS it replaced would have
+    # issued one call per level, i.e. up to `depth` of them.
+    assert calls <= 2, f"amendment_chain issued {calls} queries for a {depth}-deep chain"
+
+
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):
     result = await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such trace" in capsys.readouterr().err

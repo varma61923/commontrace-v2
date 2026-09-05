@@ -17,7 +17,7 @@ names and semantics exactly:
 
 `search_traces(query, tags)` · `contribute_trace(title, context_text, solution_text, tags, agent_type)` · `get_trace(id)` · `vote_trace(id, vote, feedback_tag, feedback_text)` · `amend_trace(id, ...)` · `list_tags()`
 
-Twelve more are Hub-specific and outside the protocol. `delete_trace(id)`
+Thirteen more are Hub-specific and outside the protocol. `delete_trace(id)`
 permanently deletes one of your own traces (self-service, immediate,
 irreversible); `request_account_deletion()` / `confirm_account_deletion
 (confirmation_token)` / `cancel_account_deletion()` do the same for your
@@ -41,6 +41,12 @@ caller's own data. `holdout_assign(trace_ids, occasion_id)` and
 `record_occasion_outcome(occasion_id, succeeded)` run a randomized
 holdout -- the only design here that supports a *causal* claim about
 whether your memory is helping; see "The randomized holdout" below.
+`value_delivered(value_per_occasion)` turns that causal effect into a
+count -- `effect x times injected`, established memories only, HURTING ones
+subtracted rather than dropped, nothing at all if the experiment is
+COMPROMISED -- and attaches your own supplied rate to it if you pass one;
+this is this product's pricing basis (STRATEGY.md §11.5), so it is worth
+knowing it exists even though it reads like a footnote to `fleet_outcomes`.
 `hub/smoke.py` pins the tool surface, so a tool
 appearing or disappearing fails a post-deploy check rather than
 surprising a client.

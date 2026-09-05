@@ -264,6 +264,43 @@ def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
     assert "**Sound.**" in result.stdout, result.stdout
 
 
+def test_experiment_status_scopes_to_the_current_randomization(server, store):
+    """The MCP tool must not pool an earlier randomization into the current
+    report -- the same defect `commontrace experiment` (the CLI) was fixed
+    for, in the entry scoping analysis to one salt. Changing the holdout rate
+    rotates the salt on purpose (a re-randomization, not a bigger sample), so
+    assignments made under the old salt are a different experiment and must
+    not be counted here either -- pooling them would make a clean rate change
+    read as a COMPROMISED experiment."""
+    from commontrace import holdout_io
+
+    _curate(server)
+    for i in range(20):
+        call(server, "retrieve", task="password reset email", occasion_id=f"old-{i}")
+
+    holdout_io.configure(store, rate=0.5)
+
+    out = call(server, "experiment_status")
+    assert out["running"] is False
+    assert "none under the current randomization" in out["note"]
+
+    for i in range(20):
+        occ = f"new-{i}"
+        r = call(server, "retrieve", task="password reset email", occasion_id=occ)
+        assert call(
+            server, "capture",
+            title=f"Password reset case {occ}",
+            context_text="Customer reports the password reset email never arrived.",
+            solution_text="Investigated and responded to the customer.",
+            occasion_id=occ, resolved=not r["withheld"],
+        )["ok"]
+
+    out = call(server, "experiment_status")
+    assert out["running"] is True
+    assert out["n_assignments"] == 20, "pooled the old salt's assignments in"
+    assert out["excluded_other_randomization"] == 20
+
+
 # --- capture -------------------------------------------------------------
 
 def test_capture_records_the_outcome_it_reports(server):
