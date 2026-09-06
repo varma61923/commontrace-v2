@@ -177,6 +177,36 @@ class TestImportCommand:
         rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dry-run", "--dest", str(store)])
         assert rc == 1
 
+    def test_dry_run_reports_a_schema_invalid_row_as_rejected_not_written(
+        self, store, tmp_path, capsys
+    ):
+        """A row can pass the presence/parse check `import_data` runs but
+        still fail schema validation (e.g. trace.schema.json floors
+        `tokens_used` at 0, which nothing before validation enforces).
+        Schema validation used to run only in the real (non-dry-run) path,
+        so `--dry-run` counted such a row as one that "would be created"
+        while a real run on the identical file rejected it and exited
+        non-zero -- the dry run's whole purpose is to predict that outcome."""
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        jsonl_path = tmp_path / "export.jsonl"
+        jsonl_path.write_text(
+            '{"title": "t1", "context": "c1", "solution": "s1", "tokens_used": -5}\n',
+            encoding="utf-8",
+        )
+        capsys.readouterr()
+        rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dry-run", "--dest", str(store)])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "0 trace(s) would be created" in captured.out
+        assert "would be rejected as schema-invalid" in captured.err
+
+        # And the real run on the identical file must reject it the same way.
+        capsys.readouterr()
+        rc = main(["import", str(jsonl_path), "--agent-type", "support", "--dest", str(store)])
+        assert rc == 1
+        traces_dir = store / "memory" / "traces"
+        assert [f for f in os.listdir(traces_dir) if f != "README.md"] == []
+
     def test_missing_file_fails_cleanly(self, store, capsys):
         main(["init", "--agent-type", "support", "--dest", str(store)])
         capsys.readouterr()

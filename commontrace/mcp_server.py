@@ -159,11 +159,25 @@ def _run_cli(command: str, argv: list[str]) -> tuple[int, str, str]:
     parser = argparse.ArgumentParser(prog="commontrace")
     subparsers = parser.add_subparsers(dest="command", required=True)
     module.add_parser(subparsers)
-    args = parser.parse_args([command, *argv])
 
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = args.func(args)
+    # parse_args itself, not just args.func(args), needs to be inside the
+    # redirect AND inside the SystemExit guard: an argparse `type=` validator
+    # that rejects its input (e.g. distill_cmd.py's --similarity-threshold
+    # range check) makes argparse print a usage/error message and call
+    # parser.exit() -> sys.exit(2), the same as the shell CLI's normal
+    # invalid-argument path. SystemExit is a BaseException, not an Exception,
+    # so it passed straight through every caller's `except Exception` here --
+    # reproduced live: it printed the error to this PROCESS's real stderr
+    # (parse_args ran outside the redirect) and then propagated out of the
+    # MCP tool call entirely, rather than becoming this function's normal
+    # (rc, out, err) contract every other failure already uses.
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            args = parser.parse_args([command, *argv])
+            rc = args.func(args)
+    except SystemExit as exc:
+        rc = exc.code if isinstance(exc.code, int) else 2
     return int(rc or 0), out.getvalue(), err.getvalue()
 
 
@@ -722,13 +736,11 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         try:
             with _quiet():
-                rows, rate, corrupt = experiment_cmd._load(root)
-                report = integrity.audit(rows)
-                observations = experiment_cmd._observations(rows)
+                all_rows, rate, corrupt = experiment_cmd._load(root)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the experiment: {type(exc).__name__}: {exc}")
 
-        if not rows:
+        if not all_rows:
             return _ok(
                 running=False, integrity=None, effects=[], projections=[],
                 note="No holdout assignments yet. Pass `occasion_id` to `retrieve` and "
@@ -736,13 +748,43 @@ def build_server(root: str, *, allow_approval: bool = True):
                      "correlation.",
             )
 
+        # SCOPED TO ONE RANDOMIZATION, matching `commontrace experiment` (the CLI
+        # report) and what the Hub already does in SQL. Without this, changing
+        # the holdout rate (which rotates the salt) makes every assignment ever
+        # logged pool into one comparison, which `integrity.audit` correctly
+        # flags as COMPROMISED even when the currently-running experiment is
+        # perfectly clean -- and the CLI and this tool would then disagree
+        # about the same store.
+        rows, wanted_salt, n_other_salt = experiment_cmd.scope_to_current_salt(root, all_rows)
+        if not rows:
+            return _ok(
+                running=False, integrity=None, effects=[], projections=[],
+                note=f"{len(all_rows)} assignment(s) recorded, but none under the current "
+                     f"randomization (salt {wanted_salt!r}). They belong to an earlier "
+                     "experiment and are not pooled in -- pooling two randomizations would "
+                     "let one occasion sit in opposite arms. Start a fresh run with "
+                     "`experiment --configure`.",
+            )
+
+        report = integrity.audit(rows)
+        observations = experiment_cmd._observations(rows)
         effects = experiment.analyze(observations)
         return _ok(
             running=True,
-            holdout_rate=rate,
+            # NOT `rate` from `_load()` above -- that is an average over
+            # `all_rows`, every randomization ever logged, computed before
+            # the scoping just above happened. Everything else returned here
+            # (n_assignments/effects/report) is scoped to `rows` (the
+            # current salt only); a rate blended across old and new
+            # randomizations would silently disagree with them, the exact
+            # class of bug this tool's own salt-scoping fix exists to
+            # prevent -- one field over. `rows` is non-empty here (guarded
+            # by `if not rows` above).
+            holdout_rate=sum(r.rate for r in rows) / len(rows),
             n_assignments=report.n_assignments,
             n_resolved=report.n_resolved,
             corrupt_lines=corrupt,
+            excluded_other_randomization=n_other_salt,
             integrity={
                 "verdict": report.verdict,
                 "effects_readable": report.readable,
@@ -769,13 +811,19 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         try:
             traces = load_trace_candidates(root, None)
-            lessons = evidence_io.load_active_lessons(root)
+            # One disk read, not two: all_lessons (status=None) is a strict
+            # superset of the active-only list build_taxonomy needs, so the
+            # active subset is filtered in memory with the same rule
+            # evidence_io.load_active_lessons applies internally, instead of
+            # re-globbing and re-parsing every lesson_*.md a second time.
+            all_lessons = evidence_io.load_active_lessons(root, status=None)
+            lessons = [lesson for lesson in all_lessons if (lesson.get("status") or "active") == "active"]
             tax = taxonomy.build_taxonomy(traces, lessons)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the store: {type(exc).__name__}: {exc}")
 
         by_status: dict[str, int] = {}
-        for lesson in lessons:
+        for lesson in all_lessons:
             key = str(lesson.get("status") or "unknown")
             by_status[key] = by_status.get(key, 0) + 1
 

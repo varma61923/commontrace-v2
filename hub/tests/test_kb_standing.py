@@ -691,6 +691,25 @@ class TestReviewQueue:
             assert len(await crud.kb_review_queue(session, limit=0)) == 1
             assert len(await crud.kb_review_queue(session, limit="nonsense")) == 4
 
+    async def test_count_kb_review_queue_is_the_true_total_not_the_capped_length(
+        self, session_factory, orgs
+    ):
+        """The admin Knowledge Base page's 'needs attention' tile used to
+        read `len(kb_review_queue(limit=_MAX_ROWS))`, which silently reads
+        as a total and stops matching the real queue size the moment it
+        exceeds `_MAX_ROWS` -- the exact defect the overview page's
+        traces/quarantined/keys tiles had for fleet-wide org counts.
+        `count_kb_review_queue` must report every entry needing attention,
+        independent of whatever `limit` a caller passes to the bounded
+        list."""
+        for i in range(4):
+            await _seed(session_factory, orgs["operator"], f"entry {i}")
+        async with session_scope(session_factory) as session:
+            capped = await crud.kb_review_queue(session, limit=2)
+            total = await crud.count_kb_review_queue(session)
+        assert len(capped) == 2
+        assert total == 4
+
 
 # --- 7. The operator CLI ------------------------------------------------
 
@@ -758,6 +777,26 @@ class TestManageCommands:
         assert "knowledge base entries:  1" in out
         assert "retracted:" in out
         assert live  # the surviving entry is the one counted above
+
+    async def test_kb_stats_needs_review_counts_all_four_kb_review_buckets(
+        self, session_factory, orgs, capsys
+    ):
+        """`kb-review` lists FOUR buckets needing attention: urgent
+        (security-flagged), disputed, stale, and never_hit. `kb_stats`'s
+        "needs review" hint used to be computed as
+        `standings[disputed] + standings[stale]` -- `standing_of()` has no
+        "urgent" or "never_hit" value at all, so a security-flagged entry
+        or one that has never matched anything was invisible to this
+        summary even while `kb-review` itself listed it first. Neither
+        entry seeded below is disputed or stale, so the old computation
+        would have reported 0 and suppressed the hint entirely."""
+        urgent = await _seed(session_factory, orgs["operator"], "urgent entry", hits=1)
+        await _vote(session_factory, orgs["cust-a"], urgent, "down", feedback_tag="security_concern")
+        await _seed(session_factory, orgs["operator"], "never hit", hits=0)
+
+        await manage.kb_stats(session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "`kb-review` lists the 2 entry(ies) needing a decision." in out
 
 
 # --- 8. commons_seed's review_after field -------------------------------

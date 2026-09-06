@@ -554,6 +554,40 @@ class TestPushCapturedTraces:
         assert fm["hub_trace_id"] == "hub-trace-1"
         assert fm["hub_pushed_fingerprint"]
 
+    def test_first_push_forwards_the_local_profile(self, store, monkeypatch):
+        """`commontrace capture --profile ...` is a real, user-facing local
+        flag (protocol/schemas/trace.schema.json's extension-profile
+        mechanism) -- before this fix, contribute_trace had no `profile`
+        parameter at all, so a captured trace's profile was silently
+        dropped the moment it reached the Hub, with no error anywhere."""
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(
+            tdir, "t1.md", "occasion-1", "title", "ctx", "sol",
+            extra={"profile": "code-review"},
+        )
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            assert arguments["profile"] == "code-review"
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
+    def test_a_trace_with_no_profile_pushes_the_empty_default(self, store, monkeypatch):
+        import asyncio
+
+        tdir = paths.traces_dir(str(store))
+        _write_captured_trace(tdir, "t1.md", "occasion-1", "title", "ctx", "sol")
+
+        async def fake_call_tool(hub_url, api_key, name, arguments, **kw):
+            assert arguments["profile"] == ""
+            return {"id": "hub-trace-1", "quarantined": False}
+
+        monkeypatch.setattr(hub_client, "_call_tool", fake_call_tool)
+        asyncio.run(hub_client.push_captured_traces("http://localhost:8420/mcp", "key", str(store)))
+
     def test_a_trace_with_no_outcome_yet_pushes_an_empty_outcome(self, store, monkeypatch):
         import asyncio
 

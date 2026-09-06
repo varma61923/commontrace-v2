@@ -215,6 +215,48 @@ class TestRendering:
         assert "Quarantined traces" in r.text
         assert "looks like &lt;spam&gt;" in r.text
 
+    async def test_overview_totals_cover_every_org_not_just_the_rendered_page(
+        self, session_factory, monkeypatch
+    ):
+        """`traces_by_org`/`quarantined_by_org`/`keys_by_org` are already
+        unrestricted, fleet-wide GROUP BY queries -- but the top-line
+        `total_traces`/`total_quarantined`/`total_keys` tiles used to be
+        summed from `rows`, which is truncated to the first `_MAX_ROWS`
+        organizations by name. Once a deployment had more orgs than that,
+        the three summary tiles silently undercounted, with no truncation
+        notice anywhere near them (the one that exists sits below the
+        per-org table). Monkeypatching `_MAX_ROWS` down to 1 makes this
+        reproducible with two orgs instead of two hundred and one."""
+        from hub import auth as hub_auth
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        monkeypatch.setattr(admin, "_MAX_ROWS", 1)
+
+        async with session_scope(session_factory) as session:
+            org_a = Organization(name="Org A", plan="team")
+            org_b = Organization(name="Org B", plan="team")
+            session.add_all([org_a, org_b])
+            await session.flush()
+            for org in (org_a, org_b):
+                session.add(Trace(
+                    org_id=org.id, title="t", context_text="c", solution_text="s",
+                    tags=[], agent_type="support", agent_id="w1",
+                    quarantined=True, quarantine_reason="spam",
+                ))
+                await hub_auth.issue_api_key(session, org.id, expires_days=90)
+
+        async with session_scope(session_factory) as session:
+            overview = await admin._overview(session)
+
+        # Only one org's row is actually rendered ...
+        assert len(overview["orgs"]) == 1
+        assert overview["truncated"] is True
+        # ... but both orgs' traces/quarantines/keys must still count.
+        assert overview["total_traces"] == 2
+        assert overview["total_quarantined"] == 2
+        assert overview["total_keys"] == 2
+
     async def test_an_unknown_org_id_is_a_page_not_a_crash(self, session_factory):
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin/org/00000000-0000-0000-0000-000000000000",

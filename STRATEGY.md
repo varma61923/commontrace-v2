@@ -415,9 +415,11 @@ What that means concretely, all of it already implemented:
 
 - **(A) is the product.** Per-org agent memory, with `HUB_COMMONS_ENABLED=false`
   making "no cross-org sharing" a property of the deployment rather than a
-  promise about behaviour — the three commons tools are absent from the MCP
-  surface entirely, not merely unused. `hub/DEPLOYMENT.md` §13 documents the
-  single-org deployment as a first-class shape, not a stripped-down mode.
+  promise about behaviour — the four commons tools (`commons_overlap`,
+  `commons_search`, `submit_kb_entry`, `list_my_kb_submissions`) are absent
+  from the MCP surface entirely, not merely unused. `hub/DEPLOYMENT.md` §13
+  documents the single-org deployment as a first-class shape, not a
+  stripped-down mode.
 - **(B) stays built but dormant**, so choosing it later is a config change
   and a decision, not a re-architecture. The cost of keeping it is one
   boolean and the tests that pin both modes.

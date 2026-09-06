@@ -162,6 +162,27 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
     return rows, rate, corrupt
 
 
+def scope_to_current_salt(
+    root: str, all_rows: list[integrity.Assignment], salt: str | None = None,
+) -> tuple[list[integrity.Assignment], str, int]:
+    """Scope assignment rows to one randomization, matching what the Hub does in SQL.
+
+    Assignment is a hash of (lesson, occasion, salt) against a rate, so a
+    changed salt or rate re-randomizes every occasion -- pooling assignments
+    from two of them is not a larger sample, it is a comparison of nothing
+    against nothing, and `integrity.check_assignment_drift` exists precisely
+    to catch it. Every caller that analyses the holdout log (the CLI report
+    and the MCP `experiment_status` tool alike) must scope through this, or
+    the two surfaces can read the same store and disagree.
+
+    Returns (scoped_rows, salt_used, n_excluded_from_other_randomizations).
+    """
+    config = holdout_io.load_config(root)
+    wanted_salt = salt if salt is not None else config.salt
+    rows = [r for r in all_rows if r.salt == wanted_salt]
+    return rows, wanted_salt, len(all_rows) - len(rows)
+
+
 def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutObservation]:
     """The resolved, de-duplicated subset the estimate is computed on.
 
@@ -323,10 +344,7 @@ def run(args: argparse.Namespace) -> int:
     # first time anyone changed their holdout rate the report became
     # permanently invalid -- and said so, via a finding, which is better than
     # silence but worse than not doing it.
-    config = holdout_io.load_config(root)
-    wanted_salt = args.salt if args.salt is not None else config.salt
-    rows = [r for r in all_rows if r.salt == wanted_salt]
-    other = len(all_rows) - len(rows)
+    rows, wanted_salt, other = scope_to_current_salt(root, all_rows, args.salt)
     if all_rows and not rows:
         print(
             f"[commontrace] {len(all_rows)} assignment(s) recorded, but none under the "
@@ -384,7 +402,15 @@ def run(args: argparse.Namespace) -> int:
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),
         n_lessons=len({o.lesson_slug for o in obs}),
-        holdout_rate=rate,
+        # NOT `rate` from `_load()` above -- that is an average over
+        # `all_rows`, every randomization ever logged, computed before
+        # scoping happened. `n_assignments`/`effects`/`report` are all
+        # correctly scoped to `rows` (the current salt only), so a rate
+        # blended across old and new randomizations would be exactly the
+        # "two quantities in one report, only one of them scoped" defect
+        # this file's own salt-scoping fix exists to prevent -- one field
+        # over. `rows` is non-empty here (guarded by `n_lines == 0` above).
+        holdout_rate=sum(r.rate for r in rows) / len(rows),
         effects=effects,
     )
 

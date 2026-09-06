@@ -287,6 +287,12 @@ python -m alembic -c hub/alembic.ini upgrade head
 python -m hub.main
 ```
 
+On Python 3.12 (what the Docker image ships), add
+`-c hub/requirements-lock.txt` to that `pip install` for the same exact,
+tested set of transitive dependencies the image gets — see that file's own
+header for why it's scoped to one interpreter version rather than every
+Python this Hub supports.
+
 Clients connect to `https://<your-host>/mcp` with
 `Authorization: Bearer <api-key>`.
 

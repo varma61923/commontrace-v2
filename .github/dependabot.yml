@@ -1,0 +1,55 @@
+# Keeps this repo's own security posture from decaying silently.
+#
+# hub/requirements-lock.txt exists because an unconstrained install can
+# resolve a transitive dependency (mcp's own httpx2/starlette) that didn't
+# exist when this Hub was last tested against it -- see that file's header.
+# A lock file nobody is prompted to revisit rots exactly the way it warns
+# against: Dependabot is what turns "a direct dependency has a new release"
+# into an actual PR a human sees, rather than something that only surfaces
+# the next time someone happens to run pip-audit or hits a CVE advisory by
+# chance. It cannot regenerate hub/requirements-lock.txt itself (that needs
+# a real interpreter to resolve against, per that file's own regeneration
+# steps) -- bumping a direct pin here is the trigger to also run those
+# steps and commit the refreshed lock in the same PR.
+#
+# actions/checkout and actions/setup-python are pinned to full commit SHAs
+# in .github/workflows/ci.yml (not floating tags), specifically so a
+# compromised tag can't silently inject code into CI -- Dependabot updates
+# both the SHA and its `# vN` comment together, so that guarantee survives
+# routine bumps instead of degrading back to tag-pinning by accident.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+
+  - package-ecosystem: "pip"
+    directory: "/hub"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "hub"]
+    # requirements-lock.txt (a pip CONSTRAINTS file, a different concept
+    # from a requirements file) is regenerated from a real install against
+    # a specific interpreter -- see its own header -- not hand-edited or
+    # bot-edited. A Dependabot PR bumping requirements.txt still needs that
+    # regeneration step done by whoever merges it; nothing here does it
+    # automatically, and hub/tests/test_requirements_lock.py fails the
+    # build if a merged bump leaves the two out of sync.
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "docker"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "ci"]

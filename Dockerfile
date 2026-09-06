@@ -18,10 +18,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY hub/requirements.txt ./hub/requirements.txt
+COPY hub/requirements.txt hub/requirements-lock.txt ./hub/
 # Install into a self-contained prefix we can copy wholesale into the
-# runtime stage.
-RUN pip install --prefix=/install -r hub/requirements.txt
+# runtime stage. -c (constraints), not -r: requirements.txt still names
+# what's actually required and why; requirements-lock.txt only narrows an
+# otherwise-unconstrained transitive resolve to the exact, tested set --
+# see that file's own header for why this closes a real reproducibility
+# gap (mcp's own indirect deps are unpinned and have already moved once).
+RUN pip install --prefix=/install -r hub/requirements.txt -c hub/requirements-lock.txt
 
 
 FROM python:3.12-slim AS runtime

@@ -1435,6 +1435,7 @@ async def push_captured_traces(
         tags = list(instance.get("tags") or []) if isinstance(instance.get("tags"), list) else []
         agent_type = str(instance.get("agent_type") or "")
         agent_id = str(instance.get("agent_id") or "")
+        profile = str(instance.get("profile") or "")
         outcome = instance.get("outcome") if isinstance(instance.get("outcome"), dict) else {}
         fingerprint = _trace_push_fingerprint(title, context_text, solution_text, tags, outcome)
 
@@ -1497,6 +1498,7 @@ async def push_captured_traces(
                     "tags": tags,
                     "agent_type": agent_type,
                     "agent_id": agent_id,
+                    "profile": profile,
                     "outcome": outcome,
                     # Keyed on this trace's own local id, like
                     # push_active_lessons's f"lesson:{slug}": a retry of

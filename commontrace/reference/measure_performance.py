@@ -544,11 +544,27 @@ def compute_transfer_gap(episodes, lessons):
         # lesson still misresolved as untraceable.
         clean_slug = slug[:-3] if slug.endswith(".md") else slug
         path = os.path.join(BASE_DIR, "episodes", f"{clean_slug}.md")
+        project = None
         if os.path.exists(path):
-            with open(path, encoding="utf-8-sig") as fh:
-                fm = parse_frontmatter(fh.read())
-            return (fm or {}).get("project")
-        return None
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    fm = parse_frontmatter(fh.read())
+                project = (fm or {}).get("project")
+            except OSError:
+                project = None
+        elif not os.path.isabs(clean_slug):
+            # If slug lacks the YYYY-MM-DD_ prefix that episode files
+            # routinely carry on disk, probe for a matching date-prefixed file.
+            matches = glob.glob(os.path.join(BASE_DIR, "episodes", f"*_{clean_slug}.md"))
+            if matches:
+                try:
+                    with open(matches[0], encoding="utf-8-sig") as fh:
+                        fm = parse_frontmatter(fh.read())
+                    project = (fm or {}).get("project")
+                except OSError:
+                    project = None
+        episode_project[slug] = project
+        return project
 
     total_hits = 0
     cross_hits = 0
@@ -916,7 +932,9 @@ FRESHNESS_WINDOW_DAYS = 90
 # above and each already normalized to [0, 1] where higher is better.
 _COMPOSITE_COMPONENTS = ("lesson_quality", "implicit_retrieval", "lesson_coverage", "freshness")
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# \w with re.UNICODE, not [a-z0-9]: ASCII-only regex silently drops non-Latin
+# characters (accents, umlauts, CJK, Cyrillic) and produces false duplicates or misses.
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 # Words too common in this corpus to signal that two lessons are the same
 # lesson. Without them, every pair of lessons shares "the/a/lesson/when" and
 # the similarity floor rises for everything equally.
@@ -965,7 +983,7 @@ def compute_lexical_duplicates(lessons, threshold):
 
 
 def _parse_last_hit(value):
-    """`last_hit` as a date, or None for "NEVER"/absent/unparseable.
+    """Parse a `last_hit` frontmatter value into a datetime or None.
 
     Tolerant on purpose: this feeds a warning threshold, and a hand-edited
     date in an unexpected shape should not crash the whole benchmark.
@@ -973,6 +991,11 @@ def _parse_last_hit(value):
     text = str(value or "").strip()
     if not text or text.upper() == "NEVER":
         return None
+    # ISO 8601 parsing with timezone support (e.g. 2026-01-01T00:00:00Z or +00:00)
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.datetime.strptime(text[:len("2026-01-01T00:00:00")], fmt)
@@ -991,13 +1014,18 @@ def compute_freshness(lessons, now=None):
     """
     if not lessons:
         return None, 0
-    now = now or datetime.datetime.now()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
     cutoff = now - datetime.timedelta(days=FRESHNESS_WINDOW_DAYS)
     fresh = 0
     for fm in lessons.values():
         hit = _parse_last_hit(fm.get("last_hit"))
-        if hit is not None and hit >= cutoff:
-            fresh += 1
+        if hit is not None:
+            if hit.tzinfo is None:
+                hit = hit.replace(tzinfo=datetime.timezone.utc)
+            if hit >= cutoff:
+                fresh += 1
     return fresh / len(lessons), len(lessons)
 
 
@@ -1039,34 +1067,91 @@ def _extract_metric(report, path):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def _new_file_mode(target_dir):
+    """The mode a brand-new file would get under the current process umask.
+    Mirrors commontrace/frontmatter.py's helper of the same name exactly
+    (not imported -- this script has no hard dependency on the commontrace
+    package and runs standalone): a single open() with O_CREAT combines the
+    requested mode with the umask atomically, via a throwaway probe file in
+    the target directory, with no shared process state (os.umask(0)) mutated
+    in between."""
+    import stat
+    import uuid
+
+    probe_path = os.path.join(target_dir, f".measure-performance-umask-probe-{uuid.uuid4().hex}")
+    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    try:
+        return stat.S_IMODE(os.fstat(fd).st_mode)
+    finally:
+        os.close(fd)
+        os.unlink(probe_path)
+
+
+def _atomic_write_text(path, content, out_dir, suffix):
+    """Write `content` to `path` via a sibling tempfile, fsynced and
+    chmod'd, then os.replace()'d into place. Shared by persist_report and
+    main()'s --html branch, which independently open-coded this before and
+    both missed the same two things commontrace/frontmatter.py's write()
+    already had to learn the hard way: (1) os.replace()'s atomicity says
+    nothing about the durability of the data it points at -- a crash
+    between write and rename can still leave `path` truncated without an
+    fsync first; and (2) tempfile.mkstemp() always creates its file at 0600
+    regardless of umask, which os.replace() carries straight through to
+    `path` -- silently locking a shared benchmark_reports/ directory down
+    to owner-only on every write, exactly the bug frontmatter.py's own
+    _new_file_mode/chmod dance exists to prevent for lessons and traces.
+    """
+    import stat
+    import tempfile
+
+    try:
+        want_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        want_mode = _new_file_mode(out_dir)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=suffix)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, want_mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def persist_report(clean_report, ts=None):
     """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json.
     Returns the path written. `ts` (a datetime) lets callers reuse the same instant used
     to build the report's own `timestamp` field, so filenames and content agree.
+
+    Atomic: writes to a .tmp file then os.replace() so a concurrent reader never
+    sees a partial file, and a crash mid-write leaves a .tmp orphan rather than
+    corrupting the real report.
     """
     ts = ts or datetime.datetime.now()
     out_dir = _reports_dir()
     os.makedirs(out_dir, exist_ok=True)
     # Microseconds, not just seconds: two `bench` runs within the same
     # second (a scripted loop, two CI jobs landing close together) produced
-    # the identical filename at second resolution, and the second run's
-    # `open(path, "w")` silently overwrote the first's report with no
-    # warning -- an entire benchmark run's history lost, and load_stored_reports'
-    # diff/history trend silently missing an entry it never knew existed.
-    # Microseconds sort in the same chronological order this format already
-    # relies on (a fixed-width, zero-padded numeric suffix), so this changes
-    # nothing about how load_stored_reports orders reports.
+    # the identical filename at second resolution.
     base = ts.strftime("%Y-%m-%d_%H%M%S_%f")
     path = os.path.join(out_dir, f"{base}.json")
     # Belt and braces: even microsecond resolution is not a hard guarantee
-    # on every platform/clock. Fall back to a numeric suffix rather than
-    # ever silently overwriting an existing report.
+    # on every platform/clock. Fall back to a numeric suffix.
+    # Use zero-padded 4-digit suffix so collision files sort AFTER the base
+    # file (e.g. "base_0001.json" > "base.json" in ASCII order, whereas the
+    # former "-1" suffix sorts BEFORE "." and corrupted chronological order).
     suffix = 1
     while os.path.exists(path):
-        path = os.path.join(out_dir, f"{base}-{suffix}.json")
+        path = os.path.join(out_dir, f"{base}_{suffix:04d}.json")
         suffix += 1
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(clean_report, fh, indent=2, default=str)
+    _atomic_write_text(path, json.dumps(clean_report, indent=2, default=str), out_dir, ".tmp")
     return path
 
 
@@ -1401,7 +1486,7 @@ def _md_to_html_fragment(md_text):
         # Escape raw content FIRST so arbitrary frontmatter text (project names, lesson
         # titles, etc.) containing <, >, or & can't inject markup into the report --
         # markdown syntax chars (*, `, _) aren't HTML-special so escaping first is safe.
-        text = html.escape(text, quote=False)
+        text = html.escape(text, quote=True)
         # bold **...** or __...__
         text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
         text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
@@ -1660,7 +1745,11 @@ def main():
     lessons, skipped_lessons = load_lessons()
 
     if not episodes:
-        print("Not enough episodes to compute. Run /commontrace a few times first.")
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "not_enough_episodes",
+                              "message": "Not enough episodes to compute. Run /commontrace a few times first."}))
+        else:
+            print("Not enough episodes to compute. Run /commontrace a few times first.")
         sys.exit(0)
 
     now = datetime.datetime.now()
@@ -1736,9 +1825,15 @@ def main():
         html_report = render_html(md, report["timestamp"], alerts)
         out_dir = _reports_dir()
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{now.strftime('%Y-%m-%d_%H%M%S')}.html")
-        with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(html_report)
+        # Microsecond precision + zero-padded collision suffix, consistent with
+        # persist_report's JSON naming so reports pair cleanly by timestamp.
+        html_base = now.strftime("%Y-%m-%d_%H%M%S_%f")
+        out_path = os.path.join(out_dir, f"{html_base}.html")
+        html_suffix = 1
+        while os.path.exists(out_path):
+            out_path = os.path.join(out_dir, f"{html_base}_{html_suffix:04d}.html")
+            html_suffix += 1
+        _atomic_write_text(out_path, html_report, out_dir, ".html.tmp")
         print(f"HTML report written: {out_path}")
         if alerts:
             print("\nAlerts:")

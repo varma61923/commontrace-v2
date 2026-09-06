@@ -147,16 +147,18 @@ def validate_size(fields: dict, config: HubConfig) -> None:
     context_text = fields.get("context_text", "")
     solution_text = fields.get("solution_text", "")
     tags = fields.get("tags") or []
-    # Not every caller's `fields` includes this -- amend_trace's wire dict
-    # never did and never sets a new agent_type -- so it is read the same
+    # Not every caller's `fields` includes these -- amend_trace's wire dict
+    # never set a new agent_type or profile -- so both are read the same
     # defensive way as `tags` above rather than assumed present.
     agent_type = fields.get("agent_type") or ""
+    profile = fields.get("profile") or ""
 
     for value, name in (
         (title, "title"),
         (context_text, "context_text"),
         (solution_text, "solution_text"),
         (agent_type, "agent_type"),
+        (profile, "profile"),
     ):
         reject_unstorable_text(value, name)
     for tag in tags:
@@ -173,6 +175,15 @@ def validate_size(fields: dict, config: HubConfig) -> None:
     for tag in tags:
         if len(tag) > config.max_tag_chars:
             raise TraceRejected(f"tag {tag!r} exceeds {config.max_tag_chars} chars")
+    # Trace.profile is String(128) -- a literal bound, not a config knob,
+    # like agent_id/idempotency_key's identical checks in crud.py: this is
+    # the column's actual capacity, not a customer-facing quality setting.
+    # Left to the INSERT, an over-long value raises
+    # asyncpg.StringDataRightTruncation (a DataError, not an
+    # IntegrityError), which surfaces as an opaque HTTP 500 instead of a
+    # clean rejection.
+    if len(profile) > 128:
+        raise TraceRejected(f"profile exceeds 128 chars ({len(profile)})")
 
     serialized_size = len(json.dumps(fields, ensure_ascii=False).encode("utf-8"))
     if serialized_size > config.max_trace_bytes:
@@ -500,12 +511,22 @@ class _SharedPgPool:
         self.loop = asyncio.new_event_loop()
         self.pool = None
         self._init_error: BaseException | None = None
+        self._stop_event = threading.Event()
         ready = threading.Event()
         self._thread = threading.Thread(
             target=self._run, args=(dsn, ready), name="hub-ratelimit-pg", daemon=True
         )
         self._thread.start()
         if not ready.wait(timeout=_POOL_STARTUP_TIMEOUT_SECONDS):
+            self._stop_event.set()
+            def _cancel_and_stop():
+                for task in asyncio.all_tasks(self.loop):
+                    task.cancel()
+                self.loop.stop()
+            try:
+                self.loop.call_soon_threadsafe(_cancel_and_stop)
+            except RuntimeError:
+                pass
             raise TimeoutError(
                 f"timed out after {_POOL_STARTUP_TIMEOUT_SECONDS}s waiting for the "
                 "HUB_RATE_LIMIT_BACKEND=postgres connection pool to start"
@@ -528,13 +549,24 @@ class _SharedPgPool:
         except BaseException as exc:  # noqa: BLE001 - surfaced to __init__ via self._init_error
             self._init_error = exc
             ready.set()
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()
+            return
+        if self._stop_event.is_set():
+            if self.pool is not None:
+                try:
+                    self.loop.run_until_complete(self.pool.close())
+                except Exception:
+                    pass
+            if not self.loop.is_closed():
+                self.loop.close()
             return
         ready.set()
         try:
             self.loop.run_forever()
         finally:
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()
 
     async def _setup(self, asyncpg, dsn: str):
         pool = await asyncpg.create_pool(dsn, min_size=self._POOL_MIN_SIZE, max_size=self._POOL_MAX_SIZE)

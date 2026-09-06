@@ -265,8 +265,14 @@ def _print_hub_credential_warning(example_path: str) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    root = paths.resolve_root()
     dest = os.path.abspath(args.dest)
+    # Resolve the commontrace store root from the *destination* directory, not
+    # from cwd: when --dest points at a separate checkout or agent home, the
+    # generated .mcp.json must reference that store's root path, not the
+    # operator's working directory (which leaks host paths and likely points at
+    # the wrong store). resolve_root(dest) inspects dest for a memory/ dir and
+    # falls back to dest itself -- correct for both in-repo and external installs.
+    root = paths.resolve_root(dest)
     skill_md = _find_skill_md(root, dest)
     print(f"[commontrace] installing target='{args.target}' into {dest}")
 

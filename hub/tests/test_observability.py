@@ -10,6 +10,47 @@ import pytest
 from hub import observability
 
 
+class TestMetricsCardinalityIsBounded:
+    """`Metrics._requests` is a plain, never-evicted, process-lifetime dict
+    keyed on (method, path, status) -- so any label an unauthenticated
+    caller controls has to be bucketed to a fixed set, or an attacker can
+    grow this dict without bound just by varying that label on cheap,
+    ungated requests (nothing rate-limits a 404 to a path this app doesn't
+    serve). `path` was already bucketed to `_KNOWN_PATHS`; `method` was not
+    -- an HTTP method is only constrained by RFC 7230's `token` grammar, so
+    arbitrary verb strings reached the dict as distinct keys forever."""
+
+    def test_an_unknown_path_collapses_to_one_bucket(self):
+        metrics = observability.Metrics()
+        for i in range(50):
+            metrics.observe_request("GET", f"/aaaa{i}", 404, 1.0)
+        rendered = metrics.render()
+        assert 'path="other"' in rendered
+        assert "aaaa" not in rendered
+
+    def test_an_unknown_method_collapses_to_one_bucket(self):
+        metrics = observability.Metrics()
+        for i in range(50):
+            metrics.observe_request(f"FOOBAR{i}", "/mcp", 404, 1.0)
+        rendered = metrics.render()
+        assert 'method="OTHER"' in rendered
+        assert "FOOBAR" not in rendered
+
+    def test_the_internal_dict_stays_bounded_regardless_of_attacker_input(self):
+        metrics = observability.Metrics()
+        for i in range(500):
+            metrics.observe_request(f"VERB{i}", f"/path{i}", 404, 1.0)
+        # Every one of those 500 calls must collapse to exactly one
+        # (method_bucket, path_bucket, status) key -- not 500 distinct ones.
+        assert len(metrics._requests) == 1
+
+    def test_a_known_method_and_path_are_labelled_precisely(self):
+        metrics = observability.Metrics()
+        metrics.observe_request("POST", "/mcp", 200, 5.0)
+        rendered = metrics.render()
+        assert 'method="POST",path="/mcp",status="200"' in rendered
+
+
 class TestJsonLogFormatter:
     def _record(self, **kwargs):
         record = logging.LogRecord(

@@ -29,12 +29,23 @@ that could go wrong quietly.
 | `entitlements` | 4.08 | 5.61 | 13.97 | 47.36 | 11.6× | 0.60 | sublinear |
 | `agents_under_management` | 1.71 | 3.03 | 9.25 | 33.12 | 19.4× | 0.72 | sublinear |
 | `fleet_outcomes` | 6.76 | 20.75 | 40.44 | 96.45 | 14.3× | **0.62** | sublinear |
+| `causal_effects` | 15.15 | 53.72 | 294.99 | 1440.40 | 95.0× | **1.11** | LINEAR-OR-WORSE |
+| `value_delivered` | 14.34 | 51.73 | 311.60 | 1399.29 | 97.6× | **1.12** | LINEAR-OR-WORSE |
 
-**No path grows linearly with the customer's own corpus.** A 64× increase
-in a customer's accumulated history costs 3.0× on the read the product
-exists for (an agent describing its task in a sentence) and at worst ~20×
-on the operator-facing reports. On the cost side, link 3's falsifier does
-not fire.
+**No path against a customer's TRACE corpus grows linearly.** A 64×
+increase in a customer's accumulated history costs 3.0× on the read the
+product exists for (an agent describing its task in a sentence) and at
+worst ~20× on the operator-facing reports. On the cost side, link 3's
+falsifier does not fire for that axis.
+
+**The last two rows measure a different axis, and it does not clear the
+same bar.** `causal_effects`/`value_delivered` scale with the org's
+`HoldoutObservation` count under its *current* experiment (§ below), not
+its trace count -- the sweep grows both in lockstep at the same labelled
+sizes (`hub/bench_scaling.py:_seed_holdout`), which is why they share this
+table rather than needing a second one, but the column headers name two
+different corpora for these two rows. Read on for what that means and
+what was and was not done about it.
 
 The three `search_traces` rows are three query shapes, and the first two
 now carry a `search_traces` cost the earlier runs of this document did not
@@ -95,6 +106,69 @@ because the worst case is real: a deliberately broad query does cost
 `O(matches)`, and a fleet that searches for common words will find it.
 `hub/tests/test_bench_scaling.py:TestGeneratedCorpusIsSelective` pins the
 generator's diversity so the artifact cannot quietly return.
+
+## `causal_effects`/`value_delivered`: genuinely linear, and not an artifact this time
+
+These two rows measure a different corpus than every other row in the
+table above: `HoldoutObservation` count under an org's *current*
+experiment (bounded by `Organization.holdout_salt`, not by history --
+`--configure`/`start-experiment` rotating the rate starts this count over
+at zero), not trace count. They were absent from every earlier run of this
+document for exactly the reason `search_traces` almost was measured
+wrong: a probe added to the existing sweep, which only grows *traces*,
+would have measured a flat line regardless of how the path actually
+scales, for having nothing to do with the axis being varied.
+`hub/bench_scaling.py:_seed_holdout` grows both corpora in lockstep so one
+sweep answers both questions.
+
+**The exponent is a genuine ~1.1, not a benchmark artifact, and it is not
+being reported as fixed.** Profiling the 200,000-observation case (a
+synthetic run, not this table, at 20 lessons rather than 80) found the
+single largest cost was `sqlalchemy.orm.loading` -- `select
+(HoldoutObservation)` hydrates a full mapped ORM entity, with its identity
+map and instrumented attributes, for every row, when the function reads
+only 7 of the model's 9 columns. That accounted for roughly 60% of a
+12-second call. Replacing it with a Core column-select of exactly the
+fields used -- `trace_id, occasion_id, injected, succeeded, salt,
+created_at, trace_revision` -- returns lightweight `Row` tuples instead,
+with **no change to what is computed**: same rows, same fields, same
+downstream `Assignment`/`HoldoutObservation` objects, all 25 existing
+tests in `hub/tests/test_holdout.py`/`test_fleet_outcomes.py` and this
+codebase's own broader suite passing unchanged. Measured on that same
+200k-row run: **9.7s → 6.2s, a real 36% reduction** -- and the fitted
+exponent over the table above (already reflecting this fix) is still
+**1.11**, because the fix reduced a constant factor, not the shape.
+
+That shape is not a bug to chase away. `experiment.analyze` needs the
+per-arm success/failure counts for every lesson, correctly computed --
+reducible to aggregates in principle. `integrity.audit`'s five checks
+(differential attrition, arm balance, mid-run drift, conflicting arms,
+treatment stability) are what make this product's causal claim trustworthy
+rather than merely computed, and each one is inherently row-level: arm
+balance and attrition need per-observation timestamps for the power
+projection, treatment stability needs each observation's own recorded
+revision, and conflicting-arm detection is specifically "does the same
+(lesson, occasion) pair appear in both arms" -- a question aggregate counts
+cannot answer at all. Reading every row at least once is the correctness
+floor for auditing a randomized comparison honestly, not an oversight
+`fleet_outcomes`'s grouped-aggregate fix happened to miss.
+
+Rewriting that audit machinery to move some of it into SQL, or to sample
+rather than read every row, would trade away the exact property
+`hub/crud.py:causal_effects`'s own docstring and this codebase's own
+CHANGELOG spent several rounds establishing: that a compromised experiment
+is *detected*, not silently averaged over. That is a larger, riskier
+change to the single most safety-critical statistics in this product than
+this pass is prepared to make unmeasured and unreviewed. What is true in
+the meantime, and worth an operator's attention if `HoldoutObservation`
+volume for one org's one experiment ever approaches six figures: **an
+experiment is bounded by design, not by accident** -- `PILOT.md`'s whole
+argument is to size and plan a pilot's duration up front rather than run
+one indefinitely, and reconfiguring the rate (which every real reason to
+change it already calls for) resets this count to zero. The practical
+exposure is "how long was this experiment left running against real
+volume before anyone looked at the result," which the existing power
+projection (`integrity.project`) already answers.
 
 ## The term budget, and the finding that made it necessary
 

@@ -27,7 +27,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, or_, select, update
+from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, literal, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,23 +80,31 @@ def _contribute_request_hash(
     tags: list[str],
     agent_type: str,
     outcome: dict | None = None,
+    profile: str = "",
 ) -> str:
     # Order-independent over tags (a client may reasonably reorder an
     # unordered set between retries) but otherwise exact -- this only needs
     # to distinguish "same logical request" from "different request", not
     # to be a general canonicalization.
     #
-    # `outcome` is a new, optional last argument rather than inserted among
-    # the others: this function is also called by submit_kb_entry, which
-    # has no concept of outcome and never passes one, so its hash -- and
-    # every already-stored request_hash for an existing KB submission --
-    # stays byte-identical to before. Sorted-key JSON, not a delimiter
-    # join like the other fields: outcome is a dict, not a string, and
-    # json.dumps(..., sort_keys=True) is a canonical, order-independent
-    # serialization of it for free.
+    # `outcome` and `profile` are new, optional trailing arguments rather
+    # than inserted among the others: this function is also called by
+    # submit_kb_entry, which has no concept of either and never passes
+    # them, so its hash -- and every already-stored request_hash for an
+    # existing KB submission -- stays byte-identical to before. Each is
+    # appended only when truthy, for the same reason: a contribute_trace
+    # call that never passes `profile` (every caller before this one did)
+    # must keep hashing to exactly what it did before, or an idempotency
+    # key stored under the old formula would misread a legitimate retry
+    # made mid-deploy as IdempotencyKeyConflict. Sorted-key JSON, not a
+    # delimiter join like the string fields: outcome is a dict, not a
+    # string, and json.dumps(..., sort_keys=True) is a canonical,
+    # order-independent serialization of it for free.
     parts = [title, context_text, solution_text, agent_type, "\x1f".join(sorted(tags))]
     if outcome:
         parts.append(json.dumps(outcome, sort_keys=True, ensure_ascii=False))
+    if profile:
+        parts.append(profile)
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -791,7 +799,7 @@ async def search_traces(
     if traces:
         await session.execute(
             update(Trace)
-            .where(Trace.id.in_([t.id for t in traces]))
+            .where(Trace.org_id == org_id, Trace.id.in_([t.id for t in traces]))
             .values(retrievals=Trace.retrievals + 1)
         )
     return {
@@ -871,6 +879,7 @@ async def contribute_trace(
     tags: list[str] | None = None,
     agent_type: str = "",
     agent_id: str = "",
+    profile: str = "",
     outcome: dict | None = None,
     actor: str = AUDIT_ACTOR_UNKNOWN,
     idempotency_key: str | None = None,
@@ -895,6 +904,26 @@ async def contribute_trace(
     reported -- so `amend_trace` accepts the same parameter to attach or
     update it once the outcome is known, without needing a second write
     path.
+
+    `profile` names a domain-specific extension profile a trace belongs to
+    (protocol/schemas/trace.schema.json, e.g. "code-review" for the
+    Alpha/A/B/Omega/Lambda pipeline SKILL.md ships) -- optional, and the
+    local `commontrace capture --profile` client-side flag has populated it
+    on-disk since the schema was written. This was the only one of the
+    Trace columns supporting it (Trace.profile/extensions/watch_condition/
+    review_after) with a real write path anywhere in this codebase and
+    still had no way to reach the Hub: `amend_trace` already carries all
+    four forward unchanged on every amendment (see its own docstring), but
+    contribute_trace -- the only place a NEW trace is created -- accepted
+    none of them, so a customer's `--profile` value was silently dropped
+    the moment `commontrace sync --push-traces` sent that trace onward.
+    `extensions`/`watch_condition`/`review_after` stay contribute-time
+    defaults for now: nothing anywhere actually sets them yet, unlike
+    `profile`, and `extensions` in particular is an open `additionalProperties:
+    true` object -- accepting arbitrary customer-shaped JSON into it needs
+    its own validation pass (a NUL byte or lone surrogate nested inside a
+    JSONB value fails at INSERT exactly like reject_unstorable_text exists
+    to prevent for a flat string column) rather than reusing this fix.
 
     `idempotency_key` makes retries safe: an MCP client that times out
     waiting for a response cannot tell "the write never happened" from "it
@@ -963,7 +992,8 @@ async def contribute_trace(
         ).scalar_one_or_none()
         if existing is not None:
             return _idempotent_replay_or_conflict(
-                existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome
+                existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome,
+                profile,
             )
 
     allowed, retry_after = rate_limiter.check(org_id)
@@ -990,6 +1020,7 @@ async def contribute_trace(
         "solution_text": solution_text,
         "tags": tags,
         "agent_type": agent_type,
+        "profile": profile,
     }
     validate_trace(wire)  # raises SchemaValidationError -> hard reject
     validate_size(wire, config)  # raises TraceRejected -> hard reject
@@ -1004,12 +1035,13 @@ async def contribute_trace(
         tags=tags,
         agent_type=agent_type,
         agent_id=agent_id,
+        profile=profile,
         outcome=outcome,
         quarantined=reason is not None,
         quarantine_reason=reason or "",
         idempotency_key=idempotency_key,
         request_hash=(
-            _contribute_request_hash(title, context_text, solution_text, tags, agent_type, outcome)
+            _contribute_request_hash(title, context_text, solution_text, tags, agent_type, outcome, profile)
             if idempotency_key is not None
             else None
         ),
@@ -1030,7 +1062,8 @@ async def contribute_trace(
         if existing is None:
             raise  # the constraint fired for some other reason; don't mask it
         return _idempotent_replay_or_conflict(
-            existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome
+            existing, idempotency_key, title, context_text, solution_text, tags, agent_type, outcome,
+            profile,
         )
 
     # Bounded, content-free summary -- audit rows outlive an org purge, so
@@ -1059,8 +1092,11 @@ def _idempotent_replay_or_conflict(
     tags: list[str],
     agent_type: str,
     outcome: dict | None = None,
+    profile: str = "",
 ) -> dict:
-    incoming_hash = _contribute_request_hash(title, context_text, solution_text, tags, agent_type, outcome)
+    incoming_hash = _contribute_request_hash(
+        title, context_text, solution_text, tags, agent_type, outcome, profile
+    )
     if existing.request_hash != incoming_hash:
         raise IdempotencyKeyConflict(
             f"idempotency_key {idempotency_key!r} was already used for a different contribute_trace "
@@ -1322,25 +1358,63 @@ async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
     gap "delete this trace" is supposed to close. Shared by
     hub/manage.py:purge_trace and delete_trace below -- both walk the same
     lineage, one at operator-CLI trust, one self-service and org-scoped.
+
+    Expressed as a single recursive CTE rather than a Python-side BFS that
+    issued one round trip per chain level: `commontrace/hub_client.py`'s
+    documented curation pattern is repeated `amend_trace` calls on the same
+    trace ("each attaching whatever became known since"), and nothing caps
+    how deep that chain gets -- delete_trace below is a customer-reachable
+    MCP tool, so an org whose chain grew into the thousands would otherwise
+    hold this transaction (and its pooled connection) open for thousands of
+    sequential queries. Walking both link directions from one seed row in
+    one query costs the same either way. UNION (not UNION ALL) also gives
+    the recursion its own cycle guard for free: Postgres stops expanding a
+    branch once it re-derives a row already in the working table, so a
+    malformed chain cannot recurse forever.
     """
-    seen: set[str] = {trace_id}
-    frontier: set[str] = {trace_id}
-    while frontier:
-        rows = (
-            await session.execute(
-                select(Trace.id, Trace.supersedes_trace_id).where(
-                    or_(Trace.id.in_(frontier), Trace.supersedes_trace_id.in_(frontier))
-                )
-            )
-        ).all()
-        next_frontier: set[str] = set()
-        for tid, supersedes in rows:
-            for candidate in (tid, supersedes):
-                if candidate is not None and candidate not in seen:
-                    seen.add(candidate)
-                    next_frontier.add(candidate)
-        frontier = next_frontier
-    return seen
+    # Two separate single-direction recursive CTEs, unioned, rather than one
+    # bidirectional CTE: Postgres requires a recursive term to reference its
+    # own CTE exactly once, so a single `chain` walking both
+    # `supersedes_trace_id` outward (to ancestors) and inward (to
+    # descendants) in one recursive term is rejected outright
+    # (`InvalidRecursionError`) -- verified against a real Postgres, not
+    # just a compiled-SQL guess. Each CTE below references itself once, so
+    # both are legal, and the pair still costs exactly one round trip.
+    # Typed against Trace.id's own column type: an untyped literal binds as
+    # VARCHAR, and Postgres has no `uuid = character varying` operator, so
+    # the very first join above would fail outright rather than just being
+    # slow -- caught by running this against a real Postgres, not merely a
+    # compiled-SQL check.
+    seed = literal(trace_id, type_=Trace.id.type)
+    ancestors = select(seed.label("id")).cte(name="ancestors", recursive=True)
+    ancestors = ancestors.union(
+        select(Trace.supersedes_trace_id.label("id"))
+        .join(ancestors, Trace.id == ancestors.c.id)
+        .where(Trace.supersedes_trace_id.isnot(None))
+    )
+    # Seeded from the WHOLE `ancestors` chain, not just `seed` alone: a
+    # `supersedes_trace_id` column is a single FK per row (at most one
+    # parent), so this relation is a forest, but any node can have several
+    # CHILDREN -- a fork, exactly what amend_trace's own docstring documents
+    # as a real, reachable case (an unkeyed retry creates a second trace
+    # superseding the same original instead of extending the chain). A
+    # descendants walk seeded only from `seed` finds seed's own descendants
+    # but never a sibling that forked off an ANCESTOR of seed rather than
+    # off seed itself. Seeding from every id already known to be in the
+    # ancestor chain means the first recursive step finds every direct
+    # child of every one of those ids -- forks included -- and every
+    # further step finds that fork's own descendants the same way,
+    # recovering the whole connected subtree exactly as the BFS this
+    # replaced did (reproduced missing a fork against a live Postgres
+    # before this fix; see test_amendment_chain_includes_a_fork_off_an_ancestor).
+    descendants = select(ancestors.c.id.label("id")).cte(name="descendants", recursive=True)
+    descendants = descendants.union(
+        select(Trace.id.label("id")).join(descendants, Trace.supersedes_trace_id == descendants.c.id)
+    )
+    rows = (
+        await session.execute(union(select(ancestors.c.id), select(descendants.c.id)))
+    ).scalars().all()
+    return set(rows)
 
 
 async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor: str = AUDIT_ACTOR_UNKNOWN) -> bool:
@@ -1637,6 +1711,7 @@ async def amend_trace(
         "solution_text": resolved_solution,
         "tags": resolved_tags,
         "agent_type": original.agent_type,
+        "profile": original.profile,
     }
     validate_trace(wire)
     validate_size(wire, config)
@@ -2047,9 +2122,29 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     beside it say how far each trace is from an answer.
     """
     org = await session.get(Organization, org_id)
+    # A Core column-select, not `select(HoldoutObservation)`: the latter
+    # hydrates a full mapped ORM entity per row (identity map, instrumented
+    # attributes) for every one of what can be hundreds of thousands of rows
+    # under a long-running experiment, and every field it hydrates beyond the
+    # seven read below is wasted work. Measured on a live Postgres at 200k
+    # rows: ORM instantiation alone (sqlalchemy.orm.loading) accounted for
+    # roughly 60% of a 12-SECOND call -- a customer-facing MCP tool
+    # (fleet_outcomes/value_delivered) that a fleet doing ordinary retrieval
+    # volume reaches within months, not an edge case. Selecting only the
+    # columns this function actually reads returns lightweight Row tuples
+    # instead, with no change to what is computed: same rows, same fields,
+    # same downstream Assignment objects.
     rows = (
         await session.execute(
-            select(HoldoutObservation).where(
+            select(
+                HoldoutObservation.trace_id,
+                HoldoutObservation.occasion_id,
+                HoldoutObservation.injected,
+                HoldoutObservation.succeeded,
+                HoldoutObservation.salt,
+                HoldoutObservation.created_at,
+                HoldoutObservation.trace_revision,
+            ).where(
                 HoldoutObservation.org_id == org_id,
                 # Scoped to the CURRENT experiment. Observations from an
                 # earlier salt were drawn from a different randomization
@@ -2075,7 +2170,8 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 # of them, which is the only way that check can exist.
             )
         )
-    ).scalars().all()
+    ).all()  # plain Row tuples (named attribute access below), not `.scalars()`
+    # -- there is no single-entity column to scalar-ize; this selects seven.
 
     assignments = [
         integrity.Assignment(
@@ -2896,7 +2992,37 @@ async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
     Retracted entries are absent: they are already dealt with.
     """
     limit = _clamp_int(limit, 1, 500, 50)
+    queue = await _kb_review_queue_full(session)
+    return queue[:limit]
 
+
+async def count_kb_review_queue(session: AsyncSession) -> int:
+    """The true size of kb_review_queue's list, uncapped by `limit` --
+    for a summary tile, which must not read as a total when it is actually
+    `min(true_count, limit)`. Shares _kb_review_queue_full with
+    kb_review_queue itself rather than re-deriving the four-bucket
+    classification a second way that could silently drift from it."""
+    return len(await _kb_review_queue_full(session))
+
+
+async def kb_review_queue_and_total(session: AsyncSession, limit: int = 50) -> tuple[list[dict], int]:
+    """(kb_review_queue(limit), count_kb_review_queue()) from ONE
+    _kb_review_queue_full call, for a caller (hub/admin.py's KB dashboard)
+    that needs both the bounded list and the true total in the same
+    request -- calling kb_review_queue and count_kb_review_queue
+    separately would each independently re-run the same Trace query and
+    the Vote flag-count query behind _kb_review_queue_full."""
+    limit = _clamp_int(limit, 1, 500, 50)
+    queue = await _kb_review_queue_full(session)
+    return queue[:limit], len(queue)
+
+
+async def _kb_review_queue_full(session: AsyncSession) -> list[dict]:
+    """Every entry needing review, worst first, with no `limit` applied --
+    see kb_review_queue's docstring for the four-bucket classification this
+    implements. Split out so kb_review_queue (bounded, for actually listing
+    entries) and count_kb_review_queue (a true count, for a summary tile)
+    can't disagree about what counts as "needs attention"."""
     rows = (
         await session.execute(
             select(Trace).where(*commons_visible()).order_by(Trace.commons_hits.desc())
@@ -2957,7 +3083,7 @@ async def kb_review_queue(session: AsyncSession, limit: int = 50) -> list[dict]:
     # `rows` is already hits-descending, and Python's sort is stable, so
     # sorting on the bucket alone preserves that ordering within each one.
     queue.sort(key=lambda item: order[item["bucket"]])
-    return queue[:limit]
+    return queue
 
 
 # --- The CommonTrace Knowledge Base (opt-in, operator-curated) ---------

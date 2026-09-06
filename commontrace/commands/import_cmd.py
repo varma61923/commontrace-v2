@@ -105,28 +105,25 @@ def run(args: argparse.Namespace) -> int:
                 continue
 
             row = result
-            if args.dry_run:
-                n_written += 1  # counts "would be written" in dry-run mode
-                continue
-
             trace_id = str(uuid.uuid4())
-            slug = _slugify(row.title)
-            # Unconditionally id-suffixed, same reasoning as capture_cmd.py:
-            # the `if os.path.exists()` fallback is check-then-act and loses
-            # a row when two imports run at once, which is exactly what a
-            # migration looks like when someone parallelizes it by splitting
-            # the file.
-            out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
 
             fm = templates.trace_frontmatter(
                 trace_id, row.title, args.agent_type, row.tags, args.profile, row.outcome or None
             )
 
-            # Validate before writing, exactly as `capture` does. A bulk
-            # import is the likeliest source of malformed records -- it is
-            # someone else's export, not this tool's output -- so accepting
-            # what `capture` refuses would make the importer the one hole in
-            # the store's invariants, and a bad row would be averaged into
+            # Validate before writing, exactly as `capture` does -- and
+            # BEFORE the `--dry-run` early-exit below, not after it. A row
+            # that parses fine but fails schema validation (e.g. a negative
+            # `tokens_used`, which the schema floors at 0 but nothing in the
+            # parse step rejects) used to be counted by `--dry-run` as one
+            # of the traces "would be created," while the real run on the
+            # identical file rejected it and exited non-zero -- the dry
+            # run's whole purpose is to predict that outcome, not skip past
+            # the check that produces it. A bulk import is the likeliest
+            # source of malformed records -- it is someone else's export,
+            # not this tool's output -- so accepting what `capture` refuses
+            # would make the importer the one hole in the store's
+            # invariants, and a bad row would be averaged into
             # `bench --pilot` until an audit ran.
             instance = dict(fm)
             instance["context_text"] = row.context_text
@@ -134,10 +131,29 @@ def run(args: argparse.Namespace) -> int:
             errors = validate.validate(instance, schema)
             if errors:
                 n_rejected += 1
-                if len(reject_samples) < _MAX_DETAILS:
-                    for err in errors:
-                        reject_samples.append(f"line {row.line_no}: {err}")
+                # Checked per error, not just once before the loop: a single
+                # row that fails several schema checks at once could
+                # otherwise push reject_samples well past _MAX_DETAILS in
+                # one iteration (the check above only gated entry into this
+                # loop, not each append within it), overshooting the "only
+                # the first N are shown" promise printed below.
+                for err in errors:
+                    if len(reject_samples) >= _MAX_DETAILS:
+                        break
+                    reject_samples.append(f"line {row.line_no}: {err}")
                 continue
+
+            if args.dry_run:
+                n_written += 1  # counts "would be written" in dry-run mode
+                continue
+
+            slug = _slugify(row.title)
+            # Unconditionally id-suffixed, same reasoning as capture_cmd.py:
+            # the `if os.path.exists()` fallback is check-then-act and loses
+            # a row when two imports run at once, which is exactly what a
+            # migration looks like when someone parallelizes it by splitting
+            # the file.
+            out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
 
             body = templates.trace_body(row.context_text, row.solution_text)
             if row.source_id:
@@ -176,23 +192,27 @@ def run(args: argparse.Namespace) -> int:
     # a CI/CD ingestion pipeline checking $?.
     all_rows_skipped = n_written == 0 and n_skipped > 0
 
+    # Reported (and folded into the exit code) identically whether or not
+    # this is a dry run: schema validation now runs before the --dry-run
+    # early-exit above, so a row rejected here would ALSO be rejected by a
+    # real run on the same file -- a dry run that hid this would predict a
+    # cleaner import than the file will actually produce.
+    if n_rejected:
+        verb = "would be rejected as schema-invalid" if args.dry_run else "rejected as schema-invalid and NOT written"
+        print(f"[commontrace] {n_rejected} row(s) {verb}:", file=sys.stderr)
+        for line in reject_samples:
+            print(f"  [REJECT] {line}", file=sys.stderr)
+        if n_rejected > _MAX_DETAILS:
+            print(f"  ... and more (only the first {_MAX_DETAILS} are shown)", file=sys.stderr)
+
     if args.dry_run:
         print(f"[commontrace] --dry-run: no files written. {n_written} trace(s) would be created.")
-        return 1 if all_rows_skipped else 0
+        return 1 if (all_rows_skipped or n_rejected) else 0
 
     print(
         f"[commontrace] wrote {n_written} trace(s) to {tdir}. "
         "Run `commontrace distill` to find repeated patterns across them."
     )
-    if n_rejected:
-        print(
-            f"[commontrace] {n_rejected} row(s) rejected as schema-invalid and NOT written:",
-            file=sys.stderr,
-        )
-        for line in reject_samples:
-            print(f"  [REJECT] {line}", file=sys.stderr)
-        if n_rejected > _MAX_DETAILS:
-            print(f"  ... and more (only the first {_MAX_DETAILS} are shown)", file=sys.stderr)
     if n_rejected or all_rows_skipped:
         # Non-zero: a partial import that looks successful is how bad rows get
         # discovered a month later, in a report.

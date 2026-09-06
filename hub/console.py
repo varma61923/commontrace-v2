@@ -58,6 +58,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote as _url_quote
 
 from sqlalchemy import or_, select
 from starlette.requests import Request
@@ -553,6 +554,26 @@ def _render_memory(result: dict, tags: list[str]) -> str:
         )
         body.append("<table><thead><tr><th>Trace</th><th>Tags</th><th>Agent type</th>"
                     f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{rows}</tbody></table>")
+        # search_traces caps at `limit` and signals whether more rows exist
+        # via `has_more` (fetched as one extra row, not a second COUNT) --
+        # this used to be dropped on the floor here, so a corpus with more
+        # than 50 matches showed exactly 50 with no indication, and no way
+        # to reach the rest from this page at all.
+        limit = int(result.get("limit") or len(traces) or 1)
+        offset = int(result.get("offset") or 0)
+        query_param = f'&q={_url_quote(result.get("query", ""))}' if result.get("query") else ""
+        nav = []
+        if offset > 0:
+            nav.append(
+                f'<a href="{CONSOLE_PATH}/memory?offset={max(0, offset - limit)}{query_param}">'
+                "&larr; Newer</a>"
+            )
+        if result.get("has_more"):
+            nav.append(
+                f'<a href="{CONSOLE_PATH}/memory?offset={offset + limit}{query_param}">Older &rarr;</a>'
+            )
+        if nav:
+            body.append(f'<p class="muted">{" · ".join(nav)}</p>')
     elif result.get("query"):
         body.append('<p class="sub">Nothing matched. That is an answer about this corpus, '
                     "not an error — and the terms above say whether the query reduced to "
@@ -583,7 +604,7 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
         rows = "".join(
             f"<tr><td>{h(s.get('title'))}</td><td>{h(s.get('status'))}</td>"
             f"<td>{h(str(s.get('created_at'))[:16])}</td>"
-            f"<td>{h(s.get('reviewer_note') or '—')}</td></tr>"
+            f"<td>{h(s.get('rejection_reason') or '—')}</td></tr>"
             for s in submissions
         )
         body.append("<h2>Your proposals</h2><table><thead><tr><th>Title</th><th>Status</th>"
@@ -758,11 +779,15 @@ def add_console_routes(
             return _redirect_to_signin()
         org_id = str(claims["org"])
         query = str(request.query_params.get("q") or "")[:500]
+        try:
+            offset = max(0, int(request.query_params.get("offset") or 0))
+        except ValueError:
+            offset = 0
         async with session_scope(session_factory) as session:
             try:
-                result = await crud.search_traces(session, org_id, query=query, limit=50)
+                result = await crud.search_traces(session, org_id, query=query, limit=50, offset=offset)
             except ValueError as exc:
-                result = {"traces": [], "terms": [], "error": str(exc)}
+                result = {"traces": [], "terms": [], "error": str(exc), "offset": offset, "has_more": False}
             tags = await crud.list_tags(session, org_id)
         result["query"] = query
         return _page("Memory", _render_memory(result, tags))

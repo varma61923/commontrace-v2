@@ -58,6 +58,31 @@ class TestCreateOrgWarnsOnDuplicateName:
         assert count == 2
 
 
+async def test_list_orgs_attributes_active_key_counts_correctly(session_factory, config, two_orgs, capsys):
+    """Regression test for switching from one ApiKey query per org (in the
+    loop) to a single grouped query looked up by org_id -- pins that a
+    batched count doesn't get mixed up between orgs, which is the real risk
+    a refactor like this introduces. org_a gets 2 active keys and 1 revoked
+    (which must not count), org_b gets 1; a bug that summed instead of
+    grouped, or grouped by the wrong key, would show up as wrong per-org
+    numbers here even though the total across both is right either way."""
+    async with session_scope(session_factory) as session:
+        await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        revoked = await auth.issue_api_key(session, two_orgs["org_a"], expires_days=90)
+        await auth.revoke_api_key(session, revoked.key_id)
+        await auth.issue_api_key(session, two_orgs["org_b"], expires_days=90)
+
+    capsys.readouterr()
+    await manage.list_orgs(session_factory=session_factory)
+    out = capsys.readouterr().out
+    for line in out.splitlines():
+        if two_orgs["org_a"] in line:
+            assert "active_keys=2" in line, line
+        elif two_orgs["org_b"] in line:
+            assert "active_keys=1" in line, line
+
+
 async def test_stats_reports_zero_on_empty_db(session_factory, capsys):
     await manage.stats(session_factory=session_factory)
     out = capsys.readouterr().out
@@ -269,6 +294,98 @@ async def test_purge_trace_unrelated_traces_survive(session_factory, config, two
     assert bystander_row is not None
 
 
+async def test_amendment_chain_is_a_bounded_number_of_round_trips(session_factory, config, two_orgs):
+    """The BFS-per-level implementation this replaced issued one query per
+    LINK in the chain -- delete_trace is a customer-reachable MCP tool
+    (unlike purge_trace, which is operator-only), and nothing caps how deep
+    a chain gets: repeated `amend_trace` calls on the same trace is this
+    codebase's own documented curation pattern ("each attaching whatever
+    became known since"). A self-service delete on a chain built that way
+    would otherwise hold a pooled connection open for one round trip per
+    amendment. The recursive-CTE replacement must cost the same small,
+    constant number of round trips regardless of chain depth -- and must
+    still return exactly the right set of ids."""
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        trace = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="chain-0", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    chain_ids = {trace["id"]}
+    current = trace
+    depth = 30
+    for i in range(depth):
+        async with session_scope(session_factory) as session:
+            current = await amend_trace(
+                session, two_orgs["org_a"], current["id"], config, rate_limiter,
+                title=f"chain-{i + 1}", actor="test",
+            )
+        chain_ids.add(current["id"])
+    assert len(chain_ids) == depth + 1
+
+    async with session_scope(session_factory) as session:
+        calls = 0
+        real_execute = session.execute
+
+        async def counting_execute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return await real_execute(*args, **kwargs)
+
+        session.execute = counting_execute
+        result = await crud.amendment_chain(session, trace["id"])
+
+    assert result == chain_ids
+    # One recursive CTE per link direction -- independent of `depth`, which
+    # is the property this fix exists for. The BFS it replaced would have
+    # issued one call per level, i.e. up to `depth` of them.
+    assert calls <= 2, f"amendment_chain issued {calls} queries for a {depth}-deep chain"
+
+
+async def test_amendment_chain_includes_a_fork_off_an_ancestor(session_factory, config, two_orgs):
+    """amend_trace's own docstring documents a real, reachable way the
+    supersession graph forks: a retried amend_trace call with no (or a
+    different) idempotency_key against the same still-unmutated original
+    creates a SECOND trace superseding it, rather than extending the chain.
+    amendment_chain must still return the WHOLE connected component in that
+    case -- delete_trace/purge_trace trust this set to be the trace's
+    complete lineage, and a fork that silently falls outside it survives an
+    operation documented (and audited) as deleting all of it.
+
+    Shape: A -- B -- D (the "main" line amended twice), plus C, a second,
+    independent amendment of B (the fork). Querying from D (an amendment
+    of the fork point's own child, not of the fork point itself) must still
+    reach C: C shares an ancestor with D, not a direct edge to it.
+    """
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        a = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="a", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    async with session_scope(session_factory) as session:
+        b = await amend_trace(
+            session, two_orgs["org_a"], a["id"], config, rate_limiter, title="b", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        d = await amend_trace(
+            session, two_orgs["org_a"], b["id"], config, rate_limiter, title="d", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        # A second, independent amendment of B -- the fork. No idempotency_key,
+        # same as the retry scenario amend_trace's docstring describes.
+        c = await amend_trace(
+            session, two_orgs["org_a"], b["id"], config, rate_limiter, title="c", actor="test",
+        )
+
+    expected = {a["id"], b["id"], c["id"], d["id"]}
+    async with session_scope(session_factory) as session:
+        result_from_d = await crud.amendment_chain(session, d["id"])
+        result_from_c = await crud.amendment_chain(session, c["id"])
+    assert result_from_d == expected
+    assert result_from_c == expected
+
+
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):
     result = await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such trace" in capsys.readouterr().err
@@ -358,6 +475,23 @@ class TestSubmissionReviewCommands:
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, two_orgs["org_a"])
         assert org.bonus_commons_queries == 42
+
+    async def test_approve_submission_reports_the_clamped_credit_not_the_raw_input(
+        self, session_factory, config, two_orgs, capsys
+    ):
+        """review_kb_submission clamps `credit` to [0, 2**63-1] before
+        writing it -- the operator-facing message must describe what was
+        actually written to the database, not the raw --credit argument,
+        or a negative (or absurdly large) value reads as granted when it
+        was silently bounded to something else."""
+        s = await _submit_via_cli_path(session_factory, config, two_orgs["org_a"])
+        await manage.approve_submission(s["id"], two_orgs["org_b"], "-50", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "credited 0 bonus" in out
+        assert "-50" not in out
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, two_orgs["org_a"])
+        assert org.bonus_commons_queries == 0
 
     async def test_approve_submission_unknown_operator_org_reports_error(
         self, session_factory, config, two_orgs, capsys
@@ -467,6 +601,25 @@ class TestPurgeRequiresConfirmation:
         monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
         monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "y")  # not the exact word "yes"
+        exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "aborted" in err
+
+    def test_ctrl_d_at_the_prompt_aborts_cleanly_instead_of_crashing(self, config, monkeypatch, capsys):
+        """Ctrl-D at an interactive prompt raises EOFError from input() --
+        an entirely ordinary way to bail out, not an error condition.
+        Uncaught, this reached the operator as a raw Python traceback
+        instead of the same clean 'aborted' message every other way of
+        saying no already gets, and nothing destructive had happened yet
+        at the point it was raised."""
+        monkeypatch.setenv("HUB_DATABASE_URL", config.database_url)
+        monkeypatch.setattr(manage.sys.stdin, "isatty", lambda: True)
+
+        def _raise_eof(prompt):
+            raise EOFError()
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
         exit_code = manage.main(["purge-org", "00000000-0000-0000-0000-000000000000"])
         assert exit_code == 2
         err = capsys.readouterr().err

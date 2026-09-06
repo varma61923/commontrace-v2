@@ -211,7 +211,7 @@ def validate_outcome(outcome: dict | None) -> dict:
             f"expected any of {sorted(KNOWN_OUTCOME_FIELDS)}"
         )
     for _n, field, _d in PROPORTION_METRICS:
-        if field in outcome and not _is_bool(outcome[field]):
+        if field in outcome and outcome[field] is not None and not _is_bool(outcome[field]):
             raise ValueError(f"outcome.{field} must be a boolean, got {outcome[field]!r}")
     if "baseline" in outcome and not _is_bool(outcome["baseline"]):
         raise ValueError(f"outcome.baseline must be a boolean, got {outcome['baseline']!r}")
@@ -229,9 +229,9 @@ def validate_outcome(outcome: dict | None) -> dict:
         # _is_number/math.isfinite check is needed once `value` is known to
         # be a plain int: Python ints have no NaN/Infinity representation,
         # unlike the float this function used to also accept.
-        if not isinstance(value, int) or isinstance(value, bool):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
             raise ValueError(f"outcome.{field} must be an integer, got {value!r}")
-        if value < 0:
+        if value is not None and value < 0:
             raise ValueError(f"outcome.{field} must not be negative, got {value!r}")
     return dict(outcome)
 

@@ -772,6 +772,56 @@ class TestAnalysisIsScopedToOneRandomization:
         assert result.returncode == 0, result.stderr
         assert "Causal Effect Report" in result.stdout
 
+    def test_the_reported_holdout_rate_is_the_current_salts_not_a_blend(self, tmp_path):
+        """n_assignments/effects/the integrity report were already scoped to
+        the current salt -- but the printed "Holdout rate" line was computed
+        from `_load()`'s unscoped average over EVERY randomization ever
+        logged, before scoping happened. An org that ran at 10% for a while
+        then reconfigured to 50% (the documented `--configure` workflow)
+        would see a report whose effects are correctly current but whose
+        headline rate is a meaningless blend of two different experiments."""
+        import json
+
+        from commontrace import holdout_io
+
+        old_rows = [a(occasion=f"old-{i}", injected=i % 2 == 0, succeeded=i % 3 == 0,
+                      rate=0.1, salt="old-salt") for i in range(40)]
+        outcomes = {r.occasion_id: bool(r.succeeded) for r in old_rows}
+        root, cli = TestTheExperimentCommand._store(tmp_path, old_rows, outcomes)
+
+        config = holdout_io.configure(root, rate=0.5)
+        new_rows = [a(occasion=f"new-{i}", injected=i % 2 == 0, succeeded=i % 3 == 0,
+                      rate=0.5, salt=config.salt) for i in range(40)]
+
+        import os
+
+        from commontrace import frontmatter, paths, templates
+
+        tdir = paths.traces_dir(root)
+        for r in new_rows:
+            fm = templates.trace_frontmatter(
+                r.occasion_id, f"Case {r.occasion_id}", "support", [], "",
+                {"resolved": bool(r.succeeded)},
+            )
+            frontmatter.write(
+                os.path.join(tdir, f"2026-01-02_case_{r.occasion_id}.md"), fm,
+                templates.trace_body("A customer reported a problem.", "Investigated and answered."),
+            )
+        log = os.path.join(paths.memory_dir(root), "holdout_log.jsonl")
+        with open(log, "a", encoding="utf-8") as fh:
+            for r in new_rows:
+                fh.write(json.dumps({
+                    "occasion_id": r.occasion_id, "lesson": r.lesson,
+                    "injected": r.injected, "rate": r.rate, "salt": r.salt,
+                }) + "\n")
+
+        result = cli("experiment", "--dest", root)
+        assert result.returncode == 0, result.stderr
+        # The current salt's own rate (50%), not (0.1*40 + 0.5*40)/80 = 30%
+        # blended across both randomizations.
+        assert "Holdout rate: **50%**" in result.stdout, result.stdout
+        assert "Holdout rate: **30%**" not in result.stdout
+
 
 class TestAnOldLogStaysReadable:
     """Scoping the analysis to a salt introduced a way to lose an entire

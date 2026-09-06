@@ -228,11 +228,23 @@ async def list_orgs(session_factory=None) -> None:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         orgs = (await session.execute(select(Organization))).scalars().all()
+        # One grouped query for every org's active-key count, not one query
+        # per org in the loop below -- the same fix hub/admin.py:_overview
+        # already applies to its own per-org tiles, for the identical
+        # reason: an operator with hundreds of tenants should not pay
+        # hundreds of round trips to load a report they run routinely.
+        keys_by_org = dict(
+            (
+                await session.execute(
+                    select(ApiKey.org_id, func.count())
+                    .where(ApiKey.revoked_at.is_(None))
+                    .group_by(ApiKey.org_id)
+                )
+            ).all()
+        )
         for org in orgs:
-            n_keys = (
-                await session.execute(select(ApiKey).where(ApiKey.org_id == org.id, ApiKey.revoked_at.is_(None)))
-            ).scalars().all()
-            print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={len(n_keys)}")
+            n_keys = keys_by_org.get(org.id, 0)
+            print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={n_keys}")
 
 
 async def stats(session_factory=None) -> None:
@@ -469,6 +481,16 @@ async def kb_stats(session_factory=None) -> None:
                 select(func.count(func.distinct(KnowledgeBaseSubmission.org_id)))
             )
         ).scalar_one()
+        # The true count behind ALL FOUR of kb-review's buckets (urgent,
+        # disputed, stale, never_hit) -- not just the two (disputed/stale)
+        # `standing_of()` alone can report. Recomputing "needs review" from
+        # standings the way this used to would silently omit security-
+        # flagged entries and never-hit ones, exactly the "capped/partial
+        # result read as a total" defect hub/admin.py's overview/KB tiles
+        # had before their own fix (crud.count_kb_review_queue exists
+        # specifically so a summary number like this one can't disagree
+        # with what `kb-review` actually lists).
+        queue_total = await crud.count_kb_review_queue(session)
 
     if submission_counts:
         pending = submission_counts.get("pending", 0)
@@ -509,11 +531,8 @@ async def kb_stats(session_factory=None) -> None:
     if n_retracted:
         print(f"  {'retracted:':<14} {n_retracted}   (withdrawn by an operator, not served)")
 
-    needs_review = standings.get(commons.STANDING_DISPUTED, 0) + standings.get(
-        commons.STANDING_STALE, 0
-    )
-    if needs_review:
-        print(f"\n  `kb-review` lists the {needs_review} entry(ies) needing a decision.")
+    if queue_total:
+        print(f"\n  `kb-review` lists the {queue_total} entry(ies) needing a decision.")
 
     if total_hits == 0:
         print(
@@ -952,7 +971,12 @@ async def approve_submission(
         print(f"error: no PENDING submission with id: {submission_id}", file=sys.stderr)
         return False
     print(f"approved {submission_id} -> new Knowledge Base entry {result['resulting_trace_id']}")
-    print(f"  credited {credit_int} bonus Knowledge Base queries to the submitting org")
+    # `result['credit_awarded']`, not the local `credit_int`: review_kb_submission
+    # clamps the credit to [0, 2**63-1] before writing it, so a negative or
+    # absurdly large --credit is silently bounded in the database while this
+    # local variable still holds the raw, unclamped value the operator typed
+    # -- printing that back would misdescribe what the write actually did.
+    print(f"  credited {result['credit_awarded']} bonus Knowledge Base queries to the submitting org")
     return True
 
 
@@ -1468,7 +1492,18 @@ def _confirm_destructive(action: str) -> bool:
             file=sys.stderr,
         )
         return False
-    reply = input(f"This will {action.upper()}. This cannot be undone. Type 'yes' to continue: ")
+    try:
+        reply = input(f"This will {action.upper()}. This cannot be undone. Type 'yes' to continue: ")
+    except EOFError:
+        # Ctrl-D at the prompt -- an entirely ordinary way to bail out of an
+        # interactive confirmation, not an error condition. Left uncaught,
+        # `input()` raising here reached the caller as a raw traceback
+        # (reproduced: stdin hitting EOF at an interactive tty prompt raises
+        # EOFError), which is exactly the "a traceback here reads as 'the
+        # tool is broken'" failure this module's own confirmation prompts
+        # exist to avoid -- and nothing destructive has happened yet at this
+        # point, so treating it as "no" is safe.
+        return False
     return reply.strip().lower() == "yes"
 
 

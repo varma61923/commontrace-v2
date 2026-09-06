@@ -380,6 +380,7 @@ The agent then has the whole protocol as tools:
 | `approve_lesson(slug)` | Activate it, so retrieval starts injecting it. |
 | `reject_lesson(slug, reason)` | Archive one that should not become a lesson. |
 | `list_lessons` / `get_lesson` / `store_status` | Read the store, and see which recurring patterns still have no lesson. |
+| `experiment_status()` | Is the randomized holdout you're feeding with `occasion_id` actually going to answer anything yet -- validity, power projections, and effects so far, so an agent can tell a running pilot from a spent one. |
 
 Two things about this are deliberate.
 

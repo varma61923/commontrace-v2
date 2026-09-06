@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import distill, frontmatter, lesson_io, paths, templates, trace_io
+from commontrace.commands._validators import similarity_threshold as _similarity_threshold
 from commontrace.frontmatter import FrontmatterError
 
 
@@ -17,7 +18,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "candidate lessons at status=review (never auto-activated).",
     )
     p.add_argument("--agent-type", default=None, help="Only cluster traces of this agent_type.")
-    p.add_argument("--similarity-threshold", type=float, default=0.3)
+    p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
     p.add_argument("--min-cluster-size", type=int, default=2)
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)

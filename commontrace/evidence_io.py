@@ -24,7 +24,7 @@ from commontrace.commands._format import read_or_warn
 BODY_KEY = templates.BODY_KEY
 
 
-def load_active_lessons(root: str) -> list[dict]:
+def load_active_lessons(root: str, status: str = "active") -> list[dict]:
     out = []
     for path in sorted(glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
@@ -33,12 +33,15 @@ def load_active_lessons(root: str) -> list[dict]:
         if result is None:
             continue
         fm, body = result
+        lesson_status = fm.get("status") or "active"
+        if status is not None and lesson_status != status:
+            continue
         fm[BODY_KEY] = body
         out.append(fm)
     return out
 
 
-def load_evidence(root: str) -> list[reliability.Evidence]:
+def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliability.Evidence]:
     """Collect occasions on which lessons were injected, from both shapes the
     protocol supports.
 
@@ -80,13 +83,20 @@ def load_evidence(root: str) -> list[reliability.Evidence]:
             )
         )
 
-    for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
-        if os.path.basename(path) == "README.md":
-            continue
-        result = read_or_warn(trace_io.read, path)
-        if result is None:
-            continue
-        inst, _ = result
+    if traces is None:
+        trace_instances = []
+        for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
+            if os.path.basename(path) == "README.md":
+                continue
+            result = read_or_warn(trace_io.read, path)
+            if result is None:
+                continue
+            inst, _ = result
+            trace_instances.append(inst)
+    else:
+        trace_instances = traces
+
+    for inst in trace_instances:
         ext = inst.get("extensions") or {}
         retrieved = list(ext.get("lessons_retrieved") or [])
         if not retrieved:

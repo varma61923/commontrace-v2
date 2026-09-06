@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import sys
 
 from commontrace import (
+    distill,
     evidence_io,
     experiment,
     impact,
@@ -15,10 +17,12 @@ from commontrace import (
     pilot,
     reliability,
     taxonomy,
+    trace_io,
 )
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
-from commontrace.commands._traces import load_trace_candidates, load_trace_instances
+from commontrace.commands._validators import similarity_threshold as _similarity_threshold
+from commontrace.frontmatter import FrontmatterError
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -29,7 +33,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "whether CommonTrace is fixing the issues worth fixing. See PILOT.md.",
     )
     p.add_argument("--agent-type", default=None)
-    p.add_argument("--similarity-threshold", type=float, default=0.3)
+    p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
     p.add_argument("--min-cluster-size", type=int, default=2)
     p.add_argument("--min-evidence", type=int, default=reliability.DEFAULT_MIN_EVIDENCE)
     p.add_argument("--precision-floor", type=float, default=reliability.DEFAULT_PRECISION_FLOOR)
@@ -56,12 +60,35 @@ def _load_pilot_metrics(root: str, agent_type: str | None) -> dict | None:
     if rc != 0:
         return None
     try:
-        return json.loads(out)
+        data = json.loads(out)
+        # pilot_metrics.py now emits {"error": ...} JSON (not plain text) when there is
+        # no outcome data. Treat that as "no baseline yet" -- same as before the JSON fix.
+        if isinstance(data, dict) and "error" in data:
+            return None
+        return data
     except json.JSONDecodeError:
-        # pilot_metrics.py prints a plain-text "no traces" notice (not JSON)
-        # and exits 0 when the store has no outcome data at all -- that is
-        # "no baseline yet", not a failure of this command.
+        # Legacy fallback: plain-text "no traces" notice exits 0 but isn't JSON.
         return None
+
+
+def _load_traces(root: str) -> list[tuple[str, dict]]:
+    tdir = paths.traces_dir(root)
+    traces: list[tuple[str, dict]] = []
+    for path in sorted(glob.glob(os.path.join(tdir, "*.md"))):
+        if os.path.basename(path) == "README.md":
+            continue
+        try:
+            instance, _ = trace_io.read(path)
+        except FrontmatterError as exc:
+            # Same warning as _traces.py's loaders (load_trace_candidates /
+            # load_trace_instances), which this replaces to read the traces
+            # dir once instead of twice: a corrupt trace must drop out of
+            # the report, not disappear from it silently, or a `pilot`
+            # customer's sponsor reads numbers that quietly exclude it.
+            print(f"[commontrace] warning: skipping unreadable trace {path}: {exc}", file=sys.stderr)
+            continue
+        traces.append((path, instance))
+    return traces
 
 
 def run(args: argparse.Namespace) -> int:
@@ -71,7 +98,34 @@ def run(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
 
-    trace_candidates = load_trace_candidates(root, args.agent_type)
+    raw_traces = _load_traces(root)
+    all_instances = [inst for _, inst in raw_traces]
+    # Filtered once, not twice: trace_instances and trace_candidates below
+    # both used to re-apply this identical agent_type condition in their
+    # own comprehensions, a second full pass over raw_traces with the two
+    # copies free to drift out of sync.
+    matched_traces = [
+        (path, inst) for path, inst in raw_traces
+        if not args.agent_type or inst.get("agent_type") == args.agent_type
+    ]
+    trace_instances = [inst for _, inst in matched_traces]
+    trace_candidates = [
+        distill.TraceCandidate(
+            id=inst["id"],
+            path=path,
+            title=inst.get("title", ""),
+            context_text=inst.get("context_text", ""),
+            solution_text=inst.get("solution_text", ""),
+            tags=(
+                [str(t) for t in inst.get("tags", []) if t is not None]
+                if isinstance(inst.get("tags"), (list, tuple))
+                else []
+            ),
+            agent_type=inst.get("agent_type", ""),
+        )
+        for path, inst in matched_traces
+        if inst.get("id")
+    ]
     lessons = evidence_io.load_active_lessons(root)
     tax = taxonomy.build_taxonomy(
         trace_candidates, lessons,
@@ -79,8 +133,7 @@ def run(args: argparse.Namespace) -> int:
         min_cluster_size=args.min_cluster_size,
     )
 
-    evidence = evidence_io.load_evidence(root)
-    trace_instances = load_trace_instances(root, args.agent_type)
+    evidence = evidence_io.load_evidence(root, traces=all_instances)
     impact_report = impact.compute_impact(
         evidence, trace_instances,
         cost_per_1k_tokens=args.cost_per_1k_tokens,
@@ -92,7 +145,16 @@ def run(args: argparse.Namespace) -> int:
     ) if evidence else []
     harmful_lesson_slugs = [s.slug for s in scores if s.verdict == reliability.VERDICT_HARMFUL]
 
-    holdout_rows, _rate, _corrupt = experiment_cmd._load(root)
+    # Scoped to the current randomization, same as `commontrace experiment`
+    # and the MCP `experiment_status` tool: pooling assignments from a
+    # rotated-away salt with the current one is a comparison of nothing
+    # against nothing, and would make `commontrace pilot` -- the document a
+    # customer's sponsor reads for a renewal decision -- disagree with
+    # `commontrace experiment` on the very same store after a holdout-rate
+    # change, exactly the class of bug scope_to_current_salt exists to close
+    # everywhere the holdout log is analyzed.
+    all_rows, _rate, _corrupt = experiment_cmd._load(root)
+    holdout_rows, _wanted_salt, _other = experiment_cmd.scope_to_current_salt(root, all_rows)
     obs = experiment_cmd._observations(holdout_rows)
     # The pilot report is the document a customer's sponsor reads to decide
     # whether to renew, so a causal claim inside it needs the same validity

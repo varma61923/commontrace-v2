@@ -11,10 +11,13 @@
 # just a version-number one. Bump these deliberately (test against the new
 # version, then edit the pin) rather than letting them float.
 #
-# This still isn't full transitive-dependency reproducibility (that needs
-# a proper lock file, e.g. pip-tools/uv, pinning every indirect dependency
-# too) -- treat that as a known follow-up, not something exact-pinning the
-# direct list alone achieves.
+# Exact-pinning this list alone still isn't full transitive-dependency
+# reproducibility -- see hub/requirements-lock.txt (a pip constraints file
+# covering every indirect dependency too, generated against the Python
+# version the Dockerfile actually ships) for the install the shipped image
+# uses: `pip install -r hub/requirements.txt -c hub/requirements-lock.txt`.
+# That file's own header explains why it's scoped to one Python version
+# rather than covering CI's whole 3.10/3.11/3.12 matrix.
 
 mcp==2.0.0                 # MCP server transport (streamable-http), also pulls starlette + uvicorn
 httpx==0.28.1               # official Encode HTTP client (was pinned to the unofficial "httpx2" repackaging)
