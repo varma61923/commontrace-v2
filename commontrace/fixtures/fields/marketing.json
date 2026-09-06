@@ -1,0 +1,194 @@
+{
+  "field": "marketing",
+  "agent_type": "marketing",
+  "lessons": [
+    {
+      "name": "segment_ctr_underperformance",
+      "description": "Campaign underperforming on CTR for one segment",
+      "applies_when": "A campaign's overall metrics look fine, but one specific segment (a persona, industry vertical, or lifecycle stage) has CTR well below the rest of the campaign.",
+      "do_not_apply_when": "Does not apply when the underperforming segment's send/render actually failed (deliverability or rendering bug) -- rule out delivery issues first.",
+      "tags": [
+        "ctr",
+        "segmentation",
+        "campaign-performance"
+      ],
+      "domain": "segment",
+      "importance": 4
+    },
+    {
+      "name": "seo_ranking_drop_after_migration",
+      "description": "SEO ranking drop after a CMS migration",
+      "applies_when": "Organic search rankings and traffic drop noticeably in the weeks following a CMS migration or site redesign.",
+      "do_not_apply_when": "Does not apply to a gradual ranking decline unrelated in time to any migration -- that has different, usually content- or backlink-related, causes.",
+      "tags": [
+        "seo",
+        "migration",
+        "technical-seo"
+      ],
+      "domain": "seo",
+      "importance": 4
+    },
+    {
+      "name": "brand_voice_compliance_flag",
+      "description": "Brand voice inconsistency flagged by legal/comms review",
+      "applies_when": "A campaign draft comes back from legal/comms review flagged for both brand-voice inconsistency and unsupported or unverifiable claims, requiring a rewrite before it can ship.",
+      "do_not_apply_when": "Does not apply to a voice-only flag with no claims issue, where a single pass is sufficient.",
+      "tags": [
+        "brand-voice",
+        "compliance",
+        "legal-review"
+      ],
+      "domain": "brand",
+      "importance": 4
+    },
+    {
+      "name": "webinar_registration_dropoff",
+      "description": "Webinar registration-to-attendance drop-off",
+      "applies_when": "A webinar has registration numbers in line with (or above) past events, but the registration-to-attendance ratio is noticeably lower than usual.",
+      "do_not_apply_when": "Does not apply when the drop-off is explained by a scheduling conflict with a known industry event -- that's a timing issue, not a reminder issue.",
+      "tags": [
+        "webinar",
+        "attendance",
+        "lifecycle-marketing"
+      ],
+      "domain": "webinar",
+      "importance": 4
+    },
+    {
+      "name": "ab_test_inconclusive_subject_line",
+      "description": "Inconclusive A/B test on subject lines",
+      "applies_when": "A subject-line (or similar) A/B test finishes with no statistically significant difference between variants, and the team isn't sure whether that means 'no effect' or 'not enough data.'",
+      "do_not_apply_when": "Does not apply when the test was adequately powered and still came back flat -- that is a genuine null result.",
+      "tags": [
+        "ab-testing",
+        "email",
+        "statistics"
+      ],
+      "domain": "ab",
+      "importance": 4
+    },
+    {
+      "name": "regulated_vertical_social_compliance",
+      "description": "Social post flagged for compliance in a regulated vertical",
+      "applies_when": "A social post for a regulated vertical (financial services, healthcare, insurance) is flagged by compliance, usually for a claim requiring a disclaimer or substantiation that wasn't included.",
+      "do_not_apply_when": "Does not apply to posts with no substantive claim (pure brand/awareness content), which need no disclaimer at all.",
+      "tags": [
+        "compliance",
+        "regulated-industry",
+        "social-media"
+      ],
+      "domain": "regulated",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "email campaign CTR is well below benchmark for one customer segment",
+      "relevant": [
+        "segment_ctr_underperformance"
+      ]
+    },
+    {
+      "query": "paid social ad underperforming specifically with the enterprise segment",
+      "relevant": [
+        "segment_ctr_underperformance"
+      ]
+    },
+    {
+      "query": "one audience segment has much lower click-through than the rest of the campaign",
+      "relevant": [
+        "segment_ctr_underperformance"
+      ]
+    },
+    {
+      "query": "organic rankings dropped sharply after migrating to a new CMS",
+      "relevant": [
+        "seo_ranking_drop_after_migration"
+      ]
+    },
+    {
+      "query": "traffic fell off a cliff after the site redesign / CMS migration",
+      "relevant": [
+        "seo_ranking_drop_after_migration"
+      ]
+    },
+    {
+      "query": "SEO regression after CMS migration, suspect broken redirects or canonical tags",
+      "relevant": [
+        "seo_ranking_drop_after_migration"
+      ]
+    },
+    {
+      "query": "legal review flagged inconsistent brand voice and unsupported claims in the draft",
+      "relevant": [
+        "brand_voice_compliance_flag"
+      ]
+    },
+    {
+      "query": "comms review says the copy doesn't match brand voice guidelines and needs a compliance pass",
+      "relevant": [
+        "brand_voice_compliance_flag"
+      ]
+    },
+    {
+      "query": "draft campaign copy rejected in review for tone and unverifiable claims",
+      "relevant": [
+        "brand_voice_compliance_flag"
+      ]
+    },
+    {
+      "query": "webinar has strong registration numbers but attendance is much lower than usual",
+      "relevant": [
+        "webinar_registration_dropoff"
+      ]
+    },
+    {
+      "query": "high sign-up rate but low show-up rate for the upcoming webinar",
+      "relevant": [
+        "webinar_registration_dropoff"
+      ]
+    },
+    {
+      "query": "registration-to-attendance ratio dropped compared to previous webinars",
+      "relevant": [
+        "webinar_registration_dropoff"
+      ]
+    },
+    {
+      "query": "subject line A/B test came back with no statistically significant winner",
+      "relevant": [
+        "ab_test_inconclusive_subject_line"
+      ]
+    },
+    {
+      "query": "email test inconclusive, both subject line variants performed about the same",
+      "relevant": [
+        "ab_test_inconclusive_subject_line"
+      ]
+    },
+    {
+      "query": "A/B test underpowered, list size too small to detect a difference",
+      "relevant": [
+        "ab_test_inconclusive_subject_line"
+      ]
+    },
+    {
+      "query": "social post got flagged by compliance for a regulated-industry claim",
+      "relevant": [
+        "regulated_vertical_social_compliance"
+      ]
+    },
+    {
+      "query": "financial services social copy needs a compliance disclaimer added",
+      "relevant": [
+        "regulated_vertical_social_compliance"
+      ]
+    },
+    {
+      "query": "healthcare marketing post pulled for review over an unsubstantiated outcome claim",
+      "relevant": [
+        "regulated_vertical_social_compliance"
+      ]
+    }
+  ]
+}

@@ -64,7 +64,8 @@ pip install -e ".[attention]"
 ### 2 — Bootstrap a store for your fleet
 
 ```bash
-commontrace init --agent-type support        # or: sales | hr | marketing | code | ops | custom
+commontrace init --agent-type support        # any field: code, sales, hr, marketing,
+                                             # ops, robotics, legal, ... (open taxonomy)
 commontrace doctor                            # sanity-check the environment
 ```
 
@@ -492,9 +493,11 @@ main session for speed.
 | **Lambda** | Validates lesson proposals (auto, no human needed) | 11 |
 | **Orchestrator** | Coordinates the pipeline, takes decisions at phase 6/8 | all |
 
-Plus an **attention layer** (`memory/attention/`) — a local numpy/sentence-transformers
-embedding index that pre-filters lessons for Alpha at scale (100+ lessons without latency
-degradation).
+Plus an **attention layer** — a local numpy/sentence-transformers embedding index that
+pre-filters lessons for Alpha at scale (100+ lessons without latency degradation). The
+scripts ship inside the package (`commontrace/reference/`) and are driven by `commontrace
+query` / `commontrace index`; each store keeps its own generated index at
+`memory/attention/index.npz`.
 
 Architecture diagrams: `assets/commontrace_overall.png`, `assets/agent_*.png`.
 
@@ -518,7 +521,7 @@ are running from a different location than the memory store).
 
 ```bash
 export COMMONTRACE_ROOT=/opt/commontrace
-python3 memory/attention/query.py "my task"
+commontrace query "my task"
 commontrace bench
 ```
 
@@ -534,10 +537,12 @@ memory/
   lessons/              — one .md file per validated procedural rule
   episodes/             — one .md file per /commontrace run (written by Omega)
   attention/
-    build_index.py      — builds embedding index from active lessons
-    query.py            — pre-filters lessons by cosine similarity (used by Alpha)
-    index.npz           — generated file (gitignored, rebuild with build_index.py)
+    index.npz           — generated embedding index (gitignored; rebuild with `commontrace index`)
 ```
+
+The scripts that build and read that index (`build_index.py`, `query.py`) live in
+`commontrace/reference/` and ship with the package, so semantic retrieval works from a
+plain `pip install` rather than only from a repo checkout.
 
 **Memory starts empty.** The example entries in `memory/lessons/` and `memory/episodes/`
 are illustrative templates — delete them once your own runs accumulate.
@@ -545,10 +550,14 @@ are illustrative templates — delete them once your own runs accumulate.
 **Rebuild the attention index** after adding or editing lessons:
 
 ```bash
-python3 memory/attention/build_index.py
-# or force-rebuild:
-python3 memory/attention/build_index.py --force
+commontrace index
+commontrace index --force      # rebuild even if it looks current
 ```
+
+Nothing rebuilds it automatically (it loads a ~420 MB model and can hit the network), so
+`commontrace query` checks freshness cheaply and **falls back to lexical retrieval** when
+the index is missing or stale, rather than returning nothing. Lexical reads the lesson
+files as they are and cannot go stale — it is also what the MCP server always uses.
 
 The embedding model (`multi-qa-mpnet-base-dot-v1`, ~420 MB) is downloaded once and
 cached under `~/.cache/huggingface/`.
@@ -612,6 +621,36 @@ first month answers "is it still helping?" a year in, and regressions show
 up as a metric moving the wrong way. For a *causal* rather than
 correlational answer on a specific lesson, see `commontrace experiment`
 (randomized holdout, § [Benchmark](#benchmark)).
+
+### Is retrieval as good in *your* field as in ours?
+
+`commontrace bench --pilot` measures your fleet. `commontrace bench --retrieval`
+measures the retriever itself, **per field**, against a labelled corpus that ships
+with the package (six fields, 36 lessons, 108 queries):
+
+```bash
+commontrace bench --retrieval                                  # per-field table
+commontrace bench --retrieval --json                           # machine-readable
+commontrace bench --retrieval --max-pollution 1.5 --max-spread 2   # CI gate
+```
+
+It exists because a single aggregate number cannot show the failure it is
+looking for. Scoring used to be raw word overlap, which rewards whichever
+field writes more — so a threshold meant something different in a terse coding
+store than in a wordy legal one, and nothing would have caught a change that
+improved coding at legal's expense.
+
+The headline metric is **pollution**: assignments logged per assignment
+actually about the lesson. Under `query --experiment` every retrieved lesson
+is logged as an eligible holdout assignment, so a lesson retrieved into tasks
+it has nothing to do with absorbs those tasks' outcomes — which is how one
+lesson accrued 246 assignments against ~80 real occasions and was reported as
+significantly *hurting* outcomes when it was fine.
+
+The gate is deliberately two-sided (a ceiling on the worst field **and** the
+worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
+*spread* was 1.32×, so a spread-only gate would have called it acceptable.
+Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATUS.md) §9.
 
 ---
 

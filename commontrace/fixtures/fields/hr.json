@@ -1,0 +1,194 @@
+{
+  "field": "hr",
+  "agent_type": "hr",
+  "lessons": [
+    {
+      "name": "benefits_enrollment_window",
+      "description": "New-hire benefits enrollment window question",
+      "applies_when": "A new hire (or their manager) asks about the deadline to enroll in health/dental/vision benefits, or missed it and wants to know what options remain.",
+      "do_not_apply_when": "Does not apply to open-enrollment-period questions (a different, company-wide annual window), which this rule does not cover.",
+      "tags": [
+        "benefits",
+        "enrollment",
+        "onboarding"
+      ],
+      "domain": "benefits",
+      "importance": 4
+    },
+    {
+      "name": "parental_leave_pto_interaction",
+      "description": "Parental leave interaction with PTO accrual",
+      "applies_when": "An employee going on parental leave asks whether PTO keeps accruing during the leave, and whether unused PTO can be used to cover any unpaid portion.",
+      "do_not_apply_when": "Does not apply to jurisdictions with statutory paid family leave that replaces this policy; check locality first.",
+      "tags": [
+        "leave",
+        "pto",
+        "benefits"
+      ],
+      "domain": "parental",
+      "importance": 4
+    },
+    {
+      "name": "performance_improvement_plan",
+      "description": "Manager asking how to structure a Performance Improvement Plan",
+      "applies_when": "A manager is considering, or has decided, to put a direct report on a formal performance improvement plan and asks about process, timeline, and documentation requirements.",
+      "do_not_apply_when": "Does not apply to immediate-termination-for-cause situations, which follow a separate escalation path, not a PIP.",
+      "tags": [
+        "performance",
+        "pip",
+        "management"
+      ],
+      "domain": "performance",
+      "importance": 4
+    },
+    {
+      "name": "remote_stipend_eligibility",
+      "description": "Remote-work stipend eligibility question",
+      "applies_when": "An employee (fully remote or hybrid) asks whether they qualify for the home-office/equipment stipend, and when it's paid.",
+      "do_not_apply_when": "Does not apply to contractors, who are on a separate stipend policy (or none) depending on contract terms.",
+      "tags": [
+        "remote-work",
+        "stipend",
+        "benefits"
+      ],
+      "domain": "remote",
+      "importance": 4
+    },
+    {
+      "name": "exit_cobra_documentation",
+      "description": "Exit interview scheduling and COBRA documentation",
+      "applies_when": "An employee is departing and either the manager or the employee asks about exit-interview scheduling, or the employee asks about COBRA continuation coverage timing.",
+      "do_not_apply_when": "Does not apply in states/countries where continuation coverage follows a different statutory timeline than federal COBRA.",
+      "tags": [
+        "offboarding",
+        "cobra",
+        "compliance"
+      ],
+      "domain": "exit",
+      "importance": 4
+    },
+    {
+      "name": "internal_transfer_comp_banding",
+      "description": "Internal transfer compensation banding question",
+      "applies_when": "An employee is transferring internally to a role in a different compensation band (often a promotion-adjacent lateral move) and the manager or employee asks how pay is affected.",
+      "do_not_apply_when": "Does not apply to same-band lateral transfers, where no comp review is triggered.",
+      "tags": [
+        "compensation",
+        "internal-transfer",
+        "banding"
+      ],
+      "domain": "internal",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "new hire missed the 30-day benefits enrollment window, what are the options",
+      "relevant": [
+        "benefits_enrollment_window"
+      ]
+    },
+    {
+      "query": "employee asks how many days they have to enroll in health benefits after start date",
+      "relevant": [
+        "benefits_enrollment_window"
+      ]
+    },
+    {
+      "query": "new hire wants to add a dependent after the enrollment window closed",
+      "relevant": [
+        "benefits_enrollment_window"
+      ]
+    },
+    {
+      "query": "does PTO keep accruing during parental leave",
+      "relevant": [
+        "parental_leave_pto_interaction"
+      ]
+    },
+    {
+      "query": "employee asks if they can use PTO to top up pay during unpaid parental leave",
+      "relevant": [
+        "parental_leave_pto_interaction"
+      ]
+    },
+    {
+      "query": "how parental leave affects PTO accrual and vacation carryover",
+      "relevant": [
+        "parental_leave_pto_interaction"
+      ]
+    },
+    {
+      "query": "manager wants to put a direct report on a performance improvement plan, what's the process",
+      "relevant": [
+        "performance_improvement_plan"
+      ]
+    },
+    {
+      "query": "how long should a PIP run and what documentation is required",
+      "relevant": [
+        "performance_improvement_plan"
+      ]
+    },
+    {
+      "query": "first time running a PIP, need the template and timeline",
+      "relevant": [
+        "performance_improvement_plan"
+      ]
+    },
+    {
+      "query": "is a fully remote employee eligible for the home-office stipend",
+      "relevant": [
+        "remote_stipend_eligibility"
+      ]
+    },
+    {
+      "query": "hybrid employee asks if 2 office days a week disqualifies them from the remote stipend",
+      "relevant": [
+        "remote_stipend_eligibility"
+      ]
+    },
+    {
+      "query": "new remote hire asking when the equipment stipend is paid out",
+      "relevant": [
+        "remote_stipend_eligibility"
+      ]
+    },
+    {
+      "query": "departing employee needs COBRA paperwork, what's the timeline for sending it",
+      "relevant": [
+        "exit_cobra_documentation"
+      ]
+    },
+    {
+      "query": "when should the exit interview be scheduled relative to the last day",
+      "relevant": [
+        "exit_cobra_documentation"
+      ]
+    },
+    {
+      "query": "departing employee asking how long they have to elect COBRA coverage",
+      "relevant": [
+        "exit_cobra_documentation"
+      ]
+    },
+    {
+      "query": "employee transferring to a new team in a different comp band, how is pay adjusted",
+      "relevant": [
+        "internal_transfer_comp_banding"
+      ]
+    },
+    {
+      "query": "internal transfer to a higher-band role, does comp change immediately",
+      "relevant": [
+        "internal_transfer_comp_banding"
+      ]
+    },
+    {
+      "query": "lateral internal move, manager asking if compensation needs review",
+      "relevant": [
+        "internal_transfer_comp_banding"
+      ]
+    }
+  ]
+}

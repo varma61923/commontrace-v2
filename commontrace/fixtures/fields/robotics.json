@@ -1,0 +1,200 @@
+{
+  "field": "robotics",
+  "agent_type": "robotics",
+  "lessons": [
+    {
+      "name": "end_effector_thermal_drift",
+      "description": "End-effector position drift after long runtime (thermal)",
+      "applies_when": "After several continuous hours of operation, the arm's end-effector position drifts by a few millimeters relative to its calibrated pose, degrading pick/place accuracy.",
+      "do_not_apply_when": "Does not apply when drift correlates with cycle count or payload weight instead of runtime -- that points to mechanical wear or backlash, not thermal.",
+      "tags": [
+        "calibration",
+        "thermal-drift",
+        "manipulator",
+        "robotics"
+      ],
+      "domain": "end",
+      "importance": 4
+    },
+    {
+      "name": "planner_stall_cluttered_workspace",
+      "description": "Motion planner stalls near cluttered workspace boundary",
+      "applies_when": "The motion planner reliably finds paths in open space but stalls or times out when the target pose is near the workspace boundary in a densely cluttered scene.",
+      "do_not_apply_when": "Does not apply when stalls occur throughout the workspace regardless of boundary proximity -- that's a global density or algorithm-choice issue.",
+      "tags": [
+        "motion-planning",
+        "path-planning",
+        "obstacle-avoidance",
+        "robotics"
+      ],
+      "domain": "planner",
+      "importance": 4
+    },
+    {
+      "name": "sensor_fusion_jitter_firmware",
+      "description": "LiDAR+IMU fusion jitter after a firmware update",
+      "applies_when": "After a LiDAR (or IMU) firmware update, the fused pose estimate becomes noticeably jittery even though each sensor looks fine viewed in isolation.",
+      "do_not_apply_when": "Does not apply when jitter was present before the firmware update too -- that points to genuine filter tuning or a mechanical vibration source.",
+      "tags": [
+        "sensor-fusion",
+        "firmware",
+        "localization",
+        "robotics"
+      ],
+      "domain": "sensor",
+      "importance": 4
+    },
+    {
+      "name": "battery_early_shutdown",
+      "description": "Battery discharge curve triggers early low-power shutdown",
+      "applies_when": "The robot shuts down on a low-power protection trip well before its rated runtime or stated remaining charge would predict, especially under heavy motor load.",
+      "do_not_apply_when": "Does not apply to a battery genuinely near end-of-life with reduced capacity -- that needs cell replacement, not a cutoff logic change.",
+      "tags": [
+        "battery",
+        "power-management",
+        "shutdown",
+        "robotics"
+      ],
+      "domain": "battery",
+      "importance": 4
+    },
+    {
+      "name": "gripper_force_overshoot_deformable",
+      "description": "Gripper force-control overshoot on deformable objects",
+      "applies_when": "A force-controlled gripper occasionally overshoots its target grip force when first contacting a soft/deformable object, briefly exceeding the setpoint enough to deform or damage it.",
+      "do_not_apply_when": "Does not apply when overshoot happens on rigid objects too -- that's a general gain-tuning issue, not a compliant-material-specific one.",
+      "tags": [
+        "force-control",
+        "gripper",
+        "manipulation",
+        "robotics"
+      ],
+      "domain": "gripper",
+      "importance": 4
+    },
+    {
+      "name": "fleet_charging_deadlock",
+      "description": "Fleet coordination deadlock at charging dock",
+      "applies_when": "Under high fleet utilization, two or more robots occasionally deadlock near the charging dock, each waiting for a lane or slot the other is occupying, with neither able to proceed or back off.",
+      "do_not_apply_when": "Does not apply to deadlocks away from the dock (e.g. in open aisles), which are a general traffic-management issue with a different fix.",
+      "tags": [
+        "fleet-coordination",
+        "deadlock",
+        "charging",
+        "robotics"
+      ],
+      "domain": "fleet",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "arm's end-effector position drifts after running for a few hours",
+      "relevant": [
+        "end_effector_thermal_drift"
+      ]
+    },
+    {
+      "query": "pick accuracy degrades over a long shift, positions off by a few millimeters",
+      "relevant": [
+        "end_effector_thermal_drift"
+      ]
+    },
+    {
+      "query": "repeatability gets worse over time, suspect thermal expansion in the joints",
+      "relevant": [
+        "end_effector_thermal_drift"
+      ]
+    },
+    {
+      "query": "path planner times out or stalls when the workspace is near-full of obstacles",
+      "relevant": [
+        "planner_stall_cluttered_workspace"
+      ]
+    },
+    {
+      "query": "arm hesitates or fails to find a path close to the bin edge with many objects",
+      "relevant": [
+        "planner_stall_cluttered_workspace"
+      ]
+    },
+    {
+      "query": "planner works fine in open space but stalls in dense clutter near the boundary",
+      "relevant": [
+        "planner_stall_cluttered_workspace"
+      ]
+    },
+    {
+      "query": "localization jitters after the LiDAR firmware update, IMU fusion looks off",
+      "relevant": [
+        "sensor_fusion_jitter_firmware"
+      ]
+    },
+    {
+      "query": "pose estimate noisy since flashing new sensor firmware, timing suspect",
+      "relevant": [
+        "sensor_fusion_jitter_firmware"
+      ]
+    },
+    {
+      "query": "sensor fusion output jittery post-update, suspect timestamp misalignment",
+      "relevant": [
+        "sensor_fusion_jitter_firmware"
+      ]
+    },
+    {
+      "query": "robot shuts down for low battery well before the rated runtime",
+      "relevant": [
+        "battery_early_shutdown"
+      ]
+    },
+    {
+      "query": "low-power cutoff triggers early under heavy motor load",
+      "relevant": [
+        "battery_early_shutdown"
+      ]
+    },
+    {
+      "query": "battery reports enough charge remaining but the robot shuts down anyway",
+      "relevant": [
+        "battery_early_shutdown"
+      ]
+    },
+    {
+      "query": "gripper crushes or deforms soft objects despite force-control being enabled",
+      "relevant": [
+        "gripper_force_overshoot_deformable"
+      ]
+    },
+    {
+      "query": "force feedback overshoots the setpoint when grasping compliant materials",
+      "relevant": [
+        "gripper_force_overshoot_deformable"
+      ]
+    },
+    {
+      "query": "grip force spikes past target briefly when contacting a soft object",
+      "relevant": [
+        "gripper_force_overshoot_deformable"
+      ]
+    },
+    {
+      "query": "two robots deadlock waiting for the same charging dock approach lane",
+      "relevant": [
+        "fleet_charging_deadlock"
+      ]
+    },
+    {
+      "query": "fleet traffic manager occasionally deadlocks robots near the charging station",
+      "relevant": [
+        "fleet_charging_deadlock"
+      ]
+    },
+    {
+      "query": "robots block each other at the dock entrance under high fleet utilization",
+      "relevant": [
+        "fleet_charging_deadlock"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "field": "sales",
+  "agent_type": "sales",
+  "lessons": [
+    {
+      "name": "per_seat_vs_flat_rate_objection",
+      "description": "Objection: 'your pricing is per-seat, competitor is flat-rate'",
+      "applies_when": "A prospect compares our per-seat pricing unfavorably to a competitor's flat-rate plan, usually while projecting their headcount growth over the contract term.",
+      "do_not_apply_when": "Does not apply when the prospect has an explicit hard budget cap independent of headcount -- there, address the cap directly instead.",
+      "tags": [
+        "pricing",
+        "objection-handling",
+        "discovery"
+      ],
+      "domain": "per",
+      "importance": 4
+    },
+    {
+      "name": "security_questionnaire_request",
+      "description": "Enterprise security questionnaire / SOC 2 request",
+      "applies_when": "An enterprise prospect's security/procurement team sends a vendor security questionnaire (or asks for a SOC 2 report) before the deal can move to legal review.",
+      "do_not_apply_when": "Does not apply to prospects in a regulated industry requiring a custom on-site audit -- that needs security/legal involvement beyond the standard packet.",
+      "tags": [
+        "security-review",
+        "soc2",
+        "enterprise"
+      ],
+      "domain": "security",
+      "importance": 4
+    },
+    {
+      "name": "champion_goes_dark",
+      "description": "Champion goes dark mid-cycle",
+      "applies_when": "An engaged champion who was driving the deal internally suddenly stops responding for one to several weeks, with no explanation, partway through an otherwise-healthy cycle.",
+      "do_not_apply_when": "Does not apply in the first week of silence during a known internal freeze period (e.g. year-end) -- give it the stated window first.",
+      "tags": [
+        "re-engagement",
+        "champion",
+        "stalled-deal"
+      ],
+      "domain": "champion",
+      "importance": 4
+    },
+    {
+      "name": "multiyear_discount_approval",
+      "description": "Multi-year discount request above exec approval threshold",
+      "applies_when": "A prospect asks for a discount on a multi-year commitment that exceeds the rep's standing approval authority, and the deal needs to move through an approval workflow without stalling.",
+      "do_not_apply_when": "Does not apply to single-year discount requests within standard approval authority, which don't need the extra packaging.",
+      "tags": [
+        "discounting",
+        "approval-process",
+        "multi-year"
+      ],
+      "domain": "multiyear",
+      "importance": 4
+    },
+    {
+      "name": "msa_indemnification_redline",
+      "description": "Procurement redlines MSA indemnification clause",
+      "applies_when": "Customer procurement/legal returns the MSA with the indemnification clause redlined, most often asking to remove or raise the standard liability cap.",
+      "do_not_apply_when": "Does not apply to redlines on clauses other than indemnification/liability (e.g. data processing terms), which route to a different specialist.",
+      "tags": [
+        "legal-redline",
+        "procurement",
+        "msa"
+      ],
+      "domain": "msa",
+      "importance": 4
+    },
+    {
+      "name": "renewal_at_risk_low_adoption",
+      "description": "Renewal at risk due to low product adoption",
+      "applies_when": "A renewal is approaching (usually within 60-90 days) and usage/adoption data shows the account under-using the product relative to its contract size, putting the renewal at risk.",
+      "do_not_apply_when": "Does not apply when low usage reflects a genuine mismatch between the purchased tier and the account's actual needs -- that's a downsell/renewal restructuring conversation, not an adoption push.",
+      "tags": [
+        "renewal",
+        "adoption",
+        "customer-success"
+      ],
+      "domain": "renewal",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "prospect objects that our per-seat pricing is more expensive than a flat-rate competitor",
+      "relevant": [
+        "per_seat_vs_flat_rate_objection"
+      ]
+    },
+    {
+      "query": "deal stalls on pricing model comparison, per-seat vs flat-rate",
+      "relevant": [
+        "per_seat_vs_flat_rate_objection"
+      ]
+    },
+    {
+      "query": "champion pushing back on per-seat cost as team scales",
+      "relevant": [
+        "per_seat_vs_flat_rate_objection"
+      ]
+    },
+    {
+      "query": "enterprise prospect's security team sent a vendor security questionnaire",
+      "relevant": [
+        "security_questionnaire_request"
+      ]
+    },
+    {
+      "query": "prospect asks for SOC 2 report before legal will review the MSA",
+      "relevant": [
+        "security_questionnaire_request"
+      ]
+    },
+    {
+      "query": "security review is blocking the deal, need to respond to a questionnaire",
+      "relevant": [
+        "security_questionnaire_request"
+      ]
+    },
+    {
+      "query": "champion stopped responding to emails halfway through the deal cycle",
+      "relevant": [
+        "champion_goes_dark"
+      ]
+    },
+    {
+      "query": "deal was progressing well, now the internal champion has gone quiet for two weeks",
+      "relevant": [
+        "champion_goes_dark"
+      ]
+    },
+    {
+      "query": "need a re-engagement play, primary contact isn't answering",
+      "relevant": [
+        "champion_goes_dark"
+      ]
+    },
+    {
+      "query": "prospect wants a 3-year deal with a discount above my standard approval limit",
+      "relevant": [
+        "multiyear_discount_approval"
+      ]
+    },
+    {
+      "query": "multi-year commitment requested, discount needs exec sign-off",
+      "relevant": [
+        "multiyear_discount_approval"
+      ]
+    },
+    {
+      "query": "how to structure a multi-year discount request for approval",
+      "relevant": [
+        "multiyear_discount_approval"
+      ]
+    },
+    {
+      "query": "procurement sent back the MSA with the indemnification clause redlined",
+      "relevant": [
+        "msa_indemnification_redline"
+      ]
+    },
+    {
+      "query": "customer legal wants uncapped indemnification, standard MSA caps it",
+      "relevant": [
+        "msa_indemnification_redline"
+      ]
+    },
+    {
+      "query": "deal stuck on an indemnification redline from customer's procurement team",
+      "relevant": [
+        "msa_indemnification_redline"
+      ]
+    },
+    {
+      "query": "renewal coming up in 60 days, usage data shows low adoption",
+      "relevant": [
+        "renewal_at_risk_low_adoption"
+      ]
+    },
+    {
+      "query": "account is at risk for renewal, seats are mostly unused",
+      "relevant": [
+        "renewal_at_risk_low_adoption"
+      ]
+    },
+    {
+      "query": "customer health score dropped ahead of renewal, adoption is the driver",
+      "relevant": [
+        "renewal_at_risk_low_adoption"
+      ]
+    }
+  ]
+}

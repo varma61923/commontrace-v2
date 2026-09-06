@@ -104,7 +104,12 @@ include = ["commontrace*"]
 # (reference/ deliberately has no __init__.py). Without this the benchmark
 # commands only worked from a repo checkout -- a plain `pip install`
 # customer could not compute their own pilot metrics.
-commontrace = ["schemas/*.json", "reference/*.py"]
+# fixtures/fields/*.json is the labelled cross-field corpus
+# `commontrace bench --retrieval` measures against. It ships for the same
+# reason the scripts do: the claim it checks is "retrieval works as well in
+# your field as in ours", and a claim a customer cannot re-run on their own
+# install is a claim they have to take on trust.
+commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json"]
 
 [tool.ruff]
 line-length = 120

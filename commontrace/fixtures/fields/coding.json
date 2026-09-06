@@ -1,0 +1,196 @@
+{
+  "field": "coding",
+  "agent_type": "code",
+  "lessons": [
+    {
+      "name": "flaky_ci_async_cleanup",
+      "description": "Flaky CI test from unawaited async cleanup",
+      "applies_when": "A test using an async HTTP client fixture fails intermittently in CI (not locally) with 'Event loop is closed' or a dangling-task warning during teardown.",
+      "do_not_apply_when": "Does not apply to purely synchronous tests, or to fixtures whose client library already blocks until shutdown in its own `__aexit__`.",
+      "tags": [
+        "ci",
+        "pytest",
+        "async",
+        "flaky-test"
+      ],
+      "domain": "flaky",
+      "importance": 4
+    },
+    {
+      "name": "n_plus_one_api_timeout",
+      "description": "N+1 query timeout on list endpoint",
+      "applies_when": "A list endpoint's p99 latency jumped after a related field (e.g. author, owner) was added to each row of the response, and DB query logs show one extra query fired per row instead of one batched query.",
+      "do_not_apply_when": "Does not apply to single-item (detail) endpoints, where one extra query per request is not per-row and is usually fine.",
+      "tags": [
+        "performance",
+        "orm",
+        "api",
+        "database"
+      ],
+      "domain": "n",
+      "importance": 4
+    },
+    {
+      "name": "pagination_off_by_one",
+      "description": "Off-by-one pagination bug dropping or duplicating the boundary row",
+      "applies_when": "Clients report a record missing or duplicated when paging through a list; usually happens right at the page boundary and only for certain page sizes.",
+      "do_not_apply_when": "Does not apply to offset-based (LIMIT/OFFSET) pagination, whose failure mode is different (concurrent inserts shifting offsets).",
+      "tags": [
+        "pagination",
+        "api",
+        "bug"
+      ],
+      "domain": "pagination",
+      "importance": 4
+    },
+    {
+      "name": "batch_job_fd_leak",
+      "description": "Batch job memory/file-descriptor leak from unclosed handles",
+      "applies_when": "A batch/import job that processes many files grows in memory and eventually OOMs or hits the OS file-descriptor limit partway through a run that used to complete fine on smaller inputs.",
+      "do_not_apply_when": "Does not apply to a single resource opened once outside the loop and reused across items.",
+      "tags": [
+        "memory-leak",
+        "batch-job",
+        "resource-management"
+      ],
+      "domain": "batch",
+      "importance": 4
+    },
+    {
+      "name": "cache_invalidation_race",
+      "description": "Stale cache read from a race between write and invalidation",
+      "applies_when": "Immediately after a record is updated, a concurrent read sometimes repopulates the cache with the pre-update value, so the next several reads serve stale data until the TTL expires.",
+      "do_not_apply_when": "Does not apply to cache-aside reads with a short TTL and no correctness requirement on immediate consistency.",
+      "tags": [
+        "caching",
+        "race-condition",
+        "consistency"
+      ],
+      "domain": "cache",
+      "importance": 4
+    },
+    {
+      "name": "timezone_date_filter_bug",
+      "description": "Timezone-naive date filter drops records near midnight UTC",
+      "applies_when": "A 'records for date X' filter misses or includes records near midnight depending on the user's timezone, because the filter compares a naive calendar date against a timestamp column stored in UTC.",
+      "do_not_apply_when": "Does not apply to filters that are already explicitly documented and tested as UTC-calendar-day semantics.",
+      "tags": [
+        "timezone",
+        "date-filter",
+        "bug"
+      ],
+      "domain": "timezone",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "CI test suite intermittently fails with a teardown error after an async fixture",
+      "relevant": [
+        "flaky_ci_async_cleanup"
+      ]
+    },
+    {
+      "query": "flaky test in CI, async client fixture not closed before test ends",
+      "relevant": [
+        "flaky_ci_async_cleanup"
+      ]
+    },
+    {
+      "query": "pytest-asyncio test flakes in CI with 'Event loop is closed' teardown errors",
+      "relevant": [
+        "flaky_ci_async_cleanup"
+      ]
+    },
+    {
+      "query": "API list endpoint times out under load, suspect N+1 query per row",
+      "relevant": [
+        "n_plus_one_api_timeout"
+      ]
+    },
+    {
+      "query": "list endpoint p99 latency spike after adding a related-object field to the response",
+      "relevant": [
+        "n_plus_one_api_timeout"
+      ]
+    },
+    {
+      "query": "endpoint slow in production, ORM issuing one query per item in a loop",
+      "relevant": [
+        "n_plus_one_api_timeout"
+      ]
+    },
+    {
+      "query": "paginated endpoint skips a row when the client moves to the next page",
+      "relevant": [
+        "pagination_off_by_one"
+      ]
+    },
+    {
+      "query": "list pagination duplicates the last row of a page on the next page's fetch",
+      "relevant": [
+        "pagination_off_by_one"
+      ]
+    },
+    {
+      "query": "cursor-based pagination returns overlapping items across pages",
+      "relevant": [
+        "pagination_off_by_one"
+      ]
+    },
+    {
+      "query": "nightly batch job OOMs after processing a few thousand files",
+      "relevant": [
+        "batch_job_fd_leak"
+      ]
+    },
+    {
+      "query": "long-running worker slowly leaks memory, suspect unclosed file handles",
+      "relevant": [
+        "batch_job_fd_leak"
+      ]
+    },
+    {
+      "query": "batch import job crashes with 'too many open files' partway through",
+      "relevant": [
+        "batch_job_fd_leak"
+      ]
+    },
+    {
+      "query": "users occasionally see stale data right after an update, cache not invalidated in time",
+      "relevant": [
+        "cache_invalidation_race"
+      ]
+    },
+    {
+      "query": "race condition: write succeeds but a concurrent read repopulates the cache with old data",
+      "relevant": [
+        "cache_invalidation_race"
+      ]
+    },
+    {
+      "query": "cache invalidation race causes intermittent stale reads after edits",
+      "relevant": [
+        "cache_invalidation_race"
+      ]
+    },
+    {
+      "query": "date-range filter misses records created near midnight depending on user timezone",
+      "relevant": [
+        "timezone_date_filter_bug"
+      ]
+    },
+    {
+      "query": "report for 'yesterday' is missing the last hour of records for some users",
+      "relevant": [
+        "timezone_date_filter_bug"
+      ]
+    },
+    {
+      "query": "date filter compares a naive local date against a UTC timestamp column",
+      "relevant": [
+        "timezone_date_filter_bug"
+      ]
+    }
+  ]
+}

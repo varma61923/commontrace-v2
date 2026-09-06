@@ -156,11 +156,13 @@ You do NOT touch anything other than reading memory. No file writes, no edits, n
 ### Step 0 — Semantic attention pre-filter (v2.3)
 RUN via shell:
 ```
-python3 $COMMONTRACE_ROOT/memory/attention/query.py "[verbatim /commontrace invocation, task + criteria]" --top-k=10 --include-importance-floor=4
+commontrace query "[verbatim /commontrace invocation, task + criteria]" --top-k 10 --include-importance-floor 4
 ```
-Read the output (one line per lesson, format `slug | cosine=0.XXX | importance=N`). These are your priority candidates for steps 1-2 below. The override `--include-importance-floor=4` guarantees that all lessons with `importance >= 4` are present in the output, even if absent from the top-K cosine — you MUST keep them as candidates to consider (cf. step 7).
+Read the output (one line per lesson). These are your priority candidates for steps 1-2 below. The override `--include-importance-floor 4` guarantees that all lessons with `importance >= 4` are present in the output, even if absent from the top-K — you MUST keep them as candidates to consider (cf. step 7).
 
-The cosine score is a COMPLEMENT to qualitative sorting (importance × tag_match), not a replacement. You always judge `applies_when` / `do_not_apply_when` at step 4. If the script fails (index.npz file missing, Python error), continue with the classic workflow (steps 1-8) and note the failure in the report.
+Use `commontrace query` rather than calling the attention script directly: it picks the retriever, and it **falls back to lexical retrieval when the embedding index is missing or stale** instead of returning nothing. Calling the script by path also stopped working when it moved into the package (`commontrace/reference/`) so a plain `pip install` could reach it at all.
+
+The score is a COMPLEMENT to qualitative sorting (importance × tag_match), not a replacement. You always judge `applies_when` / `do_not_apply_when` at step 4. If retrieval returns nothing, continue with the classic workflow (steps 1-8) and note it in the report.
 
 ### Steps 1-8 (classic qualitative workflow)
 1. READ `memory/INDEX.md` to verify pre-filter candidate relevance and complement by domain if needed
@@ -732,9 +734,9 @@ GO.
 5. Updates the current episode frontmatter: fills `lessons_validated_by_lambda` with the effective list of validated slugs (field renamed in v2.2 from `lessons_validated_by_user`).
 6. **Trigger attention layer rebuild (v2.3)**: if at least one creation / update (that modifies the body or encoded fields) / revision was applied in steps 1-3, the orchestrator automatically runs:
    ```
-   python3 $COMMONTRACE_ROOT/memory/attention/build_index.py
+   commontrace index
    ```
-   Expected output: `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. If the script fails (sentence-transformers unavailable, etc.), the orchestrator notes it in the final report but does not block the run — the index remains queryable as-is for future runs. Manual rebuild also possible: `python build_index.py --force` after manual editing.
+   Expected output: `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. If it fails (sentence-transformers unavailable, no network for the model download, etc.), the orchestrator notes it in the final report but does not block the run — `commontrace query` detects the stale index and falls back to lexical retrieval, so retrieval keeps working until the next successful rebuild. Manual rebuild: `commontrace index --force`.
 7. Includes in the final user report:
    - List of ACCEPTED proposals applied
    - List of REJECTED proposals with Lambda reason (traceability)

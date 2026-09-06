@@ -558,3 +558,100 @@ tool for it in this repo, and Phase 3 intentionally did not add one.
   none of the 3 main metrics' reported values changed as a result of Phase 3 -- the new
   report sections (`operational_cost`, `semantic_duplicates`) and `alerts`/`schema_version`
   bump are strictly additive JSON keys.
+
+---
+
+## 9. Phase 4 — Cross-field retrieval (implemented 2026-09-06)
+
+`commontrace bench --retrieval`. Read this before quoting the pollution number.
+
+### 9.1 The question it answers
+
+Everything above §8 measures ONE store's memory health. This measures something
+different and previously unmeasured: **is retrieval as good in your field as in
+ours?**
+
+The product's claim is that one loop works for a coding fleet, an HR fleet, a
+legal fleet, a robotics fleet, or a field nobody has thought of yet. Retrieval
+was where that quietly failed. Scoring was raw weighted word overlap
+(`score += weight * len(hits)`) keeping anything above zero, which is not
+comparable across fields: legal and robotics lessons are wordier and share more
+boilerplate than coding ones, so an unnormalized sum rewards whichever field
+writes more, and the hardcoded English stopword list in `commontrace/_lexical.py`
+strips "the" but not `pursuant` or `node` — each of which is its own field's
+stopword.
+
+Nothing measured any field but coding, so nothing would have caught a change
+that improved coding at legal's expense.
+
+### 9.2 The corpus, and what it is not
+
+`commontrace/fixtures/fields/*.json` — six fields (coding, HR, sales,
+marketing, robotics, legal), 36 lessons, 108 labelled queries
+(`query → relevant slugs`).
+
+**It is hand-authored, not sampled from production traffic.** The lessons and
+queries were written to be realistic for each field — a legal store's lessons
+really are wordier and more boilerplate-heavy than a coding store's, which is
+the property under test — but they are not a random sample of any real fleet's
+work, and no claim here transfers automatically to a customer's own store. What
+it establishes is a *relative* fact that does transfer: retrieval no longer
+depends on how verbose a field happens to be.
+
+It ships inside the wheel rather than living under `tests/`, so a customer on a
+plain `pip install` can re-run the claim rather than taking it on trust.
+
+### 9.3 Metrics
+
+Standard precision@1 / recall@k / MRR, plus two that exist because of how this
+product uses retrieval:
+
+- **collateral@k** — retrieved lessons NOT relevant to the query. Not cosmetic:
+  under `query --experiment` every retrieved lesson is logged as an eligible
+  holdout assignment, so each collateral retrieval attributes an unrelated
+  task's outcome to a lesson that had nothing to do with it.
+- **pollution_ratio** — assignments a fleet would log ÷ the ones actually about
+  the lesson. This is the quantity that turns retrieval imprecision into a
+  wrong causal verdict. The failure that motivated it: one lesson accrued
+  **246 assignments against ~80 occasions actually about it**, and was reported
+  as significantly HURTING outcomes (−14.5pp, 95% CI [−26.3, −2.7], p=0.018)
+  after Benjamini-Hochberg. The lesson was fine.
+
+### 9.4 The gate is two-sided, and that is not belt-and-braces
+
+`--max-pollution` (absolute ceiling on the worst field) AND `--max-spread`
+(worst ÷ best). Building this proved both are needed:
+
+| Scorer | Per-field pollution | Spread |
+|---|---|---|
+| `count-v1` (historical) | 1.89× – 2.50× | 1.32× |
+| `idf-v2` (current) | 1.00× – 1.28× | 1.28× |
+
+Retrieval noise **more than halved**, and the spread barely moved — because the
+old scorer was bad in every field roughly equally. A spread-only gate, which is
+what "gate on cross-field variance" naively suggests, would have called that
+regression acceptable. Conversely a ceiling-only gate passes a change that
+fixes five fields and abandons the sixth, which is the failure this whole
+section exists for.
+
+CI thresholds are `--max-pollution 1.5 --max-spread 2`
+(`tests/test_cross_field_retrieval.py`), chosen with headroom over the measured
+1.28× so ordinary tuning does not fail the build while the historical scorer
+still does. `TestTheGateActuallyCatchesTheRegressionItExistsFor` asserts that
+the old scorer fails the ceiling — if that test ever passes, the gate has
+stopped measuring, not the scorer improved.
+
+### 9.5 Known limitations
+
+- **Six fields is not "any field".** The gate demonstrates the scorer is not
+  verbosity-biased across a deliberately varied set; it cannot prove the next
+  field will behave. Adding a field is adding one JSON file, and is the right
+  response to a fleet whose retrieval underperforms.
+- **Lexical only.** The semantic retriever needs an embedding model and a built
+  index, so it is not exercised here. The lexical path is what MCP always uses
+  and what the CLI falls back to whenever the index is stale, so it is the path
+  most fleets actually run — but a semantic regression would not show up in
+  this number.
+- **Single-label queries.** Each query names exactly one relevant lesson, so
+  recall@k is a coarse instrument and precision@1 carries most of the signal. A
+  corpus with genuinely multi-lesson tasks would measure ranking quality better.
