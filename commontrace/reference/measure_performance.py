@@ -1067,6 +1067,64 @@ def _extract_metric(report, path):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def _new_file_mode(target_dir):
+    """The mode a brand-new file would get under the current process umask.
+    Mirrors commontrace/frontmatter.py's helper of the same name exactly
+    (not imported -- this script has no hard dependency on the commontrace
+    package and runs standalone): a single open() with O_CREAT combines the
+    requested mode with the umask atomically, via a throwaway probe file in
+    the target directory, with no shared process state (os.umask(0)) mutated
+    in between."""
+    import stat
+    import uuid
+
+    probe_path = os.path.join(target_dir, f".measure-performance-umask-probe-{uuid.uuid4().hex}")
+    fd = os.open(probe_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    try:
+        return stat.S_IMODE(os.fstat(fd).st_mode)
+    finally:
+        os.close(fd)
+        os.unlink(probe_path)
+
+
+def _atomic_write_text(path, content, out_dir, suffix):
+    """Write `content` to `path` via a sibling tempfile, fsynced and
+    chmod'd, then os.replace()'d into place. Shared by persist_report and
+    main()'s --html branch, which independently open-coded this before and
+    both missed the same two things commontrace/frontmatter.py's write()
+    already had to learn the hard way: (1) os.replace()'s atomicity says
+    nothing about the durability of the data it points at -- a crash
+    between write and rename can still leave `path` truncated without an
+    fsync first; and (2) tempfile.mkstemp() always creates its file at 0600
+    regardless of umask, which os.replace() carries straight through to
+    `path` -- silently locking a shared benchmark_reports/ directory down
+    to owner-only on every write, exactly the bug frontmatter.py's own
+    _new_file_mode/chmod dance exists to prevent for lessons and traces.
+    """
+    import stat
+    import tempfile
+
+    try:
+        want_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        want_mode = _new_file_mode(out_dir)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=suffix)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, want_mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def persist_report(clean_report, ts=None):
     """Write clean_report as JSON to memory/benchmark_reports/YYYY-MM-DD_HHMMSS_ffffff.json.
     Returns the path written. `ts` (a datetime) lets callers reuse the same instant used
@@ -1076,7 +1134,6 @@ def persist_report(clean_report, ts=None):
     sees a partial file, and a crash mid-write leaves a .tmp orphan rather than
     corrupting the real report.
     """
-    import tempfile
     ts = ts or datetime.datetime.now()
     out_dir = _reports_dir()
     os.makedirs(out_dir, exist_ok=True)
@@ -1094,21 +1151,7 @@ def persist_report(clean_report, ts=None):
     while os.path.exists(path):
         path = os.path.join(out_dir, f"{base}_{suffix:04d}.json")
         suffix += 1
-    # Atomic write: serialise to a sibling .tmp file, then rename into place.
-    # os.replace is atomic on POSIX (and best-effort on Windows). A crash
-    # between write and replace leaves a harmless orphan .tmp; it never
-    # corrupts an existing .json.
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            json.dump(clean_report, fh, indent=2, default=str)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _atomic_write_text(path, json.dumps(clean_report, indent=2, default=str), out_dir, ".tmp")
     return path
 
 
@@ -1778,7 +1821,6 @@ def main():
     if args.json:
         print(json.dumps(clean_report, indent=2, default=str))
     elif args.html:
-        import tempfile
         md = render_markdown(report, alerts)
         html_report = render_html(md, report["timestamp"], alerts)
         out_dir = _reports_dir()
@@ -1791,17 +1833,7 @@ def main():
         while os.path.exists(out_path):
             out_path = os.path.join(out_dir, f"{html_base}_{html_suffix:04d}.html")
             html_suffix += 1
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".html.tmp")
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                fh.write(html_report)
-            os.replace(tmp_path, out_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _atomic_write_text(out_path, html_report, out_dir, ".html.tmp")
         print(f"HTML report written: {out_path}")
         if alerts:
             print("\nAlerts:")

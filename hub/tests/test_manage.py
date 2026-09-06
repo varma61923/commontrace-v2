@@ -342,6 +342,50 @@ async def test_amendment_chain_is_a_bounded_number_of_round_trips(session_factor
     assert calls <= 2, f"amendment_chain issued {calls} queries for a {depth}-deep chain"
 
 
+async def test_amendment_chain_includes_a_fork_off_an_ancestor(session_factory, config, two_orgs):
+    """amend_trace's own docstring documents a real, reachable way the
+    supersession graph forks: a retried amend_trace call with no (or a
+    different) idempotency_key against the same still-unmutated original
+    creates a SECOND trace superseding it, rather than extending the chain.
+    amendment_chain must still return the WHOLE connected component in that
+    case -- delete_trace/purge_trace trust this set to be the trace's
+    complete lineage, and a fork that silently falls outside it survives an
+    operation documented (and audited) as deleting all of it.
+
+    Shape: A -- B -- D (the "main" line amended twice), plus C, a second,
+    independent amendment of B (the fork). Querying from D (an amendment
+    of the fork point's own child, not of the fork point itself) must still
+    reach C: C shares an ancestor with D, not a direct edge to it.
+    """
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        a = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="a", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+    async with session_scope(session_factory) as session:
+        b = await amend_trace(
+            session, two_orgs["org_a"], a["id"], config, rate_limiter, title="b", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        d = await amend_trace(
+            session, two_orgs["org_a"], b["id"], config, rate_limiter, title="d", actor="test",
+        )
+    async with session_scope(session_factory) as session:
+        # A second, independent amendment of B -- the fork. No idempotency_key,
+        # same as the retry scenario amend_trace's docstring describes.
+        c = await amend_trace(
+            session, two_orgs["org_a"], b["id"], config, rate_limiter, title="c", actor="test",
+        )
+
+    expected = {a["id"], b["id"], c["id"], d["id"]}
+    async with session_scope(session_factory) as session:
+        result_from_d = await crud.amendment_chain(session, d["id"])
+        result_from_c = await crud.amendment_chain(session, c["id"])
+    assert result_from_d == expected
+    assert result_from_c == expected
+
+
 async def test_purge_trace_unknown_id_reports_error(session_factory, capsys):
     result = await manage.purge_trace("00000000-0000-0000-0000-000000000000", session_factory=session_factory)
     assert "no such trace" in capsys.readouterr().err

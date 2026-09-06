@@ -811,8 +811,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         try:
             traces = load_trace_candidates(root, None)
-            lessons = evidence_io.load_active_lessons(root)
+            # One disk read, not two: all_lessons (status=None) is a strict
+            # superset of the active-only list build_taxonomy needs, so the
+            # active subset is filtered in memory with the same rule
+            # evidence_io.load_active_lessons applies internally, instead of
+            # re-globbing and re-parsing every lesson_*.md a second time.
             all_lessons = evidence_io.load_active_lessons(root, status=None)
+            lessons = [lesson for lesson in all_lessons if (lesson.get("status") or "active") == "active"]
             tax = taxonomy.build_taxonomy(traces, lessons)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the store: {type(exc).__name__}: {exc}")

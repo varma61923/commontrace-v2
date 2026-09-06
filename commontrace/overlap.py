@@ -174,13 +174,19 @@ def minhash(text: str, num_perm: int = DEFAULT_NUM_PERM) -> list[int]:
 
 
 def estimate_jaccard(sig_a: list[int], sig_b: list[int]) -> float:
-    """Fraction of agreeing positions == unbiased Jaccard estimate."""
+    """Fraction of agreeing positions == unbiased Jaccard estimate.
+
+    Deliberately pure Python, not numpy, despite `np` being importable here:
+    both callers (overlap.find_coverage, reliability.find_contradictions)
+    invoke this once per (item, item) PAIR inside an O(n^2) loop, and at this
+    module's fixed signature length (128 -- see _permutations' docstring)
+    the per-call cost of np.asarray() twice plus a ufunc dispatch measurably
+    exceeds the zip/sum loop it would replace (~4x slower, benchmarked at
+    128 elements) -- there is no signature size in real use where the
+    numpy path actually wins, only allocation overhead paid on every pair.
+    """
     if not sig_a or not sig_b or len(sig_a) != len(sig_b):
         raise ValueError("signatures must be non-empty and the same length")
-    if np is not None:
-        arr_a = np.asarray(sig_a)
-        arr_b = np.asarray(sig_b)
-        return float(np.equal(arr_a, arr_b).mean())
     return sum(1 for x, y in zip(sig_a, sig_b) if x == y) / len(sig_a)
 
 

@@ -8,18 +8,7 @@ import sys
 
 from commontrace import evidence_io, paths, taxonomy
 from commontrace.commands._traces import load_trace_candidates
-
-
-def _similarity_threshold(value: str) -> float:
-    try:
-        threshold = float(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"must be a number, got {value!r}") from None
-    if not (0 < threshold <= 1):
-        raise argparse.ArgumentTypeError(
-            f"must be > 0 and <= 1 (similarity range), got {threshold}"
-        )
-    return threshold
+from commontrace.commands._validators import similarity_threshold as _similarity_threshold
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

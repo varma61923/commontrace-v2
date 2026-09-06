@@ -21,23 +21,8 @@ from commontrace import (
 )
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
+from commontrace.commands._validators import similarity_threshold as _similarity_threshold
 from commontrace.frontmatter import FrontmatterError
-
-
-def _similarity_threshold(value: str) -> float:
-    """Same guard as distill_cmd/taxonomy_cmd: `pilot` feeds this straight into
-    `taxonomy.build_taxonomy`, so a non-positive value hits `find_clusters`'s
-    documented "cluster everything into one" mode and the O(k^2) medoid search
-    behind it, on the whole store, in a report a customer's sponsor runs."""
-    try:
-        threshold = float(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"must be a number, got {value!r}") from None
-    if not (0 < threshold <= 1):
-        raise argparse.ArgumentTypeError(
-            f"must be > 0 and <= 1 (similarity range), got {threshold}"
-        )
-    return threshold
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -115,10 +100,15 @@ def run(args: argparse.Namespace) -> int:
 
     raw_traces = _load_traces(root)
     all_instances = [inst for _, inst in raw_traces]
-    trace_instances = [
-        inst for _, inst in raw_traces
+    # Filtered once, not twice: trace_instances and trace_candidates below
+    # both used to re-apply this identical agent_type condition in their
+    # own comprehensions, a second full pass over raw_traces with the two
+    # copies free to drift out of sync.
+    matched_traces = [
+        (path, inst) for path, inst in raw_traces
         if not args.agent_type or inst.get("agent_type") == args.agent_type
     ]
+    trace_instances = [inst for _, inst in matched_traces]
     trace_candidates = [
         distill.TraceCandidate(
             id=inst["id"],
@@ -133,8 +123,8 @@ def run(args: argparse.Namespace) -> int:
             ),
             agent_type=inst.get("agent_type", ""),
         )
-        for path, inst in raw_traces
-        if inst.get("id") and (not args.agent_type or inst.get("agent_type") == args.agent_type)
+        for path, inst in matched_traces
+        if inst.get("id")
     ]
     lessons = evidence_io.load_active_lessons(root)
     tax = taxonomy.build_taxonomy(
@@ -155,7 +145,16 @@ def run(args: argparse.Namespace) -> int:
     ) if evidence else []
     harmful_lesson_slugs = [s.slug for s in scores if s.verdict == reliability.VERDICT_HARMFUL]
 
-    holdout_rows, _rate, _corrupt = experiment_cmd._load(root)
+    # Scoped to the current randomization, same as `commontrace experiment`
+    # and the MCP `experiment_status` tool: pooling assignments from a
+    # rotated-away salt with the current one is a comparison of nothing
+    # against nothing, and would make `commontrace pilot` -- the document a
+    # customer's sponsor reads for a renewal decision -- disagree with
+    # `commontrace experiment` on the very same store after a holdout-rate
+    # change, exactly the class of bug scope_to_current_salt exists to close
+    # everywhere the holdout log is analyzed.
+    all_rows, _rate, _corrupt = experiment_cmd._load(root)
+    holdout_rows, _wanted_salt, _other = experiment_cmd.scope_to_current_salt(root, all_rows)
     obs = experiment_cmd._observations(holdout_rows)
     # The pilot report is the document a customer's sponsor reads to decide
     # whether to renew, so a causal claim inside it needs the same validity

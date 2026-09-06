@@ -474,19 +474,21 @@ async def _kb_data(session) -> dict:
         .where(Trace.commons_source == "seed", Trace.commons_retracted_at.isnot(None))
     ) or 0)
 
-    return {
+    result = {
         "corpus": corpus, "hits": hits, "consuming_orgs": consuming,
         "pending": pending, "pending_total": pending_total,
         "retracted": retracted, "retracted_total": retracted_total,
-        # A summary tile from the CAPPED lists above (len(pending)) would
-        # silently read as a total and stop matching the actual queue size
-        # past _MAX_ROWS, exactly like the overview page's fleet-wide tiles
-        # once did (see _overview's fix) -- count_kb_review_queue is the
-        # true, unbounded count behind the same classification `queue`
-        # (bounded, for the table below) already uses.
-        "queue": await crud.kb_review_queue(session, limit=_MAX_ROWS),
-        "queue_total": await crud.count_kb_review_queue(session),
     }
+    # A summary tile from the CAPPED list above (len(queue)) would silently
+    # read as a total and stop matching the actual queue size past
+    # _MAX_ROWS, exactly like the overview page's fleet-wide tiles once did
+    # (see _overview's fix) -- queue_total is the true, unbounded count
+    # behind the same classification `queue` (bounded, for the table below)
+    # already uses. One call, not kb_review_queue + count_kb_review_queue
+    # separately: each independently re-runs the same Trace + Vote queries
+    # this dashboard load would otherwise pay for twice.
+    queue, queue_total = await crud.kb_review_queue_and_total(session, limit=_MAX_ROWS)
+    return {**result, "queue": queue, "queue_total": queue_total}
 
 
 # --- Rendering --------------------------------------------------------------

@@ -1392,7 +1392,22 @@ async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
         .join(ancestors, Trace.id == ancestors.c.id)
         .where(Trace.supersedes_trace_id.isnot(None))
     )
-    descendants = select(seed.label("id")).cte(name="descendants", recursive=True)
+    # Seeded from the WHOLE `ancestors` chain, not just `seed` alone: a
+    # `supersedes_trace_id` column is a single FK per row (at most one
+    # parent), so this relation is a forest, but any node can have several
+    # CHILDREN -- a fork, exactly what amend_trace's own docstring documents
+    # as a real, reachable case (an unkeyed retry creates a second trace
+    # superseding the same original instead of extending the chain). A
+    # descendants walk seeded only from `seed` finds seed's own descendants
+    # but never a sibling that forked off an ANCESTOR of seed rather than
+    # off seed itself. Seeding from every id already known to be in the
+    # ancestor chain means the first recursive step finds every direct
+    # child of every one of those ids -- forks included -- and every
+    # further step finds that fork's own descendants the same way,
+    # recovering the whole connected subtree exactly as the BFS this
+    # replaced did (reproduced missing a fork against a live Postgres
+    # before this fix; see test_amendment_chain_includes_a_fork_off_an_ancestor).
+    descendants = select(ancestors.c.id.label("id")).cte(name="descendants", recursive=True)
     descendants = descendants.union(
         select(Trace.id.label("id")).join(descendants, Trace.supersedes_trace_id == descendants.c.id)
     )
@@ -2988,6 +3003,18 @@ async def count_kb_review_queue(session: AsyncSession) -> int:
     kb_review_queue itself rather than re-deriving the four-bucket
     classification a second way that could silently drift from it."""
     return len(await _kb_review_queue_full(session))
+
+
+async def kb_review_queue_and_total(session: AsyncSession, limit: int = 50) -> tuple[list[dict], int]:
+    """(kb_review_queue(limit), count_kb_review_queue()) from ONE
+    _kb_review_queue_full call, for a caller (hub/admin.py's KB dashboard)
+    that needs both the bounded list and the true total in the same
+    request -- calling kb_review_queue and count_kb_review_queue
+    separately would each independently re-run the same Trace query and
+    the Vote flag-count query behind _kb_review_queue_full."""
+    limit = _clamp_int(limit, 1, 500, 50)
+    queue = await _kb_review_queue_full(session)
+    return queue[:limit], len(queue)
 
 
 async def _kb_review_queue_full(session: AsyncSession) -> list[dict]:

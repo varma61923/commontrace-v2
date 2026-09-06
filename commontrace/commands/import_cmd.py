@@ -131,9 +131,16 @@ def run(args: argparse.Namespace) -> int:
             errors = validate.validate(instance, schema)
             if errors:
                 n_rejected += 1
-                if len(reject_samples) < _MAX_DETAILS:
-                    for err in errors:
-                        reject_samples.append(f"line {row.line_no}: {err}")
+                # Checked per error, not just once before the loop: a single
+                # row that fails several schema checks at once could
+                # otherwise push reject_samples well past _MAX_DETAILS in
+                # one iteration (the check above only gated entry into this
+                # loop, not each append within it), overshooting the "only
+                # the first N are shown" promise printed below.
+                for err in errors:
+                    if len(reject_samples) >= _MAX_DETAILS:
+                        break
+                    reject_samples.append(f"line {row.line_no}: {err}")
                 continue
 
             if args.dry_run:
