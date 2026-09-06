@@ -108,7 +108,7 @@ class ImportancesResult(tuple):
         return obj
 
 
-def load_importances(return_mtimes: bool = False) -> tuple:
+def load_importances() -> "ImportancesResult":
     """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
     n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
     template) whose frontmatter was successfully parsed, active or not, for Alpha
@@ -149,16 +149,21 @@ def load_importances(return_mtimes: bool = False) -> tuple:
         n_parsed += 1
         if frontmatter.get("status", "active") != "active":
             continue
+        # Counted toward staleness before the slug check below: check_staleness's
+        # own slow-path fallback (no precomputed newest_active_mtime) only
+        # requires status=="active" to count a file's mtime, not a well-formed
+        # slug. Gating this on _SLUG_RE too made the fast path here disagree
+        # with that fallback on the exact same on-disk state -- an active
+        # lesson with a malformed `name` would raise a staleness warning via
+        # the slow path but not via this one.
+        newest_active_mtime = max(newest_active_mtime, mtime)
         slug = frontmatter.get("name")
         if not slug or not _SLUG_RE.match(str(slug)):
             continue
-        newest_active_mtime = max(newest_active_mtime, mtime)
         try:
             out[str(slug)] = int(frontmatter.get("importance", 3))
         except (TypeError, ValueError):
             out[str(slug)] = 3
-    if return_mtimes:
-        return out, n_parsed, newest_active_mtime
     return ImportancesResult(out, n_parsed, newest_active_mtime)
 
 

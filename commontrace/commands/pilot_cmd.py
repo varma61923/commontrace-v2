@@ -21,6 +21,23 @@ from commontrace import (
 )
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
+from commontrace.frontmatter import FrontmatterError
+
+
+def _similarity_threshold(value: str) -> float:
+    """Same guard as distill_cmd/taxonomy_cmd: `pilot` feeds this straight into
+    `taxonomy.build_taxonomy`, so a non-positive value hits `find_clusters`'s
+    documented "cluster everything into one" mode and the O(k^2) medoid search
+    behind it, on the whole store, in a report a customer's sponsor runs."""
+    try:
+        threshold = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number, got {value!r}") from None
+    if not (0 < threshold <= 1):
+        raise argparse.ArgumentTypeError(
+            f"must be > 0 and <= 1 (similarity range), got {threshold}"
+        )
+    return threshold
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -31,7 +48,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "whether CommonTrace is fixing the issues worth fixing. See PILOT.md.",
     )
     p.add_argument("--agent-type", default=None)
-    p.add_argument("--similarity-threshold", type=float, default=0.3)
+    p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
     p.add_argument("--min-cluster-size", type=int, default=2)
     p.add_argument("--min-evidence", type=int, default=reliability.DEFAULT_MIN_EVIDENCE)
     p.add_argument("--precision-floor", type=float, default=reliability.DEFAULT_PRECISION_FLOOR)
@@ -77,9 +94,15 @@ def _load_traces(root: str) -> list[tuple[str, dict]]:
             continue
         try:
             instance, _ = trace_io.read(path)
-            traces.append((path, instance))
-        except Exception:
+        except FrontmatterError as exc:
+            # Same warning as _traces.py's loaders (load_trace_candidates /
+            # load_trace_instances), which this replaces to read the traces
+            # dir once instead of twice: a corrupt trace must drop out of
+            # the report, not disappear from it silently, or a `pilot`
+            # customer's sponsor reads numbers that quietly exclude it.
+            print(f"[commontrace] warning: skipping unreadable trace {path}: {exc}", file=sys.stderr)
             continue
+        traces.append((path, instance))
     return traces
 
 
