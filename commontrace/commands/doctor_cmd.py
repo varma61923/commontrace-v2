@@ -184,8 +184,14 @@ def run(args: argparse.Namespace) -> int:
     if query_script is not None:
         _check("reference attention/query.py", True, query_script)
     else:
-        _info("reference attention/query.py",
-              "not found; expected for a pip-installed client (it ships only in a repo checkout)")
+        # It ships inside the package now, so absence means a damaged install
+        # rather than "you are not in a repo checkout". This used to be an
+        # [INFO] saying absence was expected -- which meant the one command
+        # that exists to diagnose a broken retriever reported the breakage as
+        # normal, while `commontrace query` exited non-zero for anyone who
+        # had installed the attention extra.
+        _check("reference attention/query.py", False,
+               "missing from the installed package - try `pip install --force-reinstall commontrace`")
 
     bench_script = find_reference_script(root, "benchmark/measure_performance.py")
     if bench_script is not None:

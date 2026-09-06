@@ -40,16 +40,31 @@ def test_fresh_client_install_has_no_actionable_warnings_beyond_empty_store(fres
     # Labels are stated neutrally ("attention extra", not "attention extra
     # installed"): the INFO branch reports ABSENCE, and reusing the
     # affirmative label made it claim the opposite of its own detail.
+    # "reference attention/query.py" is deliberately NOT here any more: it
+    # ships inside the package now (memory/attention/README.md), so its
+    # absence is a damaged install rather than the expected state of a
+    # pip-installed client. Reporting it as [INFO] meant the one command that
+    # exists to diagnose a broken retriever called the breakage normal.
     info_labels = {
-        "attention extra (numpy + sentence-transformers)",
-        "reference attention/query.py",
         "protocol/ spec",
     }
     for label in info_labels:
         assert any(label in line for line in info_lines), f"expected an [INFO] line for: {label}"
 
+    # The attention extra is optional AND supported -- the README recommends
+    # installing it -- so both states are correct and neither is a [WARN].
+    # Asserting only the absent state made this test pass in exactly one of
+    # the two configurations the product ships, and fail for anyone who
+    # followed the install instructions.
+    attention_lines = [
+        line for line in out.splitlines()
+        if "attention extra (numpy + sentence-transformers)" in line
+    ]
+    assert len(attention_lines) == 1
+    assert attention_lines[0].startswith(("[OK  ]", "[INFO]")), attention_lines[0]
+
     # None of the informational conditions leaked through as [WARN].
-    for label in info_labels:
+    for label in info_labels | {"attention extra (numpy + sentence-transformers)"}:
         assert not any(label in line for line in warn_lines), f"{label} should not be [WARN]"
 
     # The benchmark script ships inside the wheel, so a client with no repo

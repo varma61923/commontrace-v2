@@ -106,7 +106,14 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
     return out
 
 
-def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set[str]:
+def _apply_holdout(
+    args: argparse.Namespace,
+    root: str,
+    slugs: list[str],
+    relevance: dict[str, float] | None = None,
+    scorer: str = "",
+    floor: float | None = None,
+) -> set[str]:
     """Thin wrapper over holdout_io.assign_and_log -- see that function.
 
     The body used to live here, which meant any second retriever (the MCP
@@ -118,6 +125,7 @@ def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set
     rate, salt = _effective_holdout(args, root)
     return holdout_io.assign_and_log(
         root, slugs, occasion_id=args.occasion_id, rate=rate, salt=salt,
+        relevance=relevance, scorer=scorer, floor=floor,
     )
 
 
@@ -196,7 +204,12 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
                 file=sys.stderr,
             )
             return 1
-        withheld = _apply_holdout(args, root, [r.slug for r in ranked])
+        withheld = _apply_holdout(
+            args, root, [r.slug for r in ranked],
+            relevance={r.slug: r.relevance for r in ranked},
+            scorer=config.scorer,
+            floor=floor,
+        )
 
     for r in ranked:
         if r.slug in withheld:
@@ -217,8 +230,66 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     return 0
 
 
+def _index_is_unusable(root: str) -> str:
+    """Why the semantic index cannot be trusted right now, or "" if it can.
+
+    Deliberately cheap and dependency-free -- mtimes and file size, no numpy,
+    no model load. build_index.py's own check is stricter (it compares the
+    indexed slug SET and the embedding model), but it can only run after
+    importing numpy and is therefore not something `query` can consult on
+    every call. This catches the two cases that matter in practice: no index
+    was ever built, and a lesson changed since the last build.
+
+    Used to pick the retriever BEFORE paying for a model load, because the
+    alternative is worse than slow. `commontrace init` writes an EMPTY
+    index.npz, and nothing rebuilds it automatically, so a fleet that
+    approves lessons and queries -- the normal first hour with this product
+    -- ran semantic retrieval against an index containing nothing, got zero
+    results, and under `--experiment` logged NO assignment for the occasion.
+    The pilot silently lost the occasion and exited 0.
+    """
+    index_path = os.path.join(paths.memory_dir(root), "attention", "index.npz")
+    try:
+        index_mtime = os.path.getmtime(index_path)
+    except OSError:
+        return "no semantic index has been built yet"
+
+    newest_lesson = 0.0
+    newest_name = ""
+    for path in glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")):
+        if os.path.basename(path) == "lesson_template.md":
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime > newest_lesson:
+            newest_lesson, newest_name = mtime, os.path.basename(path)
+    if newest_lesson == 0.0:
+        return ""
+    if newest_lesson > index_mtime:
+        return f"{newest_name} changed after the index was last built"
+    return ""
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+
+    if not args.lexical and has_attention_deps():
+        reason = _index_is_unusable(root)
+        if reason:
+            # Fall back to the retriever that is correct right now rather than
+            # to silence. Lexical reads the lesson files themselves, so it
+            # cannot be stale, needs no index and no model -- and a fleet that
+            # keeps retrieving is strictly better than one that keeps
+            # returning nothing while its experiment quietly accrues no data.
+            print(
+                f"[commontrace] semantic index unusable ({reason}); using lexical "
+                "retrieval for this query.\n"
+                "  Rebuild it with `commontrace index` to use semantic retrieval.",
+                file=sys.stderr,
+            )
+            return _run_lexical(args, root)
 
     if args.lexical or not has_attention_deps():
         if not args.lexical:
@@ -230,23 +301,21 @@ def run(args: argparse.Namespace) -> int:
             )
         return _run_lexical(args, root)
 
-    if args.agent_type:
-        # The semantic script has no agent_type filter. Saying so beats
-        # silently returning unfiltered results that look filtered.
-        print(
-            "[commontrace] --agent-type is not supported by the semantic retriever and "
-            "was NOT applied. Use --lexical to filter by agent type.",
-            file=sys.stderr,
-        )
-
     missing_hint = (
-        "Retrieval requires the reference attention scripts from the commontrace-v2 "
-        "repo checkout (memory/attention/) plus `pip install commontrace[attention]`. "
+        "The reference attention scripts ship inside the package, so this means a "
+        "damaged install -- try `pip install --force-reinstall commontrace`. "
         "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view."
     )
     script_args = [args.task, "--top-k", str(args.top_k)]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
+    if args.agent_type:
+        # Forwarded now that the index carries an agent_types column. It used
+        # to be dropped with a warning, which meant one organisation running
+        # several fleets out of one store could scope lexical retrieval to a
+        # fleet and not semantic retrieval -- two retrievers answering
+        # different questions from the same store.
+        script_args.extend(["--agent-type", args.agent_type])
     script_path = os.path.join("memory", "attention", "query.py")
 
     if not args.experiment:

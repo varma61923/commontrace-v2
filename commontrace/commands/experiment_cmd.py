@@ -4,6 +4,7 @@ import argparse
 import glob
 import json
 import os
+import statistics
 import sys
 
 from commontrace import (
@@ -155,6 +156,10 @@ def _load(root: str) -> tuple[list[integrity.Assignment], float, int]:
             succeeded=outcomes.get(rec.occasion_id),
             at=rec.at,
             revision=rec.revision,
+            relevance=rec.relevance,
+            rank=rec.rank,
+            scorer=rec.scorer,
+            floor=rec.floor,
         )
         for rec in records
     ]
@@ -202,6 +207,97 @@ def _observations(rows: list[integrity.Assignment]) -> list[experiment.HoldoutOb
         for r in unique if r.succeeded is not None
     ]
 
+
+
+def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, dict]:
+    """Re-estimate on the strongest half of each lesson's matches only.
+
+    The treatment this experiment measures is "inject the lesson WHEN
+    RETRIEVED", so what counts as retrieved is part of the treatment
+    definition, not a pre-processing detail. Retrieval returns top-k, and a
+    lesson that scraped in on an incidental word is in the same arm as one
+    that was squarely on topic -- the outcome of the first says nothing about
+    the lesson, and dilutes the estimate toward the store's base rate.
+
+    Restricting to the top half by relevance asks: does the effect survive
+    when only the occasions the lesson was actually about are counted? A
+    verdict that flips between the two is the finding, and it is a finding
+    the full-sample estimate cannot show on its own.
+
+    Returns {} when relevance was never recorded -- an older log gets no
+    sensitivity band rather than a fabricated one.
+    """
+    scored = [r for r in rows if r.relevance is not None and r.succeeded is not None]
+    if len(scored) < 2 * args.min_arm:
+        return {}
+
+    by_lesson: dict[str, list[integrity.Assignment]] = {}
+    for r in scored:
+        by_lesson.setdefault(r.lesson, []).append(r)
+
+    strong: list[experiment.HoldoutObservation] = []
+    for group in by_lesson.values():
+        if len(group) < 2:
+            continue
+        cutoff = statistics.median([r.relevance for r in group])
+        strong.extend(
+            experiment.HoldoutObservation(
+                lesson_slug=r.lesson,
+                occasion_id=r.occasion_id,
+                injected=r.injected,
+                succeeded=bool(r.succeeded),
+            )
+            for r in group if r.relevance is not None and r.relevance >= cutoff
+        )
+    if not strong:
+        return {}
+
+    restricted = experiment.analyze(
+        strong, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect)
+    return {e.lesson_slug: {
+        "verdict": e.verdict, "effect": e.effect,
+        "n_injected": e.n_injected, "n_withheld": e.n_withheld,
+    } for e in restricted}
+
+
+def _render_sensitivity(
+    effects: list, sensitivity: dict[str, dict],
+) -> str:
+    """Only the lessons whose verdict CHANGES are worth the reader's attention."""
+    if not sensitivity:
+        return ""
+    flipped = []
+    for e in effects:
+        alt = sensitivity.get(e.lesson_slug)
+        if alt and alt["verdict"] != e.verdict:
+            flipped.append((e, alt))
+    if not flipped:
+        return (
+            "_Relevance sensitivity: every verdict above is unchanged when the estimate "
+            "is restricted to the occasions each lesson matched most strongly._"
+        )
+    lines = [
+        "### Relevance sensitivity",
+        "",
+        "Restricted to the strongest half of each lesson's matches -- the occasions it "
+        "was most clearly about -- these verdicts change:",
+        "",
+        "| Lesson | All matches | Strongest matches only | n (inj/withheld) |",
+        "|---|---|---|---|",
+    ]
+    for e, alt in flipped:
+        lines.append(
+            f"| `{e.lesson_slug}` | {e.verdict} | {alt['verdict']} | "
+            f"{alt['n_injected']}/{alt['n_withheld']} |"
+        )
+    lines += [
+        "",
+        "A verdict that depends on which matches are counted is a verdict about "
+        "retrieval as much as about the lesson. The treatment being measured is "
+        "\"inject when retrieved\", so what counts as retrieved is part of it: see "
+        "`commontrace retrieval --floor`.",
+    ]
+    return "\n".join(lines)
 
 
 def _revisions_under_test(rows: list[integrity.Assignment]) -> dict[str, list[str]]:
@@ -399,6 +495,7 @@ def run(args: argparse.Namespace) -> int:
 
     effects = experiment.analyze(
         obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect)
+    sensitivity = _relevance_sensitivity(rows, args)
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),
         n_lessons=len({o.lesson_slug for o in obs}),
@@ -428,6 +525,9 @@ def run(args: argparse.Namespace) -> int:
             # alone is attached to a mutable name, and silently stops
             # describing the lesson the moment anyone edits it.
             "revisions_under_test": revisions,
+            # The same estimate over each lesson's strongest matches only.
+            # Empty when relevance was never recorded.
+            "relevance_sensitivity": sensitivity,
         }, indent=2, default=str))
     else:
         # Validity FIRST, effects second. A report that leads with a
@@ -448,6 +548,10 @@ def run(args: argparse.Namespace) -> int:
         print("---")
         print()
         print(experiment.render(summary, alpha=args.alpha))
+        sensitivity_block = _render_sensitivity(effects, sensitivity)
+        if sensitivity_block:
+            print()
+            print(sensitivity_block)
         worth = value.compute(effects, report, value_per_occasion=args.value_per_occasion)
         print()
         print("---")

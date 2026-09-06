@@ -13,7 +13,7 @@ import pytest
 # subsequent test file that imports numpy-dependent modules (test_pilot_metrics, test_value, etc.).
 # Instead we install temporary stubs only while importing the attention scripts, then remove them.
 _ATTENTION_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference"
 )
 if _ATTENTION_DIR not in sys.path:
     sys.path.insert(0, _ATTENTION_DIR)
@@ -317,7 +317,12 @@ def test_query_cmd_importance_floor_flag():
     args = parser.parse_args(["query", "my task", "--include-importance-floor", "3"])
     assert args.include_importance_floor == 3
 
-    with patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True):
+    # A usable index as well as the deps: `query` now falls back to lexical
+    # when the semantic index is missing or stale, so without this the run
+    # never reaches the script and this test would be asserting the fallback
+    # rather than the flag forwarding it exists to pin.
+    with patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True), \
+            patch("commontrace.commands.query_cmd._index_is_unusable", return_value=""):
         with patch("commontrace.commands.query_cmd.run_script", return_value=0) as mock_run:
             query_cmd.run(args)
             assert mock_run.called

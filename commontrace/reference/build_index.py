@@ -79,7 +79,11 @@ _AUTO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))  # memory/attention â
 _ROOT = os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT") or _AUTO_ROOT
 LESSONS_DIR = os.path.join(_ROOT, "memory", "lessons")
 INDEX_PATH = os.path.join(_ROOT, "memory", "attention", "index.npz")
-ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule"
+# Bumped when the indexed content or columns change, so build_index.py's own
+# staleness check (and query.py's guard) reject an index built by an older
+# version instead of silently using it. The v2 suffix marks the addition of
+# the agent_types column.
+ENCODED_FIELD = "description+domain+tags+applies_when+do_not_apply_when+rule|v2"
 
 
 _RULE_RE = re.compile(r"^##[ \t]*Rule[ \t]*\r?\n(.*?)(?=\n##[ \t]|\Z)", re.DOTALL | re.MULTILINE | re.IGNORECASE)
@@ -148,7 +152,17 @@ def build_query_text(frontmatter: dict, body: str) -> str:
 
 
 def iter_active_lessons(lessons_dir: str):
-    """Yield (slug, query_text) for each ACTIVE lesson (excludes template, README, archived)."""
+    """Yield (slug, query_text, agent_type) for each ACTIVE lesson.
+
+    agent_type travels with the embedding so `query.py --agent-type` can scope
+    results to one fleet. Without it the semantic retriever had no way to
+    filter, and `commontrace query --agent-type` printed "not supported by the
+    semantic retriever and was NOT applied" -- which meant a single
+    organisation running several fleets out of one store (its coding agents,
+    its HR agents, its legal agents) could not scope semantic retrieval to the
+    fleet asking. The lexical path could, so the two retrievers answered
+    different questions from the same store.
+    """
     for path in sorted(glob.glob(os.path.join(lessons_dir, "lesson_*.md"))):
         fname = os.path.basename(path)
         if fname == "lesson_template.md":
@@ -197,10 +211,11 @@ def iter_active_lessons(lessons_dir: str):
                 f"({_SLUG_RE.pattern}), skipping", file=sys.stderr
             )
             continue
-        yield slug, build_query_text(frontmatter, body)
+        yield slug, build_query_text(frontmatter, body), str(frontmatter.get('agent_type') or '')
 
 
-def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray) -> None:
+def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray,
+                 agent_types: "list[str]" = None) -> None:
     """Atomically write index.npz: build to a unique per-process tmp file
     under the same directory, then os.replace() over the final path.
 
@@ -218,6 +233,7 @@ def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray) ->
         np.savez(
             tmp_path,
             slugs=np.array(slugs),
+            agent_types=np.array(agent_types if agent_types is not None else [''] * len(slugs)),
             embeddings=embeddings.astype(np.float32),
             model_name=np.array(MODEL_NAME),
             encoded_field=np.array(ENCODED_FIELD),
@@ -249,9 +265,11 @@ def main() -> int:
 
     slugs: list[str] = []
     texts: list[str] = []
-    for slug, query_text in iter_active_lessons(LESSONS_DIR):
+    agent_types: list[str] = []
+    for slug, query_text, agent_type in iter_active_lessons(LESSONS_DIR):
         slugs.append(slug)
         texts.append(query_text)
+        agent_types.append(agent_type)
 
     if not slugs:
         # A freshly initialized repository has 0 active lessons -- that is
@@ -263,7 +281,7 @@ def main() -> int:
         # query.py load it and correctly report "no lessons match" instead.
         print(f"[INFO] No active lessons found under {LESSONS_DIR}. Writing an empty index.")
         embeddings = np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
-        _write_index(INDEX_PATH, slugs, embeddings)
+        _write_index(INDEX_PATH, slugs, embeddings, agent_types)
         return 0
 
     if os.path.exists(INDEX_PATH) and not args.force:
@@ -310,7 +328,7 @@ def main() -> int:
         show_progress_bar=False,
     )
 
-    _write_index(INDEX_PATH, slugs, embeddings)
+    _write_index(INDEX_PATH, slugs, embeddings, agent_types)
     print(
         f"Index built: {len(slugs)} lessons, "
         f"model={MODEL_NAME}, dim={embeddings.shape[1]}, "

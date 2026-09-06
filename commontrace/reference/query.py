@@ -326,6 +326,12 @@ def main() -> int:
         default=4,
         help="Always include lessons with importance >= this (safety override, default 4)",
     )
+    parser.add_argument(
+        "--agent-type", default=None,
+        help="Restrict results to one fleet. Requires an index built with the "
+             "agent_types column; an older index has no way to tell fleets apart "
+             "and the filter is reported as not applied rather than silently ignored.",
+    )
     args = parser.parse_args()
 
     # Latency covers the whole retrieval stage (index load through brief assembly below),
@@ -354,6 +360,10 @@ def main() -> int:
             model_name = str(data["model_name"])
             embeddings = data["embeddings"]  # already L2-normalized
             slugs = data["slugs"]
+            # Absent in an index built before the agent_types column existed.
+            # None (not an empty array) so the filter below can tell "this
+            # index cannot answer that question" from "no lesson matches".
+            agent_types = data["agent_types"] if "agent_types" in data.files else None
             n_lessons = int(data["n_lessons"])
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
         print(
@@ -439,6 +449,20 @@ def main() -> int:
     # `lesson_x | cosine=0.9xx | importance=0` in the brief.
     order = np.argsort(scores)[::-1]
     active_order = [idx for idx in order if str(slugs[idx]) in importances]
+
+    if args.agent_type:
+        if agent_types is None:
+            print(
+                f"[WARN] --agent-type {args.agent_type!r} was NOT applied: this index "
+                "predates the agent_types column. Rebuild with `commontrace index "
+                "--force` to filter by fleet.",
+                file=sys.stderr,
+            )
+        else:
+            active_order = [
+                idx for idx in active_order
+                if str(agent_types[idx]) == args.agent_type
+            ]
     top_k_idx = list(active_order[: args.top_k])
 
     # Safety override: include all active lessons with importance >= floor. This must

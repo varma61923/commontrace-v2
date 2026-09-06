@@ -65,6 +65,7 @@ rather than checked here.
 from __future__ import annotations
 
 import datetime
+import statistics
 from dataclasses import dataclass, field
 
 from commontrace import experiment
@@ -152,6 +153,14 @@ class Assignment:
     # before revisions were recorded, or a lesson that could not be read --
     # and unknown is treated as unknown, never as a change.
     revision: str | None = None
+    # WHY this lesson was eligible: how strongly it matched, where it placed,
+    # and the retrieval settings that judged it. None on assignments logged
+    # before these were recorded; the checks that read them skip such rows
+    # rather than inferring a value they do not have.
+    relevance: float | None = None
+    rank: int | None = None
+    scorer: str | None = None
+    floor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -439,6 +448,210 @@ def check_assignment_drift(rows: list[Assignment]) -> Finding:
     )
 
 
+# A lesson is "marginally eligible" on an occasion when it barely cleared the
+# retrieval floor. The band is absolute rather than a percentile because the
+# relevance scale itself is absolute (commontrace/retrieval.py) -- a
+# percentile would move with the store's own distribution and stop meaning
+# the same thing between two fleets.
+MARGINAL_BAND = 0.10
+_MARGINAL_WEAKENS = 0.40
+_MARGINAL_INVALIDATES = 0.70
+
+# How far a lesson's assignment count may exceed the median before it looks
+# like it is absorbing occasions that are not about it.
+_CONCENTRATION_MULTIPLE = 3.0
+
+
+def check_marginal_eligibility(rows: list[Assignment]) -> Finding:
+    """How much of the evidence comes from lessons that barely matched.
+
+    THE FAILURE THIS EXISTS FOR. Retrieval returns top-k, and every retrieved
+    lesson is logged as eligible on that occasion -- so a lesson that scraped
+    in on one incidental word gets an assignment row identical to one that was
+    squarely on topic, and the occasion's outcome is attributed to both. The
+    outcome had nothing to do with the marginal one, so those rows are noise
+    with a sign: they pull the estimate toward the store's base rate, and with
+    enough of them a lesson that does nothing acquires a significant verdict.
+
+    Observed in practice: in a six-lesson store, one lesson accumulated 246
+    assignments against roughly 80 occasions actually about it, and was
+    reported as significantly HURTING outcomes (-14.5pp, p=0.018) after
+    Benjamini-Hochberg. Nothing in the log could show why, because the log
+    recorded that the lesson was eligible and not how weakly.
+
+    Rows with no recorded relevance are skipped, not assumed: an assignment
+    logged before the evidence was recorded cannot be assessed, and reporting
+    it as clean would be as wrong as reporting it as marginal.
+    """
+    scored = [r for r in rows if r.relevance is not None and r.floor is not None]
+    numbers: dict = {"n_scored": len(scored), "n_unscored": len(rows) - len(scored)}
+    if not scored:
+        return Finding(
+            "marginal_eligibility", SEVERITY_OK,
+            "No retrieval scores recorded, so eligibility strength cannot be assessed.",
+            "Assignments logged before retrieval evidence was recorded carry no "
+            "relevance score. Newer assignments will carry one; this check reports "
+            "on those.",
+            numbers,
+        )
+
+    by_lesson: dict[str, list[Assignment]] = {}
+    for r in scored:
+        by_lesson.setdefault(r.lesson, []).append(r)
+
+    worst_slug = ""
+    worst_share = 0.0
+    shares: dict[str, float] = {}
+    for slug, group in sorted(by_lesson.items()):
+        marginal = sum(
+            1 for r in group
+            if r.relevance is not None and r.floor is not None
+            and r.relevance < r.floor + MARGINAL_BAND
+        )
+        share = marginal / len(group)
+        shares[slug] = round(share, 4)
+        if share > worst_share:
+            worst_slug, worst_share = slug, share
+    numbers["marginal_share_by_lesson"] = shares
+    numbers["worst"] = {"lesson": worst_slug, "share": round(worst_share, 4)}
+
+    if worst_share >= _MARGINAL_INVALIDATES:
+        severity = SEVERITY_INVALIDATES
+        detail = (
+            f"Most of {worst_slug!r}'s evidence comes from occasions it barely matched, "
+            "so its effect is mostly measured on tasks it was never about. That is a "
+            "bias in the estimate, not a shortage of data -- more occasions of the same "
+            "kind make it worse, not better. Raise the retrieval floor "
+            "(`commontrace retrieval --floor`) and start a fresh randomization before "
+            "quoting an effect for it."
+        )
+    elif worst_share >= _MARGINAL_WEAKENS:
+        severity = SEVERITY_WEAKENS
+        detail = (
+            f"A large minority of {worst_slug!r}'s assignments only just cleared the "
+            "retrieval floor. Its effect is diluted toward the store's base rate by "
+            "occasions it was not really about. Compare against the top-relevance "
+            "band before drawing a conclusion."
+        )
+    else:
+        return Finding(
+            "marginal_eligibility", SEVERITY_OK,
+            "Assignments come from lessons that matched their occasions solidly.",
+            "", numbers,
+        )
+
+    return Finding(
+        "marginal_eligibility", severity,
+        f"{worst_share:.0%} of {worst_slug!r}'s assignments only just cleared the "
+        "retrieval floor.",
+        detail, numbers,
+    )
+
+
+def check_assignment_concentration(rows: list[Assignment]) -> Finding:
+    """Is one lesson being logged far more often than the rest, and worse?
+
+    A lesson eligible on several times more occasions than its peers is either
+    genuinely broad or matching things it should not. The two are told apart
+    by relevance: a broad lesson matches its many occasions as strongly as
+    other lessons match theirs, while an over-matching one is both more
+    frequent AND weaker. Only the second is a problem, and only the second is
+    reported here.
+    """
+    if not rows:
+        return Finding("assignment_concentration", SEVERITY_OK, "No assignments.", "", {})
+
+    by_lesson: dict[str, list[Assignment]] = {}
+    for r in rows:
+        by_lesson.setdefault(r.lesson, []).append(r)
+    if len(by_lesson) < 3:
+        return Finding(
+            "assignment_concentration", SEVERITY_OK,
+            "Too few lessons under test to compare assignment counts.",
+            "", {"n_lessons": len(by_lesson)},
+        )
+
+    counts = {slug: len(group) for slug, group in by_lesson.items()}
+    median_count = statistics.median(counts.values())
+    medians = {
+        slug: statistics.median([r.relevance for r in group if r.relevance is not None])
+        for slug, group in by_lesson.items()
+        if any(r.relevance is not None for r in group)
+    }
+    overall_median_rel = statistics.median(medians.values()) if medians else None
+
+    flagged = []
+    for slug, count in sorted(counts.items()):
+        if median_count <= 0 or count < _CONCENTRATION_MULTIPLE * median_count:
+            continue
+        rel = medians.get(slug)
+        if rel is None or overall_median_rel is None or rel >= overall_median_rel:
+            # Broad, but matching as strongly as its peers. Not a defect.
+            continue
+        flagged.append((slug, count, rel))
+
+    numbers = {
+        "counts": counts,
+        "median_count": median_count,
+        "median_relevance_by_lesson": {k: round(v, 4) for k, v in medians.items()},
+        "flagged": [f[0] for f in flagged],
+    }
+    if not flagged:
+        return Finding(
+            "assignment_concentration", SEVERITY_OK,
+            "No lesson is absorbing a disproportionate share of occasions.",
+            "", numbers,
+        )
+
+    slug, count, rel = flagged[0]
+    return Finding(
+        "assignment_concentration", SEVERITY_WEAKENS,
+        f"{slug!r} was eligible on {count} occasions against a median of "
+        f"{median_count:.0f}, and matched them less strongly than other lessons match theirs.",
+        "A lesson that is both far more frequent and weaker than its peers is being "
+        "retrieved into occasions it is not about, and those occasions' outcomes are "
+        "attributed to it. Its effect estimate describes a mixture of the tasks it "
+        "addresses and the tasks it merely matched.",
+        numbers,
+    )
+
+
+def check_scorer_drift(rows: list[Assignment]) -> Finding:
+    """Did retrieval change what counts as eligible, mid-experiment?
+
+    The same reasoning as check_assignment_drift, one level up. That check
+    catches a changed randomization; this catches a changed DENOMINATOR. The
+    scorer and the floor together decide which lessons get an assignment at
+    all, so changing either mid-run means the rows before and after describe
+    two different treatments -- "injected when retrieved" is not one treatment
+    if what counts as retrieved moved.
+    """
+    scorers = sorted({r.scorer for r in rows if r.scorer})
+    floors = sorted({round(r.floor, 6) for r in rows if r.floor is not None})
+    numbers = {"scorers": scorers, "floors": floors}
+    if len(scorers) <= 1 and len(floors) <= 1:
+        return Finding(
+            "scorer_drift", SEVERITY_OK,
+            "One retrieval configuration throughout.",
+            "", numbers,
+        )
+    changed = []
+    if len(scorers) > 1:
+        changed.append(f"scorer ({', '.join(repr(s) for s in scorers)})")
+    if len(floors) > 1:
+        changed.append(f"floor ({', '.join(str(f) for f in floors)})")
+    return Finding(
+        "scorer_drift", SEVERITY_INVALIDATES,
+        f"Retrieval changed mid-run: {' and '.join(changed)}.",
+        "The scorer and floor decide which lessons are eligible on an occasion, so "
+        "these assignments describe two different treatments pooled into one "
+        "comparison. Analyse one configuration at a time, or start a fresh "
+        "randomization (`commontrace experiment --configure --rate <rate>`) so the "
+        "new settings get their own run.",
+        numbers,
+    )
+
+
 def check_inconsistent_arms(rows: list[Assignment], unit: str = UNIT_LESSON) -> Finding:
     """Was any (lesson, occasion) recorded in BOTH arms?
 
@@ -682,14 +895,25 @@ def audit(
     # same unit the estimate is computed on.
     conflicts = check_inconsistent_arms(rows, unit)
     drift = check_assignment_drift(rows)
+    # Read the raw rows for the same reason drift does: a configuration
+    # change is visible across every line written under each setting, and
+    # normalizing first would hide a change that happened within one pair's
+    # retries.
+    scorer_drift = check_scorer_drift(rows)
     unique, duplicates = normalize(rows)
     findings = [
         check_differential_attrition(unique),
         check_arm_balance(unique),
         drift,
+        scorer_drift,
         conflicts,
         check_treatment_stability(unique, unit),
         check_outcome_variation(unique),
+        # Both read the de-duplicated rows: these are about which occasions
+        # the estimate is computed over, so they must count assignments the
+        # same way the estimate does.
+        check_marginal_eligibility(unique),
+        check_assignment_concentration(unique),
     ]
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=0)
     return IntegrityReport(

@@ -292,6 +292,18 @@ def build_server(root: str, *, allow_approval: bool = True):
             # (path, frontmatter) shape -- not a parallel implementation. If
             # the two surfaces ranked differently, a fleet's shell-capable and
             # shell-less agents would be reading different memory.
+            # Lexical, deliberately, even when the attention extra is
+            # installed. This is a long-running server answering one
+            # retrieval per agent turn, and the semantic path is a subprocess
+            # that loads a sentence-transformer model and reads an index that
+            # nothing rebuilds automatically -- so it would be both slow per
+            # call and stale by default here. Since scoring became
+            # IDF-weighted and length-normalized (commontrace/retrieval.py),
+            # lexical reads the lesson files as they are right now and cannot
+            # go stale, which is the better trade for this surface. The CLI
+            # falls back to exactly this retriever whenever its index is
+            # stale, so the two surfaces agree in the common case rather
+            # than only in name.
             with _quiet():
                 active = query_cmd._iter_active_lessons(root, agent_type or None)
             # The store's own retrieval settings, for the same reason the
@@ -325,6 +337,12 @@ def build_server(root: str, *, allow_approval: bool = True):
                     occasion_id=occasion_id,
                     rate=config.rate,
                     salt=config.salt,
+                    # Same evidence `commontrace query` records. Omitting it
+                    # here would make an agent-driven fleet's log unauditable
+                    # by exactly the checks a shell-driven one gets.
+                    relevance={r.slug: r.relevance for r in ranked},
+                    scorer=retrieval_config.scorer,
+                    floor=retrieval_config.floor,
                 )
             except Exception as exc:  # noqa: BLE001
                 # An assignment that could not be LOGGED must not be acted on:

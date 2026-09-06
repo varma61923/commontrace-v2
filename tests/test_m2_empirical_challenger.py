@@ -61,7 +61,7 @@ def attention_modules():
             mock_st.SentenceTransformer = DummySentenceTransformer
             sys.modules["sentence_transformers"] = mock_st
 
-    from memory.attention import build_index, query
+    import build_index, query  # commontrace/reference/, on sys.path via conftest
 
     yield build_index, query
 
@@ -191,7 +191,7 @@ class TestUtf8BomHandling:
             )
 
         active_lessons = list(build_index.iter_active_lessons(ldir))
-        slugs = [slug for slug, _ in active_lessons]
+        slugs = [slug for slug, _, _ in active_lessons]
         assert "lesson_bom_active" in slugs
 
         # Test query.load_importances
@@ -590,7 +590,7 @@ class TestLessonSlugNormalizationAndIndexing:
             fm["status"] = "active"
             frontmatter.write(path, fm, body)
 
-        active_slugs = [slug for slug, _ in build_index.iter_active_lessons(ldir)]
+        active_slugs = [slug for slug, _, _ in build_index.iter_active_lessons(ldir)]
         assert "auto_norm_1" in active_slugs
         assert "lesson_auto_norm_2" in active_slugs
 

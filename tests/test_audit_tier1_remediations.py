@@ -1094,7 +1094,7 @@ class TestSemanticQueryDetectsIndexMismatch:
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
-            "_query_probe", Path(REPO_ROOT) / "memory" / "attention" / "query.py",
+            "_query_probe", Path(REPO_ROOT) / "commontrace" / "reference" / "query.py",
         )
         module = importlib.util.module_from_spec(spec)
         return module, spec
@@ -1227,7 +1227,7 @@ class TestBuildIndexTempFileIsUniquePerProcess:
     the exact same hardcoded `.tmp.npz` path."""
 
     def test_source_no_longer_hardcodes_the_tmp_path(self):
-        text = (Path(REPO_ROOT) / "memory" / "attention" / "build_index.py").read_text(encoding="utf-8")
+        text = (Path(REPO_ROOT) / "commontrace" / "reference" / "build_index.py").read_text(encoding="utf-8")
         assert 'INDEX_PATH + ".tmp.npz"' not in text
         assert "tempfile.mkstemp" in text
 
