@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import glob
+import hashlib
 import os
 import re
 import sys
@@ -113,14 +114,60 @@ def _id_suffix(trace_id: str) -> str:
     system emits, and that must not escape the traces directory or produce
     an unopenable name. The id INSIDE the file is untouched -- only this
     fragment is sanitized, so the experiment join still sees the real id.
+
+    MUST BE INJECTIVE, and a plain prefix is not. This truncated to the first
+    16 characters, and the filename is `<date>_<title-slug>_<suffix>.md`, so
+    two occasions captured on the same day with the same title whose ids
+    differ only after character 16 computed the SAME path -- and the write
+    path has no existence check, because `_find_trace_by_occasion` correctly
+    declines to match them (it compares the full id inside the file). So the
+    second capture silently replaced the first.
+
+    That is not an exotic input. PILOT.md tells operators to use "a ticket
+    number, a run id, a job id", and real ones are prefixed:
+    JIRA-ROBOTICS-PLATFORM-4711 and ...-4712 share their first 25 characters.
+    Reproduced: five captures under such ids left ONE file on disk.
+
+    Hashing the tail keeps the name readable (the prefix still shows which
+    occasion it is), keeps it deterministic so the fast-path glob in
+    `_find_trace_by_occasion` still finds it, and makes a collision require a
+    blake2s collision rather than a shared prefix.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", trace_id).strip("-.")
-    return (safe[:16] or "trace")
+    if not safe:
+        return "trace"
+    if len(safe) <= 16:
+        return safe
+    digest = hashlib.blake2s(trace_id.encode("utf-8"), digest_size=3).hexdigest()
+    return f"{safe[:9]}-{digest}"
 
 
 def _slugify(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug[:60] or "trace"
+
+
+def _free_path(out_path: str, trace_id: str) -> str:
+    """`out_path`, or a variant of it not already holding a DIFFERENT trace.
+
+    Returns `out_path` unchanged when nothing is there, or when what is there
+    is this same trace (the caller's own re-capture, which it handles by
+    merging). Only a genuine stranger at that path causes a rename.
+    """
+    if not os.path.exists(out_path):
+        return out_path
+    try:
+        fm, _ = frontmatter.read(out_path)
+        if str(fm.get("id", "")) == trace_id:
+            return out_path
+    except Exception:  # noqa: BLE001 - an unreadable file is still occupied
+        pass
+    stem, ext = os.path.splitext(out_path)
+    for n in range(2, 1000):
+        candidate = f"{stem}-{n}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+    return out_path
 
 
 def _find_trace_by_occasion(tdir: str, occasion_id: str) -> str | None:
@@ -216,6 +263,14 @@ def run(args: argparse.Namespace) -> int:
     lock_target = os.path.join(tdir, f".occasion-{_id_suffix(trace_id)}") if occasion_id else out_path
     with locked(lock_target):
         existing_path = _find_trace_by_occasion(tdir, occasion_id) if occasion_id else None
+        if existing_path is None:
+            # Belt and braces. `_id_suffix` is injective now, so this should
+            # not fire -- but the failure it guards against destroyed data
+            # silently for every occasion id sharing a 16-character prefix,
+            # and a check that costs one stat() is cheap next to that. If the
+            # computed path is taken by a DIFFERENT trace, step aside rather
+            # than overwrite it.
+            out_path = _free_path(out_path, trace_id)
         if existing_path is not None:
             out_path = existing_path
             print(f"[commontrace] note: updating the existing trace for occasion "

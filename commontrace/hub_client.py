@@ -1383,6 +1383,35 @@ def _trace_amend_idempotency_key(local_id: str, fingerprint: str) -> str:
     return "trace-amend:" + hashlib.sha256(f"{local_id}\x1e{fingerprint}".encode("utf-8")).hexdigest()
 
 
+def _trace_filename_suffix(clean_trace_id: str) -> str:
+    """An injective filename fragment for a pulled Hub trace.
+
+    Mirrors capture_cmd._id_suffix, and exists for the same reason: a plain
+    prefix is not injective, and the pull path treats a taken filename as
+    "already have it", so a prefix collision drops a trace instead of
+    overwriting one. Kept local rather than imported to avoid dragging a
+    command module into the client library.
+    """
+    if len(clean_trace_id) <= 16:
+        return clean_trace_id
+    digest = hashlib.blake2s(clean_trace_id.encode("utf-8"), digest_size=3).hexdigest()
+    return f"{clean_trace_id[:9]}-{digest}"
+
+
+def _stored_trace_id(path: str) -> str:
+    """The `id` recorded inside an already-pulled trace, or "" if unreadable.
+
+    The skip in `pull_traces` compares this rather than trusting the filename,
+    so a file that merely happens to occupy the computed path never causes a
+    different trace to be dropped.
+    """
+    try:
+        fm, _ = frontmatter.read(path)
+    except Exception:  # noqa: BLE001 - an unreadable neighbour is not this trace
+        return ""
+    return str(fm.get("id", ""))
+
+
 async def push_captured_traces(
     hub_url: str, api_key: str, root: str, concurrency: int = _PUSH_CONCURRENCY
 ) -> list[PushResult]:
@@ -1804,11 +1833,18 @@ async def pull_search_results(
         clean_trace_id = re.sub(r"[^A-Za-z0-9_-]", "", raw_trace_id)[:64]
         raw_title = str(trace.get("title") or "trace")
         slug = re.sub(r"[^a-z0-9]+", "-", raw_title.lower()).strip("-")[:60] or "trace"
-        filename = f"hub_{slug}_{clean_trace_id[:8]}.md" if clean_trace_id else f"hub_{slug}.md"
+        # An injective suffix, not a prefix. Two Hub traces whose ids agree in
+        # their first 8 characters -- which ids minted from a ticket system's
+        # own numbering routinely do -- computed the same filename, and the
+        # skip below then read that as "already pulled" and DROPPED the second
+        # one. A pull that silently returns fewer traces than the Hub holds is
+        # worse than one that errors: the store looks complete.
+        suffix = _trace_filename_suffix(clean_trace_id)
+        filename = f"hub_{slug}_{suffix}.md" if clean_trace_id else f"hub_{slug}.md"
         out_path = os.path.abspath(os.path.join(tdir_abs, filename))
         if not (out_path == tdir_abs or out_path.startswith(tdir_abs + os.sep)):
             raise ValueError(f"Path traversal detected in trace id: {raw_trace_id!r}")
-        if os.path.exists(out_path):
+        if os.path.exists(out_path) and _stored_trace_id(out_path) == clean_trace_id:
             continue  # already pulled in a previous sync
 
         fm = templates.trace_frontmatter(

@@ -9,6 +9,7 @@ import uuid
 
 from commontrace import frontmatter, import_data, paths, templates, validate
 from commontrace.commands import _validators
+from commontrace.commands.capture_cmd import _id_suffix
 
 _SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -158,7 +159,15 @@ def run(args: argparse.Namespace) -> int:
             # a row when two imports run at once, which is exactly what a
             # migration looks like when someone parallelizes it by splitting
             # the file.
-            out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
+            #
+            # capture_cmd._id_suffix rather than `trace_id[:8]`, for the same
+            # injectivity reason -- and it matters more here, not less. There
+            # is no existence check on this path at all (by design, per the
+            # comment above), and an import is where volume lives: 8 hex
+            # characters is 32 bits, so a 100k-row migration expects a
+            # collision, and a collision here is a silently dropped row in
+            # the bulk load someone is trusting to move their history.
+            out_path = os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md")
 
             body = templates.trace_body(row.context_text, row.solution_text)
             if row.source_id:

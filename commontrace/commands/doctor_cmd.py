@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import importlib.util
 import os
+import re
 import shutil
 import sys
 
-from commontrace import paths
+from commontrace import frontmatter, paths
 from commontrace.commands._shellout import find_reference_script
 
 
@@ -75,6 +77,61 @@ def _info(label: str, detail: str = "") -> None:
     print(line)
 
 
+def _legacy_suffix(trace_id: str) -> str:
+    """The filename fragment capture_cmd used to compute, before it was made
+    injective -- the first 16 characters of the sanitized id."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", trace_id).strip("-.")
+    return safe[:16]
+
+
+def _collision_suspects(root: str) -> int:
+    """How many groups of occasions could have overwritten each other.
+
+    Detection leans on the holdout log rather than on the traces, because the
+    traces are the thing that was destroyed: the log is append-only JSONL and
+    still names every occasion that was ever assigned an arm, including ones
+    whose trace file was later clobbered by a sibling.
+
+    A group counts as a suspect when two or more DISTINCT occasion ids share
+    a legacy 16-character filename fragment (so they would have collided) and
+    at least one of them has no trace on disk while another does. Either half
+    alone is innocent -- ids can share a prefix without either being captured
+    yet, and an occasion can legitimately have no outcome recorded -- which is
+    why both are required before saying anything.
+    """
+    from commontrace import holdout_io
+
+    try:
+        records, _ = holdout_io.read_log(root)
+    except Exception:  # noqa: BLE001 - doctor must not fail on a damaged log
+        return 0
+    if not records:
+        return 0
+
+    on_disk: set[str] = set()
+    for path in glob.glob(os.path.join(paths.traces_dir(root), "*.md")):
+        if os.path.basename(path) == "README.md":
+            continue
+        try:
+            fm, _ = frontmatter.read(path)
+        except Exception:  # noqa: BLE001
+            continue
+        on_disk.add(str(fm.get("id", "")))
+
+    groups: dict[str, set[str]] = {}
+    for rec in records:
+        groups.setdefault(_legacy_suffix(rec.occasion_id), set()).add(rec.occasion_id)
+
+    suspects = 0
+    for ids in groups.values():
+        if len(ids) < 2:
+            continue
+        present = {i for i in ids if i in on_disk}
+        if present and len(present) < len(ids):
+            suspects += 1
+    return suspects
+
+
 def _declared_agent_type(root: str) -> str | None:
     """What memory/INDEX.md's first line literally says, unvalidated.
 
@@ -126,6 +183,24 @@ def run(args: argparse.Namespace) -> int:
         # read back. These can disagree silently, and when they do, every
         # trace captured without an explicit --agent-type is stamped with the
         # wrong fleet and `--agent-type <yours>` then matches nothing.
+        # Traces this store may already have lost. Nothing is rewritten --
+        # the data is gone and only a person can decide what to do about it --
+        # but a store that silently dropped captures should not have to
+        # discover that from a headcount months later.
+        collided = _collision_suspects(root)
+        if collided:
+            _check(
+                "trace filename collisions", False,
+                f"{collided} trace file(s) hold fewer captures than were made under "
+                "them. Before this was fixed, two occasion ids sharing their first 16 "
+                "characters (e.g. TICKET-PROJECT-4711 and -4712) wrote to one filename "
+                "and the second silently replaced the first. New captures are safe; "
+                "these are already-lost traces. Re-capture them if the source data "
+                "still exists.",
+            )
+        else:
+            _check("trace filename collisions", True, "none detected")
+
         declared = _declared_agent_type(root)
         effective = paths.store_agent_type(root)
         if declared is None:
