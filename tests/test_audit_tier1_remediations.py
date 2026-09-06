@@ -1179,19 +1179,35 @@ class TestSemanticQueryDetectsIndexMismatch:
 
 
 class TestTemplateHeadingsMatchWhatIsGenerated:
-    def test_code_agent_type_gets_episodes_not_traces(self):
-        """code scaffolds memory/episodes/ (init_cmd.py); the index it
-        generates for itself previously pointed at the wrong directory."""
+    def test_a_store_with_episodes_indexes_episodes_not_traces(self):
+        """A store that scaffolds memory/episodes/ (the code-review profile,
+        init_cmd.EPISODE_PROFILES) previously generated an index pointing at
+        the wrong directory.
+
+        Keyed on whether the store HAS episodes rather than on
+        `agent_type == "code"`: episodes come from the profile, and any fleet
+        may run that profile -- while a `code` fleet that doesn't run it has
+        no episodes to index.
+        """
         from commontrace import templates
 
-        idx = templates.index_md("code")
+        idx = templates.index_md("code", has_episodes=True)
         assert "#### Episodes" in idx
         assert "#### Traces" not in idx
 
-    def test_other_agent_types_keep_traces(self):
+    def test_a_store_without_episodes_keeps_traces(self):
         from commontrace import templates
 
-        idx = templates.index_md("sales")
+        idx = templates.index_md("sales", has_episodes=False)
+        assert "#### Traces" in idx
+        assert "#### Episodes" not in idx
+
+    def test_a_code_store_with_no_episode_profile_indexes_traces(self):
+        """`--agent-type code --profile ''` captures into memory/traces/, so
+        that is what its own index must point at."""
+        from commontrace import templates
+
+        idx = templates.index_md("code", has_episodes=False)
         assert "#### Traces" in idx
         assert "#### Episodes" not in idx
 

@@ -3,6 +3,36 @@ from __future__ import annotations
 
 import argparse
 
+from commontrace import paths
+
+
+def agent_type(value: str) -> str:
+    """Any slug is a valid agent_type; this checks shape, not membership.
+
+    protocol/PROTOCOL.md#7-taxonomy-open-not-closed defines the taxonomy as
+    open, trace.schema.json/lesson.schema.json declare agent_type as a plain
+    string with no enum, and the Hub column is free text. The CLI was the one
+    surface that disagreed: `choices=paths.AGENT_TYPES` on init/lesson new/
+    import made a robotics or legal fleet impossible to declare, so both had
+    to be filed under `custom` -- losing the distinction the field exists to
+    record, in a product whose whole claim is that it works for any fleet.
+
+    Rejecting by shape is still worth doing: the value is written unquoted
+    into memory/INDEX.md's first line, reaches paths.store_agent_type's
+    parser, and is stored in the Hub's String(64) column, so a value with a
+    newline, a path separator, or 200 characters in it breaks something
+    later and further away than here.
+    """
+    candidate = value.strip().lower()
+    if not paths.AGENT_TYPE_RE.match(candidate):
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a valid agent type: expected a lowercase slug "
+            f"matching {paths.AGENT_TYPE_RE.pattern} (letters, digits, '_', '-'). "
+            f"Any field is valid -- e.g. {', '.join(paths.SUGGESTED_AGENT_TYPES[:4])}, "
+            "robotics, legal -- the taxonomy is open (protocol/PROTOCOL.md §7)."
+        )
+    return candidate
+
 
 def similarity_threshold(value: str) -> float:
     """`distill.find_clusters` treats `similarity_threshold <= 0` as a

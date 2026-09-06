@@ -75,6 +75,24 @@ def _info(label: str, detail: str = "") -> None:
     print(line)
 
 
+def _declared_agent_type(root: str) -> str | None:
+    """What memory/INDEX.md's first line literally says, unvalidated.
+
+    paths.store_agent_type returns what commands will USE, substituting a
+    default for anything unusable. Comparing the two is the only way to see
+    a store whose declared type is being silently ignored.
+    """
+    try:
+        with open(paths.index_path(root), encoding="utf-8") as fh:
+            first = fh.readline()
+    except OSError:
+        return None
+    _, sep, value = first.partition("agent_type:")
+    if not sep:
+        return None
+    return value.strip() or None
+
+
 def run(args: argparse.Namespace) -> int:
     _FAILURES.clear()
     root = paths.resolve_root(args.dest)
@@ -103,6 +121,29 @@ def run(args: argparse.Namespace) -> int:
             except OSError:
                 n_lessons = 0
         _check("lessons in store", n_lessons > 0, f"{n_lessons} found")
+
+        # What this store says it is, versus what every command will actually
+        # read back. These can disagree silently, and when they do, every
+        # trace captured without an explicit --agent-type is stamped with the
+        # wrong fleet and `--agent-type <yours>` then matches nothing.
+        declared = _declared_agent_type(root)
+        effective = paths.store_agent_type(root)
+        if declared is None:
+            _info(
+                "store agent_type",
+                f"not declared in memory/INDEX.md; commands will assume '{effective}'. "
+                "Add `agent_type: <your fleet>` to the first line to make it explicit.",
+            )
+        elif declared == effective:
+            _check("store agent_type", True, f"{declared!r} (any field is valid; taxonomy is open)")
+        else:
+            _check(
+                "store agent_type", False,
+                f"memory/INDEX.md declares {declared!r} but commands read back "
+                f"{effective!r} -- it is not a valid slug "
+                f"({paths.AGENT_TYPE_RE.pattern}). Traces are being stamped "
+                f"{effective!r}. Fix the first line of memory/INDEX.md.",
+            )
 
     attention_extra = _installed("numpy") and _installed("sentence_transformers")
     # Labels below are stated NEUTRALLY, not affirmatively.

@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import frontmatter, lesson_io, paths, templates, validate
+from commontrace.commands import _validators
 from commontrace.commands._format import cell, read_or_warn
 
 
@@ -34,8 +35,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     new.add_argument("--slug", required=True, help="e.g. lesson_my_rule")
     new.add_argument("--description", required=True)
     new.add_argument(
-        "--agent-type", choices=paths.AGENT_TYPES, default=None,
-        help="Defaults to the agent_type this store was initialized with.",
+        "--agent-type", type=_validators.agent_type, default=None,
+        help="Any lowercase slug (the taxonomy is open -- e.g. code, hr, robotics, "
+             "legal). Defaults to the agent_type this store was initialized with.",
     )
     new.add_argument("--domain", required=True)
     new.add_argument("--tags", default="")

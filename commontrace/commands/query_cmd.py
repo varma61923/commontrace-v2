@@ -5,9 +5,18 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, holdout_io, paths, retrieval
+from commontrace import frontmatter, holdout_io, paths, retrieval, retrieval_io
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
+
+
+def _relevance_floor(raw: str) -> float:
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"--relevance-floor must be in [0.0, 1.0], got {value}"
+        )
+    return value
 
 
 def _positive_int(raw: str) -> int:
@@ -37,6 +46,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Force the pure-Python lexical fallback even if the attention extra is installed.",
     )
     p.add_argument("--agent-type", default=None)
+    p.add_argument(
+        "--relevance-floor", type=_relevance_floor, default=None,
+        help="Minimum relevance (0-1) a lesson must reach to be retrieved at all. "
+             "Defaults to this store's configured floor (`commontrace retrieval`). "
+             "Under --experiment this also decides which lessons are logged as "
+             "eligible, so lowering it admits weak matches into the causal estimate.",
+    )
     p.add_argument(
         "--experiment", action="store_true",
         help="Randomized holdout mode: deliberately withhold a fraction of otherwise-"
@@ -147,7 +163,26 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
 
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons = _iter_active_lessons(root, args.agent_type)
-    ranked = retrieval.rank_lessons(args.task, lessons, top_k=args.top_k)
+    config = retrieval_io.load_config(root)
+    floor = config.floor if args.relevance_floor is None else args.relevance_floor
+    ranked = retrieval.rank_lessons(
+        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+    )
+    if config.pinned_for_running_experiment:
+        # Said once, where someone can act on it, rather than silently
+        # upgrading a store whose experiment is mid-flight.
+        print(
+            "[commontrace] note: this store has holdout assignments already recorded, so "
+            f"retrieval stays on the {config.scorer!r} scorer those assignments were made "
+            "under.\n"
+            "  Switching scorers changes which lessons are eligible, which would pool two "
+            "different treatments\n"
+            "  into one comparison. To adopt the field-robust scorer, finish or restart the "
+            "experiment:\n"
+            "    commontrace retrieval --scorer idf-v2 && commontrace experiment --configure "
+            "--rate <rate>",
+            file=sys.stderr,
+        )
     if not ranked:
         print("[commontrace] no lexical matches. Try `commontrace lesson list` for a full view.")
         return 0
@@ -169,7 +204,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             # experiment is running. An automated retriever should skip these.
             print(f"{r.slug:45s} [WITHHELD - holdout]")
             continue
-        print(f"{r.slug:45s} score={r.score:5.1f}  {r.description}")
+        print(f"{r.slug:45s} rel={r.relevance:4.2f}  {r.description}")
         print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
 
     if args.experiment:

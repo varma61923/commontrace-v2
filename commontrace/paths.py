@@ -9,8 +9,25 @@ Priority (matches resolve_root()'s actual checks, most to least specific):
 from __future__ import annotations
 
 import os
+import re
+import sys
 
-AGENT_TYPES = ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
+# Suggestions, not a closed set. protocol/PROTOCOL.md#7-taxonomy-open-not-closed
+# defines the taxonomy as open, the JSON schemas declare agent_type as a plain
+# string with no enum, and the Hub stores it as free text -- so a robotics or
+# legal fleet is a first-class citizen of the protocol. These names are what
+# `--help` offers as examples and what STARTER_DOMAINS below has starter
+# vocabularies for; nothing validates against membership in this list.
+SUGGESTED_AGENT_TYPES = ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
+
+# Deprecated alias. Kept for one release so an external caller importing
+# `paths.AGENT_TYPES` does not break on upgrade; prefer SUGGESTED_AGENT_TYPES.
+AGENT_TYPES = SUGGESTED_AGENT_TYPES
+
+# What a valid agent_type looks like, rather than which ones exist. Lowercase
+# slug, <= 64 chars: safe unquoted in a filename, in memory/INDEX.md's first
+# line, and in the Hub's String(64) agent_type column (hub/models.py).
+AGENT_TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 STARTER_DOMAINS = {
     "code": ["git-safety", "refactor", "testing", "subagents", "performance", "cuda-gpu", "other"],
@@ -57,6 +74,15 @@ def store_agent_type(root: str, default: str = "code") -> str:
 
     Falls back to `default` for a store with no index (or an index written by
     hand), so this can never be the thing that stops a capture from happening.
+
+    Validated by SHAPE, not by membership in SUGGESTED_AGENT_TYPES. Checking
+    membership caused the exact failure the paragraph above warns about, one
+    level down: a store initialized as `robotics` or `legal` -- both valid
+    under the open taxonomy in protocol/PROTOCOL.md#7 -- read back as `code`,
+    silently, so every trace it captured was stamped with the wrong fleet and
+    `--agent-type robotics` then matched nothing. A store's own declared type
+    is the authority here; this function's job is to reject what cannot be
+    written down safely, not to have opinions about which fields exist.
     """
     try:
         with open(index_path(root), encoding="utf-8") as fh:
@@ -67,7 +93,19 @@ def store_agent_type(root: str, default: str = "code") -> str:
     if not sep:
         return default
     candidate = value.strip()
-    return candidate if candidate in AGENT_TYPES else default
+    if not candidate:
+        return default
+    if AGENT_TYPE_RE.match(candidate):
+        return candidate
+    # Present but unusable. Silence here is what made the original bug
+    # invisible, so say so once rather than quietly substituting `default`.
+    print(
+        f"[commontrace] warning: memory/INDEX.md declares agent_type "
+        f"{candidate!r}, which is not a valid slug ({AGENT_TYPE_RE.pattern}). "
+        f"Using {default!r}. Fix the first line of {index_path(root)}.",
+        file=sys.stderr,
+    )
+    return default
 
 
 def lessons_dir(root: str) -> str:

@@ -8,6 +8,7 @@ import sys
 import uuid
 
 from commontrace import frontmatter, import_data, paths, templates, validate
+from commontrace.commands import _validators
 
 _SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -20,7 +21,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("file", help="Path to a .jsonl or .csv export.")
     p.add_argument("--format", choices=["jsonl", "csv"], default=None, help="Default: infer from the file extension.")
-    p.add_argument("--agent-type", choices=paths.AGENT_TYPES, required=True)
+    p.add_argument(
+        "--agent-type", type=_validators.agent_type, required=True,
+        help="Kind of fleet these traces came from, as a lowercase slug. Any "
+             "field works -- e.g. code, support, hr, robotics, legal.",
+    )
     p.add_argument("--profile", default="")
     p.add_argument("--title-field", default="title")
     p.add_argument("--context-field", default="context")

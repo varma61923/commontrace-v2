@@ -69,6 +69,7 @@ from commontrace import (
     mcp_tools,
     paths,
     retrieval,
+    retrieval_io,
     revision,
     taxonomy,
     templates,
@@ -293,7 +294,18 @@ def build_server(root: str, *, allow_approval: bool = True):
             # shell-less agents would be reading different memory.
             with _quiet():
                 active = query_cmd._iter_active_lessons(root, agent_type or None)
-            ranked = retrieval.rank_lessons(task, active, top_k=max(1, min(int(top_k), 50)))
+            # The store's own retrieval settings, for the same reason the
+            # holdout config below is read from the store rather than
+            # hardcoded here: scorer and floor decide which lessons are
+            # ELIGIBLE, so this surface disagreeing with `commontrace query`
+            # would put two different treatments in one experiment.
+            retrieval_config = retrieval_io.load_config(root)
+            ranked = retrieval.rank_lessons(
+                task, active,
+                top_k=max(1, min(int(top_k), 50)),
+                floor=retrieval_config.floor,
+                scorer=retrieval_config.scorer,
+            )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
