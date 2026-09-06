@@ -206,6 +206,7 @@ class TestTraceSchemaGovernanceAndCommonsFields:
         assert any("quarantine_reason" in e for e in errs)
 
     def test_hub_validate_trace_with_governance_fields(self):
+        pytest.importorskip("jsonschema", reason="hub[server] extra not installed in this env")
         from hub.schema_validation import SchemaValidationError, validate_trace
 
         valid_trace = {
@@ -231,6 +232,8 @@ class TestSearchTracesTenantIsolation:
     """Tests for hub/crud.py:search_traces retrieval counter update SQL query."""
 
     def test_search_traces_retrieval_update_includes_org_id_in_where_clause(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+
         async def _test():
             from sqlalchemy.sql.dml import Update
             from hub import crud
@@ -286,6 +289,8 @@ class TestAmendTraceProfileRetention:
     """Tests for hub/crud.py:amend_trace preserving profile in wire validation."""
 
     def test_amend_trace_passes_profile_to_wire_validation(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+
         async def _test():
             from hub import crud
             from hub.abuse import make_rate_limiter

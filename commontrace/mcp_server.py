@@ -812,12 +812,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         try:
             traces = load_trace_candidates(root, None)
             lessons = evidence_io.load_active_lessons(root)
+            all_lessons = evidence_io.load_active_lessons(root, status=None)
             tax = taxonomy.build_taxonomy(traces, lessons)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the store: {type(exc).__name__}: {exc}")
 
         by_status: dict[str, int] = {}
-        for lesson in lessons:
+        for lesson in all_lessons:
             key = str(lesson.get("status") or "unknown")
             by_status[key] = by_status.get(key, 0) + 1
 
