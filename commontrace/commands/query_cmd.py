@@ -63,7 +63,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--include-importance-floor",
         type=int,
         default=None,
-        help="Always include lessons with importance >= this floor (safety override, default: 4 in semantic retriever).",
+        help=(
+            "Always include lessons with importance >= this floor "
+            "(safety override, default: 4 in semantic retriever)."
+        ),
     )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)

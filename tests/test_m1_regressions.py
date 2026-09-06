@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import stat
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -40,9 +39,14 @@ def _import_attention():
 
 build_index, attn_query = _import_attention()
 
-from commontrace import cli, evidence_io, frontmatter, overlap, paths, trace_io
-from commontrace.commands import capture_cmd, init_cmd, pilot_cmd, query_cmd, serve_cmd, taxonomy_cmd
-
+from commontrace import (  # noqa: E402 -- must follow _import_attention() above
+    cli,
+    evidence_io,
+    frontmatter,
+    overlap,
+    trace_io,
+)
+from commontrace.commands import capture_cmd, init_cmd, pilot_cmd, query_cmd, serve_cmd, taxonomy_cmd  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +75,8 @@ def test_pilot_metrics_load_traces_ignores_unreadable_file(tmp_path):
 
     good_trace = tdir / "2026-09-05_good_trace1.md"
     good_trace.write_text(
-        "---\nid: trace1\ntitle: Good trace\nagent_type: code\noutcome:\n  resolved: true\n---\n## Context\nC\n## Solution\nS\n",
+        "---\nid: trace1\ntitle: Good trace\nagent_type: code\noutcome:\n  resolved: true\n---\n"
+        "## Context\nC\n## Solution\nS\n",
         encoding="utf-8",
     )
 
@@ -129,17 +134,19 @@ def test_evidence_io_load_active_lessons_filters_status(tmp_path):
 
     (ldir / "lesson_template.md").write_text("---\nstatus: template\n---\nBody\n", encoding="utf-8")
     (ldir / "lesson_active.md").write_text("---\nname: active-lesson\nstatus: active\n---\nBody\n", encoding="utf-8")
-    (ldir / "lesson_archived.md").write_text("---\nname: archived-lesson\nstatus: archived\n---\nBody\n", encoding="utf-8")
+    (ldir / "lesson_archived.md").write_text(
+        "---\nname: archived-lesson\nstatus: archived\n---\nBody\n", encoding="utf-8"
+    )
     (ldir / "lesson_review.md").write_text("---\nname: review-lesson\nstatus: review\n---\nBody\n", encoding="utf-8")
     (ldir / "lesson_missing_status.md").write_text("---\nname: default-lesson\n---\nBody\n", encoding="utf-8")
 
     loaded = evidence_io.load_active_lessons(str(tmp_path))
-    loaded_names = {l.get("name") for l in loaded}
+    loaded_names = {lesson.get("name") for lesson in loaded}
     assert loaded_names == {"active-lesson", "default-lesson"}
 
     # Explicit filter for archived
     archived = evidence_io.load_active_lessons(str(tmp_path), status="archived")
-    assert {l.get("name") for l in archived} == {"archived-lesson"}
+    assert {lesson.get("name") for lesson in archived} == {"archived-lesson"}
 
 
 # ---------------------------------------------------------------------------

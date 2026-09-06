@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import sys
 import threading
 import time
@@ -24,17 +23,17 @@ import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import pytest
-
 pytest.importorskip("hub")
 
-from commontrace import frontmatter, validate
-from commons.eval import representations
-from hub import abuse, outcomes
+from commons.eval import representations  # noqa: E402 -- must follow importorskip above
+from commontrace import frontmatter, validate  # noqa: E402 -- must follow importorskip above
+from hub import abuse, outcomes  # noqa: E402 -- must follow importorskip above
 
 
 class TestValidateOutcomeNullableMetrics:
@@ -236,6 +235,7 @@ class TestSearchTracesTenantIsolation:
 
         async def _test():
             from sqlalchemy.sql.dml import Update
+
             from hub import crud
             from hub.models import Trace
 

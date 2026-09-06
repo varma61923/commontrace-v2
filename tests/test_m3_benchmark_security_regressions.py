@@ -3,17 +3,14 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from commontrace.reference import measure_performance
-from commontrace.reference import pilot_metrics
 from commontrace.commands import install_cmd
-from commontrace import paths
+from commontrace.reference import measure_performance, pilot_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +166,6 @@ class TestInstallCmdRootResolution:
 # ---------------------------------------------------------------------------
 class TestDatetimeTimezoneIntegrity:
     def test_parse_last_hit_handles_iso_with_z_and_offsets(self):
-        import datetime
         dt_z = measure_performance._parse_last_hit("2026-09-05T12:00:00Z")
         assert dt_z is not None
         assert dt_z.tzinfo is not None

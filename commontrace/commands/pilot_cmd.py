@@ -103,7 +103,11 @@ def run(args: argparse.Namespace) -> int:
             title=inst.get("title", ""),
             context_text=inst.get("context_text", ""),
             solution_text=inst.get("solution_text", ""),
-            tags=[str(t) for t in inst.get("tags", []) if t is not None] if isinstance(inst.get("tags"), (list, tuple)) else [],
+            tags=(
+                [str(t) for t in inst.get("tags", []) if t is not None]
+                if isinstance(inst.get("tags"), (list, tuple))
+                else []
+            ),
             agent_type=inst.get("agent_type", ""),
         )
         for path, inst in raw_traces

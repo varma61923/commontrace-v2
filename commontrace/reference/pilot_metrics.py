@@ -245,8 +245,10 @@ def main():
     if not traces:
         if args.json:
             import json
-            print(json.dumps({"error": "no_traces",
-                              "message": "No traces with outcome data found. Run `commontrace capture` with outcome flags first."}))
+            print(json.dumps({
+                "error": "no_traces",
+                "message": "No traces with outcome data found. Run `commontrace capture` with outcome flags first.",
+            }))
         else:
             print("No traces with outcome data found. Run `commontrace capture` with outcome flags first.")
         sys.exit(0)
