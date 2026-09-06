@@ -103,6 +103,9 @@ def run_script(
     # priority. The failure is invisible: `bench --pilot --dest B` renders a
     # normal-looking report full of store A's numbers.
     env["COMMONTRACE_ROOT"] = root
+    # PYTHONUTF8 forces the child's interpreter into UTF-8 mode (PEP 540)
+    # whether capture is True or False, ensuring consistent encoding across platforms.
+    env["PYTHONUTF8"] = "1"
     if capture:
         # Both ends of the pipe pinned to UTF-8 explicitly, not left to the
         # host locale: text=True alone decodes using
@@ -116,12 +119,9 @@ def run_script(
         # content routinely contains non-ASCII text), so leaving either
         # end to the locale risks a mismatch that mangles that output into
         # mojibake or raises UnicodeDecodeError, depending on the exact
-        # bytes involved. PYTHONUTF8 forces the child's interpreter into
-        # UTF-8 mode (PEP 540) so its stdout write side matches this
-        # explicit read side. errors="replace" so an unexpected
+        # bytes involved. errors="replace" so an unexpected
         # undecodable byte still degrades to U+FFFD instead of crashing
         # the parent CLI over the child's stdout.
-        env["PYTHONUTF8"] = "1"
         result = subprocess.run(
             [sys.executable, script, *extra_args], env=env,
             stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",

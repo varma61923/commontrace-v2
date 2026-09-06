@@ -21,7 +21,6 @@ from commontrace import (
 )
 from commontrace.commands import experiment_cmd
 from commontrace.commands._shellout import run_script
-from commontrace.commands._traces import load_trace_candidates, load_trace_instances
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

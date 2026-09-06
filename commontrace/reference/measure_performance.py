@@ -544,11 +544,27 @@ def compute_transfer_gap(episodes, lessons):
         # lesson still misresolved as untraceable.
         clean_slug = slug[:-3] if slug.endswith(".md") else slug
         path = os.path.join(BASE_DIR, "episodes", f"{clean_slug}.md")
+        project = None
         if os.path.exists(path):
-            with open(path, encoding="utf-8-sig") as fh:
-                fm = parse_frontmatter(fh.read())
-            return (fm or {}).get("project")
-        return None
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    fm = parse_frontmatter(fh.read())
+                project = (fm or {}).get("project")
+            except OSError:
+                project = None
+        elif not os.path.isabs(clean_slug):
+            # If slug lacks the YYYY-MM-DD_ prefix that episode files
+            # routinely carry on disk, probe for a matching date-prefixed file.
+            matches = glob.glob(os.path.join(BASE_DIR, "episodes", f"*_{clean_slug}.md"))
+            if matches:
+                try:
+                    with open(matches[0], encoding="utf-8-sig") as fh:
+                        fm = parse_frontmatter(fh.read())
+                    project = (fm or {}).get("project")
+                except OSError:
+                    project = None
+        episode_project[slug] = project
+        return project
 
     total_hits = 0
     cross_hits = 0
@@ -916,7 +932,9 @@ FRESHNESS_WINDOW_DAYS = 90
 # above and each already normalized to [0, 1] where higher is better.
 _COMPOSITE_COMPONENTS = ("lesson_quality", "implicit_retrieval", "lesson_coverage", "freshness")
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# \w with re.UNICODE, not [a-z0-9]: ASCII-only regex silently drops non-Latin
+# characters (accents, umlauts, CJK, Cyrillic) and produces false duplicates or misses.
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 # Words too common in this corpus to signal that two lessons are the same
 # lesson. Without them, every pair of lessons shares "the/a/lesson/when" and
 # the similarity floor rises for everything equally.
@@ -965,7 +983,7 @@ def compute_lexical_duplicates(lessons, threshold):
 
 
 def _parse_last_hit(value):
-    """`last_hit` as a date, or None for "NEVER"/absent/unparseable.
+    """Parse a `last_hit` frontmatter value into a datetime or None.
 
     Tolerant on purpose: this feeds a warning threshold, and a hand-edited
     date in an unexpected shape should not crash the whole benchmark.
@@ -973,6 +991,11 @@ def _parse_last_hit(value):
     text = str(value or "").strip()
     if not text or text.upper() == "NEVER":
         return None
+    # ISO 8601 parsing with timezone support (e.g. 2026-01-01T00:00:00Z or +00:00)
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.datetime.strptime(text[:len("2026-01-01T00:00:00")], fmt)
@@ -991,13 +1014,18 @@ def compute_freshness(lessons, now=None):
     """
     if not lessons:
         return None, 0
-    now = now or datetime.datetime.now()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
     cutoff = now - datetime.timedelta(days=FRESHNESS_WINDOW_DAYS)
     fresh = 0
     for fm in lessons.values():
         hit = _parse_last_hit(fm.get("last_hit"))
-        if hit is not None and hit >= cutoff:
-            fresh += 1
+        if hit is not None:
+            if hit.tzinfo is None:
+                hit = hit.replace(tzinfo=datetime.timezone.utc)
+            if hit >= cutoff:
+                fresh += 1
     return fresh / len(lessons), len(lessons)
 
 

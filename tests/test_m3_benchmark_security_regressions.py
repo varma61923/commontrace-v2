@@ -162,3 +162,151 @@ class TestInstallCmdRootResolution:
         assert resolved != os.getcwd(), (
             "Root must not be caller's cwd when --dest points elsewhere"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. Datetime & Timezone Integrity in compute_freshness
+# ---------------------------------------------------------------------------
+class TestDatetimeTimezoneIntegrity:
+    def test_parse_last_hit_handles_iso_with_z_and_offsets(self):
+        import datetime
+        dt_z = measure_performance._parse_last_hit("2026-09-05T12:00:00Z")
+        assert dt_z is not None
+        assert dt_z.tzinfo is not None
+
+        dt_offset = measure_performance._parse_last_hit("2026-09-05T12:00:00+02:00")
+        assert dt_offset is not None
+        assert dt_offset.tzinfo is not None
+
+        dt_naive = measure_performance._parse_last_hit("2026-09-05")
+        assert dt_naive is not None
+
+    def test_compute_freshness_compares_aware_and_naive_without_type_error(self):
+        import datetime
+        utc_now = datetime.datetime(2026, 9, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        lessons = {
+            "l1": {"last_hit": "2026-09-01"},  # naive date
+            "l2": {"last_hit": "2026-09-02T12:00:00Z"},  # UTC aware
+            "l3": {"last_hit": "NEVER"},
+        }
+        # Passing UTC-aware now must not raise TypeError when comparing against naive or aware
+        val, n = measure_performance.compute_freshness(lessons, now=utc_now)
+        assert n == 3
+        assert val == pytest.approx(2 / 3)
+
+        # Passing naive now must also work without error
+        naive_now = datetime.datetime(2026, 9, 5, 12, 0, 0)
+        val2, n2 = measure_performance.compute_freshness(lessons, now=naive_now)
+        assert n2 == 3
+        assert val2 == pytest.approx(2 / 3)
+
+
+# ---------------------------------------------------------------------------
+# 6. Lexical Tokens Unicode Support
+# ---------------------------------------------------------------------------
+class TestLexicalTokensUnicode:
+    def test_lexical_tokens_preserves_non_latin_and_accented_words(self):
+        tokens = measure_performance._lexical_tokens("résumé naïve café")
+        assert "résumé" in tokens
+        assert "naïve" in tokens
+        assert "café" in tokens
+
+
+# ---------------------------------------------------------------------------
+# 7. Transfer Gap Memoization
+# ---------------------------------------------------------------------------
+class TestTransferGapMemoization:
+    def test_resolve_project_caches_lookups(self, tmp_path):
+        ep_dir = tmp_path / "episodes"
+        ep_dir.mkdir(parents=True)
+        (ep_dir / "ep1.md").write_text("---\nproject: proj_alpha\n---\n", encoding="utf-8")
+
+        with patch.object(measure_performance, "BASE_DIR", str(tmp_path)):
+            episodes = [{"name": "current_ep", "project": "proj_beta", "lessons_hit": ["l1"]}]
+            lessons = {"l1": {"source_traces": ["ep1", "ep1"]}}
+            # compute_transfer_gap should resolve ep1 and cache it
+            val, n, untraceable = measure_performance.compute_transfer_gap(episodes, lessons)
+            assert n == 1
+            assert val == 1.0  # cross-project hit
+
+
+# ---------------------------------------------------------------------------
+# 8. Shellout PYTHONUTF8 Unconditional Setting
+# ---------------------------------------------------------------------------
+class TestShelloutPythonUtf8:
+    def test_shellout_sets_pythonutf8_even_when_capture_false(self, tmp_path):
+        from commontrace.commands import _shellout
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = types.SimpleNamespace(returncode=0)
+            with patch("os.path.isfile", return_value=True):
+                _shellout.run_script(str(tmp_path), "dummy.py", [], "msg", capture=False)
+                assert mock_run.called
+                env = mock_run.call_args[1].get("env", {})
+                assert env.get("PYTHONUTF8") == "1"
+
+
+# ---------------------------------------------------------------------------
+# 9. Index Command (index_cmd.py)
+# ---------------------------------------------------------------------------
+class TestIndexCmd:
+    def test_index_cmd_missing_deps_exits_1(self, capsys):
+        from commontrace.commands import index_cmd
+        args = types.SimpleNamespace(force=False, dest=None)
+        with patch("commontrace.commands.index_cmd.has_attention_deps", return_value=False):
+            rc = index_cmd.run(args)
+            assert rc == 1
+            captured = capsys.readouterr()
+            assert "pip install commontrace[attention]" in captured.err
+
+    def test_index_cmd_with_deps_runs_script(self):
+        from commontrace.commands import index_cmd
+        args = types.SimpleNamespace(force=True, dest="/tmp/test_store")
+        with patch("commontrace.commands.index_cmd.has_attention_deps", return_value=True):
+            with patch("commontrace.commands.index_cmd.run_script", return_value=0) as mock_run:
+                rc = index_cmd.run(args)
+                assert rc == 0
+                assert mock_run.called
+                extra = mock_run.call_args[0][2]
+                assert "--force" in extra
+
+
+# ---------------------------------------------------------------------------
+# 10. Install Command Targets (cursor, windsurf, devin, generic-mcp, generic)
+# ---------------------------------------------------------------------------
+class TestInstallCmdTargets:
+    @pytest.mark.parametrize("target,expected_file", [
+        ("cursor", ".cursor/rules/commontrace.mdc"),
+        ("windsurf", ".windsurf/rules/commontrace.md"),
+        ("devin", ".devin/skills/commontrace/SKILL.md"),
+        ("generic-mcp", "commontrace.hub.mcp.json.example"),
+        ("generic", "COMMONTRACE.md"),
+    ])
+    def test_install_cmd_all_targets(self, tmp_path, target, expected_file):
+        args = types.SimpleNamespace(target=target, dest=str(tmp_path))
+        with patch.object(install_cmd, "_write_local_mcp", return_value=None):
+            with patch.object(install_cmd, "_find_skill_md", return_value=None):
+                rc = install_cmd.run(args)
+                assert rc is None or rc == 0
+                target_path = tmp_path / expected_file
+                assert target_path.is_file(), f"Target {target} failed to write {expected_file}"
+
+
+# ---------------------------------------------------------------------------
+# 11. Report HTML Shared Wrapper (report_html.py)
+# ---------------------------------------------------------------------------
+class TestReportHtml:
+    def test_wrap_page_structure(self):
+        from commontrace import report_html
+        html = report_html.wrap_page("Test Title", "<p>Body</p>", "2026-09-05")
+        assert "<!DOCTYPE html>" in html
+        assert "<title>Test Title — 2026-09-05</title>" in html
+        assert "<p>Body</p>" in html
+        assert "</html>" in html
+
+    def test_stat_card_generation(self):
+        from commontrace import report_html
+        card = report_html.stat_card("Metric", "99%", note="High accuracy")
+        assert 'class="card"' in card
+        assert 'class="label">Metric<' in card
+        assert 'class="value">99%<' in card
+        assert 'class="note">High accuracy<' in card
