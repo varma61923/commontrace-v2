@@ -77,6 +77,47 @@ def has_recorded_assignments(root: str) -> bool:
         return False
 
 
+def _last_logged_settings(root: str) -> tuple[str, float] | None:
+    """The scorer and floor the most recent assignment was made under.
+
+    None when there is no log, or when the last line predates these fields --
+    which is what identifies a genuine pre-upgrade store.
+
+    Reads only the tail of the file. This runs on every retrieval, and a
+    fleet's log grows without bound, so parsing all of it here would make
+    retrieval get slower the longer the pilot runs.
+    """
+    from commontrace import holdout_io
+
+    path = holdout_io.holdout_log_path(root)
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return None
+        with open(path, "rb") as fh:
+            # A logged row is a few hundred bytes; 8 KiB covers the last one
+            # comfortably without reading a large log into memory.
+            fh.seek(max(0, size - 8192))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed([ln for ln in tail.splitlines() if ln.strip()]):
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            continue  # a torn final line, or a partial first line from the seek
+        scorer = raw.get("scorer")
+        floor = raw.get("floor")
+        if scorer and floor is not None:
+            try:
+                return str(scorer), float(floor)
+            except (TypeError, ValueError):
+                return None
+        return None  # a complete row that simply predates these fields
+    return None
+
+
 def load_config(root: str) -> RetrievalConfig:
     """This store's retrieval settings, or the right defaults if unset.
 
@@ -105,6 +146,27 @@ def load_config(root: str) -> RetrievalConfig:
 
     # Unconfigured. A store with assignments already on disk keeps the scorer
     # those assignments were made under; see this module's docstring.
+    #
+    # WHICH scorer that is has to come from the log, not from the mere
+    # EXISTENCE of a log. Treating "there are assignments" as "this is a
+    # pre-upgrade store" was wrong in the case that matters most: a brand-new
+    # store writes its first assignment under the current scorer, and from the
+    # second query onward the log exists -- so every new fleet was silently
+    # downgraded to the historical scorer after one query, and its log then
+    # held two scorers, which check_scorer_drift correctly reports as an
+    # INVALIDATED experiment. The mechanism meant to protect an upgrade was
+    # breaking every fresh pilot instead.
+    #
+    # New rows record `scorer`/`floor`; pre-upgrade rows do not. That
+    # distinction is exactly the question being asked, so ask it directly.
+    logged = _last_logged_settings(root)
+    if logged is not None:
+        scorer, floor = logged
+        return RetrievalConfig(
+            scorer=scorer,
+            floor=floor,
+            pinned_for_running_experiment=True,
+        )
     if has_recorded_assignments(root):
         return RetrievalConfig(
             scorer=retrieval.SCORER_COUNT,

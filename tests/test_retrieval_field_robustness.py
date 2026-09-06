@@ -195,8 +195,12 @@ class TestConfigIsSharedByEverySurface:
         assert config.floor == retrieval.DEFAULT_FLOOR
         assert not config.pinned_for_running_experiment
 
-    def test_a_store_with_assignments_stays_on_what_they_were_scored_under(self, tmp_path):
-        """Upgrading must not silently re-randomize a running experiment."""
+    def test_a_pre_upgrade_store_stays_on_what_its_assignments_were_scored_under(self, tmp_path):
+        """Upgrading must not silently re-randomize a running experiment.
+
+        A pre-upgrade row records no `scorer`/`floor` -- that absence is what
+        identifies it.
+        """
         from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
 
@@ -210,6 +214,71 @@ class TestConfigIsSharedByEverySurface:
         assert config.scorer == retrieval.SCORER_COUNT
         assert config.floor == 0.0
         assert config.pinned_for_running_experiment
+
+    def test_a_new_store_is_not_mistaken_for_a_pre_upgrade_one(self, tmp_path):
+        """The bug this exists for, and it disabled the whole scorer change.
+
+        "Has assignments" was read as "predates the upgrade". But a brand-new
+        store writes its FIRST assignment under the current scorer, so from
+        the second query onward it has assignments -- and every fresh pilot
+        was silently downgraded to the historical scorer after one query.
+        Worse, its log then held two scorers, which
+        integrity.check_scorer_drift correctly reports as an INVALIDATED
+        experiment: the mechanism meant to protect an upgrade was breaking
+        every new pilot instead.
+
+        Caught by re-running the six-fleet pilot end to end, not by a unit
+        test -- the store had to actually accumulate a log for it to appear.
+        """
+        from commontrace.cli import main
+        from commontrace import holdout_io, retrieval_io
+
+        assert main(["init", "--dest", str(tmp_path)]) == 0
+        holdout_io.assign_and_log(
+            str(tmp_path), ["a"], occasion_id="o1", rate=0.5, salt="s",
+            relevance={"a": 0.62}, scorer=retrieval.SCORER_IDF,
+            floor=retrieval.DEFAULT_FLOOR,
+        )
+
+        config = retrieval_io.load_config(str(tmp_path))
+        assert config.scorer == retrieval.SCORER_IDF
+        assert config.floor == retrieval.DEFAULT_FLOOR
+
+    def test_successive_queries_do_not_drift_between_scorers(self, tmp_path):
+        """The observable consequence: one experiment, one treatment."""
+        import json
+
+        from commontrace.cli import main
+        from commontrace import holdout_io, retrieval_io
+
+        assert main(["init", "--dest", str(tmp_path)]) == 0
+        for i in range(3):
+            # Re-read the config each time, exactly as a real query does --
+            # the bug was that the second read disagreed with the first.
+            config = retrieval_io.load_config(str(tmp_path))
+            holdout_io.assign_and_log(
+                str(tmp_path), ["a"], occasion_id=f"o{i}", rate=0.5, salt="s",
+                relevance={"a": 0.62}, scorer=config.scorer, floor=config.floor,
+            )
+        scorers = set()
+        with open(holdout_io.holdout_log_path(str(tmp_path)), encoding="utf-8") as fh:
+            for line in fh:
+                scorers.add(json.loads(line)["scorer"])
+        assert scorers == {retrieval.SCORER_IDF}, f"drifted across {scorers}"
+
+    def test_a_torn_final_log_line_does_not_break_config_loading(self, tmp_path):
+        """Retrieval settings are read on every query; a half-written line
+        must not stop a fleet retrieving."""
+        from commontrace.cli import main
+        from commontrace import holdout_io, retrieval_io
+
+        assert main(["init", "--dest", str(tmp_path)]) == 0
+        with open(holdout_io.holdout_log_path(str(tmp_path)), "w", encoding="utf-8") as fh:
+            fh.write('{"occasion_id": "o1", "lesson": "a", "injected": true, '
+                     '"rate": 0.5, "salt": "s", "scorer": "idf-v2", "floor": 0.1}\n')
+            fh.write('{"occasion_id": "o2", "lesson": "a", "inject')  # torn
+        config = retrieval_io.load_config(str(tmp_path))
+        assert config.scorer == retrieval.SCORER_IDF
 
     def test_an_explicit_choice_beats_the_inferred_pin(self, tmp_path):
         from commontrace.cli import main

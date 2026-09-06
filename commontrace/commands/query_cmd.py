@@ -176,7 +176,11 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
     )
-    if config.pinned_for_running_experiment:
+    # Only when the pin is an actual DOWNGRADE. A store already running the
+    # current scorer is also "pinned" (to what its own log says it uses), and
+    # saying so on every query would be noise nobody can act on -- and noise
+    # is how the one message that does need acting on gets ignored.
+    if config.pinned_for_running_experiment and config.scorer != retrieval.SCORER_IDF:
         # Said once, where someone can act on it, rather than silently
         # upgrading a store whose experiment is mid-flight.
         print(
