@@ -283,11 +283,28 @@ class TestApiKeyExpiry:
         fix re-reads revocation state fresh immediately after verify()
         returns; this simulates a revoke landing exactly inside that
         window by hooking the asyncio.to_thread call verify() is offloaded
-        through."""
+        through.
+
+        This window exists only in the legacy (Argon2 prefix-scan) path --
+        the fast `key_hmac` lookup added later reads revocation in the same
+        single indexed SELECT that finds the row, with no `to_thread` call
+        and no gap for a concurrent revoke to land in. A freshly issued key
+        now has `key_hmac` set at issuance and would resolve via that fast
+        path, never calling `asyncio.to_thread` at all -- clear it here to
+        force this key through the legacy path this test exercises, exactly
+        as a key issued before that column existed would be."""
         import asyncio as asyncio_module
+
+        from sqlalchemy import update
+
+        from hub.models import ApiKey
 
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                update(ApiKey).where(ApiKey.id == issued.key_id).values(key_hmac=None)
+            )
 
         real_to_thread = asyncio_module.to_thread
         revoked_once = False

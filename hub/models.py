@@ -148,6 +148,17 @@ class ApiKey(Base):
     )
     key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     key_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Hex SHA-256 HMAC of the raw key, keyed by a server-side pepper
+    # (HUB_API_KEY_PEPPER) -- an indexed, O(1) verification path that makes
+    # hub/auth.py's per-request Argon2id computation (measured: ~83ms, 64MiB
+    # per verify, a ~48 req/s ceiling on a 4-core box) unnecessary for any
+    # key that has one. NULL for a key issued before this column existed, or
+    # not yet used since it was added -- verify_api_key backfills it lazily
+    # on that key's next successful (legacy Argon2) verification, so no
+    # migration job and no downtime. key_hash is kept regardless, forever,
+    # as the fallback verification path and the break-glass copy if a
+    # pepper is ever lost or rotated.
+    key_hmac: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

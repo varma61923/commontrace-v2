@@ -63,13 +63,15 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     hub/crud.py's own per-write-op limiter does further in:
 
       - `auth_rate_limiter`, keyed by client address, checked BEFORE
-        Argon2 verification runs. Verification is deliberately expensive
-        CPU work (hub/auth.py), performed for every candidate key sharing a
-        presented key's prefix, on every request carrying an Authorization
-        header regardless of whether it turns out valid -- without this, a
-        remote attacker can flood the endpoint with credentials sharing a
-        known/guessed prefix to exhaust the process's to_thread worker
-        pool. This bounds CPU spent per source rather than only reacting
+        verification runs. hub/auth.py resolves most requests through an
+        indexed `key_hmac` lookup now (cheap, ~O(1)), but any key issued
+        before that existed -- or not yet backfilled -- still falls back to
+        the original prefix-scan-plus-Argon2 path, which is deliberately
+        expensive CPU work performed for every candidate key sharing a
+        presented key's prefix. Without this limiter, a remote attacker can
+        flood the endpoint with credentials sharing a known/guessed prefix
+        to exhaust the process's to_thread worker pool on that fallback
+        path. This bounds CPU spent per source rather than only reacting
         after paying for it.
       - `read_rate_limiter`, keyed by org_id, checked once a request is
         authenticated. hub/crud.py's rate_limiter only ever gated

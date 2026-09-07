@@ -721,7 +721,10 @@ def make_read_rate_limiter(config: HubConfig) -> RateLimiterBackend:
 
 
 def make_auth_rate_limiter(config: HubConfig) -> RateLimiterBackend:
-    """Keyed by client address, checked before Argon2 verification even
-    runs -- bounds CPU spent verifying credentials from one source rather
-    than only counting failures after paying for them."""
+    """Keyed by client address, checked before verification even runs --
+    bounds CPU spent verifying credentials from one source rather than only
+    counting failures after paying for them. Most requests never reach the
+    expensive path this defends (hub/auth.py's indexed key_hmac lookup
+    handles them for ~1ms), but the legacy Argon2 fallback for unmigrated
+    keys is still exactly as expensive as before, so this stays in place."""
     return _make_limiter(config, config.auth_attempts_per_minute, config.auth_attempts_burst, "auth")

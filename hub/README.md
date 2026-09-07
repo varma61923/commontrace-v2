@@ -68,7 +68,7 @@ hub/config.py      env-driven settings, no unsafe defaults
 hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceRelation, UsageCounter
 hub/db.py          async engine/session plumbing
 hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates against them
-hub/auth.py        argon2 API-key hashing/verification/rotation/expiry + request-scoped org_id
+hub/auth.py        API-key hashing/verification/rotation/expiry (HMAC fast path, argon2 fallback) + request-scoped org_id
 hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
@@ -573,10 +573,13 @@ Three properties worth knowing, because each one was a real defect:
   limiter already saying no turns one burst into a sustained stampede.
   `commontrace sync` paces its whole batch off this value.
 - **The auth-attempt limiter charges only credentials that fail to
-  verify.** Its job is bounding the Argon2 CPU an unauthenticated source
-  can force; charging successful authentications too made it throttle the
-  legitimate heavy client hardest — a bulk push is hundreds of successful
-  authentications from one address against a 60/min budget. Valid callers
+  verify.** Most requests resolve via an indexed `key_hmac` lookup in
+  ~1ms now; this limiter's job is bounding the Argon2 CPU an
+  unauthenticated source can still force through the legacy fallback path
+  (an unmigrated or guessed-prefix key). Charging successful
+  authentications too made it throttle the legitimate heavy client
+  hardest — a bulk push is hundreds of successful authentications from
+  one address against a 60/min budget. Valid callers
   are governed by the per-org read limiter instead, where they are
   authenticated, accountable and metered.
 - **Tracked keys are capped** (`_MAX_TRACKED_KEYS`). The idle sweep alone

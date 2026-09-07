@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from hub import auth
 from hub.db import session_scope
@@ -338,6 +338,16 @@ async def test_revocation_landing_during_a_slow_verify_still_denies_it(session_f
     that happens after it was loaded, so verify_api_key re-reads revoked_at
     fresh, after verify() returns, rather than trusting `candidate`.
 
+    This is a property of the LEGACY (Argon2 prefix-scan) path specifically:
+    the fast `key_hmac` path has no such window to close in the first place
+    -- revocation is read in the SAME single indexed SELECT that finds the
+    row, with no slow operation in between for a concurrent revoke to race
+    against. A freshly issued key now has `key_hmac` set at issuance
+    (auth.issue_api_key), so it would resolve via the fast path and never
+    reach Argon2 at all -- clear it here to force this specific request
+    through the legacy path this test is actually about, exactly as a key
+    issued before the key_hmac column existed would.
+
     Exercised for real rather than trusted from the comment: verify() is
     blocked with a real threading.Event while running on its actual
     to_thread worker thread (the same offloading production uses), the key
@@ -351,6 +361,10 @@ async def test_revocation_landing_during_a_slow_verify_still_denies_it(session_f
     org_id = await _make_org(session_factory)
     async with session_scope(session_factory) as session:
         issued = await auth.issue_api_key(session, org_id)
+    async with session_scope(session_factory) as session:
+        await session.execute(
+            update(ApiKey).where(ApiKey.id == issued.key_id).values(key_hmac=None)
+        )
 
     verify_started = threading.Event()
     release_verify = threading.Event()
@@ -379,3 +393,145 @@ async def test_revocation_landing_during_a_slow_verify_still_denies_it(session_f
     release_verify.set()
     resolved = await verify_task
     assert resolved is None, "revocation landing mid-verify() was not honored -- the race window is open"
+
+
+# --- key_hmac fast path ----------------------------------------------------
+#
+# hub/auth.py's verify_api_key tries an indexed key_hmac lookup before
+# falling back to the Argon2 prefix-scan tested above. Measured motivation:
+# Argon2id verify() costs ~83ms/64MiB per call on a 4-core box, a ~48 req/s
+# ceiling on every authenticated request the Hub serves. These tests pin the
+# fast path's own correctness and its backward-compatible interaction with
+# the legacy path it sits in front of.
+
+
+async def test_a_freshly_issued_key_never_calls_argon2_verify(session_factory, config, monkeypatch):
+    """issue_api_key now writes key_hmac at issuance, so a normal
+    verification of a freshly issued key should resolve entirely through the
+    fast indexed lookup -- zero Argon2 computations, not merely a faster one.
+    This is the throughput claim itself, pinned as a test rather than left
+    to a benchmark someone might stop running."""
+    from argon2 import PasswordHasher
+
+    calls = []
+    real_verify = PasswordHasher.verify
+
+    def _tracking_verify(self, hash_, key):
+        calls.append(hash_)
+        return real_verify(self, hash_, key)
+
+    monkeypatch.setattr(PasswordHasher, "verify", _tracking_verify)
+
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+
+    assert resolved is not None
+    assert resolved.org_id == org_id
+    assert calls == []
+
+
+async def test_a_pre_hmac_key_is_backfilled_on_first_legacy_verification(session_factory, config, monkeypatch):
+    """Simulates a key issued before the key_hmac column existed: no
+    key_hmac set at all. The first verification must still succeed (via the
+    legacy path) AND leave key_hmac populated, so every verification after
+    that one takes the fast path -- zero further Argon2 calls."""
+    from argon2 import PasswordHasher
+
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+    async with session_scope(session_factory) as session:
+        await session.execute(
+            update(ApiKey).where(ApiKey.id == issued.key_id).values(key_hmac=None)
+        )
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.key_hmac is None
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is not None
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.key_hmac is not None
+    assert row.key_hmac == auth._key_hmac(issued.raw_key)
+
+    calls = []
+    real_verify = PasswordHasher.verify
+
+    def _tracking_verify(self, hash_, key):
+        calls.append(hash_)
+        return real_verify(self, hash_, key)
+
+    monkeypatch.setattr(PasswordHasher, "verify", _tracking_verify)
+
+    async with session_scope(session_factory) as session:
+        resolved2 = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved2 is not None
+    assert calls == []
+
+
+async def test_revoked_key_does_not_verify_via_the_fast_path(session_factory, config):
+    """The fast path has its own revocation check -- this proves it, not
+    just the legacy path's (test_revoked_key_no_longer_verifies)."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+    async with session_scope(session_factory) as session:
+        await auth.revoke_api_key(session, issued.key_id)
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is None
+
+
+async def test_expired_key_does_not_verify_via_the_fast_path(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id, expires_days=1)
+    async with session_scope(session_factory) as session:
+        await session.execute(
+            update(ApiKey).where(ApiKey.id == issued.key_id)
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+        )
+
+    async with session_scope(session_factory) as session:
+        resolved = await auth.verify_api_key(session, issued.raw_key)
+    assert resolved is None
+
+
+async def test_last_used_at_throttling_applies_on_the_fast_path_too(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    first_seen = row.last_used_at
+    assert first_seen is not None
+
+    async with session_scope(session_factory) as session:
+        await auth.verify_api_key(session, issued.raw_key)
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert row.last_used_at == first_seen  # unchanged: within the throttle interval
+
+
+async def test_key_hmac_is_never_the_raw_key_or_the_argon2_hash(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, org_id)
+
+    async with session_scope(session_factory) as session:
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == issued.key_id))).scalar_one()
+    assert issued.raw_key not in row.key_hmac
+    assert row.key_hmac != row.key_hash
+    assert len(row.key_hmac) == 64  # hex sha256
