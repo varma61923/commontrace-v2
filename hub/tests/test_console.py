@@ -574,3 +574,183 @@ class TestTheOverviewIsHonestAboutMissingData:
             {"experiment_running": True, "n_observations": 0},
         )
         assert "record_occasion_outcome" in html
+
+
+# --- Shareable, read-only Proof links ---------------------------------------
+
+
+class TestShareTokensAreDistinctFromSessions:
+    """issue_share_token/read_share_token in isolation -- no database, no
+    routes. The property that matters most: a share token and a session
+    token are signed the same way but must never be interchangeable, or a
+    link handed to an outsider becomes a full-scope session for that org."""
+
+    async def test_a_valid_share_token_round_trips(self):
+        token = console.issue_share_token(SECRET, "org-1")
+        claims = console.read_share_token(SECRET, token)
+        assert claims and claims["org"] == "org-1" and claims["kind"] == "share_proof"
+
+    async def test_a_different_secret_is_rejected(self):
+        token = console.issue_share_token("attacker-guess", "org-1")
+        assert console.read_share_token(SECRET, token) is None
+
+    @pytest.mark.parametrize("mangle", [
+        lambda t: t[:-4] + "AAAA",
+        lambda t: t.split(".")[0],
+        lambda t: "." + t.split(".")[1],
+        lambda t: t.replace(".", "", 1),
+        lambda t: "",
+        lambda t: "not-a-token",
+    ])
+    async def test_a_mangled_token_is_rejected(self, mangle):
+        token = console.issue_share_token(SECRET, "org-1")
+        assert console.read_share_token(SECRET, mangle(token)) is None
+
+    async def test_an_expired_share_token_is_rejected(self):
+        token = console.issue_share_token(SECRET, "org-1", ttl_seconds=-1)
+        assert console.read_share_token(SECRET, token) is None
+
+    async def test_a_session_token_is_not_a_valid_share_token(self):
+        """The other half of the guard read_session already carries: a full
+        session, presented at the public share route, must not resolve."""
+        session_token = console.issue_session(SECRET, "org-1", "ct_live_ab")
+        assert console.read_share_token(SECRET, session_token) is None
+
+    async def test_a_share_token_is_not_a_valid_session(self):
+        """Forward direction: a share link must never be upgradeable into a
+        mutating-scope console session just by pasting it into the cookie."""
+        share_token = console.issue_share_token(SECRET, "org-1")
+        assert console.read_session(SECRET, share_token) is None
+
+
+class TestProofSharing:
+    """End-to-end: minting a link from an authenticated session, and
+    resolving it back with none at all."""
+
+    async def test_the_proof_page_offers_a_share_form_when_signed_in(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof")
+        assert response.status_code == 200
+        assert "Generate shareable link" in response.text
+
+    async def test_sharing_without_a_session_redirects_to_signin(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_a_signed_in_org_can_mint_and_then_view_its_own_link(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            share_response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
+            assert share_response.status_code == 303
+            location = share_response.headers["location"]
+            assert location.startswith(f"{console.CONSOLE_PATH}/proof?share_url=")
+
+            proof_response = await client.get(location)
+            assert "Shareable link generated." in proof_response.text
+
+        # The minted URL resolves with NO cookies at all -- a fresh, bare
+        # client, exactly like an outsider who was only handed the link.
+        import re
+        match = re.search(r'value="([^"]+)"', proof_response.text)
+        assert match, proof_response.text
+        share_url = match.group(1).replace("&amp;", "&")
+        token = share_url.rsplit("/", 1)[-1]
+
+        async with _client(_app(session_factory=session_factory)) as anon_client:
+            shared_response = await anon_client.get(
+                f"{console.CONSOLE_PATH}/proof/shared/{token}"
+            )
+        assert shared_response.status_code == 200
+        assert "Shared, read-only report" in shared_response.text
+        assert "Proof" in shared_response.text
+        # No session cookie, no nav -- an outsider gets exactly the report,
+        # nothing that grants access to anything else.
+        assert console.SESSION_COOKIE not in shared_response.cookies
+        assert f"{console.CONSOLE_PATH}/memory" not in shared_response.text
+
+    async def test_a_share_link_only_ever_resolves_its_own_org(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        org_id, _raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        token = console.issue_share_token(SECRET, org_id)
+        assert console.read_share_token(SECRET, token)["org"] == org_id
+        assert console.read_share_token(SECRET, token)["org"] != other_org_id
+
+    async def test_an_expired_link_is_a_plain_404(self, session_factory):
+        token = console.issue_share_token(SECRET, "org-1", ttl_seconds=-1)
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/shared/{token}")
+        assert response.status_code == 404
+
+    async def test_a_forged_link_is_a_plain_404(self, session_factory):
+        """Not 401/403 -- a share link is handed to people with no other
+        relationship to this Hub, and the response must not distinguish
+        'tampered' from 'expired' from 'never existed'."""
+        token = console.issue_share_token(SECRET, "org-1")
+        forged = token[:-4] + "AAAA"
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/shared/{forged}")
+        assert response.status_code == 404
+
+    async def test_a_full_session_token_is_refused_at_the_shared_route(
+        self, session_factory, org_and_key
+    ):
+        """The narrower half of the kind-separation guard exercised against
+        the real route, not just the pure function above."""
+        org_id, _raw_key = org_and_key
+        session_token = console.issue_session(SECRET, org_id, "ct_live_ab")
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/proof/shared/{session_token}"
+            )
+        assert response.status_code == 404
+
+    async def test_a_share_link_cannot_be_used_to_sign_in(
+        self, session_factory, org_and_key
+    ):
+        """The forward direction, exercised through cookies: pasting a share
+        token in as the session cookie must not open the authenticated
+        console -- read_session's explicit kind check is what stops it."""
+        org_id, _raw_key = org_and_key
+        share_token = console.issue_share_token(SECRET, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            client.cookies.set(console.SESSION_COOKIE, share_token)
+            response = await client.get(console.CONSOLE_PATH)
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_shared_view_is_rate_limited_per_org(self, session_factory, org_and_key):
+        """Keyed by org, not by client address: the threat is one link being
+        hit hard by whoever holds it, from however many addresses."""
+        org_id, _raw_key = org_and_key
+        token = console.issue_share_token(SECRET, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            statuses = [
+                (await client.get(f"{console.CONSOLE_PATH}/proof/shared/{token}")).status_code
+                for _ in range(85)
+            ]
+        assert 429 in statuses
+
+    async def test_a_rate_limited_view_names_when_to_come_back(
+        self, session_factory, org_and_key
+    ):
+        org_id, _raw_key = org_and_key
+        token = console.issue_share_token(SECRET, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            responses = [
+                await client.get(f"{console.CONSOLE_PATH}/proof/shared/{token}")
+                for _ in range(85)
+            ]
+        limited = [r for r in responses if r.status_code == 429]
+        assert limited
+        assert "Retry-After" in limited[0].headers

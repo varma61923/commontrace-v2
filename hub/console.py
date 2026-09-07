@@ -134,6 +134,78 @@ def read_session(secret: str, token: str) -> dict | None:
         return None
     if int(claims.get("exp", 0)) < time.time():
         return None
+    # A share token (below) is signed with the same secret and would
+    # otherwise pass every check above -- explicitly reject it here so it
+    # can never be replayed as a full, mutating-scope session, only ever
+    # through read_share_token's narrower surface.
+    if claims.get("kind") == "share_proof":
+        return None
+    return claims
+
+
+# --- Shareable, read-only Proof links ---------------------------------------
+#
+# WHY THIS EXISTS. hub/plans.py's whole pricing model is "share of measured
+# value" (STRATEGY.md), and the Proof page below is the only place that
+# value is actually shown -- with the SOUND/WEAKENED/COMPROMISED verdict
+# rendered ABOVE the number it qualifies, not as a footnote (see
+# _validity_block's docstring: "a page that shows the number first ... is
+# how the number travels without the caveat"). Until now that page only
+# ever rendered behind a signed-in session, so the one artifact that proves
+# this product's central claim could never leave the browser it was viewed
+# in -- not into a renewal conversation, a procurement deck, or a
+# forwarded email, which is exactly where a number like this needs to
+# travel to do its job.
+#
+# WHAT THIS IS NOT. Not a snapshot: a share link re-runs the same live
+# crud.causal_effects/value_delivered queries the authenticated page does,
+# so it can never go stale into something misleading -- a viewer six weeks
+# from now sees the CURRENT verdict, including a COMPROMISED one the
+# customer generated the link before they knew about. Not permanent: it
+# expires (SHARE_TOKEN_TTL_SECONDS) and there is no revocation list, so an
+# org that wants a link truly dead has to wait it out -- a deliberate v1
+# simplification, not an oversight; a customer who needs a shorter-lived
+# link can generate one closer to when they intend to use it. Not
+# customer-identifying beyond org_id: no viewer name, no recipient email,
+# nothing that would make this a tracking pixel.
+SHARE_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60
+
+
+def issue_share_token(secret: str, org_id: str, ttl_seconds: int = SHARE_TOKEN_TTL_SECONDS) -> str:
+    """A signed, read-only, org-scoped link to that org's OWN live Proof
+    page -- mintable only by someone already holding a real session for
+    that org (see the `proof_share` route below), never guessable, and
+    incapable of being upgraded into a session (read_session's explicit
+    `kind` check above)."""
+    payload = json.dumps(
+        {"kind": "share_proof", "org": org_id, "exp": int(time.time()) + ttl_seconds},
+        separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    body = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return f"{body}.{_sign(secret, payload)}"
+
+
+def read_share_token(secret: str, token: str) -> dict | None:
+    """The claims in a share token, or None if it is unsigned, forged,
+    expired, or -- the other direction of read_session's guard -- actually
+    a full session token presented here instead."""
+    if not token or "." not in token:
+        return None
+    body, _, signature = token.partition(".")
+    try:
+        payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+    except Exception:  # noqa: BLE001 - a malformed link is simply not a valid one
+        return None
+    if not hmac.compare_digest(_sign(secret, payload), signature):
+        return None
+    try:
+        claims = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(claims, dict) or claims.get("kind") != "share_proof" or not claims.get("org"):
+        return None
+    if int(claims.get("exp", 0)) < time.time():
+        return None
     return claims
 
 
@@ -161,6 +233,15 @@ _EXTRA_CSS = """
 .err{color:#C0392B;font-size:.9rem;margin:.4rem 0}
 .muted{color:var(--muted)}
 .rev{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;color:var(--muted)}
+.shared-banner{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+  padding:.7rem 1rem;margin:0 0 1.25rem;font-size:.85rem;color:var(--muted)}
+.share-box{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+  padding:.9rem 1.1rem;margin:0 0 1.25rem}
+.share-box input{width:100%;padding:.5rem .6rem;font:inherit;font-size:.85rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--rule);
+  border-radius:8px;margin:.4rem 0;background:var(--paper)}
+.share-box button{padding:.4rem .9rem;font:inherit;font-size:.85rem;border-radius:8px;
+  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
 """
 
 
@@ -185,6 +266,39 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         # and it outlives the session cookie that was supposed to gate it.
         headers={"Cache-Control": "no-store, private", "Referrer-Policy": "same-origin",
                  "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"},
+    )
+
+
+def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
+    """A read-only Proof view for someone with no session at all -- no nav
+    (there is nothing else this link grants access to), a banner naming
+    what it is and when it stops working, and no outbound link: this
+    product has no established public URL in its own codebase to send a
+    viewer to, so the banner names CommonTrace rather than pointing
+    somewhere invented.
+    """
+    until = datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%B %-d, %Y")
+    banner = (
+        '<div class="shared-banner">Shared, read-only report — generated from live data by a '
+        f"CommonTrace customer. Link active until {h(until)}.</div>"
+    )
+    return HTMLResponse(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>Proof · CommonTrace</title><style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        '<header class="bar"><div class="in"><b>CommonTrace</b>'
+        '<span class="ro">shared report</span></div></header>'
+        f"<main>{banner}{body}</main></body></html>",
+        headers={
+            # Distinct from _page's headers in one deliberate way: this
+            # response carries no session cookie and no mutating capability
+            # at all, so there is nothing here for a cache to leak beyond
+            # the same numbers the org itself chose to put in the link --
+            # but it is still that org's un-published business data, so it
+            # stays no-store rather than becoming cacheable-by-default.
+            "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        },
     )
 
 
@@ -411,6 +525,27 @@ def _value_block(worth: dict) -> str:
             "sums only the winners is a brochure.</em></p>"
         )
     return "".join(lines) + "</div>"
+
+
+def _render_share_form(share_url: str | None) -> str:
+    """Prepended to the AUTHENTICATED Proof page only -- never to the shared
+    view itself, which has no session and must not be able to mint more
+    links for an org it isn't signed into."""
+    days = SHARE_TOKEN_TTL_SECONDS // 86400
+    if share_url:
+        return (
+            '<div class="share-box"><b>Shareable link generated.</b><br>'
+            f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
+            "anyone who has the link -- treat it like the report data it is."
+            f'<input type="text" readonly value="{h(share_url)}" onclick="this.select()"></div>'
+        )
+    return (
+        f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
+        "<b>Share this report</b><br>"
+        '<span class="muted">A read-only link to this live page -- no sign-in required to view '
+        f"it, always shows current data, expires in {days} days.</span><br>"
+        '<button type="submit">Generate shareable link</button></form>'
+    )
 
 
 def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> str:
@@ -651,6 +786,14 @@ def add_console_routes(
     # a browser, which is a strictly easier target than the MCP transport.
     signin_limiter = RateLimiter(per_minute=10, burst=5)
 
+    # Guards hub/console.py's shared, unauthenticated Proof view (below):
+    # each real causal_effects() call is genuine statistical work, not a
+    # cheap read (hub/SCALING.md measures it up to 1.4s on a large org), and
+    # this route has no session to charge a per-org read limiter against.
+    # Generous on purpose -- a link embedded in a live deck or forwarded
+    # thread can get a real burst of legitimate views -- but not unbounded.
+    share_view_limiter = RateLimiter(per_minute=60, burst=20)
+
     def _secret() -> str:
         return console_secret
 
@@ -771,7 +914,63 @@ def add_console_routes(
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
-        return _page("Proof", _render_proof(outcomes, causal, worth))
+        # Set immediately after proof_share's redirect (below) -- rendered
+        # once, not persisted, so refreshing the page without the query
+        # param drops back to the plain "generate a link" form rather than
+        # re-displaying a link that may since have been superseded.
+        share_url = request.query_params.get("share_url")
+        share_box = _render_share_form(share_url)
+        return _page("Proof", share_box + _render_proof(outcomes, causal, worth))
+
+    async def proof_share(request: Request) -> Response:
+        """Mints a new share link for the signed-in org and redirects back
+        to the Proof page with it. POST, not GET: this creates a new
+        capability (a live, un-guessable link to the org's own data) and
+        must not be triggerable by a prefetch, a browser extension
+        crawling links, or a `<img>` tag someone points at it."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        token = issue_share_token(_secret(), org_id)
+        url = str(request.url.replace(path=f"{CONSOLE_PATH}/proof/shared/{token}", query=""))
+        return RedirectResponse(
+            f"{CONSOLE_PATH}/proof?share_url={_url_quote(url, safe='')}", status_code=303
+        )
+
+    async def proof_shared(request: Request) -> Response:
+        """The public, unauthenticated view a share link resolves to. No
+        _claims call anywhere in this handler -- that is the point of this
+        route existing separately from `proof` above, not an oversight."""
+        token = request.path_params.get("token", "")
+        claims = read_share_token(_secret(), token)
+        if claims is None:
+            # 404, not 401/403: a share link is meant to be handed to
+            # someone with no other relationship to this Hub, and "invalid"
+            # vs. "expired" vs. "never existed" is not a distinction they
+            # can act on -- it would only tell a prober which token shapes
+            # are worth continuing to guess.
+            return HTMLResponse("Not found.", status_code=404)
+        org_id = str(claims["org"])
+        # Public and unauthenticated, so unlike every other console route
+        # this one is reachable by anyone who has ever seen the link -- and
+        # crud.causal_effects is real statistical work (hub/SCALING.md
+        # measures it at up to 1.4s on a large org), not a cheap read. Keyed
+        # by org_id (from the verified token), not client address: the
+        # threat here is one link being hit hard by whoever holds it, from
+        # however many addresses, not a fleet of distinct guessers -- an
+        # address-keyed limiter would not bound that at all.
+        allowed, retry_after = share_view_limiter.check(f"share:{org_id}")
+        if not allowed:
+            return HTMLResponse(
+                "This report is being viewed heavily right now -- try again shortly.",
+                status_code=429, headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+        async with session_scope(session_factory) as session:
+            outcomes = await crud.fleet_outcomes(session, org_id)
+            causal = await crud.causal_effects(session, org_id)
+            worth = await crud.value_delivered(session, org_id)
+        return _shared_page(_render_proof(outcomes, causal, worth), expires_at=int(claims["exp"]))
 
     async def memory(request: Request) -> Response:
         claims = await _claims(request)
@@ -811,6 +1010,8 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
     app.add_route(CONSOLE_PATH, overview, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/proof/share", proof_share, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
 
