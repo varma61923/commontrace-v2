@@ -5,7 +5,14 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, holdout_io, paths, retrieval, retrieval_io
+from commontrace import (
+    frontmatter,
+    holdout_io,
+    lesson_cache,
+    paths,
+    retrieval,
+    retrieval_io,
+)
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
 
@@ -89,21 +96,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, dict]]:
-    ldir = paths.lessons_dir(root)
-    out = []
-    for path in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
-        if os.path.basename(path) == "lesson_template.md":
-            continue
-        result = read_or_warn(frontmatter.read, path)
-        if result is None:
-            continue
-        fm, _ = result
-        if fm.get("status") != "active":
-            continue
-        if agent_type and fm.get("agent_type") != agent_type:
-            continue
-        out.append((path, fm))
-    return out
+    """Active lessons as (path, frontmatter), in the store's own path order.
+
+    Served from `commontrace/lesson_cache.py`, which reparses only the files
+    whose (mtime, size) changed. This used to YAML-parse the whole store on
+    every query: at 6,400 lessons that was 7.3 s of parsing per query against
+    0.17 s of actual ranking, growing linearly (see that module's docstring for
+    the measurements and `commontrace/reference/measure_local_latency.py` to
+    reproduce them). Staleness is still detected per query by stat, so the
+    ranking always reflects the store as it is right now.
+    """
+    return lesson_cache.load_active(
+        root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
 
 
 def _apply_holdout(
@@ -170,11 +175,14 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
 
 
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
-    lessons = _iter_active_lessons(root, args.agent_type)
+    lessons, term_cache = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        term_cache=term_cache,
     )
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and

@@ -65,6 +65,7 @@ from commontrace import (
     experiment,
     frontmatter,
     holdout_io,
+    lesson_cache,
     lesson_io,
     mcp_tools,
     paths,
@@ -76,7 +77,7 @@ from commontrace import (
     trace_io,
     validate,
 )
-from commontrace.commands import query_cmd
+from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 
 # The lesson fields an agent may set. Anything outside this set is ignored
@@ -304,8 +305,18 @@ def build_server(root: str, *, allow_approval: bool = True):
             # falls back to exactly this retriever whenever its index is
             # stale, so the two surfaces agree in the common case rather
             # than only in name.
+            # `load_active_with_terms`, not `query_cmd._iter_active_lessons`
+            # directly, so this long-lived server benefits from the same
+            # incremental cache the CLI does -- re-tokenizing only the lesson
+            # files that changed since the LAST `retrieve` call, not the
+            # whole store on every one. This is where that matters most: a
+            # one-shot CLI process pays the parse once regardless; this
+            # process answers many `retrieve` calls without exiting.
             with _quiet():
-                active = query_cmd._iter_active_lessons(root, agent_type or None)
+                active, term_cache = lesson_cache.load_active_with_terms(
+                    root, agent_type or None,
+                    reader=lambda p: read_or_warn(frontmatter.read, p),
+                )
             # The store's own retrieval settings, for the same reason the
             # holdout config below is read from the store rather than
             # hardcoded here: scorer and floor decide which lessons are
@@ -317,6 +328,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 top_k=max(1, min(int(top_k), 50)),
                 floor=retrieval_config.floor,
                 scorer=retrieval_config.scorer,
+                term_cache=term_cache,
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")

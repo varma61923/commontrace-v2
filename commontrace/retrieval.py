@@ -115,11 +115,19 @@ def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
     # empty description/applies_when/domain field, via a token that field
     # never actually contained.
     return [
-        (str(fm.get("description") or ""), 1.0),
-        (str(fm.get("applies_when") or ""), 1.5),
-        (" ".join(tags_list), 2.0),
-        (str(fm.get("domain") or ""), 1.0),
+        (str(fm.get("description") or ""), _FIELD_WEIGHTS[0]),
+        (str(fm.get("applies_when") or ""), _FIELD_WEIGHTS[1]),
+        (" ".join(tags_list), _FIELD_WEIGHTS[2]),
+        (str(fm.get("domain") or ""), _FIELD_WEIGHTS[3]),
     ]
+
+
+# The field weights, in `_lesson_text_weighted`'s fixed order (description,
+# applies_when, tags, domain). Pulled out as its own constant so a caller
+# holding pre-tokenized terms -- commontrace/lesson_cache.py's `field_terms`,
+# which tokenizes each field in this exact order -- can pair them with their
+# weight without re-deriving field text it does not have.
+_FIELD_WEIGHTS: tuple[float, float, float, float] = (1.0, 1.5, 2.0, 1.0)
 
 
 # The strongest weight above. `relevance` divides by it so a term matched at
@@ -189,6 +197,7 @@ def rank_lessons(
     top_k: int = 10,
     floor: float | None = None,
     scorer: str = SCORER_IDF,
+    term_cache: dict[str, list[list[str]]] | None = None,
 ) -> list[RankedLesson]:
     """Rank `lessons` -- (path, frontmatter) pairs the caller has already
     filtered to what it considers eligible (e.g. status == "active") -- by how
@@ -219,6 +228,17 @@ def rank_lessons(
     `scorer=SCORER_COUNT` restores the historical raw-additive behaviour
     exactly, for a store mid-experiment that must not have its lesson
     eligibility re-randomized under it (commontrace/retrieval_io.py).
+
+    `term_cache`, if given, maps a lesson's path to its four fields already
+    tokenized -- in `_lesson_text_weighted`'s fixed order (description,
+    applies_when, tags, domain) -- so a caller that already paid for
+    tokenization on a prior call (commontrace/lesson_cache.py, keyed by file
+    mtime) does not pay for it again. A path absent from the cache, or an
+    absent/`None` cache entirely, tokenizes fresh: this parameter can only
+    make a call faster, never change what it returns, because
+    `set(cached_terms) == set(_tokenize(field_text))` by construction --
+    `lesson_cache.field_terms` derives the cache from nothing but this same
+    `_tokenize`.
     """
     query_terms = set(_tokenize(task))
     if not query_terms:
@@ -227,20 +247,29 @@ def rank_lessons(
         floor = 0.0 if scorer == SCORER_COUNT else DEFAULT_FLOOR
 
     # Corpus statistics over the candidate set: document frequency per term,
-    # and mean term count per weighted field. Computed here rather than
-    # cached because `lessons` is a store's active set (tens to low hundreds)
-    # and it must reflect the store as it is right now -- a stale IDF table
-    # would rank against a corpus that no longer exists.
+    # and mean term count per weighted field. Recomputed on every call
+    # because `lessons` is the candidate set for THIS call and must reflect
+    # the store as it is right now -- a stale IDF table would rank against a
+    # corpus that no longer exists. What can be skipped, via `term_cache`, is
+    # re-tokenizing field text that has not changed since it was last read;
+    # the statistics built FROM those terms are still fresh every time.
     field_terms_by_lesson: list[list[tuple[set[str], float]]] = []
     doc_freq: dict[str, int] = {}
     field_len_totals: list[float] = []
-    for _path, fm in lessons:
+    for path, fm in lessons:
+        cached = term_cache.get(path) if term_cache else None
         per_field: list[tuple[set[str], float]] = []
         seen_in_doc: set[str] = set()
-        for field_text, weight in _lesson_text_weighted(fm):
-            terms = set(_tokenize(field_text))
-            per_field.append((terms, weight))
-            seen_in_doc |= terms
+        if cached is not None and len(cached) == len(_FIELD_WEIGHTS):
+            for cached_terms, weight in zip(cached, _FIELD_WEIGHTS):
+                terms = set(cached_terms)
+                per_field.append((terms, weight))
+                seen_in_doc |= terms
+        else:
+            for field_text, weight in _lesson_text_weighted(fm):
+                terms = set(_tokenize(field_text))
+                per_field.append((terms, weight))
+                seen_in_doc |= terms
         for term in seen_in_doc:
             doc_freq[term] = doc_freq.get(term, 0) + 1
         field_terms_by_lesson.append(per_field)
@@ -307,9 +336,20 @@ def rank_lessons(
             rel = score
         elif total_query_idf > 0 and matched:
             lam = _length_factor(len(set().union(*(t for t, _w in per_field))), avg_field_len)
+            # sorted(), not a bare set iteration: `matched` is a set[str], and
+            # str hashing (hence set iteration order) is PYTHONHASHSEED-
+            # randomized per process. Floating-point addition is not
+            # associative, so summing in an unspecified order made `covered`
+            # -- and therefore `rel`, tested against `floor` a few lines below
+            # before it is rounded -- vary at the ULP level between processes.
+            # Measured: 99.7% of realistic (idf, weight) draws produce a
+            # summation-order-dependent total. A lesson landing within a few
+            # ULP of the floor could clear it in one process and not another
+            # -- and eligibility is the denominator of a causal estimate
+            # (commontrace/integrity.py), so it must not depend on hash seed.
             covered = sum(
                 query_idf.get(term, 0.0) * (best_weight[term] / _MAX_FIELD_WEIGHT)
-                for term in matched
+                for term in sorted(matched)
             )
             # Clamped: `lam` may exceed 1.0 for a lesson shorter than average
             # (a deliberate small boost), and the bound this measure documents
