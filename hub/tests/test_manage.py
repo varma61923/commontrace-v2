@@ -488,7 +488,12 @@ class TestSubmissionReviewCommands:
         await manage.approve_submission(s["id"], two_orgs["org_b"], "-50", session_factory=session_factory)
         out = capsys.readouterr().out
         assert "credited 0 bonus" in out
-        assert "-50" not in out
+        # Not a bare "-50" not in out: the org ids under test are random
+        # UUIDs, and a UUID coincidentally containing the substring "-50"
+        # (e.g. "...cb-50c2...") would fail this assertion for a reason
+        # that has nothing to do with the raw credit leaking. Anchor to the
+        # exact phrase the raw value would appear in if it leaked.
+        assert "credited -50" not in out
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, two_orgs["org_a"])
         assert org.bonus_commons_queries == 0
