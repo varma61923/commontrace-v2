@@ -88,6 +88,23 @@ class Organization(Base):
     # only way to raise this number is to write something an operator
     # judged worth publishing.
     bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # A maintained counter, not derived: hub/crud.py's _reserve_trace_slot
+    # used to enforce plan.max_traces with a `SELECT count(*) FROM traces
+    # WHERE org_id = ...` on every single contribute_trace/amend_trace call
+    # -- an index scan whose cost grows with the org's ENTIRE trace history,
+    # on the org's own write path, forever. This column is incremented (by
+    # crud.contribute_trace/amend_trace, unconditionally, regardless of
+    # plan) and decremented (by crud.delete_trace and manage.purge_trace,
+    # by however many rows an amendment-chain deletion actually removes) in
+    # the SAME transaction as the row mutation that changes it, via a plain
+    # atomic `UPDATE ... SET trace_count = trace_count +/- N`, so it can
+    # never observe a partial write: either both change together, or
+    # (transaction rollback) neither does. manage.purge_org needs no
+    # matching decrement -- deleting the Organization row deletes this
+    # column's value along with it. See hub/tests/test_trace_count.py for
+    # the property this whole mechanism exists to guarantee: this value
+    # equals a real `count(*)` after every mutation path, every time.
+    trace_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # --- Randomized holdout configuration ------------------------------
     #

@@ -409,6 +409,11 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
             session.add(trace)
             added += 1
         await session.flush()
+        # One batched adjustment for the whole file, not one call per row:
+        # this loop can add hundreds of traces in a single seed, and the
+        # counter only needs to be correct once the transaction commits,
+        # not after every individual insert within it.
+        await crud._adjust_trace_count(session, org_id, added)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="commons_seed",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -1180,6 +1185,11 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(chain_ids)))
         org_id = trace.org_id
         await session.execute(delete(Trace).where(Trace.id.in_(chain_ids)))
+        # amend_trace can never produce a chain spanning two orgs (see
+        # crud.delete_trace's identical reasoning), so every id in
+        # chain_ids belongs to org_id -- one adjustment covers the whole
+        # chain, not one call per row.
+        await crud._adjust_trace_count(session, org_id, -len(chain_ids))
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_trace",
             org_id=org_id, target_type="trace", target_id=trace_id,

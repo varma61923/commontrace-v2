@@ -141,7 +141,16 @@ def as_lessons(corpus: list[dict]) -> list[tuple[str, dict]]:
 async def _seed_corpus(session, org_id: str, corpus: list[dict]) -> None:
     """ORM inserts, not bench_scaling's generate_series: 46 rows whose exact
     wording IS the measurement. `search_vector` is a GENERATED column, so
-    Postgres builds it on insert and nothing here can forget to."""
+    Postgres builds it on insert and nothing here can forget to.
+
+    Deliberately does not maintain Organization.trace_count (unlike every
+    production insert path -- crud.contribute_trace/amend_trace/
+    review_kb_submission, manage.commons_seed): this script measures
+    search_traces against a disposable benchmark database/org, never
+    plan.max_traces enforcement, so there is nothing here that reads that
+    counter back. Do not seed benchmark data into a real customer org for
+    this reason -- its trace_count would silently under-report afterward.
+    """
     for r in corpus:
         session.add(
             Trace(

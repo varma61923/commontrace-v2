@@ -485,23 +485,54 @@ async def _reserve_trace_slot(session: AsyncSession, org_id: str, plan: plans.Pl
     org already at its cap could grow storage without bound simply by
     amending instead of contributing.
 
+    Reads Organization.trace_count -- a maintained counter (see its column
+    comment in hub/models.py), not a `count(*)` over the org's traces. That
+    used to be a real per-write index scan whose cost grew with the org's
+    ENTIRE trace history; this is a single-row read of an already-current
+    value, and stays O(1) forever regardless of how large the org's corpus
+    gets. contribute_trace/amend_trace increment it, unconditionally,
+    right after the insert this call is guarding actually succeeds --
+    NOT here, and not gated on plan: an unlimited-plan org still needs an
+    accurate count in case it is ever downgraded to a bounded one later.
+
     SELECT ... FOR UPDATE on the org's own row, same as before: count-then-
     insert is a TOCTOU race under concurrent callers for the SAME org
     without it, and a different org's row lock never blocks this one.
     """
     if plan.max_traces == plans.UNLIMITED:
         return
-    await session.execute(
-        select(Organization.id).where(Organization.id == org_id).with_for_update()
-    )
     stored = int(await session.scalar(
-        select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+        select(Organization.trace_count).where(Organization.id == org_id).with_for_update()
     ) or 0)
     if not plans.within(plan.max_traces, stored):
         raise plans.EntitlementExceeded(
             metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
             remedy="Purge traces you no longer need, or move to a plan with more storage.",
         )
+
+
+async def _adjust_trace_count(session: AsyncSession, org_id: str, delta: int) -> None:
+    """Atomically add `delta` (positive on insert, negative on delete) to
+    Organization.trace_count. A plain `UPDATE ... SET trace_count =
+    trace_count + $delta` rather than a read-modify-write: two concurrent
+    calls for the same org (a write and a delete racing each other, or two
+    concurrent deletes) both need to land, not have the second silently
+    overwrite the first's effect the way separate read-then-write steps
+    would -- the same lost-update hazard `_meter`'s docstring explains for
+    UsageCounter. GREATEST(0, ...) is a defensive floor, not an expected
+    path: it exists so a bug elsewhere in this mechanism degrades to an
+    inaccurately-low (but never negative, never crash-on-underflow) count
+    rather than corrupting the column into something plans.within() would
+    choke on -- it must never be relied upon to paper over a real
+    increment/decrement site being missed.
+    """
+    if delta == 0:
+        return
+    await session.execute(
+        update(Organization)
+        .where(Organization.id == org_id)
+        .values(trace_count=func.greatest(0, Organization.trace_count + delta))
+    )
 
 
 def _active_agent_cutoff(now: datetime | None = None) -> datetime:
@@ -1066,6 +1097,10 @@ async def contribute_trace(
             profile,
         )
 
+    # Only reached on a genuine new row -- never for the idempotent-replay
+    # return above, which stores nothing new and must not double-count.
+    await _adjust_trace_count(session, org_id, +1)
+
     # Bounded, content-free summary -- audit rows outlive an org purge, so
     # they must never carry the trace body. See hub/audit.py.
     await audit.record(
@@ -1468,6 +1503,13 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
         )
     )
     await session.execute(delete(Trace).where(Trace.id.in_(own_chain_ids)))
+    # own_chain_ids, not chain_ids -- decrement by exactly what was
+    # actually deleted above, which is the same defense-in-depth
+    # own_chain_ids exists for in the first place (see this function's
+    # docstring): a chain that somehow included a foreign id must not
+    # decrement this org's count for a row that was never deleted (or
+    # never even belonged to it).
+    await _adjust_trace_count(session, org_id, -len(own_chain_ids))
     await audit.record(
         session, actor=actor, action="delete_trace", org_id=org_id,
         target_type="trace", target_id=trace_id,
@@ -1794,6 +1836,12 @@ async def amend_trace(
         return await _amend_idempotent_replay_or_conflict(
             session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags, outcome
         )
+
+    # Only reached on a genuine new row -- see contribute_trace's identical
+    # comment. amend_trace INSERTs rather than mutating (this function's
+    # own docstring), so this is a real new storage slot exactly like
+    # contribute_trace's, not a no-op that would double-count on replay.
+    await _adjust_trace_count(session, org_id, +1)
 
     session.add(TraceRelation(trace_id=amended.id, related_trace_id=original.id, relationship_type="AMENDS"))
     session.add(
@@ -2804,6 +2852,11 @@ async def review_kb_submission(
     )
     session.add(trace)
     await session.flush()
+    # Bypasses contribute_trace/_reserve_trace_slot entirely (an operator's
+    # own curation decision, not customer traffic -- see this function's
+    # lack of a plan check above), but it is still a real row landing in
+    # operator_org_id's own trace table and must be counted the same way.
+    await _adjust_trace_count(session, operator_org_id, +1)
 
     submission.status = "approved"
     submission.reviewed_at = now
