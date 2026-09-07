@@ -413,3 +413,132 @@ def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_f
         assert limiter.allow(key) is True
     finally:
         limiter.close()
+
+
+# --- check()/refund() -- the methods every real caller actually uses -------
+#
+# ApiKeyAuthMiddleware and hub/crud.py's write/KB limiters call `.check()`
+# and (auth only) `.refund()`, never `.allow()` -- see RateLimiterBackend's
+# docstring for how PostgresRateLimiter went a full release without either,
+# silently breaking HUB_RATE_LIMIT_BACKEND=postgres for every request.
+
+
+def test_pg_rate_limiter_check_matches_allow_up_to_burst(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=60, burst=2)
+    assert limiter.check("org-x") == (True, 0.0)
+    assert limiter.check("org-x") == (True, 0.0)
+    allowed, retry_after = limiter.check("org-x")
+    assert allowed is False
+    assert retry_after > 0.0
+
+
+def test_pg_rate_limiter_check_retry_after_shrinks_as_the_bucket_refills(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=60, burst=1)  # 1 token/sec -- slow enough
+    assert limiter.check("org-x")[0] is True                     # that a short sleep denies
+    _, retry_after_immediate = limiter.check("org-x")            # again but visibly refills,
+    assert retry_after_immediate > 0.0                           # rather than crossing the
+    time.sleep(0.2)                                              # allow threshold outright.
+    _, retry_after_later = limiter.check("org-x")
+    assert 0.0 < retry_after_later < retry_after_immediate
+
+
+def test_pg_rate_limiter_check_zero_per_minute_reports_the_deny_all_retry_after(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=0, burst=5)
+    allowed, retry_after = limiter.check("org-x")
+    assert allowed is False
+    assert retry_after == RateLimiter._DENY_ALL_RETRY_AFTER_SECONDS
+
+
+def test_pg_rate_limiter_refund_gives_back_one_token(pg_limiter_factory):
+    limiter = pg_limiter_factory(per_minute=60, burst=1)
+    assert limiter.check("org-x") == (True, 0.0)
+    assert limiter.check("org-x")[0] is False  # exhausted
+
+    limiter.refund("org-x")
+    time.sleep(0.2)  # refund is fire-and-forget; give the background write time to land
+
+    assert limiter.check("org-x")[0] is True  # refunded token is spendable again
+
+
+def test_pg_rate_limiter_refund_never_exceeds_capacity(pg_limiter_factory):
+    # per_minute=1 (not 60): natural refill during this test's sleeps must
+    # stay negligible, so any extra allowed check() can only be explained
+    # by the refunds themselves, not passive time-based refill.
+    limiter = pg_limiter_factory(per_minute=1, burst=1)
+    limiter.refund("org-never-checked")  # no row exists yet -- must be a no-op, not an error
+    time.sleep(0.1)
+    assert limiter.check("org-never-checked") == (True, 0.0)  # fresh key starts at capacity
+
+    # Two refunds on top of an exhausted, capacity-1 bucket must still cap
+    # at capacity -- if they summed unbounded, this would grant TWO more
+    # successful checks instead of one.
+    limiter.refund("org-never-checked")
+    limiter.refund("org-never-checked")
+    time.sleep(0.1)
+    assert limiter.check("org-never-checked")[0] is True    # one token, refunded (capped)
+    assert limiter.check("org-never-checked")[0] is False   # and only one -- not two
+
+
+def test_pg_rate_limiter_refund_is_namespaced_by_limiter_name(pg_limiter_factory):
+    write_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="write-refund-test")
+    auth_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="auth-refund-test")
+    assert write_limiter.check("org-shared") == (True, 0.0)
+    auth_limiter.refund("org-shared")  # must not touch write_limiter's bucket for the same key
+    time.sleep(0.2)
+    assert write_limiter.check("org-shared")[0] is False
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_middleware_works_against_the_postgres_backend(
+    session_factory, config
+):
+    """The regression test that would have caught the original bug: builds
+    the REAL ApiKeyAuthMiddleware with REAL PostgresRateLimiter instances
+    for both the auth and read limiters (exactly what
+    HUB_RATE_LIMIT_BACKEND=postgres wires up in hub/server.py's build_app),
+    authenticates a real issued key, and asserts the request actually
+    succeeds instead of raising AttributeError out of `.check()`."""
+    import uuid
+
+    import httpx
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from hub import auth
+    from hub.db import session_scope
+    from hub.models import Organization
+    from hub.server import ApiKeyAuthMiddleware
+
+    _skip_if_no_pg()
+
+    async def _ok(request):
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/mcp", _ok)])
+    app.add_middleware(
+        ApiKeyAuthMiddleware,
+        session_factory=session_factory,
+        protected_path="/mcp",
+        auth_rate_limiter=PostgresRateLimiter(
+            per_minute=1000, burst=1000, database_url=PG_TEST_DATABASE_URL,
+            limiter_name=f"mw-auth-{uuid.uuid4().hex[:8]}",
+        ),
+        read_rate_limiter=PostgresRateLimiter(
+            per_minute=1000, burst=1000, database_url=PG_TEST_DATABASE_URL,
+            limiter_name=f"mw-read-{uuid.uuid4().hex[:8]}",
+        ),
+    )
+
+    async with session_scope(session_factory) as session:
+        org = Organization(name="mw-pg-test-org")
+        session.add(org)
+        await session.flush()
+        issued = await auth.issue_api_key(session, org.id)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/mcp", headers={"Authorization": f"Bearer {issued.raw_key}"})
+
+    assert response.status_code == 200
+    assert response.text == "ok"
