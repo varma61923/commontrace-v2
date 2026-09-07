@@ -143,7 +143,11 @@ class TestMetricsEndpoint:
         out = m.render()
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="200"} 2' in out
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="429"} 1' in out
-        assert 'commontrace_hub_request_duration_ms_total{path="/mcp"} 21.00' in out
+        # A histogram now, not a plain summed counter -- see
+        # hub/tests/test_observability.py::TestDurationHistogram for the
+        # bucket/percentile behavior this replaced the old metric to get.
+        assert 'commontrace_hub_request_duration_ms_sum{path="/mcp"} 21.00' in out
+        assert 'commontrace_hub_request_duration_ms_count{path="/mcp"} 3' in out
 
     def test_an_arbitrary_path_cannot_inflate_label_cardinality(self):
         """An unbounded label set is the classic way a metrics endpoint

@@ -233,15 +233,23 @@ readinessProbe:
 
 ### Metrics
 
-`GET /metrics` serves Prometheus text format. Three counters:
+`GET /metrics` serves Prometheus text format:
 
 | Metric | Labels | What it answers |
 |---|---|---|
-| `commontrace_hub_requests_total` | `method`, `path`, `status` | Traffic and error rate per route. |
-| `commontrace_hub_request_duration_ms_total` | `path` | Summed latency; divide by the request count for a mean. |
-| `commontrace_hub_rate_limited_total` | `limiter` (`http`, `write`) | **How often you are refusing customers, and by which limiter.** |
+| `commontrace_hub_requests_total` (counter) | `method`, `path`, `status` | Traffic and error rate per route. |
+| `commontrace_hub_request_duration_ms` (histogram: `_bucket{le}`, `_sum`, `_count`) | `path` | Latency **distribution** per route -- feed it to PromQL's `histogram_quantile()` for p50/p95/p99, not just a mean. Bucket boundaries are `Metrics.BUCKETS_MS` in hub/observability.py. |
+| `commontrace_hub_rate_limited_total` (counter) | `limiter` (`http`, `write`) | **How often you are refusing customers, and by which limiter.** |
 
-The third is the one to alert on. Rate limiting is otherwise invisible
+Example p99 query for the `/mcp` route:
+
+```promql
+histogram_quantile(0.99,
+  sum(rate(commontrace_hub_request_duration_ms_bucket{path="/mcp"}[5m])) by (le)
+)
+```
+
+The rate-limited counter is the one to alert on unconditionally. Rate limiting is otherwise invisible
 until a customer complains, and a rising `limiter="write"` count is the
 signal that `HUB_RATE_LIMIT_PER_MINUTE` is set below what your customers'
 fleets actually do. The two limiters are counted separately because they

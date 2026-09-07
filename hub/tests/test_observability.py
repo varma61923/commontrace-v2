@@ -51,6 +51,61 @@ class TestMetricsCardinalityIsBounded:
         assert 'method="POST",path="/mcp",status="200"' in rendered
 
 
+class TestDurationHistogram:
+    """Before this, /metrics exposed only a summed duration counter -- no
+    percentile was derivable from it at all, so an SLO like "p99 < 200ms"
+    could not even be STATED against this Hub's own metrics, let alone
+    monitored. These pin the Prometheus histogram contract PromQL's
+    `histogram_quantile()` actually depends on."""
+
+    def test_bucket_counts_are_cumulative(self):
+        """Prometheus's `le` (less-or-equal) semantics: a 5ms observation
+        must be counted in the 5ms bucket AND every larger bucket, not just
+        the tightest one it fits -- histogram_quantile() assumes this."""
+        metrics = observability.Metrics()
+        metrics.observe_request("GET", "/mcp", 200, 5.0)
+        rendered = metrics.render()
+        # 5.0 falls exactly on the le="5" bucket boundary (<=), so every
+        # bucket from 5 upward must show count 1, and everything smaller
+        # (le="1", le="2") must show 0 -- it never happened yet at those.
+        assert 'duration_ms_bucket{path="/mcp",le="1"} 0' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="2"} 0' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="5"} 1' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="10"} 1' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="+Inf"} 1' in rendered
+
+    def test_sum_and_count_match_the_raw_observations(self):
+        metrics = observability.Metrics()
+        metrics.observe_request("GET", "/mcp", 200, 3.0)
+        metrics.observe_request("GET", "/mcp", 200, 7.0)
+        metrics.observe_request("GET", "/mcp", 200, 40.0)
+        rendered = metrics.render()
+        assert 'duration_ms_sum{path="/mcp"} 50.00' in rendered
+        assert 'duration_ms_count{path="/mcp"} 3' in rendered
+        # A percentile IS derivable now: the median of these three falls in
+        # the (5, 10] bucket, so le="10" must already hold 2 of the 3 --
+        # exactly what histogram_quantile() would interpolate from.
+        assert 'duration_ms_bucket{path="/mcp",le="10"} 2' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="+Inf"} 3' in rendered
+
+    def test_an_observation_past_the_largest_finite_bucket_only_counts_in_inf(self):
+        metrics = observability.Metrics()
+        metrics.observe_request("GET", "/mcp", 200, 60_000.0)  # a genuine outlier
+        rendered = metrics.render()
+        assert f'duration_ms_bucket{{path="/mcp",le="{observability.Metrics.BUCKETS_MS[-1]:g}"}} 0' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="+Inf"} 1' in rendered
+
+    def test_paths_have_independent_histograms(self):
+        metrics = observability.Metrics()
+        metrics.observe_request("GET", "/mcp", 200, 5.0)
+        metrics.observe_request("GET", "/healthz", 200, 5000.0)
+        rendered = metrics.render()
+        assert 'duration_ms_count{path="/mcp"} 1' in rendered
+        assert 'duration_ms_count{path="/healthz"} 1' in rendered
+        assert 'duration_ms_bucket{path="/mcp",le="5"} 1' in rendered
+        assert 'duration_ms_bucket{path="/healthz",le="5"} 0' in rendered
+
+
 class TestJsonLogFormatter:
     def _record(self, **kwargs):
         record = logging.LogRecord(
