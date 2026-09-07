@@ -61,7 +61,9 @@ def attention_modules():
             mock_st.SentenceTransformer = DummySentenceTransformer
             sys.modules["sentence_transformers"] = mock_st
 
-    import build_index, query  # commontrace/reference/, on sys.path via conftest
+    # commontrace/reference/, on sys.path via conftest
+    import build_index
+    import query
 
     yield build_index, query
 

@@ -82,7 +82,7 @@ def load_fields(fixtures_dir):
 
 def _as_ranker_input(lessons):
     """The (path, frontmatter) shape rank_lessons takes, same as a real store."""
-    return [(f"<fixture>/{l['name']}.md", dict(l)) for l in lessons]
+    return [(f"<fixture>/{lesson['name']}.md", dict(lesson)) for lesson in lessons]
 
 
 def measure_field(doc, top_k=3, floor=None, scorer=retrieval.SCORER_IDF):

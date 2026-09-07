@@ -624,22 +624,25 @@ product uses retrieval:
 
 | Scorer | Per-field pollution | Spread |
 |---|---|---|
-| `count-v1` (historical) | 1.89× – 2.50× | 1.32× |
-| `idf-v2` (current) | 1.00× – 1.28× | 1.28× |
+| `count-v1` (historical) | 1.72× – 2.50× | 1.32× |
+| `idf-v2`, floor=0.10 (single-corpus tuning) | 1.00× – 1.28× | 1.28× |
+| `idf-v2`, floor=0.04 (current — see §9.6) | 1.72× – 2.33× | 1.36× |
 
-Retrieval noise **more than halved**, and the spread barely moved — because the
-old scorer was bad in every field roughly equally. A spread-only gate, which is
-what "gate on cross-field variance" naively suggests, would have called that
-regression acceptable. Conversely a ceiling-only gate passes a change that
-fixes five fields and abandons the sixth, which is the failure this whole
-section exists for.
+Retrieval noise did not halve as cleanly as the single-corpus tuning first
+suggested — §9.6 explains why the floor was lowered from 0.10 to 0.04 after
+shipping. The spread stayed bounded either way, which is the point of gating
+on it separately from the ceiling: a spread-only gate would have called the
+single-corpus tuning's regression-free-looking numbers acceptable on their
+own, and a ceiling-only gate would pass a change that fixes five fields and
+abandons the sixth.
 
-CI thresholds are `--max-pollution 1.5 --max-spread 2`
-(`tests/test_cross_field_retrieval.py`), chosen with headroom over the measured
-1.28× so ordinary tuning does not fail the build while the historical scorer
-still does. `TestTheGateActuallyCatchesTheRegressionItExistsFor` asserts that
-the old scorer fails the ceiling — if that test ever passes, the gate has
-stopped measuring, not the scorer improved.
+CI thresholds are `--max-pollution 2.4 --max-spread 2`
+(`tests/test_cross_field_retrieval.py`), chosen with headroom over the
+current worst field (legal, 2.33×) so ordinary tuning does not fail the build
+while the historical scorer (legal, 2.50×) still does.
+`TestTheGateActuallyCatchesTheRegressionItExistsFor` asserts that the old
+scorer fails the ceiling — if that test ever passes, the gate has stopped
+measuring, not the scorer improved.
 
 ### 9.5 Known limitations
 
@@ -655,3 +658,41 @@ stopped measuring, not the scorer improved.
 - **Single-label queries.** Each query names exactly one relevant lesson, so
   recall@k is a coarse instrument and precision@1 carries most of the signal. A
   corpus with genuinely multi-lesson tasks would measure ranking quality better.
+
+### 9.6 The floor was tuned on one corpus, and that was not enough (2026-09-07)
+
+`DEFAULT_FLOOR` originally shipped at 0.10, chosen entirely from §9.2's
+six-field corpus — it looked free: 84% fewer collateral retrievals, no cost to
+recall or top-1 on any of the 108 labelled queries. It was not free on
+`commons/eval/` (a second, independently-authored, 46-lesson corpus with
+longer and more naturalistic query text — see `commons/eval/retrieval_tiers.py`
+and `hub/tests/test_commons.py::TestRetrievalTiersDiffer`, which pin specific
+thresholds against it). At floor=0.10, `recall_anywhere` on that corpus fell
+under the pinned >90% bar and near-vanished for negative-control probes — a
+real regression on real, already-committed test coverage, just not the
+coverage this file's own corpus exercises.
+
+`DEFAULT_FLOOR` moved from 0.10 to 0.04: the largest value that keeps both
+corpora's existing thresholds intact. Measured jointly:
+
+| floor | `commons/eval` recall_anywhere | six-field fixture worst-field pollution |
+|---|---|---|
+| 0.00 | ~93% | 2.50× (legal) |
+| 0.04 (current) | 91.3% | 2.33× (legal) |
+| 0.10 (original) | ~83% | 1.22× (marketing) |
+
+This is a real tension, not a tuning mistake corrected for free: 0.04 buys
+noticeably less pollution reduction on this file's corpus than 0.10 did (worst
+field 2.50× → 2.33×, versus 0.10's 2.50× → 1.22×). Recall was prioritized —
+a lesson that never reaches the agent cannot help it — on the strength of a
+second layer of defense that does not depend on the floor being tight:
+`commontrace/integrity.py`'s `check_marginal_eligibility` and
+`check_assignment_concentration` flag a lesson whose assignments are
+disproportionately marginal-relevance or concentrated, so residual pollution
+at this floor is caught downstream rather than silently pooled into the
+causal estimate.
+
+**The lesson for the next scoring change:** tune against both corpora, not
+just this file's. A change validated only here can look like a strict
+improvement and still regress `commons/eval`'s pinned thresholds, exactly as
+0.10 did.

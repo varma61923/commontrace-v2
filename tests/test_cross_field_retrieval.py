@@ -14,11 +14,15 @@ neither of them a mean:
   - the SPREAD between the worst and best field.
 
 Both are needed. Against the historical scorer the six fields polluted at
-1.89x-2.50x; against the current one, 1.00x-1.28x -- retrieval noise more than
-halved, while the SPREAD barely moved (1.32x -> 1.28x) because the old scorer
-was bad in every field roughly equally. A spread-only gate would have called
-that regression acceptable; a ceiling-only gate would pass a change that fixes
-five fields and abandons the sixth.
+1.89x-2.50x. The current scorer's DEFAULT_FLOOR is not tuned against this
+corpus alone -- commontrace/retrieval.py's comment on DEFAULT_FLOOR documents
+a second corpus (commons/eval/, pinned by hub/tests/test_commons.py) whose
+existing thresholds bound how high the floor can go. Jointly, the floor lands
+at 1.72x-2.33x here: real pollution reduction, but well short of what tuning
+against this corpus alone would have bought (1.00x-1.28x at the higher,
+single-corpus floor). The ceiling below sits between those two scorers'
+worst fields on purpose, so this gate still catches the historical scorer
+while accepting the joint-calibrated one.
 """
 import json
 import os
@@ -35,9 +39,12 @@ import measure_retrieval  # noqa: E402
 
 from commontrace import retrieval  # noqa: E402
 
-# Headroom over the measured 1.28x, so an ordinary tuning change does not
-# fail CI, while the historical scorer's 1.89x-2.50x does.
-MAX_POLLUTION = 1.5
+# Sits between the joint-calibrated scorer's worst field (legal, 2.33x) and
+# the historical scorer's (legal, 2.50x) -- see commontrace/retrieval.py's
+# DEFAULT_FLOOR comment for why the floor can't be tuned tighter against this
+# corpus alone. Headroom over 2.33x so an ordinary tuning change does not
+# fail CI, while the historical scorer still fails the ceiling.
+MAX_POLLUTION = 2.4
 MAX_SPREAD = 2.0
 
 

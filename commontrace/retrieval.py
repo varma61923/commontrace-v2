@@ -31,27 +31,40 @@ from commontrace._lexical import WORD_RE as _WORD_RE
 # has not configured its own (commontrace/retrieval_io.py). See `rank_lessons`
 # below for what the number means.
 #
-# Chosen as the largest value that costs NO recall, measured over a six-field
-# corpus (coding, HR, sales, marketing, robotics, legal; 36 lessons, 108
-# labelled queries -- the fixture `commontrace bench --retrieval` runs):
+# This was originally tuned against a single corpus -- the six-field fixture
+# below -- where 0.10 looked free: it removed 84% of collateral retrievals at
+# no cost to recall or top-1. It is not free everywhere. commons/eval/ is a
+# second, independently-authored corpus (46 lessons, longer and more
+# naturalistic query text, no shared authorship with the fixture below) that
+# hub/tests/test_commons.py's TestRetrievalTiersDiffer pins specific
+# thresholds against: at floor=0.10, recall_anywhere on that corpus fell to
+# ~83% (below the pinned >90% bar) and results for negative-control probes
+# nearly vanished. A floor tuned on one corpus alone was silently overfit to
+# it.
 #
-#   floor   top-1     recall@3   collateral retrievals   worst field
-#   0.00    106/108   108/108    128                     legal=27
-#   0.10    106/108   108/108     20                     marketing=5   <- here
-#   0.12    105/108   106/108     14
-#   0.16    101/108   101/108      4
-#   0.25     91/108    91/108      0
+# 0.04 is the largest value that keeps BOTH corpora's existing thresholds
+# intact, measured with `commontrace/reference/measure_retrieval.py` (the
+# six-field fixture) and `commons/eval/retrieval_tiers.py` (the 46-lesson
+# corpus) together:
 #
-# 0.10 removes 84% of the collateral retrievals -- lessons pulled into
-# unrelated tasks on an incidental word -- while matching the no-floor
-# ranking exactly on every labelled query. Those collateral retrievals are
-# not merely noise in the output: under `--experiment` each one is logged as
-# an eligible assignment, so unrelated tasks' outcomes are attributed to a
-# lesson that had nothing to do with them (commontrace/integrity.py's
-# check_assignment_concentration). Raising the floor further does buy fewer
-# still, but starts costing real hits, and a lesson that never reaches the
-# agent cannot help it.
-DEFAULT_FLOOR = 0.10
+#   floor   commons/eval           six-field fixture (worst field, pollution)
+#           recall_anywhere        legal   sales   marketing  coding  hr   robotics
+#   0.00    ~93%                   2.50x   2.39x   2.00x      2.00x   2.33x  1.89x
+#   0.04    91.3%          <- here 2.33x   2.11x   2.00x      1.94x   1.83x  1.72x
+#   0.10    ~83%                   1.22x   1.22x   1.28x      1.22x   1.17x  1.00x
+#
+# So this is a real tension, not a free lunch: 0.04 buys noticeably less
+# pollution reduction on the six-field fixture than 0.10 did (worst field
+# 2.50x -> 2.33x, versus 0.10's 2.50x -> 1.22x), in exchange for not
+# regressing commons/eval's recall. Recall was prioritized over pollution
+# here because a lesson that never reaches the agent cannot help it, while
+# residual pollution at this floor is still caught by a second layer of
+# defense -- commontrace/integrity.py's check_marginal_eligibility and
+# check_assignment_concentration -- which flags a lesson whose assignments
+# are disproportionately marginal-relevance or concentrated, rather than
+# silently pooling them into the causal estimate. See
+# tests/test_cross_field_retrieval.py for the CI gate this corresponds to.
+DEFAULT_FLOOR = 0.04
 
 # Scorer identities, recorded on every holdout assignment so an experiment can
 # never silently pool occasions scored two different ways.

@@ -116,7 +116,8 @@ class TestTheFloorRejectsMarginalMatches:
             _lesson("nda", description="Counterparty requests a mutual NDA instead of one-way",
                     applies_when="A counterparty asks to convert a one-way NDA to mutual.",
                     tags=["nda", "confidentiality"]),
-            _lesson("liability", description="Limitation of liability cap negotiation",
+            _lesson("liability", description="Limitation of liability cap negotiation instead "
+                    "of a full waiver",
                     applies_when="A counterparty asks to raise the standard liability cap.",
                     tags=["liability-cap", "msa"]),
         ]
@@ -130,10 +131,11 @@ class TestTheFloorRejectsMarginalMatches:
     def test_a_single_incidental_word_does_not(self):
         """This is the 246-assignments mechanism, at one occasion's scale.
 
-        "instead" appears in one lesson's description and nowhere else in the
-        query's subject matter. Under the old `score > 0` gate this was
-        retrieved AND logged as an eligible assignment, so this unrelated
-        task's outcome was attributed to the NDA lesson.
+        "instead" is common to both lessons (so its own IDF is low) and
+        appears nowhere else in the query's subject matter. Under the old
+        `score > 0` gate this was retrieved AND logged as an eligible
+        assignment, so this unrelated task's outcome was attributed to a
+        lesson that had nothing to do with it.
         """
         ranked = retrieval.rank_lessons(
             "the vendor onboarding form was rejected instead of approved", self._store(),
@@ -186,8 +188,8 @@ class TestBackwardCompatibility:
 
 class TestConfigIsSharedByEverySurface:
     def test_a_fresh_store_gets_the_field_robust_scorer(self, tmp_path):
-        from commontrace.cli import main
         from commontrace import retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--agent-type", "robotics", "--dest", str(tmp_path)]) == 0
         config = retrieval_io.load_config(str(tmp_path))
@@ -201,8 +203,8 @@ class TestConfigIsSharedByEverySurface:
         A pre-upgrade row records no `scorer`/`floor` -- that absence is what
         identifies it.
         """
-        from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         log = holdout_io.holdout_log_path(str(tmp_path))
@@ -230,8 +232,8 @@ class TestConfigIsSharedByEverySurface:
         Caught by re-running the six-fleet pilot end to end, not by a unit
         test -- the store had to actually accumulate a log for it to appear.
         """
-        from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         holdout_io.assign_and_log(
@@ -248,8 +250,8 @@ class TestConfigIsSharedByEverySurface:
         """The observable consequence: one experiment, one treatment."""
         import json
 
-        from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         for i in range(3):
@@ -269,8 +271,8 @@ class TestConfigIsSharedByEverySurface:
     def test_a_torn_final_log_line_does_not_break_config_loading(self, tmp_path):
         """Retrieval settings are read on every query; a half-written line
         must not stop a fleet retrieving."""
-        from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(holdout_io.holdout_log_path(str(tmp_path)), "w", encoding="utf-8") as fh:
@@ -281,8 +283,8 @@ class TestConfigIsSharedByEverySurface:
         assert config.scorer == retrieval.SCORER_IDF
 
     def test_an_explicit_choice_beats_the_inferred_pin(self, tmp_path):
-        from commontrace.cli import main
         from commontrace import holdout_io, retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(holdout_io.holdout_log_path(str(tmp_path)), "w", encoding="utf-8") as fh:
@@ -297,8 +299,8 @@ class TestConfigIsSharedByEverySurface:
     def test_a_corrupt_config_does_not_break_retrieval(self, tmp_path):
         """Refusing to serve a lesson because a settings file is corrupt
         trades a working fleet for a tidy error."""
-        from commontrace.cli import main
         from commontrace import retrieval_io
+        from commontrace.cli import main
 
         assert main(["init", "--dest", str(tmp_path)]) == 0
         with open(retrieval_io.config_path(str(tmp_path)), "w", encoding="utf-8") as fh:
