@@ -78,6 +78,44 @@ jobs:
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
 
+  perf-gate:
+    # Every benchmark in this repo (hub/bench_scaling.py, bench_retrieval.py,
+    # this one) used to be run by hand and quoted in a doc -- nothing failed
+    # the build if a later change silently regressed it. commontrace/lesson_
+    # cache.py replaced an O(N)-YAML-reparse-per-query local-tier retrieval
+    # path (measured: 8.1s at 6,400 lessons) with an incremental, mostly-O(1)
+    # cache (249ms at the same size, ~33x) -- --max-total-ms is what would
+    # catch that cache silently regressing back to a full reparse; alpha
+    # alone would NOT, because even the correct cached path is still
+    # asymptotically O(N) in lesson count (it must `stat` every file to
+    # detect changes) -- what differs between cached and uncached is the
+    # CONSTANT per lesson, which only an absolute ceiling can gate on.
+    # --max-alpha is a looser backstop against a genuinely worse-than-linear
+    # regression (e.g. an accidental O(N^2)), not the primary gate here.
+    name: perf gate (local-tier retrieval latency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install commontrace (core, no extras)
+        run: python -m pip install -e .
+
+      # Measured on a dedicated dev box: ~250ms at 6,400 lessons. CI runners
+      # are slower and noisier, so this ceiling has real headroom above
+      # that -- it exists to catch a regression of ORDERS of magnitude
+      # (back toward the ~8s the uncached path measured at the same size),
+      # not to chase this specific machine's number.
+      - name: Local-tier retrieval must not regress back to O(N) YAML re-parsing
+        run: |
+          python -m commontrace.reference.measure_local_latency \
+            --sizes 100,400,1600,6400 --runs 3 \
+            --max-total-ms 2000 --max-alpha 1.5
+
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
     # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI
