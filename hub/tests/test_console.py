@@ -896,12 +896,39 @@ class TestBillingCheckoutAndPortal:
             return "https://billing.stripe.com/session/bps_test_1"
 
         monkeypatch.setattr(console, "create_billing_portal_session", fake_portal)
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(f"{console.CONSOLE_PATH}/billing/portal")
         assert response.status_code == 303
         assert response.headers["location"] == "https://billing.stripe.com/session/bps_test_1"
+
+    async def test_portal_refuses_to_run_with_no_webhook_secret_configured(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        """The same gap as billing_checkout, on the other route: every
+        change a customer makes in the Portal (cancel, switch plan) reaches
+        this Hub only through /billing/webhook. Without a webhook_secret
+        that route is unregistered, so an org that reached the Portal
+        anyway could cancel and keep its paid entitlement forever --
+        silently stale state, not a loud failure."""
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.stripe_customer_id = "cus_existing"
+            org.plan = "team"
+            org.stripe_subscription_id = "sub_existing"
+
+        async def must_not_be_called(*a, **kw):
+            raise AssertionError("portal must not run without a working webhook")
+
+        monkeypatch.setattr(console, "create_billing_portal_session", must_not_be_called)
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")  # no webhook_secret
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/portal")
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
 
     async def test_the_overview_page_shows_upgrade_buttons_when_stripe_is_configured(
         self, session_factory, org_and_key

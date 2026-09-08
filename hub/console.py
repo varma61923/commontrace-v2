@@ -979,14 +979,24 @@ def add_console_routes(
     async def billing_portal(request: Request) -> Response:
         """Redirects an already-subscribed org to Stripe's Billing Portal,
         where Stripe itself (not this code) handles plan changes,
-        cancellation, payment method updates and invoice history."""
+        cancellation, payment method updates and invoice history.
+
+        Requires `stripe.webhook_secret`, not just `secret_key`, for the
+        same reason billing_checkout does: every change a customer makes
+        in the Portal (cancel, switch plan, a payment failure) reaches
+        this Hub ONLY through /billing/webhook. An org that reaches the
+        Portal with that route unregistered can cancel and keep its paid
+        entitlement forever, or change plans in a way this Hub never
+        applies -- silently stale state is the failure mode here, not a
+        500, so it is refused before ever redirecting to Stripe.
+        """
         claims = await _claims(request)
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, org_id)
-        if org is None or not org.stripe_customer_id or not stripe.secret_key:
+        if org is None or not org.stripe_customer_id or not stripe.secret_key or not stripe.webhook_secret:
             return RedirectResponse(CONSOLE_PATH, status_code=303)
         return_url = str(request.url.replace(path=CONSOLE_PATH, query=""))
         try:
