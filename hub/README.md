@@ -73,7 +73,10 @@ hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quara
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
-hub/console.py         read-only customer console at /app (off unless HUB_CONSOLE_SECRET is set)
+hub/console.py         customer console at /app (off unless HUB_CONSOLE_SECRET is set) -- read-only
+                        over this Hub's own data; can also send a browser to Stripe (see billing.py)
+hub/signup.py       public, self-serve org creation at /signup (off unless HUB_SIGNUP_ENABLED is set)
+hub/billing.py      self-serve Stripe upgrades: Checkout/Billing Portal + the webhook that applies them
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
@@ -150,17 +153,41 @@ proof page where the randomized holdout's validity verdict renders
 significant number and caveats it underneath is how a broken one gets
 quoted; their own corpus, searched the way their agents search it; and
 their Knowledge Base proposals and the query credit those proposals
-earned. Everything that changes state — capturing a trace, running the
-experiment, proposing to the Knowledge Base — still goes through MCP or
-the CLI, where it is authenticated and audited; the console being
-strictly read-only is also why it carries no CSRF token, since there is
-no state-changing request left for a forged one to trigger. See
-`hub/console.py`'s module docstring for the rest of that reasoning.
-`HUB_CONSOLE_SECRET` is deliberately a separate value from
-`HUB_ADMIN_TOKEN`, too — one is your operator credential, the other signs
-customer sessions, and collapsing them into one secret would mean a
-single leak compromises both surfaces at once (see
-[DEPLOYMENT.md](DEPLOYMENT.md)).
+earned. Everything that changes state in THIS HUB'S OWN DATA — capturing a trace,
+running the experiment, proposing to the Knowledge Base — still goes
+through MCP or the CLI, where it is authenticated and audited; nothing a
+browser does at `/app` writes to `Organization`, `Trace`, or any other row
+here directly. The one exception carries its own trust boundary rather
+than weakening this one: an "Upgrade" click sends the browser to a
+Stripe-hosted Checkout/Billing Portal page (`hub/billing.py`), and this
+Hub's own `Organization.plan` only ever changes later, from Stripe's own
+signed webhook call — never from the browser request itself. The console
+still carries no CSRF token: its session cookie is `SameSite=Strict`, so a
+forged cross-site request arrives with no session at all and is turned
+back at sign-in, the same defense that already covered every other route
+here. See `hub/console.py`'s and `hub/billing.py`'s module docstrings for
+the rest of that reasoning. `HUB_CONSOLE_SECRET` is deliberately a
+separate value from `HUB_ADMIN_TOKEN`, too — one is your operator
+credential, the other signs customer sessions, and collapsing them into
+one secret would mean a single leak compromises both surfaces at once
+(see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+Set `HUB_SIGNUP_ENABLED=true` to also serve a public, unauthenticated
+`/signup` route: a visitor creates their own free-plan org and first API
+key with no operator involved (unset means, as with `/admin` and `/app`,
+the route does not exist). See `hub/signup.py`'s module docstring for what
+this deliberately does not do (no email verification) and how it's kept
+from becoming an abuse vector (a tight per-address rate limit, a honeypot
+field, and the free plan's own storage/agent/query ceilings either way).
+
+Set `HUB_STRIPE_SECRET_KEY`, `HUB_STRIPE_WEBHOOK_SECRET`, and at least one
+of `HUB_STRIPE_PRICE_TEAM`/`HUB_STRIPE_PRICE_SCALE` to let a signed-in
+customer upgrade themselves via Stripe Checkout, and to keep this Hub's
+own plan column in sync with what Stripe actually charged via
+`/billing/webhook` (also off, and unregistered, until the webhook secret
+is set). See `hub/billing.py`'s module docstring for why there's no Stripe
+SDK dependency and why an already-subscribed org is routed to Stripe's
+Billing Portal rather than through Checkout a second time.
 
 ### Running the tests
 

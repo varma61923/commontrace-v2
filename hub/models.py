@@ -149,6 +149,31 @@ class Organization(Base):
     deletion_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deletion_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- Self-serve billing (hub/billing.py) -----------------------------
+    #
+    # NULL until this org's first Checkout Session completes -- most orgs on
+    # the free plan never set either column, which is the expected steady
+    # state, not a migration gap. Set together, by the same
+    # checkout.session.completed webhook handler, in the same transaction:
+    # an org with a subscription id but no customer id (or vice versa) is
+    # not a state this code ever intentionally produces.
+    #
+    # `stripe_customer_id` is also the lookup key every LATER webhook event
+    # (customer.subscription.updated/deleted) resolves an org by -- those
+    # events carry a customer id, never an org id, so this column is what
+    # makes them attributable at all. unique+indexed because it is both a
+    # real 1:1 relationship (one Stripe Customer object is never shared
+    # across two orgs) and a hot lookup path on every subscription webhook.
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    # NULL means "no active subscription" -- billing.py's own upgrade UI
+    # reads that to decide whether to offer a fresh Checkout Session (mints
+    # a NEW subscription) or Stripe's Billing Portal (manages an EXISTING
+    # one). Getting this branch wrong is not cosmetic: sending an org with
+    # a live subscription through Checkout again would create a SECOND
+    # subscription on the same customer rather than changing the first,
+    # which is silent double billing.
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 

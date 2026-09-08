@@ -38,11 +38,13 @@ from hub.abuse import (
     resolve_client_key,
 )
 from hub.admin import add_admin_routes
+from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
-from hub.console import add_console_routes
+from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
+from hub.signup import add_signup_routes
 
 logger = logging.getLogger("commontrace.hub")
 
@@ -913,6 +915,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     # operator console above in audience, auth and blast radius: that one is
     # cross-tenant and moderates; this one is scoped to a single org by a
     # signed session and cannot change any state at all.
+    stripe_settings = StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
     if config.console_secret:
         add_console_routes(
             inner_app,
@@ -920,7 +928,23 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             console_secret=config.console_secret,
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
+            stripe=stripe_settings,
         )
+
+    # Public, unauthenticated org creation -- opt-in only (hub/signup.py's
+    # own docstring covers why this defaults off and what it doesn't do,
+    # namely email verification).
+    if config.signup_enabled:
+        add_signup_routes(
+            inner_app, session_factory,
+            trusted_proxy_hops=config.trusted_proxy_hops, console_path=CONSOLE_PATH,
+        )
+
+    # Stripe calls this, not a signed-in browser -- registered independently
+    # of the console above, and only once a webhook signing secret exists to
+    # verify a delivery actually came from Stripe.
+    if config.stripe_webhook_secret:
+        add_billing_webhook_route(inner_app, session_factory, stripe=stripe_settings)
 
     add_health_routes(
         inner_app,

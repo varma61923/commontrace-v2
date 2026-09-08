@@ -30,6 +30,7 @@ from sqlalchemy import update as sa_update
 from starlette.applications import Starlette
 
 from hub import auth, console
+from hub.billing import StripeSettings
 from hub.db import session_scope
 from hub.models import ApiKey, Organization, Trace
 
@@ -42,10 +43,10 @@ def _explode(*a, **kw):
     raise AssertionError("no database access should happen for this request")
 
 
-def _app(secret: str = SECRET, session_factory=_explode) -> Starlette:
+def _app(secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None) -> Starlette:
     app = Starlette()
     if secret:
-        console.add_console_routes(app, session_factory, console_secret=secret)
+        console.add_console_routes(app, session_factory, console_secret=secret, stripe=stripe)
     return app
 
 
@@ -754,3 +755,163 @@ class TestProofSharing:
         limited = [r for r in responses if r.status_code == 429]
         assert limited
         assert "Retry-After" in limited[0].headers
+
+
+# --- Billing (hub/billing.py) ------------------------------------------------
+
+
+class TestBillingCheckoutAndPortal:
+    """The console's own Stripe surface: outbound Stripe API calls are
+    monkeypatched at the names console.py imports them under (the same
+    seam hub/tests/test_billing.py patches at billing._post), so none of
+    this touches the real network or needs a Stripe account."""
+
+    async def test_checkout_is_absent_without_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_checkout_redirects_home_when_stripe_is_not_configured(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+
+    async def test_checkout_redirects_to_stripe_when_configured(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        org_id, raw_key = org_and_key
+        captured = {}
+
+        async def fake_create_checkout_session(settings, *, org, plan, success_url, cancel_url):
+            captured["org_id"] = org.id
+            captured["plan"] = plan
+            captured["success_url"] = success_url
+            captured["cancel_url"] = cancel_url
+            return "https://checkout.stripe.com/pay/cs_test_abc"
+
+        monkeypatch.setattr(console, "create_checkout_session", fake_create_checkout_session)
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
+        assert response.status_code == 303
+        assert response.headers["location"] == "https://checkout.stripe.com/pay/cs_test_abc"
+        assert captured["plan"] == "team"
+        assert captured["org_id"] == org_id
+        assert captured["success_url"].endswith("?upgraded=1")
+
+    async def test_an_unpriced_plan_is_refused(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")  # no scale price
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "scale"})
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+
+    async def test_an_unrecognized_plan_is_refused(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "definitely-not-a-plan"}
+            )
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+
+    async def test_a_stripe_failure_redirects_home_with_an_error_flag_not_a_500(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        _org_id, raw_key = org_and_key
+
+        async def failing(*a, **kw):
+            raise RuntimeError("stripe unreachable")
+
+        monkeypatch.setattr(console, "create_checkout_session", failing)
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
+        assert response.status_code == 303
+        assert "billing_error=1" in response.headers["location"]
+
+    async def test_portal_is_absent_without_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/portal")
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_portal_redirects_home_with_no_subscription(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/portal")
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+
+    async def test_portal_redirects_to_stripe_for_a_subscribed_org(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.stripe_customer_id = "cus_existing"
+            org.plan = "team"
+            org.stripe_subscription_id = "sub_existing"
+
+        async def fake_portal(settings, *, customer_id, return_url):
+            assert customer_id == "cus_existing"
+            return "https://billing.stripe.com/session/bps_test_1"
+
+        monkeypatch.setattr(console, "create_billing_portal_session", fake_portal)
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/portal")
+        assert response.status_code == 303
+        assert response.headers["location"] == "https://billing.stripe.com/session/bps_test_1"
+
+    async def test_the_overview_page_shows_upgrade_buttons_when_stripe_is_configured(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t", price_scale="price_s")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(console.CONSOLE_PATH)
+        assert "Upgrade to Team" in response.text
+        assert "Upgrade to Scale" in response.text
+
+    async def test_the_overview_page_shows_no_billing_block_when_stripe_is_not_configured(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(console.CONSOLE_PATH)
+        assert "Upgrade to" not in response.text
+        assert "Manage billing" not in response.text
+
+    async def test_the_overview_page_offers_manage_billing_for_a_subscribed_org(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.stripe_customer_id = "cus_1"
+            org.stripe_subscription_id = "sub_1"
+            org.plan = "team"
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(console.CONSOLE_PATH)
+        assert "Manage billing" in response.text
+        assert "Upgrade to Team" not in response.text

@@ -72,6 +72,42 @@ class TestConfigRefusesNonsenseAtStartup:
         assert _env_int_in_range("HUB_NOT_SET_ANYWHERE", 5, 1, 10) == 5
 
 
+class TestSignupAndBillingDefaultOff:
+    """Same posture as HUB_ADMIN_TOKEN/HUB_CONSOLE_SECRET: unset means the
+    corresponding routes are never registered (hub/server.py), so these
+    just pin that the config layer itself defaults to the off/empty state
+    rather than silently opting a fresh deployment in."""
+
+    def test_signup_defaults_disabled(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        assert HubConfig.from_env().signup_enabled is False
+
+    def test_signup_can_be_enabled(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_SIGNUP_ENABLED", "true")
+        assert HubConfig.from_env().signup_enabled is True
+
+    def test_stripe_settings_default_empty(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        config = HubConfig.from_env()
+        assert config.stripe_secret_key == ""
+        assert config.stripe_webhook_secret == ""
+        assert config.stripe_price_team == ""
+        assert config.stripe_price_scale == ""
+
+    def test_stripe_settings_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_STRIPE_SECRET_KEY", "sk_test_123")
+        monkeypatch.setenv("HUB_STRIPE_WEBHOOK_SECRET", "whsec_123")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM", "price_team_123")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_SCALE", "price_scale_123")
+        config = HubConfig.from_env()
+        assert config.stripe_secret_key == "sk_test_123"
+        assert config.stripe_webhook_secret == "whsec_123"
+        assert config.stripe_price_team == "price_team_123"
+        assert config.stripe_price_scale == "price_scale_123"
+
+
 class TestRateLimiterReportsWhenToComeBack:
     def test_an_allowed_call_asks_for_no_wait(self):
         allowed, retry_after = RateLimiter(per_minute=60, burst=5).check("k")

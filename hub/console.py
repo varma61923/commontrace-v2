@@ -64,11 +64,12 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from hub import auth, crud
+from hub import auth, crud, plans
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
+from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.db import session_scope
-from hub.models import ApiKey
+from hub.models import ApiKey, Organization
 
 logger = logging.getLogger("commontrace.hub.console")
 
@@ -387,7 +388,40 @@ async def _overview_data(session, org_id: str) -> dict:
     }
 
 
-def _render_overview(data: dict, causal: dict) -> str:
+def _render_billing_block(billing: dict | None) -> str:
+    """Rendered on the Overview page, right after the entitlement tiles --
+    the same place "Plan" and "Billing period" already sit. Absent entirely
+    (not just disabled) when this deployment has no Stripe prices
+    configured, matching the rest of this console's "nothing to see if you
+    haven't opted in" posture."""
+    if not billing or not billing.get("enabled"):
+        return ""
+    plan = str(billing.get("plan") or plans.DEFAULT_PLAN)
+    if billing.get("has_subscription"):
+        return (
+            '<div class="share-box"><b>Billing</b><br>'
+            f'<span class="muted">Current plan: {h(plan)}. Manage your payment method, '
+            "invoices, or change plans in Stripe's billing portal.</span><br>"
+            f'<form method="post" action="{CONSOLE_PATH}/billing/portal">'
+            '<button type="submit">Manage billing</button></form></div>'
+        )
+    upgrades = "".join(
+        f'<form method="post" action="{CONSOLE_PATH}/billing/checkout" '
+        'style="display:inline-block;margin:.3rem .6rem .3rem 0">'
+        f'<input type="hidden" name="plan" value="{name}">'
+        f'<button type="submit">Upgrade to {h(name.capitalize())}</button></form>'
+        for name in billing.get("available_plans") or []
+    )
+    if not upgrades:
+        return ""
+    return (
+        '<div class="share-box"><b>Billing</b><br>'
+        f'<span class="muted">Current plan: {h(plan)}. Upgrade for more storage, agents, and '
+        "Knowledge Base queries.</span><br>" + upgrades + "</div>"
+    )
+
+
+def _render_overview(data: dict, causal: dict, billing: dict | None = None) -> str:
     ent = data["entitlements"]
     traces = ent.get("traces") or {}
     agents = ent.get("agents") or {}
@@ -410,6 +444,7 @@ def _render_overview(data: dict, causal: dict) -> str:
         ("Plan", h(ent.get("plan", "—"))),
         ("Billing period", h(ent.get("period", "—"))),
     ]))
+    body.append(_render_billing_block(billing))
 
     running = bool(causal.get("experiment_running"))
     integrity = causal.get("integrity") or {}
@@ -777,8 +812,10 @@ def add_console_routes(
     console_secret: str,
     trusted_proxy_hops: int = 0,
     commons_enabled: bool = True,
+    stripe: StripeSettings | None = None,
 ) -> None:
     """Mount the customer console. Registered only when a secret is set."""
+    stripe = stripe or StripeSettings()
 
     # Sign-in is a credential-checking endpoint, so it is rate limited on the
     # client key exactly as the MCP auth path is: without it this is an
@@ -895,7 +932,71 @@ def add_console_routes(
         async with session_scope(session_factory) as session:
             data = await _overview_data(session, org_id)
             causal = await crud.causal_effects(session, org_id)
-        return _page("Your fleet", _render_overview(data, causal))
+            org = await session.get(Organization, org_id)
+        current_plan = str(data["entitlements"].get("plan") or plans.DEFAULT_PLAN)
+        billing_state = {
+            "enabled": stripe.checkout_configured,
+            "has_subscription": bool(org and org.stripe_subscription_id),
+            "plan": current_plan,
+            "available_plans": [
+                name for name in plans.BILLABLE_PLANS
+                if stripe.price_for_plan(name) and name != current_plan
+            ],
+        }
+        return _page("Your fleet", _render_overview(data, causal, billing_state))
+
+    async def billing_checkout(request: Request) -> Response:
+        """Mints a fresh Checkout Session for a plan the signed-in org does
+        not yet subscribe to, and redirects the browser to Stripe's own
+        hosted page. POST, not GET: like proof_share, this creates real
+        state (an org gains a pending checkout / Stripe customer) and must
+        not be triggerable by a prefetch or a crawled link."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        if not stripe.checkout_configured:
+            return RedirectResponse(CONSOLE_PATH, status_code=303)
+        form = await request.form()
+        plan = str(form.get("plan") or "")
+        if plan not in plans.BILLABLE_PLANS or not stripe.price_for_plan(plan):
+            return RedirectResponse(CONSOLE_PATH, status_code=303)
+        org_id = str(claims["org"])
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        if org is None:
+            return _redirect_to_signin()
+        base_url = str(request.url.replace(path=CONSOLE_PATH, query=""))
+        try:
+            checkout_url = await create_checkout_session(
+                stripe, org=org, plan=plan,
+                success_url=f"{base_url}?upgraded=1", cancel_url=base_url,
+            )
+        except Exception:  # noqa: BLE001 - Stripe being unreachable must not 500 the console
+            logger.exception("stripe checkout session creation failed for org %s", org_id)
+            return RedirectResponse(f"{CONSOLE_PATH}?billing_error=1", status_code=303)
+        return RedirectResponse(checkout_url, status_code=303)
+
+    async def billing_portal(request: Request) -> Response:
+        """Redirects an already-subscribed org to Stripe's Billing Portal,
+        where Stripe itself (not this code) handles plan changes,
+        cancellation, payment method updates and invoice history."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        if org is None or not org.stripe_customer_id or not stripe.secret_key:
+            return RedirectResponse(CONSOLE_PATH, status_code=303)
+        return_url = str(request.url.replace(path=CONSOLE_PATH, query=""))
+        try:
+            portal_url = await create_billing_portal_session(
+                stripe, customer_id=org.stripe_customer_id, return_url=return_url,
+            )
+        except Exception:  # noqa: BLE001 - Stripe being unreachable must not 500 the console
+            logger.exception("stripe billing portal session creation failed for org %s", org_id)
+            return RedirectResponse(f"{CONSOLE_PATH}?billing_error=1", status_code=303)
+        return RedirectResponse(portal_url, status_code=303)
 
     async def proof(request: Request) -> Response:
         claims = await _claims(request)
@@ -1012,6 +1113,8 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/share", proof_share, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/billing/checkout", billing_checkout, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
 

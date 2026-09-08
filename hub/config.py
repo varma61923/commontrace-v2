@@ -236,6 +236,38 @@ class HubConfig:
     # missing setting.
     console_secret: str = ""
 
+    # --- Self-serve signup (hub/signup.py) ---
+    # False (default): no /signup route is registered at all -- the only way
+    # to create an org is still `python -m hub.manage create-org`, run by an
+    # operator. Set true to let a visitor create their own free-plan org and
+    # first API key with no operator involved. There is no email
+    # verification behind this (this Hub has no outbound email integration
+    # to build one on) -- the free plan's own limits (hub/plans.py) are the
+    # blast radius bound for an uncontactable or fraudulent signup either
+    # way, the same bound every free-tier evaluator already gets.
+    signup_enabled: bool = False
+
+    # --- Self-serve billing (hub/billing.py) ---
+    # Empty (default) means neither the console's "Upgrade" buttons nor the
+    # /billing/webhook route do anything real: hub/billing.py's own
+    # StripeSettings.checkout_configured is False, and the webhook route is
+    # never registered -- a deployment that has not opted into Stripe has
+    # nothing new to probe. Keep `stripe_secret_key` in a secret store next
+    # to HUB_DATABASE_URL; it authenticates as this account to Stripe's API.
+    stripe_secret_key: str = ""
+    # The signing secret Stripe's dashboard shows for the webhook endpoint
+    # you register there (pointed at https://<this-hub>/billing/webhook).
+    # Required for the webhook route to verify a delivery actually came from
+    # Stripe rather than from anyone who can reach this endpoint -- without
+    # it, an unauthenticated POST could forge a plan upgrade for any org_id.
+    stripe_webhook_secret: str = ""
+    # Stripe Price ids (from the Stripe dashboard, "price_..."), one per
+    # billable plan (hub/plans.py:BILLABLE_PLANS). Either may be left unset
+    # if this deployment only sells one paid tier; both unset disables
+    # self-serve upgrades entirely regardless of the other Stripe settings.
+    stripe_price_team: str = ""
+    stripe_price_scale: str = ""
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -350,6 +382,11 @@ class HubConfig:
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),
+            signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
+            stripe_secret_key=os.environ.get("HUB_STRIPE_SECRET_KEY", ""),
+            stripe_webhook_secret=os.environ.get("HUB_STRIPE_WEBHOOK_SECRET", ""),
+            stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),
+            stripe_price_scale=os.environ.get("HUB_STRIPE_PRICE_SCALE", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),
