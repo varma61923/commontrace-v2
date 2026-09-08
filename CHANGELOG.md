@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Checkout could mint a second Stripe subscription on an already-subscribed
+  org.** The Overview page hid the "Upgrade" button once an org had a live
+  subscription, but the `billing_checkout` route itself never checked —
+  a stale page, a browser back-button resubmit, or a direct POST reached
+  `create_checkout_session` regardless. Checkout always creates a NEW
+  subscription (an already-subscribed org is supposed to go through
+  Stripe's Billing Portal instead); minting a second one on the same
+  customer is silent double billing, not a cosmetic bug. Now refused at
+  the same point every other invalid state in that handler already is.
+
+- **Deleting an org with a live Stripe subscription never cancelled it.**
+  Both `confirm_org_deletion` (self-service, reachable by any org's own
+  API key) and `hub.manage purge_org` (operator CLI) deleted the org row
+  — and with it, `stripe_subscription_id` — without telling Stripe.
+  A deleted account with an uncancelled subscription keeps being charged
+  every billing cycle with no CommonTrace account left to ever notice.
+  Both paths now cancel a live subscription first; if that fails, nothing
+  is deleted (a new `deletion_blocked` MCP error code on the self-service
+  path, an error message and `False` on the CLI path) rather than
+  deleting the account and stranding the subscription.
+
+- **Self-serve billing could be partially configured into a paid-and-never-
+  upgraded state.** `StripeSettings.checkout_configured` checked for a
+  secret key and a price, but not `HUB_STRIPE_WEBHOOK_SECRET` — a
+  deployment missing only that variable would show a working "Upgrade"
+  button, take a customer's real payment via Stripe Checkout, and have no
+  route left to ever learn it happened, since `Organization.plan` only
+  ever updates from the webhook. The same gap existed on the Billing
+  Portal route (`stripe.secret_key` checked, `webhook_secret` not),
+  where an already-subscribed customer could cancel and keep their paid
+  entitlement forever with nothing to notice the cancellation. Both
+  routes now require the full, working round trip before ever redirecting
+  to Stripe.
+
+- **`retrieve()` (the local MCP tool) shipped a withheld lesson's full body
+  over the wire.** The control arm of the tool's own randomized holdout is
+  the half an agent is explicitly told never to act on — but every
+  withheld lesson's complete instructional text was still being sent on
+  every `retrieve()` call made while an experiment runs, which is exactly
+  the traffic pattern of a customer rigorously proving this product's own
+  causal claim. `commontrace query` (the CLI path to the same holdout) has
+  never printed a withheld lesson's body; `retrieve()` was the one surface
+  that disagreed with its own documented contract. Metadata (slug,
+  description, tags, score) still ships — only the body is withheld along
+  with the lesson itself.
+
 - **`experiment_status` (the MCP tool) reintroduced a bug this file already
   recorded as fixed once.** The CLI's `commontrace experiment` scopes its
   report to the store's *current* randomization (salt) — changing the
@@ -167,6 +213,62 @@ regression tests covering each fix, and a security review of the complete
 diff found no newly-introduced vulnerability.
 
 ### Added
+
+- **Shareable, read-only Proof links.** Until now the Proof page — the one
+  place this product's central claim (a causal, honestly-caveated
+  measurement of whether the memory changed outcomes) is actually shown —
+  only ever rendered behind an authenticated console session. A signed-in
+  user can now mint a time-limited (14 day), org-scoped share token from
+  the Proof page; the resulting link needs no session and re-runs the same
+  live queries the authenticated page does, so it can never go stale into
+  something misleading. Kind-separated from session tokens in both
+  directions, uniform 404s on an invalid/expired link, and rate-limited
+  per-org rather than per-address.
+
+- **Self-serve org signup (`HUB_SIGNUP_ENABLED`).** Every account before
+  this was sales- or support-assisted by construction: the only way to get
+  an org and a first API key was an operator running `hub.manage
+  create-org`. A public, opt-in `/signup` route now lets a visitor create
+  their own free-plan org with nobody involved — no email verification
+  (this Hub has no outbound email integration), bounded by the free plan's
+  own limits either way, with a tight per-address rate limit and a
+  honeypot as the actual abuse controls.
+
+- **Self-serve billing (`hub/billing.py`).** A signed-in customer can now
+  upgrade to a paid plan via Stripe Checkout, and `Organization.plan`
+  stays in sync with what Stripe actually charged via a signed webhook —
+  no operator, no manual row edit. An already-subscribed org is routed to
+  Stripe's Billing Portal instead of through Checkout again. No Stripe
+  SDK: REST calls over `httpx` (already a dependency) and one documented
+  HMAC check for webhook verification.
+
+- **`python -m hub.manage value <org_id> [value_per_occasion]`.**
+  `crud.value_delivered` (occasions improved, causally, priced only when a
+  rate is supplied and never stored) was reachable from a customer's own
+  console session and from an authenticated agent's MCP tool call, but an
+  operator investigating one account had no CLI path to the same numbers
+  without holding a customer's own API key. Also the first caller of
+  `plans.billable_value()`/`VALUE_CAPTURE_SHARE` from anywhere reachable
+  by an operator.
+
+- **`search_traces(brief=True)`.** `context_text`/`solution_text` are each
+  allowed up to 20,000 characters, and a search page can hold up to 200
+  results — a full page can legitimately run to millions of characters,
+  enough to blow a calling agent's own context budget while it is still
+  deciding which result to use. `brief=True` (off by default) previews
+  both fields instead, word-boundary-safe and always marked `"brief":
+  true`; everything else on each result is untouched, matching the
+  local tier's existing `list_lessons`/`get_lesson` "browse then get"
+  split.
+
+- **CI now proves self-serve signup and console sign-in over real HTTP.**
+  The `compose-stack` job builds and runs the actual container image —
+  the only CI job that catches what only shows up when "the pieces
+  compose" — but never enabled or exercised either surface above; a
+  route-registration mistake or an env var not reaching the container
+  could have shipped invisibly. A new step drives the real HTTP surface
+  end to end: signup issues a key, and that exact key signs in to the
+  console.
 
 - **`SECURITY.md`.** This Hub is multi-tenant, stores customer trace data,
   and holds an Argon2-hashed API key per organization — and had no
