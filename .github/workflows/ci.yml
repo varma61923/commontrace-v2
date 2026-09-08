@@ -362,6 +362,17 @@ jobs:
           HUB_AUTH_ATTEMPTS_BURST: "200"
           HUB_READ_RATE_LIMIT_PER_MINUTE: "3000"
           HUB_READ_RATE_LIMIT_BURST: "600"
+          # Widened here only, same reasoning as the rate limits above: an
+          # operator running a plain `docker compose up` still gets both
+          # routes absent by default (docker-compose.yml's own ${VAR:-...}
+          # defaults). Set here so this job proves the customer console and
+          # self-serve signup are actually wired up in the real built
+          # image, over real HTTP through the published port -- something
+          # the in-process ASGI tests cannot: they never exercise uvicorn,
+          # the real TCP/HTTP stack, or the middleware exactly as
+          # build_app() assembles it at process startup.
+          HUB_CONSOLE_SECRET: "ci-test-console-secret-not-for-production"
+          HUB_SIGNUP_ENABLED: "true"
         run: |
           docker compose up -d --build
           echo "--- services ---"
@@ -409,6 +420,44 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
           test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
           echo "unauthenticated -> 401"
+
+      - name: Self-serve signup and console sign-in work over real HTTP
+        run: |
+          set -euo pipefail
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
+          test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
+
+          # A real signup creates an org and hands back a usable key --
+          # not a 500, not a form that silently does nothing.
+          body=$(curl -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
+          raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
+          test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
+          echo "::add-mask::$raw_key"
+          echo "self-serve signup issued a key"
+
+          # /app with no session redirects to sign-in -- the console route
+          # is really registered in the running container, not only in the
+          # in-process test client.
+          resp=$(curl -s -D - -o /dev/null http://127.0.0.1:8420/app)
+          echo "$resp" | grep -qi '^HTTP/[0-9.]* 303' \
+            || { echo "GET /app with no session: expected 303"; echo "$resp"; exit 1; }
+          echo "$resp" | grep -qi '^location:.*/app/signin' \
+            || { echo "GET /app with no session: expected a redirect to /app/signin"; echo "$resp"; exit 1; }
+
+          # The key signup just issued actually signs in to the console --
+          # proving the two newest customer-facing surfaces work together,
+          # not just each in isolation.
+          cookie_jar=$(mktemp)
+          signin_code=$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
+            http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
+          test "$signin_code" = "303" || { echo "POST /app/signin: expected 303, got $signin_code"; exit 1; }
+          grep -q ct_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
+
+          overview_code=$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
+          test "$overview_code" = "200" || { echo "GET /app with a session: expected 200, got $overview_code"; exit 1; }
+          rm -f "$cookie_jar"
+          echo "self-serve signup -> console sign-in works end to end, over real HTTP"
 
       - name: Smoke check the live stack over MCP
         env:
