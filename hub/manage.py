@@ -52,6 +52,12 @@
                                        is the churn about to happen. No query text is
                                        stored -- three integers per org per month
     revenue                        -> orgs on billable plans and what they consumed
+    value <org_id> [value_per_occasion]
+                                   -> what one org's memory was worth, causally: occasions
+                                       improved, and a priced figure only if you pass a rate
+                                       -- taken fresh each call, never stored (hub/crud.py:
+                                       value_delivered). The operator-CLI path to the same
+                                       numbers hub/console.py's Proof page shows a customer.
     plan-experiment <org_id> [detect] [occasions]
                                    -> what holdout rate this org's OWN volume can answer
                                        with. Run before start-experiment: at a 10% holdout
@@ -1446,6 +1452,66 @@ async def revenue(session_factory=None) -> None:
     print("and this is the denominator to attach it to.")
 
 
+async def value(org_id: str, value_per_occasion: str | None = None, session_factory=None) -> bool:
+    """What one org's memory was worth, causally -- crud.value_delivered,
+    from the operator CLI.
+
+    Fills a real gap: value_delivered was reachable from a customer's own
+    browser session (hub/console.py's Proof page) and from an
+    authenticated agent (hub/server.py's `value_delivered` MCP tool), but
+    an operator investigating one account -- ahead of a renewal
+    conversation, before deciding whether a plan change is justified --
+    had no CLI path to the same numbers at all, and no reason to have a
+    customer's own API key to get them.
+
+    `value_per_occasion` is optional and, exactly like the console's own
+    `?per_occasion=` query parameter and crud.value_delivered's own
+    docstring, is taken fresh from THIS invocation and never stored --
+    the same discipline `revenue` above prints no currency to preserve.
+    Omit it to see the occasion count on its own.
+    """
+    session_factory = session_factory or _default_session_factory()
+    rate = None
+    if value_per_occasion is not None:
+        try:
+            rate = float(value_per_occasion)
+        except ValueError:
+            print(f"error: value_per_occasion must be a number, got {value_per_occasion!r}",
+                  file=sys.stderr)
+            return False
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        report = await crud.value_delivered(session, org_id, value_per_occasion=rate)
+
+    print(f"{org.name} ({org_id})  plan={org.plan}")
+    if not report["readable"]:
+        print(f"not readable: {report['reason']}")
+        return True
+
+    print(f"occasions improved: {report['occasions_improved']:,.1f} "
+          f"(95% CI {report['ci_95'][0]:,.1f} .. {report['ci_95'][1]:,.1f})")
+    print(f"memories counted: {report['n_counted']}  excluded: {report['n_excluded']}")
+    if rate is not None and report["money"] is not None:
+        low, high = report["money_range"] or (report["money"], report["money"])
+        billable = report["money"] * plans.VALUE_CAPTURE_SHARE
+        print(f"at {rate:,.2f}/occasion: {report['money']:,.2f} total "
+              f"({low:,.2f} .. {high:,.2f}); {plans.VALUE_CAPTURE_SHARE:.0%} share = {billable:,.2f}")
+    else:
+        print("(pass a value-per-occasion rate as a second argument for a priced figure -- "
+              "taken fresh each time, never stored)")
+    for m in report["memories"]:
+        if m["counted"]:
+            print(f"  + {m['title'] or m['trace_id']}: {m['occasions_improved']:,.1f} occasions "
+                  f"({m['verdict']})")
+        else:
+            print(f"  - {m['title'] or m['trace_id']}: excluded ({m['why_not']})")
+    return True
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
     "issue-key": (issue_key, 1, 2),
@@ -1466,6 +1532,7 @@ _COMMANDS = {
     "usage": (usage, 0, 1),
     "retrieval": (retrieval, 0, 1),
     "revenue": (revenue, 0, 0),
+    "value": (value, 1, 2),
     "outcomes": (fleet_outcomes, 0, 1),
     "plan-experiment": (plan_experiment, 1, 3),
     "start-experiment": (start_experiment, 1, 2),

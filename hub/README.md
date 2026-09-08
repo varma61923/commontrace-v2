@@ -673,6 +673,10 @@ python -m hub.manage outcomes [org_id]            # is the product working, per 
 python -m hub.manage start-experiment <org_id> [rate]   # begin a randomized holdout (causal)
 python -m hub.manage experiment <org_id>          # what the holdout established, per trace
 python -m hub.manage stop-experiment <org_id>     # stop withholding; observations are kept
+python -m hub.manage value <org_id> [value_per_occasion]  # what the memory was worth, causally --
+                                                   # occasions improved, priced only if you pass a
+                                                   # rate (never stored); the CLI path to the same
+                                                   # numbers a customer sees on their own Proof page
 python -m hub.manage kb-stats                     # corpus size, hits delivered, standing breakdown, submission funnel
 python -m hub.manage kb-review [limit]            # which entries need a human, worst first
 python -m hub.manage kb-retract <trace_id> [reason]  # withdraw an entry from the Knowledge Base (reversible)

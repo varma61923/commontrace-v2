@@ -33,7 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 
 from commontrace import revision
-from hub import crud, manage
+from hub import crud, manage, plans
 from hub.db import session_scope
 from hub.models import HoldoutObservation, Organization, Trace
 
@@ -869,3 +869,72 @@ class TestWhatTheMemoryWasWorth:
             theirs = await crud.value_delivered(session, other_org)
         assert theirs["memories"] == []
         assert theirs["occasions_improved"] == 0.0
+
+
+class TestTheOperatorCLIReachesTheSameNumbers:
+    """`hub.manage value` -- crud.value_delivered from the operator CLI.
+
+    Before this command existed, the same numbers were reachable from a
+    customer's own browser session (hub/console.py) and from an
+    authenticated agent (hub/server.py's MCP tool), but an operator
+    investigating one account had no CLI path to them at all. Reuses
+    TestWhatTheMemoryWasWorth's own experiment-seeding helper rather than
+    duplicating it.
+    """
+
+    async def _running_experiment(self, session_factory, org, n=120, helps=True):
+        return await TestWhatTheMemoryWasWorth()._running_experiment(
+            session_factory, org, n=n, helps=helps
+        )
+
+    async def test_an_unknown_org_reports_an_error(self, session_factory, capsys):
+        assert not await manage.value("00000000-0000-0000-0000-000000000000",
+                                       session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_a_non_numeric_rate_reports_an_error_without_touching_the_db(
+        self, session_factory, org, capsys
+    ):
+        assert not await manage.value(org, "free", session_factory=session_factory)
+        assert "must be a number" in capsys.readouterr().err
+
+    async def test_no_activity_yet_reports_zero_rather_than_erroring(
+        self, session_factory, org, capsys
+    ):
+        assert await manage.value(org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "occasions improved: 0.0" in out
+
+    async def test_with_no_rate_it_prints_a_count_but_no_money(self, session_factory, org, capsys):
+        await self._running_experiment(session_factory, org)
+        assert await manage.value(org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "occasions improved" in out
+        assert "pass a value-per-occasion rate" in out
+        # No currency is ever printed unless a rate was actually supplied.
+        assert "share" not in out
+
+    async def test_with_a_rate_it_prints_the_capture_share(self, session_factory, org, capsys):
+        await self._running_experiment(session_factory, org)
+        async with session_scope(session_factory) as session:
+            expected = await crud.value_delivered(session, org, value_per_occasion=25.0)
+
+        assert await manage.value(org, "25.0", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert f"{expected['money']:,.2f}" in out
+        billable = expected["money"] * plans.VALUE_CAPTURE_SHARE
+        assert f"{billable:,.2f}" in out
+
+    async def test_a_compromised_experiment_prints_the_reason_not_a_figure(
+        self, session_factory, org, capsys
+    ):
+        traces = await _traces(session_factory, org, 1)
+        for i in range(120):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            if bool(result["inject"]) or i % 4 == 0:
+                await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+
+        assert await manage.value(org, "25.0", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "not readable" in out
+        assert "COMPROMISED" in out
