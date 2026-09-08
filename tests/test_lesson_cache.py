@@ -146,6 +146,36 @@ class TestCacheMatchesDirectScan:
         assert len(lessons) == 1
         assert lessons[0][1]["description"] == "anything at all"
 
+    def test_a_corrupt_on_disk_terms_field_self_heals(self, tmp_path):
+        """`terms` is a pure function of the cached `fm`, so `_stamps_differ`
+        deliberately does not compare it -- but that means a cache entry
+        whose `terms` alone is corrupt (unlike `mtime_ns`/`size`/`fm`, all of
+        which stay unchanged) must still be recognized as needing a rewrite,
+        or the corruption never leaves the on-disk file and every future
+        call pays a full reparse for that lesson forever."""
+        import json
+
+        root = str(tmp_path)
+        path = _write_lesson(root, "lesson_a", description="anything at all")
+        lesson_cache.load_active_with_terms(root)  # populate the cache
+
+        cpath = lesson_cache.cache_path(root)
+        with open(cpath, encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        on_disk["entries"][path]["terms"] = [["only", "one", "field"]]  # wrong length
+        with open(cpath, "w", encoding="utf-8") as fh:
+            json.dump(on_disk, fh)
+
+        lessons, terms = lesson_cache.load_active_with_terms(root)
+        assert len(lessons) == 1  # self-heals in memory even without the fix
+
+        with open(cpath, encoding="utf-8") as fh:
+            healed = json.load(fh)
+        assert len(healed["entries"][path]["terms"]) == 4, (
+            "the repaired terms were never written back to disk -- every "
+            "future call will reparse this lesson from scratch, forever"
+        )
+
     def test_a_bare_yaml_date_field_survives_the_cache_round_trip(self, tmp_path):
         """last_hit: 2026-07-01 parses as datetime.date under PyYAML -- the
         exact value a naive JSON cache would crash on or silently corrupt."""

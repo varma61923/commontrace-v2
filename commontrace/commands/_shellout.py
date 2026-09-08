@@ -57,27 +57,29 @@ def _store_scripts_allowed() -> bool:
 def find_reference_script(root: str, relative: str) -> str | None:
     """Locate a reference-implementation script (attention/query.py, benchmark/...).
 
-    Checked in order: the copy bundled in the installed package, then -- only
-    with `COMMONTRACE_ALLOW_STORE_SCRIPTS=1` -- the store root. The packaged
-    copy is what makes the command work for someone who only ran
-    `pip install commontrace`; preferring it also means an untrusted clone
+    Checked in order: with `COMMONTRACE_ALLOW_STORE_SCRIPTS=1`, the store
+    root first (that opt-in exists so a contributor's edited copy in their
+    own checkout is actually picked up -- checking it second, behind the
+    always-present packaged copy, made the opt-in permanently unreachable);
+    otherwise only the packaged copy is ever considered. The packaged copy
+    is what makes the command work for someone who only ran `pip install
+    commontrace`, and is the only candidate by default so an untrusted clone
     cannot plant an executable script the victim runs by pointing `--dest`
-    (or cwd) at it. The store-root candidate remains for a contributor who
-    deliberately drops an edited copy into their own store and opts in.
+    (or cwd) at it.
     """
-    candidates = [os.path.join(packaged_reference_dir(), os.path.basename(relative))]
     if _store_scripts_allowed():
-        candidates.append(os.path.join(root, relative))
-    for i, c in enumerate(candidates):
-        if os.path.isfile(c):
-            if i > 0:
-                print(
-                    "[commontrace] warning: running reference script from store root "
-                    f"{c} (COMMONTRACE_ALLOW_STORE_SCRIPTS=1); packaged copy ignored. "
-                    "Only set this for a repo checkout you trust.",
-                    file=sys.stderr,
-                )
-            return c
+        store_copy = os.path.join(root, relative)
+        if os.path.isfile(store_copy):
+            print(
+                "[commontrace] warning: running reference script from store root "
+                f"{store_copy} (COMMONTRACE_ALLOW_STORE_SCRIPTS=1); packaged copy "
+                "ignored. Only set this for a repo checkout you trust.",
+                file=sys.stderr,
+            )
+            return store_copy
+    packaged_copy = os.path.join(packaged_reference_dir(), os.path.basename(relative))
+    if os.path.isfile(packaged_copy):
+        return packaged_copy
     return None
 
 

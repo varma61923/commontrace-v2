@@ -105,9 +105,10 @@ def run(args: argparse.Namespace) -> int:
             "pass --fail-if-unconfigured for exit 2).",
             file=sys.stderr,
         )
-        strict = getattr(args, "fail_if_unconfigured", False) or os.environ.get("COMMONTRACE_SYNC_STRICT", "").strip().lower() in {
+        env_strict = os.environ.get("COMMONTRACE_SYNC_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on",
         }
+        strict = getattr(args, "fail_if_unconfigured", False) or env_strict
         return 2 if strict else 0
 
     from commontrace import hub_client

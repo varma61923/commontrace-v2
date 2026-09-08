@@ -212,6 +212,7 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     ldir = paths.lessons_dir(root)
+    paths.warn_if_implicit_cwd_store(args.dest)
     os.makedirs(ldir, exist_ok=True)
     date = datetime.date.today().strftime("%Y%m%d")
 

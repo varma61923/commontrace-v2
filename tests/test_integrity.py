@@ -874,3 +874,34 @@ class TestAnOldLogStaysReadable:
         assert result.returncode == 0, result.stderr
         assert "Causal Effect Report" in result.stdout
         assert "none under the current randomization" not in result.stderr
+
+
+class TestReadLogSurvivesANonFiniteRank:
+    """`json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN` tokens by
+    default, so a log line carrying one of those for `rank` must not be able
+    to crash `read_log` for the whole file -- `int(float("inf"))` raises
+    `OverflowError`, which `_opt_int` did not catch alongside its sibling
+    `_opt_float`'s NaN/Inf guard.
+    """
+
+    def test_an_infinite_rank_is_dropped_not_fatal(self, tmp_path):
+        import json
+        import os
+
+        from commontrace import holdout_io, paths
+
+        root = str(tmp_path / "fleet")
+        os.makedirs(paths.memory_dir(root), exist_ok=True)
+        with open(holdout_io.holdout_log_path(root), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "occasion_id": "t1", "lesson": "l", "injected": True, "rank": float("inf"),
+            }) + "\n")
+            fh.write(json.dumps({
+                "occasion_id": "t2", "lesson": "l", "injected": False, "rank": 3,
+            }) + "\n")
+
+        records, corrupt = holdout_io.read_log(root)
+        assert corrupt == 0
+        assert len(records) == 2
+        assert records[0].rank is None
+        assert records[1].rank == 3

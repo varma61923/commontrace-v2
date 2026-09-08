@@ -233,6 +233,26 @@ class TestSubprocessScriptLookupIsolation:
         )
         assert resolved is None
 
+    def test_opted_in_store_copy_wins_over_an_existing_packaged_copy(self, tmp_path, monkeypatch):
+        # The opt-in exists specifically for a contributor iterating on a
+        # reference script that's ALSO shipped in the package (e.g.
+        # measure_performance.py) -- the case every real caller hits, since
+        # every basename they pass exists in commontrace/reference/. Checking
+        # the packaged copy first made this opt-in permanently unreachable:
+        # the packaged file always exists, so the loop always returned it
+        # before ever looking at the store root.
+        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        repo_root = tmp_path / "repo_root"
+        script_path = repo_root / "benchmark" / "measure_performance.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# Contributor's locally edited copy\n", encoding="utf-8")
+
+        resolved = _shellout.find_reference_script(
+            str(repo_root), os.path.join("benchmark", "measure_performance.py")
+        )
+        assert resolved is not None
+        assert os.path.abspath(resolved) == os.path.abspath(str(script_path))
+
 
 # ==============================================================================
 # SEC-06: Tag Type Confusion in retrieval.py and reliability.py

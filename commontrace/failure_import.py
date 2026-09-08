@@ -278,12 +278,19 @@ def read_failures(path: str, fmt_override: str | None = None) -> tuple[list[dict
                     "split the export or pass a smaller file")
         except OSError:
             pass
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
-            raw = fh.read(MAX_IMPORT_BYTES + 1)
-        if len(raw) > MAX_IMPORT_BYTES:
+        # Read as bytes, not text: the fallback cap below must count actual
+        # bytes even when the getsize() pre-check above silently no-ops (a
+        # transient OSError). Reading in text mode made `len(raw)` count
+        # decoded characters, which undercounts by up to 4x on multi-byte
+        # UTF-8 content and let that much more than MAX_IMPORT_BYTES of real
+        # data through.
+        with open(path, "rb") as fh:
+            raw_bytes = fh.read(MAX_IMPORT_BYTES + 1)
+        if len(raw_bytes) > MAX_IMPORT_BYTES:
             raise FailureImportError(
                 f"{path} is larger than {MAX_IMPORT_BYTES // (1024 * 1024)} MiB; "
                 "split the export or pass a smaller file")
+        raw = raw_bytes.decode("utf-8-sig", errors="replace")
     except OSError as exc:
         raise FailureImportError(f"cannot read {path}: {exc}") from exc
 

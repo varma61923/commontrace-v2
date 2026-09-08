@@ -391,6 +391,24 @@ def test_capture_refuses_an_invalid_trace_instead_of_writing_it(server, store):
     assert not written, written
 
 
+def test_coerce_tags_raises_rather_than_silently_dropping_malformed_input():
+    # The declared tool schema (`tags: list[str] | None`) already rejects a
+    # top-level non-list value before it reaches the tool function -- the SDK's
+    # own pydantic validation refuses `tags=123` with a clear ToolError, so
+    # this scenario is not reachable through `capture`/`draft_lesson`'s real
+    # MCP surface. `_coerce_tags` is still hardened directly (raise, not
+    # silently return None) for any caller that isn't behind that schema --
+    # returning None here used to mean "no tags" was indistinguishable from
+    # "tags rejected," with nothing in a caller's response saying which.
+    with pytest.raises(ValueError, match="tags"):
+        mcp_server._coerce_tags(123)
+    with pytest.raises(ValueError, match="tags"):
+        mcp_server._coerce_tags({"a": 1})
+    assert mcp_server._coerce_tags(None) is None
+    assert mcp_server._coerce_tags("solo") == ["solo"]
+    assert mcp_server._coerce_tags(["a", "b"]) == ["a", "b"]
+
+
 def test_the_cli_can_read_what_the_mcp_server_wrote(server, store):
     _curate(server)
     assert cli("trace", "validate", "--dest", store).returncode == 0
@@ -451,6 +469,19 @@ def test_draft_can_fill_a_lesson_in_over_several_calls(server):
     # Only what was passed changes: the rule from the first call survives.
     assert second["lesson"]["importance"] == 5
     assert "Check the suppression list first." in second["lesson"]["body"]
+
+
+def test_draft_refuses_an_oversized_rule_instead_of_writing_it(server):
+    # capture_cmd/lesson_cmd both refuse an oversized write via
+    # _validators.check_text_size; draft_lesson writes straight to
+    # lesson_io.write_lesson and had no equivalent guard, even though it is
+    # the primary way an agent puts free-text content into a lesson.
+    _capture_pattern(server)
+    slug = call(server, "propose_lessons")["candidates"][0]["slug"]
+    from commontrace.commands._validators import REFUSE_CHARS
+    out = call(server, "draft_lesson", slug=slug, rule="x" * (REFUSE_CHARS + 1))
+    assert not out["ok"] and "large" in out["error"].lower()
+    assert "x" * 100 not in call(server, "get_lesson", slug=slug)["lesson"]["body"]
 
 
 def test_draft_never_activates(server):

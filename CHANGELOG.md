@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A non-finite `rank` in a holdout log line crashed the entire read.**
+  `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN` tokens by
+  default, and `holdout_io._opt_int` converted with `int(value)`, which
+  raises `OverflowError` on an infinite float — uncaught, since the append
+  that used it sits outside the per-line corrupt-line guard. One such line
+  took down `read_log` for the whole file, violating its own documented
+  contract that "one torn write must not make the rest of an experiment
+  unreadable." `_opt_int` now catches `OverflowError` alongside
+  `TypeError`/`ValueError`, matching the non-finite guard `_opt_float`
+  already had.
+
+- **`COMMONTRACE_ALLOW_STORE_SCRIPTS=1` never actually did anything.**
+  `find_reference_script` checked the packaged copy of a reference script
+  first and returned on the first match — but every real reference script
+  (`query.py`, `build_index.py`, `measure_performance.py`,
+  `pilot_metrics.py`) ships inside the package, so the packaged candidate
+  was always a hit and the store-root candidate was never reached, even
+  with the opt-in set. A contributor editing a reference script in their
+  own checkout got the stale packaged copy every time, silently. Now,
+  when opted in, the store-root copy is checked first (and wins).
+
+- **A malformed `tags` argument to the `capture`/`draft_lesson` MCP tools
+  was silently dropped.** `_coerce_tags` returned `None` for anything that
+  wasn't a string, list, or tuple, and both call sites treated that the
+  same as "no tags were given" — the write succeeded, `ok` was `true`, and
+  nothing in the response said the tags never landed. It now raises
+  instead, so a malformed value surfaces as a clear tool error.
+
+- **`draft_lesson` had no size guard on the text it writes.** The
+  CLI write paths (`capture`, `lesson new`, ...) all refuse an oversized
+  write via `_validators.check_text_size`, but `draft_lesson` — the
+  primary way an agent puts free-text content into a lesson over MCP —
+  called `lesson_io.write_lesson` directly with no size check at all. It
+  now runs the same guard before writing.
+
+- **A cache entry with a corrupt `terms` field never self-healed on disk.**
+  `lesson_cache`'s write-decision (`_stamps_differ`) compares only
+  `mtime_ns`/`size`/`fm`, deliberately not `terms` (a pure function of
+  `fm`). But a `terms` field that was corrupt for some other reason (a
+  hand-edited or format-drifted cache file) got correctly recomputed in
+  memory on every call — and then never written back, since the stamps it
+  compares hadn't moved. That lesson paid a full reparse on every single
+  future call, forever, silently defeating the module's own "an edit
+  costs one parse, not N" guarantee for that entry. The repair is now
+  flagged explicitly and forces a cache rewrite.
+
+- **`failure_import.read_failures`'s fallback size cap counted characters,
+  not bytes.** If `os.path.getsize` failed while `open()` still succeeded,
+  the fallback opened the file in text mode and capped `len(raw)` —
+  decoded characters — letting up to ~4x `MAX_IMPORT_BYTES` of real data
+  through on multi-byte UTF-8 content. The fallback now reads bytes
+  directly and decodes after the cap is enforced.
+
+- **`commontrace import`'s size cap and implicit-store warning had gaps.**
+  `import_data.py` never received the total-file-size cap
+  `failure_import.py` got (only the per-field CSV limit was duplicated);
+  `import_cmd.py` now checks the file size up front. Separately,
+  `warn_if_implicit_cwd_store` used `explicit is not None` where
+  `resolve_root` uses a truthy check, so `--dest ""` suppressed the
+  warning while still hitting the same cwd fallback as no `--dest` at all
+  — now consistent. The warning is also wired into `commontrace import`
+  and `commontrace distill`, which create a store the same way
+  `capture`/`lesson new` do but had no warning at all.
+
 - **Checkout could mint a second Stripe subscription on an already-subscribed
   org.** The Overview page hid the "Upgrade" button once an org had a live
   subscription, but the `billing_checkout` route itself never checked —

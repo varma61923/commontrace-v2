@@ -279,19 +279,30 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
     cached = _read_cache(cpath)
 
     entries: dict = {}
+    repaired = False
     for path in lesson_paths:
         stamp = _stat(path)
         if stamp is None:
             continue  # vanished between glob and stat
         prior = cached.get(path)
-        if (
+        stamp_and_fm_match = (
             isinstance(prior, dict)
             and prior.get("mtime_ns") == stamp[0]
             and prior.get("size") == stamp[1]
             and isinstance(prior.get("fm"), dict)
-            and _valid_terms(prior.get("terms"))
-        ):
+        )
+        if stamp_and_fm_match and _valid_terms(prior.get("terms")):
             entries[path] = prior
+            continue
+        if stamp_and_fm_match:
+            # Stamps and projection agree with what's cached, but `terms`
+            # itself is corrupt -- recompute it from the still-valid `fm`
+            # rather than paying a full reparse, and mark the cache dirty so
+            # the fix is actually written back. `_stamps_differ` alone would
+            # never see this case: stamps and `fm` are exactly what it
+            # compares, and neither one moved.
+            entries[path] = {**prior, "terms": field_terms(prior["fm"])}
+            repaired = True
             continue
 
         # New or modified: the only path that pays a YAML parse.
@@ -309,7 +320,7 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
 
     # Write only when the cache would actually change, so a steady-state query
     # is pure reads -- no tmpfile, no rename, no write amplification per query.
-    if _stamps_differ(cached, entries):
+    if repaired or _stamps_differ(cached, entries):
         _write_cache(cpath, entries)
     return entries, [p for p in lesson_paths if p in entries]
 

@@ -136,6 +136,23 @@ class TestWhatWasMeasuredIsStated:
         assert len(failures) == failure_import.MAX_FAILURES
         assert stats["truncated"] == 600 - failure_import.MAX_FAILURES
 
+    def test_the_size_cap_counts_bytes_not_characters(self, tmp_path, monkeypatch):
+        """The fallback size check used to open in text mode and cap
+        len(raw) -- decoded CHARACTERS, not bytes -- so when the primary
+        os.path.getsize() guard failed, multi-byte UTF-8 content could be up
+        to ~4x over the real byte cap and still slip through undetected."""
+        monkeypatch.setattr(failure_import, "MAX_IMPORT_BYTES", 100)
+
+        def _boom(path):
+            raise OSError("simulated getsize failure")
+
+        monkeypatch.setattr(os.path, "getsize", _boom)
+        # 40 characters, but "€" (EUR SIGN) is 3 bytes in UTF-8: 120
+        # bytes total, over the 100-byte cap even though the char count isn't.
+        p = _write(tmp_path, "a.txt", "€" * 40)
+        with pytest.raises(failure_import.FailureImportError, match="larger than"):
+            failure_import.read_failures(p)
+
 
 class TestRefusalsAreActionable:
     """'Invalid input' sends someone to Slack instead of to a number."""

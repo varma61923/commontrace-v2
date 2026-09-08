@@ -61,11 +61,31 @@ def _slugify(title: str) -> str:
 # many bad rows would otherwise accumulate a string per row indefinitely.
 _MAX_DETAILS = 20
 
+# `import_data.iter_csv`/`iter_jsonl` stream row by row (no OOM risk the way
+# failure_import.py's fully-materializing read has), but "streamed" is not
+# "unbounded": a multi-gigabyte file handed in by mistake still costs the
+# CPU/IO time to walk the whole thing with no progress signal until it's
+# done. This is a fail-fast bound, generous relative to failure_import.py's
+# 50 MiB (which exists for a stricter reason) precisely because streaming
+# tolerates a much larger file safely.
+_MAX_IMPORT_FILE_BYTES = 500 * 1024 * 1024
+
 
 def run(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.file):
         print(f"[commontrace] no such file: {args.file}", file=sys.stderr)
         return 1
+    try:
+        if os.path.getsize(args.file) > _MAX_IMPORT_FILE_BYTES:
+            print(
+                f"[commontrace] {args.file} is larger than "
+                f"{_MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB; split the export "
+                "or pass a smaller file",
+                file=sys.stderr,
+            )
+            return 1
+    except OSError:
+        pass
 
     mapping = import_data.FieldMapping(
         title=args.title_field,
@@ -76,6 +96,8 @@ def run(args: argparse.Namespace) -> int:
     )
     fmt = _infer_format(args.file, args.format)
 
+    if not args.dry_run:
+        paths.warn_if_implicit_cwd_store(args.dest)
     root = paths.resolve_root(args.dest)
     tdir = paths.traces_dir(root)
     date = datetime.date.today().isoformat()

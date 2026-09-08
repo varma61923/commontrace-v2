@@ -366,8 +366,12 @@ def _opt_int(value: object) -> int | None:
     if value is None:
         return None
     try:
+        # `int(float("inf"))` raises OverflowError, not ValueError -- and
+        # JSON's `Infinity`/`-Infinity`/`NaN` tokens are accepted by
+        # `json.loads` by default, so a log line carrying one of those for
+        # `rank` must not be able to crash the whole read.
         return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

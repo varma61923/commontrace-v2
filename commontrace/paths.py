@@ -67,8 +67,15 @@ def warn_if_implicit_cwd_store(explicit: str | None) -> None:
     write paths (`capture`, `lesson new`) then `makedirs` a store wherever
     the user happened to be. Read-only paths stay silent (a warning there
     would be noise); call this only before creating store directories.
+
+    Truthiness matches `resolve_root`'s own `if explicit:` check, not just
+    `is not None`: an empty string (e.g. `--dest ""` from an unset shell
+    variable) is falsy to `resolve_root`, which falls through to the same
+    env/cwd fallback as no `--dest` at all -- this function must fall
+    through with it, or the one caller relying on `--dest ""` behaving like
+    "no --dest" gets silently different warning behavior than resolution.
     """
-    if explicit is not None:
+    if explicit:
         return
     if os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT"):
         return

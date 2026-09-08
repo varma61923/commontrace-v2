@@ -79,6 +79,7 @@ from commontrace import (
 )
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
+from commontrace.commands._validators import REFUSE_CHARS, check_text_size
 
 # The lesson fields an agent may set. Anything outside this set is ignored
 # rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
@@ -198,13 +199,19 @@ def _coerce_tags(tags: object) -> list[str] | None:
     """A loosely-typed MCP client may send a single string instead of a list;
     iterating it char-by-char would corrupt tags to single letters (",".join
     on "mytag" -> "m,y,t,a,g"). Accept a bare string as one tag, mirroring
-    distill_cmd._safe_tags' isinstance guard."""
+    distill_cmd._safe_tags' isinstance guard.
+
+    Raises ValueError for anything else (an int, a dict, a bool, ...) rather
+    than silently dropping it -- a caller whose tags are quietly discarded
+    still gets back a normal-looking success response with no signal that
+    its tags never landed.
+    """
     if tags is None:
         return None
     if isinstance(tags, str):
         tags = [tags]
     if not isinstance(tags, (list, tuple)):
-        return None
+        raise ValueError(f"tags must be a string or a list of strings, got {type(tags).__name__}")
     return [str(t) for t in tags]
 
 
@@ -476,7 +483,10 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         argv = ["--title", title, "--context", context_text, "--solution", solution_text,
                 "--dest", root]
-        coerced = _coerce_tags(tags)
+        try:
+            coerced = _coerce_tags(tags)
+        except ValueError as exc:
+            return _err(str(exc))
         if coerced:
             argv += ["--tags", ",".join(str(t) for t in coerced)]
         if agent_type:
@@ -661,6 +671,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             "description": description, "importance_rationale": importance_rationale,
             "domain": domain,
         }
+        if not check_text_size({**sections, **fields}, what="lesson"):
+            return _err(
+                f"refusing to write {slug!r}: the drafted text is too large "
+                f"(over {REFUSE_CHARS} chars total). Split the content or "
+                "trim the sections and try again."
+            )
         try:
             # Locked read-modify-write: a fleet may have several agents
             # drafting at once, and two independent read-then-writes silently
