@@ -376,10 +376,26 @@ def build_server(root: str, *, allow_approval: bool = True):
                 fm, body = frontmatter.read(r.path)
             except Exception:  # noqa: BLE001
                 continue
-            item = _lesson_wire(fm, body, include_body=True)
+            is_withheld = r.slug in withheld
+            # A withheld lesson is the control arm: the agent is told never
+            # to act on it, so its BODY -- the actual instructional text --
+            # has no legitimate use once it crosses the wire, only cost
+            # (this can run to MAX_TEXT_CHARS-scale content, on EVERY
+            # retrieve() call while an experiment is running -- exactly the
+            # calls a customer rigorously proving this product's causal
+            # claim makes most of) and a small, avoidable priming risk: an
+            # agent that has read the rule anyway is not the same
+            # experiment as one that has not. fm is still read and passed
+            # to _lesson_wire either way, so `revision`/`unfilled` stay
+            # correct -- only the wire payload's `body` key is omitted.
+            # Metadata (slug, description, tags, score) still ships, so
+            # `withheld` stays informative about WHAT was suppressed, just
+            # not usable. Matches `commontrace query`'s own CLI behavior,
+            # which has never printed a withheld lesson's body either.
+            item = _lesson_wire(fm, body, include_body=not is_withheld)
             item["score"] = round(r.score, 3)
             item["matched"] = list(r.matched_terms or [])
-            (held if r.slug in withheld else injected).append(item)
+            (held if is_withheld else injected).append(item)
 
         result = {
             "lessons": injected,

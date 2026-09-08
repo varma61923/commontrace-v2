@@ -194,6 +194,48 @@ def test_retrieve_matches_the_cli_ranking(server, store):
 
 # --- the holdout ---------------------------------------------------------
 
+def test_a_withheld_lesson_never_ships_its_body(server, store):
+    """The control arm exists so the agent does NOT act on it -- shipping the
+    instructional text anyway is pure cost (this can run to
+    MAX_TEXT_CHARS-scale content, on every retrieve() call while an
+    experiment runs) plus a small, avoidable priming risk. Metadata stays,
+    so `withheld` is still informative about WHAT was suppressed.
+
+    rate must be < 1.0 (holdout_io.configure's own range check), so this
+    loops occasions -- same pattern as
+    test_holdout_assigns_both_arms_and_logs_every_one below -- until the
+    control arm actually shows up, rather than trying to force it."""
+    from commontrace import holdout_io
+
+    _curate(server)
+    holdout_io.configure(store, rate=0.9)
+    withheld_item = None
+    for i in range(40):
+        out = call(server, "retrieve", task="password reset email never arrived", occasion_id=f"occ-{i}")
+        if out["withheld"]:
+            withheld_item = out["withheld"][0]
+            break
+    assert withheld_item is not None, "40 occasions at rate=0.9 produced no withheld lesson"
+    assert "body" not in withheld_item
+    # Still informative -- just not usable.
+    assert withheld_item["slug"] and withheld_item["description"]
+    assert withheld_item["score"] > 0 and withheld_item["matched"]
+
+
+def test_an_injected_lesson_still_ships_its_body(server, store):
+    """The other half of the same property: NOT withholding must not
+    accidentally start stripping bodies from lessons the agent is meant to
+    use."""
+    from commontrace import holdout_io
+
+    _curate(server)
+    holdout_io.configure(store, rate=0.0)  # deterministic: nothing withheld
+    out = call(server, "retrieve", task="password reset email never arrived", occasion_id="occ-1")
+    assert len(out["lessons"]) == 1
+    assert "suppression" in out["lessons"][0]["body"]
+    assert out["withheld"] == []
+
+
 def test_holdout_assigns_both_arms_and_logs_every_one(server, store):
     _curate(server)
     arms = set()
