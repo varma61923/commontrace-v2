@@ -4,8 +4,8 @@ What an operator needs to run the Hub for real, as opposed to the
 local-checkout instructions in [`hub/README.md`](README.md).
 
 > **Verification status, stated up front.** The application is exercised
-> against a real PostgreSQL 16 instance by `hub/tests/` (767 tests, tenant
-> isolation among them) on Python 3.10/3.11/3.12, alongside 939 client-side
+> against a real PostgreSQL 16 instance by `hub/tests/` (1,051 tests, tenant
+> isolation among them) on Python 3.10/3.11/3.12, alongside 1,334 client-side
 > tests. CI additionally applies every migration to an empty database, runs
 > `alembic check` for drift, and proves an interrupted `CONCURRENTLY` index
 > migration can be retried.
@@ -25,7 +25,7 @@ local-checkout instructions in [`hub/README.md`](README.md).
 >
 > | Rehearsed | Result |
 > |---|---|
-> | Migrations onto an empty database, then `alembic check` | 13 revisions applied, no drift |
+> | Migrations onto an empty database, then `alembic check` | 17 revisions applied, no drift |
 > | Image built and run directly | Serves `/healthz`, `/readyz`, `/metrics`; runs as uid 10001, not root |
 > | Container `HEALTHCHECK` | Reports healthy, and honours a non-default `HUB_PORT` |
 > | Container restart | Data intact; logs JSON with no key or password in them |
@@ -134,10 +134,16 @@ HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))
 
 Operationally, four things to know:
 
-- **It is read-only.** Nothing on it changes state, which is why it carries
-  no CSRF token — there is no state-changing request for a forged one to
-  trigger. Everything a customer can change goes through MCP or the CLI,
-  where it is authenticated and audited.
+- **It is read-only over this Hub's own data.** Nothing a browser does here
+  writes to `Organization`, `Trace`, or any other row directly, which is why
+  it carries no CSRF token — its session cookie is `SameSite=Strict`, so a
+  forged cross-site request arrives with no session and is turned back at
+  sign-in. Everything a customer can change in their own trace store still
+  goes through MCP or the CLI, where it is authenticated and audited. The
+  one exception carries its own trust boundary rather than weakening this
+  one: with Stripe configured (below), an "Upgrade" click sends the browser
+  to a Stripe-hosted page, and `Organization.plan` only ever changes later,
+  from Stripe's own signed webhook call — never from the browser request.
 - **Revoking a key ends the browser sessions it opened**, checked on every
   request. `revoke-key` is a working emergency stop for the console too.
 - **Rotating `HUB_CONSOLE_SECRET` signs every customer out.** That is the
@@ -230,6 +236,65 @@ readinessProbe:
   httpGet: { path: /readyz, port: 8420 }
   periodSeconds: 10
 ```
+
+### Self-serve signup
+
+Set `HUB_SIGNUP_ENABLED=true` and the Hub also serves a public,
+unauthenticated `POST /signup`: a visitor creates their own free-plan org
+and first API key with no operator involved (unset — the default — means
+the route does not exist, same posture as `/admin` and `/app`).
+
+```bash
+HUB_SIGNUP_ENABLED=true
+```
+
+Two things to know before enabling it on a public ingress:
+
+- **No email verification.** This Hub has no outbound email integration to
+  build one on. The blast radius of an uncontactable or fraudulent signup
+  is bounded by the free plan's own limits (`hub/plans.py`) either way —
+  the same ceiling every evaluator gets, verified or not.
+- **No CAPTCHA.** The only abuse controls are a tight per-address rate
+  limit and a honeypot field (`hub/signup.py`). That is enough for an
+  unauthenticated route that mints a usable credential to not be a fully
+  open oracle, but it is not CAPTCHA-strength — for a public-facing
+  deployment expecting real traffic, put it behind whatever bot mitigation
+  (a WAF, a CAPTCHA) you already run in front of other public signup forms,
+  the same way you would for any other account-creation endpoint.
+
+### Self-serve billing
+
+Set `HUB_STRIPE_SECRET_KEY`, `HUB_STRIPE_WEBHOOK_SECRET`, and at least one
+of `HUB_STRIPE_PRICE_TEAM`/`HUB_STRIPE_PRICE_SCALE` and a signed-in customer
+can upgrade themselves via Stripe Checkout; `Organization.plan` then stays
+in sync with what Stripe actually charged via `POST /billing/webhook` (also
+unregistered until the webhook secret is set).
+
+**All three or none.** `StripeSettings.checkout_configured` (`hub/billing.py`)
+requires the key, the webhook secret, and a price together — not just enough
+to sell an upgrade. The reason is specific: a deployment with a working key
+and price but no webhook secret would show a working "Upgrade" button, take
+a customer's real payment, and then have no route left to ever learn it
+happened, so the plan never moves off `free` — charged and never upgraded,
+silently. The same requirement gates Stripe's Billing Portal (where an
+already-subscribed customer manages or cancels), for the same reason in the
+other direction: a cancellation made there is also delivered only through
+the webhook, and without it a canceled customer keeps their paid entitlement
+indefinitely.
+
+```bash
+HUB_STRIPE_SECRET_KEY=sk_live_...
+HUB_STRIPE_WEBHOOK_SECRET=whsec_...      # from the endpoint you register in
+                                          # the Stripe dashboard, pointed at
+                                          # https://<this-hub>/billing/webhook
+HUB_STRIPE_PRICE_TEAM=price_...
+HUB_STRIPE_PRICE_SCALE=price_...
+```
+
+No Stripe SDK — `hub/billing.py` calls Stripe's REST API directly over
+`httpx` (already a Hub dependency) and verifies webhook signatures with one
+documented HMAC check, rather than adding a second pinned dependency for a
+handful of calls to one vendor.
 
 ### Metrics
 
@@ -461,6 +526,16 @@ across a revocation, re-revoke those key ids immediately.
 - [ ] `HUB_CONSOLE_SECRET` either unset, or set to a fresh random secret
       that is NOT `HUB_ADMIN_TOKEN`. `/app` is customer-reachable by design,
       so it belongs on your public ingress behind TLS — unlike `/admin`.
+- [ ] If `HUB_SIGNUP_ENABLED=true`, put whatever bot mitigation (WAF,
+      CAPTCHA) you already run in front of other public signup forms in
+      front of `/signup` too — its own abuse controls are a rate limit and
+      a honeypot, not CAPTCHA-strength. See §4, "Self-serve signup".
+- [ ] `HUB_STRIPE_SECRET_KEY`/`HUB_STRIPE_WEBHOOK_SECRET` from a secret
+      store, same as `HUB_DATABASE_URL`. Set all four Stripe variables
+      together or none — `checkout_configured` refuses to offer Checkout
+      or the Billing Portal on a partial configuration, because either one
+      without a registered webhook silently desyncs `Organization.plan`
+      from what Stripe actually charged. See §4, "Self-serve billing".
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
@@ -509,7 +584,8 @@ across a revocation, re-revoke those key ids immediately.
 | A holdout's assignments depend on the org's `holdout_salt`; restarting an experiment starts a new one and earlier observations are no longer pooled | `hub/models.py:Organization.holdout_salt` |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
-| No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |
+| Self-serve billing covers Checkout + the Billing Portal only — no dunning, tax handling, or invoicing UI beyond what Stripe's own hosted pages provide | §4, `hub/billing.py` |
+| Self-serve signup has no email verification and no CAPTCHA (a rate limit + honeypot only) | §4, `hub/signup.py` |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
 
 ---
