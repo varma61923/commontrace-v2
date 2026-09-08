@@ -155,6 +155,79 @@ class TestFullTextSearch:
         assert len(page["traces"]) == 1
 
 
+class TestBriefMode:
+    """context_text/solution_text are each allowed up to 20,000 characters
+    (HubConfig.max_text_chars), so a full page at MAX_SEARCH_LIMIT can
+    legitimately run to millions of characters -- enough to blow a calling
+    agent's own context budget, not just its bill. `brief=True` previews
+    both fields instead."""
+
+    async def test_default_behavior_is_unchanged(self, session_factory, config, org):
+        """Off by default -- an existing caller reading context_text/
+        solution_text straight off a search result must keep working
+        exactly as before."""
+        await _contribute(session_factory, config, org, "t", "short context", "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org)
+        trace = page["traces"][0]
+        assert trace["context_text"] == "short context"
+        assert trace["solution_text"] == "short solution"
+        assert "brief" not in trace
+
+    async def test_a_short_field_is_returned_whole_but_marked_brief(self, session_factory, config, org):
+        """Short enough to need no truncation is not the same claim as
+        'this is the full record' -- brief=True always marks its output,
+        whether or not anything was actually cut."""
+        await _contribute(session_factory, config, org, "t", "short context", "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert trace["context_text"] == "short context"
+        assert trace["solution_text"] == "short solution"
+        assert trace["brief"] is True
+
+    async def test_a_long_field_is_truncated_with_an_ellipsis(self, session_factory, config, org):
+        long_context = "word " * 500  # far past BRIEF_PREVIEW_CHARS
+        await _contribute(session_factory, config, org, "t", long_context, "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert len(trace["context_text"]) < len(long_context)
+        assert trace["context_text"].endswith("…")
+
+    async def test_truncation_cuts_at_a_word_boundary(self, session_factory, config, org):
+        long_context = "alpha " * 500
+        await _contribute(session_factory, config, org, "t", long_context, "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        preview = page["traces"][0]["context_text"]
+        # Never ends mid-word: strip the ellipsis and the remainder must be
+        # whole "alpha" tokens, not a fragment like "alph".
+        body = preview.rstrip("…")
+        assert body == "" or body.split()[-1] == "alpha"
+
+    async def test_ids_titles_and_tags_are_unaffected_by_brief(self, session_factory, config, org):
+        await _contribute(
+            session_factory, config, org, "unaffected title", "c" * 1000, "s" * 1000, tags=["x", "y"]
+        )
+        async with session_scope(session_factory) as session:
+            full = await crud.search_traces(session, org, brief=False)
+            brief = await crud.search_traces(session, org, brief=True)
+        assert full["traces"][0]["id"] == brief["traces"][0]["id"]
+        assert full["traces"][0]["title"] == brief["traces"][0]["title"] == "unaffected title"
+        assert full["traces"][0]["tags"] == brief["traces"][0]["tags"] == ["x", "y"]
+
+    async def test_get_trace_is_never_brief(self, session_factory, config, org):
+        """brief is a search_traces-only concept -- fetching one trace by id
+        to actually use it must always return the whole thing."""
+        long_context = "word " * 500
+        contributed = await _contribute(session_factory, config, org, "t", long_context, "s")
+        async with session_scope(session_factory) as session:
+            trace = await crud.get_trace(session, org, contributed["id"])
+        assert trace["context_text"] == long_context
+        assert "brief" not in trace
+
+
 class TestBatchHydration:
     async def test_votes_and_relations_attach_to_the_right_traces(self, session_factory, config, org):
         """Guards the N+1 fix: batch-loading must not cross-wire one trace's

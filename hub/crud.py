@@ -218,14 +218,46 @@ async def _related_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict
     return out
 
 
-def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
+# search_traces' `brief` mode truncates to this many characters per text
+# field, cut at the nearest preceding whitespace so a preview never ends
+# mid-word. Not operator-configurable: it is a wire-shaping constant, not a
+# deployment policy like max_text_chars (HubConfig) is -- there is no
+# version of "too short to be useful" or "too long to save anything" that
+# varies legitimately by deployment the way a storage/abuse limit does.
+BRIEF_PREVIEW_CHARS = 240
+
+
+def _preview(text: str, limit: int = BRIEF_PREVIEW_CHARS) -> str:
+    """First `limit` characters of `text`, or `text` unchanged if it
+    already fits. Cuts at the last whitespace inside the limit rather than
+    mid-word, and only when that does not throw away more than half the
+    budget -- a preview that is merely short must never be confused with
+    one that was cut, so a truncated preview always ends in `…`."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
+
+
+def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: bool = False) -> dict:
     """Pure shaping -- no I/O. Callers batch-load `votes`/`related` first
-    (see _votes_by_trace) rather than letting this function issue queries."""
-    return {
+    (see _votes_by_trace) rather than letting this function issue queries.
+
+    `brief=True` (search_traces only -- see its own docstring) previews
+    `context_text`/`solution_text` instead of returning them whole. Those
+    two fields are individually bounded by `HubConfig.max_text_chars`
+    (20,000 by default) EACH, so a full page of results (`MAX_SEARCH_LIMIT`
+    = 200) can legitimately run to millions of characters -- enough to
+    blow a calling agent's own context budget, not just run up its bill.
+    """
+    out = {
         "id": trace.id,
         "title": trace.title,
-        "context_text": trace.context_text,
-        "solution_text": trace.solution_text,
+        "context_text": _preview(trace.context_text) if brief else trace.context_text,
+        "solution_text": _preview(trace.solution_text) if brief else trace.solution_text,
         "tags": list(trace.tags or []),
         "agent_type": trace.agent_type,
         "agent_id": trace.agent_id,
@@ -265,6 +297,12 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
     }
+    if brief:
+        # A caller checking this key programmatically never has to guess
+        # whether a short-but-complete field and a truncated one look the
+        # same -- they don't rely on noticing the trailing "…" either.
+        out["brief"] = True
+    return out
 
 
 def commons_visible() -> list:
@@ -355,13 +393,13 @@ def _to_commons_wire(trace: Trace, now: datetime | None = None) -> dict:
     }
 
 
-async def _hydrate(session: AsyncSession, traces: list[Trace]) -> list[dict]:
+async def _hydrate(session: AsyncSession, traces: list[Trace], *, brief: bool = False) -> list[dict]:
     """Wire-shape a list of already-org-scoped traces, batch-loading their
     votes and relations (2 queries total, regardless of list length)."""
     trace_ids = [t.id for t in traces]
     votes = await _votes_by_trace(session, trace_ids)
     related = await _related_by_trace(session, trace_ids)
-    return [_to_wire(t, votes.get(t.id, []), related.get(t.id, [])) for t in traces]
+    return [_to_wire(t, votes.get(t.id, []), related.get(t.id, []), brief=brief) for t in traces]
 
 
 async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
@@ -697,18 +735,33 @@ async def search_traces(
     tags: list[str] | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
     offset: int = 0,
+    brief: bool = False,
 ) -> dict:
     """Returns {"traces": [...], "limit", "offset", "has_more", "terms"}.
 
-    Three deliberate properties, all visible to callers:
+    Four deliberate properties, all visible to callers:
 
-    1. **Pagination.** This used to hard-cap at 50 results with no offset,
+    1. **`brief` trades content for headroom.** `context_text`/
+       `solution_text` are each independently bounded by
+       `HubConfig.max_text_chars` (20,000 by default), so a full page at
+       `MAX_SEARCH_LIMIT` (200) can legitimately run to millions of
+       characters -- enough to blow a calling agent's own context budget,
+       not just its bill. `brief=True` previews both fields instead
+       (`BRIEF_PREVIEW_CHARS`, marked with a trailing "…" when actually
+       cut, plus `"brief": true` on every row so a caller never has to
+       infer it from the ellipsis) while leaving id/title/tags/agent_type/
+       score untouched -- enough to judge relevance and decide which
+       result to fetch in full via `get_trace`. Off by default: an
+       existing caller reading `context_text`/`solution_text` straight off
+       a search result keeps working exactly as before.
+
+    2. **Pagination.** This used to hard-cap at 50 results with no offset,
        so a client could never reach result 51 at all. `limit` is clamped
        to [1, MAX_SEARCH_LIMIT] and `has_more` tells the caller whether to
        page again (computed by fetching one extra row, not by a second
        COUNT query).
 
-    2. **Matching is full-text, not substring.** The old
+    3. **Matching is full-text, not substring.** The old
        `ILIKE '%query%'` could not use an index -- a leading wildcard
        defeats B-tree prefix matching -- so every search sequentially
        scanned the org's traces. It now matches against the
@@ -722,7 +775,7 @@ async def search_traces(
        substring hits are mostly noise -- but it IS a behavior change, not
        a transparent optimization.
 
-    3. **Query terms are OR-ed, not AND-ed** (`hub/search.py`). This is the
+    4. **Query terms are OR-ed, not AND-ed** (`hub/search.py`). This is the
        correction of a defect that made the product's core loop return
        nothing at all for the query shape it exists to serve.
 
@@ -755,6 +808,7 @@ async def search_traces(
     """
     limit = _clamp_int(limit, 1, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
     offset = _clamp_int(offset, 0, MAX_SEARCH_OFFSET, 0)
+    brief = bool(brief)
     if query:
         reject_unstorable_text(query, "query")
     # search_traces has no schema validation ahead of it the way the
@@ -834,7 +888,7 @@ async def search_traces(
             .values(retrievals=Trace.retrievals + 1)
         )
     return {
-        "traces": await _hydrate(session, traces),
+        "traces": await _hydrate(session, traces, brief=brief),
         "limit": limit,
         "offset": offset,
         "has_more": has_more,

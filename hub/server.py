@@ -289,6 +289,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         limit: int = DEFAULT_SEARCH_LIMIT,
         offset: int = 0,
         occasion_id: str = "",
+        brief: bool = False,
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
@@ -301,6 +302,14 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         Returns {"traces": [...], "limit", "offset", "has_more", "terms",
         "terms_ignored"}. Page by re-calling with offset += limit while
         has_more is true.
+
+        `context_text`/`solution_text` are each allowed up to 20,000
+        characters, so a full page of results can be large. Pass
+        `brief=True` to get a short preview of both instead (marked
+        `"brief": true` per result) when you are scanning many candidates to
+        pick one -- then call `get_trace(id)` for the one you decide to use.
+        Everything else on each result (id, title, tags, agent_type) is
+        unaffected either way.
 
         `terms` is what your query reduced to after stemming and stopword
         removal, and `terms_ignored` lists the terms that were NOT used
@@ -334,7 +343,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 result = await crud.search_traces(
-                    session, org_id, query=query, tags=tags, limit=limit, offset=offset
+                    session, org_id, query=query, tags=tags, limit=limit, offset=offset, brief=brief
                 )
                 if occasion_id:
                     result["holdout"] = await crud.holdout_for_results(
