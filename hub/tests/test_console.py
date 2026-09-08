@@ -828,6 +828,40 @@ class TestBillingCheckoutAndPortal:
         assert captured["org_id"] == org_id
         assert captured["success_url"].endswith("?upgraded=1")
 
+    async def test_an_already_subscribed_org_cannot_mint_a_second_checkout_session(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        """The severe case billing.py's own module docstring warns about:
+        Checkout always mints a NEW subscription, so an org that already
+        has one reaching this route anyway (a stale page, a browser
+        back-button resubmit, a direct POST -- the Overview page hiding
+        the button is a UI nicety, not enforcement) must not be allowed
+        to create a second one on the same Stripe customer, which is
+        silent double billing."""
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.stripe_customer_id = "cus_existing"
+            org.stripe_subscription_id = "sub_existing"
+            org.plan = "team"
+
+        async def must_not_be_called(*a, **kw):
+            raise AssertionError("checkout must not run for an already-subscribed org")
+
+        monkeypatch.setattr(console, "create_checkout_session", must_not_be_called)
+        stripe = StripeSettings(
+            secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t", price_scale="price_s"
+        )
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "scale"})
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+        async with session_scope(session_factory) as session:
+            unchanged = await session.get(Organization, org_id)
+            assert unchanged.stripe_subscription_id == "sub_existing"
+            assert unchanged.plan == "team"
+
     async def test_an_unpriced_plan_is_refused(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
         # no scale price -- webhook_secret set so this exercises the

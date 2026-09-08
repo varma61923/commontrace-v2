@@ -965,6 +965,17 @@ def add_console_routes(
             org = await session.get(Organization, org_id)
         if org is None:
             return _redirect_to_signin()
+        if org.stripe_subscription_id:
+            # The Overview page never shows this button to an already-
+            # subscribed org (billing.get("has_subscription") swaps it for
+            # "Manage billing"), but that is a UI nicety, not enforcement --
+            # a stale page, a browser back-button resubmit, or a direct POST
+            # would otherwise reach here anyway. Checkout always mints a NEW
+            # subscription (billing.py's own module docstring); minting a
+            # second one on a customer who already has one is not a smaller
+            # version of this feature, it is silent double billing. Refused
+            # here, not just hidden in the UI.
+            return RedirectResponse(CONSOLE_PATH, status_code=303)
         base_url = str(request.url.replace(path=CONSOLE_PATH, query=""))
         try:
             checkout_url = await create_checkout_session(
