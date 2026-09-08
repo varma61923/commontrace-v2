@@ -85,7 +85,17 @@ dev = [
     # `pip install -e ".[dev]"` and then `pytest hub/tests/` -- the natural
     # thing to try -- got an immediate collection failure with nothing in
     # this extra explaining why.
-    "pytest-asyncio>=0.23,<1.0",
+    #
+    # >=1.0, not the previous >=0.23,<1.0: 0.23.3 (the newest, and only
+    # resolvable, release under that old ceiling) breaks collection under
+    # pytest>=9 with `AttributeError: 'Package' object has no attribute
+    # 'obj'` in its own pytest_collectstart hook -- a real incompatibility
+    # this same change surfaced by raising the pytest floor above 9.0.3 for
+    # the PYSEC-2026-1845 fix above. hub/requirements.txt already installs
+    # pytest-asyncio unpinned in CI and resolves 1.4.0 there without issue,
+    # so the floor is raised (not just the ceiling widened) to make sure a
+    # resolver can't land back on the broken 0.23.3.
+    "pytest-asyncio>=1.0,<2.0",
     # tests/test_mcp_server.py drives the local MCP server, including one test
     # that spawns `commontrace serve` as a real subprocess and speaks MCP to
     # it -- the only thing that proves stdout stays clean enough to carry the

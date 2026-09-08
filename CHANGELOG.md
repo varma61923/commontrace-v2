@@ -9,15 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`pytest`'s dev-extra range still permitted a known-vulnerable version.**
-  `pyproject.toml`'s `[dev]` extra capped `pytest` at `<9.0`, whose newest
-  release (8.4.2) carries PYSEC-2026-1845, fixed in 9.0.3. CI's own
-  `pip-audit` job flags any version a range specifier *permits*, not just
-  the one actually installed, so the cap was making that job fail
-  regardless of what a contributor's environment happened to resolve.
-  Raised the floor to `>=9.0.3` (not just the ceiling) so the vulnerable
-  range is unreachable; the full suite (client + hub) is verified green
-  on pytest 9.1.1.
+- **`pytest`'s dev-extra range still permitted a known-vulnerable version,
+  and fixing it broke `pytest-asyncio` collection.** `pyproject.toml`'s
+  `[dev]` extra capped `pytest` at `<9.0`, whose newest release (8.4.2)
+  carries PYSEC-2026-1845, fixed in 9.0.3. CI's own `pip-audit` job flags
+  any version a range specifier *permits*, not just the one actually
+  installed, so the cap was making that job fail regardless of what a
+  contributor's environment happened to resolve. Raised the floor to
+  `>=9.0.3` (not just the ceiling) so the vulnerable range is
+  unreachable — which then surfaced a second, real incompatibility:
+  `pytest-asyncio`'s old `<1.0` cap resolved 0.23.3, whose
+  `pytest_collectstart` hook breaks under `pytest>=9`
+  (`AttributeError: 'Package' object has no attribute 'obj'`). Raised its
+  floor to `>=1.0` too, matching the unpinned `pytest-asyncio` CI's own
+  `hub tests` job already resolves. The full suite (client + hub) is
+  verified green on pytest 9.1.1 / pytest-asyncio 1.4.0, including the
+  exact three-step CI job (`pytest tests/`, `ruff check .`,
+  `pytest hub/tests/test_image_contents.py --noconftest`) that first
+  caught the collection break.
 
 - **A non-finite `rank` in a holdout log line crashed the entire read.**
   `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN` tokens by
