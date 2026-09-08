@@ -116,9 +116,24 @@ class TestWebhookSignatureVerification:
 class TestStripeSettings:
     async def test_checkout_configured_needs_a_secret_key_and_at_least_one_price(self):
         assert StripeSettings().checkout_configured is False
-        assert StripeSettings(secret_key="sk_test").checkout_configured is False
-        assert StripeSettings(secret_key="sk_test", price_team="price_team").checkout_configured is True
+        assert StripeSettings(secret_key="sk_test", webhook_secret="whsec").checkout_configured is False
+        assert StripeSettings(
+            secret_key="sk_test", webhook_secret="whsec", price_team="price_team"
+        ).checkout_configured is True
         assert StripeSettings(price_team="price_team").checkout_configured is False
+
+    async def test_checkout_configured_also_needs_a_webhook_secret(self):
+        """The severe case this guards: secret_key + a price with NO
+        webhook_secret would let Checkout collect a real payment while
+        add_billing_webhook_route (gated on webhook_secret, hub/server.py)
+        stays unregistered -- so Organization.plan never learns the
+        payment happened. Charged and never upgraded is worse than the
+        button not existing at all, so checkout_configured must require
+        the whole round trip, not just the sellable half."""
+        assert StripeSettings(secret_key="sk_test", price_team="price_team").checkout_configured is False
+        assert StripeSettings(
+            secret_key="sk_test", webhook_secret="whsec", price_team="price_team"
+        ).checkout_configured is True
 
     async def test_price_for_plan_resolves_billable_plans_only(self):
         settings = StripeSettings(secret_key="sk", price_team="price_t", price_scale="price_s")

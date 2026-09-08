@@ -89,9 +89,19 @@ class StripeSettings:
     @property
     def checkout_configured(self) -> bool:
         """Whether there is enough here to offer a self-serve upgrade at
-        all. `secret_key` alone is not enough -- with no price configured
-        for either paid plan, "Upgrade" would have nothing to sell."""
-        return bool(self.secret_key and (self.price_team or self.price_scale))
+        all. Requires all three: `secret_key` alone is not enough -- with
+        no price configured for either paid plan, "Upgrade" would have
+        nothing to sell -- and `webhook_secret` is not optional either,
+        despite gating a DIFFERENT route (add_billing_webhook_route,
+        hub/server.py). Offering Checkout while the webhook stays
+        unregistered is not a smaller version of this feature, it is the
+        worst version of it: a customer completes a real Stripe payment,
+        and this Hub has no route left to ever learn it happened, so
+        Organization.plan never moves off 'free'. Charged and never
+        upgraded is a strictly worse outcome than the button not existing,
+        so this checks for a working round trip, not just a sellable one.
+        """
+        return bool(self.secret_key and self.webhook_secret and (self.price_team or self.price_scale))
 
     def price_for_plan(self, plan: str) -> str | None:
         return {"team": self.price_team, "scale": self.price_scale}.get(plan) or None

@@ -772,6 +772,28 @@ class TestBillingCheckoutAndPortal:
         assert response.status_code == 303
         assert response.headers["location"].endswith("/signin")
 
+    async def test_checkout_refuses_to_run_with_no_webhook_secret_configured(
+        self, session_factory, org_and_key, monkeypatch
+    ):
+        """The severe partial-configuration case: secret_key + a price with
+        NO webhook_secret must never reach Stripe. If it did, a customer
+        could complete a real payment while add_billing_webhook_route
+        (hub/server.py, gated on webhook_secret) stays unregistered --
+        Organization.plan would never learn the payment happened. Charged
+        and never upgraded is worse than the button not existing."""
+        _org_id, raw_key = org_and_key
+
+        async def must_not_be_called(*a, **kw):
+            raise AssertionError("checkout must not run without a working webhook")
+
+        monkeypatch.setattr(console, "create_checkout_session", must_not_be_called)
+        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")  # no webhook_secret
+        async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
+        assert response.status_code == 303
+        assert response.headers["location"] == console.CONSOLE_PATH
+
     async def test_checkout_redirects_home_when_stripe_is_not_configured(
         self, session_factory, org_and_key
     ):
@@ -796,7 +818,7 @@ class TestBillingCheckoutAndPortal:
             return "https://checkout.stripe.com/pay/cs_test_abc"
 
         monkeypatch.setattr(console, "create_checkout_session", fake_create_checkout_session)
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
@@ -808,7 +830,9 @@ class TestBillingCheckoutAndPortal:
 
     async def test_an_unpriced_plan_is_refused(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")  # no scale price
+        # no scale price -- webhook_secret set so this exercises the
+        # per-plan price check specifically, not the blanket configured gate.
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "scale"})
@@ -817,7 +841,7 @@ class TestBillingCheckoutAndPortal:
 
     async def test_an_unrecognized_plan_is_refused(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(
@@ -835,7 +859,7 @@ class TestBillingCheckoutAndPortal:
             raise RuntimeError("stripe unreachable")
 
         monkeypatch.setattr(console, "create_checkout_session", failing)
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(f"{console.CONSOLE_PATH}/billing/checkout", data={"plan": "team"})
@@ -883,7 +907,9 @@ class TestBillingCheckoutAndPortal:
         self, session_factory, org_and_key
     ):
         _org_id, raw_key = org_and_key
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t", price_scale="price_s")
+        stripe = StripeSettings(
+            secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t", price_scale="price_s"
+        )
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.get(console.CONSOLE_PATH)
@@ -909,7 +935,7 @@ class TestBillingCheckoutAndPortal:
             org.stripe_customer_id = "cus_1"
             org.stripe_subscription_id = "sub_1"
             org.plan = "team"
-        stripe = StripeSettings(secret_key="sk_test", price_team="price_t")
+        stripe = StripeSettings(secret_key="sk_test", webhook_secret="whsec_test", price_team="price_t")
         async with _client(_app(session_factory=session_factory, stripe=stripe)) as client:
             await _signed_in(client, raw_key)
             response = await client.get(console.CONSOLE_PATH)
