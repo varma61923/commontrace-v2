@@ -34,7 +34,6 @@ import csv
 import io
 import json
 import os
-import sys
 
 # The stdlib default (131072 bytes = 128 KiB) is a defense against a
 # pathological file, not a limit any real export is expected to respect --
@@ -43,14 +42,20 @@ import sys
 # raises `_csv.Error: field larger than field limit`, which read_failures'
 # own except tuple below did not catch (csv.Error is not a ValueError
 # subclass), so a large-but-legitimate export crashed with a raw traceback
-# instead of failing cleanly or, better, just parsing. Raised as high as
-# this platform's C long allows: sys.maxsize overflows a 32-bit long on
-# some platforms/CPython builds, which raises OverflowError -- 2**31 - 1 is
-# the largest value guaranteed to fit everywhere.
+# instead of failing cleanly or, better, just parsing. Raised to 10 MiB per
+# field: large enough for any legitimate stack trace/export, small enough
+# that a single malicious field cannot exhaust RAM (sys.maxsize allowed a
+# single field to grow until the process died before MAX_FAILURES applied).
 try:
-    csv.field_size_limit(sys.maxsize)
+    csv.field_size_limit(10 * 1024 * 1024)
 except OverflowError:
     csv.field_size_limit(2**31 - 1)
+
+# Refuse absurdly large imports before reading them fully into memory:
+# read_failures materializes the whole file (fh.read + list(DictReader)),
+# so an unbounded read on an untrusted export is a local DoS. 50 MiB is
+# far above any plausible failure export (500 failures cap below).
+MAX_IMPORT_BYTES = 50 * 1024 * 1024
 
 # Fields we will accept for the two things we need. Real exports name these
 # differently and asking a prospect to rename columns before they can get a
@@ -263,8 +268,22 @@ def read_failures(path: str, fmt_override: str | None = None) -> tuple[list[dict
         # matches the name callers expect. utf-8-sig strips the BOM when
         # present and is identical to plain utf-8 when it is not, so this is
         # strictly more permissive with no behavior change for BOM-less files.
+        #
+        # Size-gated before read: this materializes the whole file, so check
+        # st_size first to refuse absurd inputs without allocating them.
+        try:
+            if os.path.getsize(path) > MAX_IMPORT_BYTES:
+                raise FailureImportError(
+                    f"{path} is larger than {MAX_IMPORT_BYTES // (1024 * 1024)} MiB; "
+                    "split the export or pass a smaller file")
+        except OSError:
+            pass
         with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
-            raw = fh.read()
+            raw = fh.read(MAX_IMPORT_BYTES + 1)
+        if len(raw) > MAX_IMPORT_BYTES:
+            raise FailureImportError(
+                f"{path} is larger than {MAX_IMPORT_BYTES // (1024 * 1024)} MiB; "
+                "split the export or pass a smaller file")
     except OSError as exc:
         raise FailureImportError(f"cannot read {path}: {exc}") from exc
 

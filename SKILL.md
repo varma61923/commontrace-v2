@@ -48,6 +48,8 @@ Phase 10 → Omega (synthesis + lesson proposals)    ──→ writes episode/, 
 Phase 11 → Lambda (automatic backlog validation)   ──→ ACCEPTED/REJECTED/NEEDS REFINEMENT verdicts, orchestrator applies ACCEPTED
 ```
 
+Protocol mapping (protocol/PROTOCOL.md: Capture → Structure → Extract → Validate → Store → Inject → Measure): Inject = Alpha (Phase 0); Extract = Omega (Phase 10); Validate = Lambda (Phase 11).
+
 ## When to use
 
 - **Architectural code**: refactor, port, redesign (e.g. CUDA port, algorithmic scan)

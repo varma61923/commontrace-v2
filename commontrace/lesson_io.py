@@ -51,16 +51,34 @@ from commontrace import frontmatter, paths, revision
 SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+def canonical_slug(raw: str) -> str:
+    """One identity for `foo`, `lesson_foo` and `lesson_foo.md`.
+
+    `foo` and `lesson_foo` resolve to the same file by design, and the
+    revision journal keys on whatever `name` happened to be stored (or the
+    filename with `.md`). Comparing canonically keeps `history` finding
+    records regardless of which form each side used, without renaming any
+    stored identity (the stored `name` is the retrieval/experiment identity
+    and must not churn mid-store).
+    """
+    stem = str(raw)
+    if stem.endswith(".md"):
+        stem = stem[: -len(".md")]
+    if stem.startswith("lesson_"):
+        stem = stem[len("lesson_"):]
+    return stem
+
+
 def lesson_path(root: str, slug: str) -> str | None:
     """The file for `slug`, or None if there is no such lesson."""
     if not SLUG_RE.match(slug):
         return None
+    stem = canonical_slug(slug)
     ldir = paths.lessons_dir(root)
-    filename = f"{slug}.md" if slug.startswith("lesson_") else f"lesson_{slug}.md"
-    path = os.path.join(ldir, filename)
+    path = os.path.join(ldir, f"lesson_{stem}.md")
     if os.path.isfile(path):
         return path
-    legacy_path = os.path.join(ldir, f"{slug}.md")
+    legacy_path = os.path.join(ldir, f"{stem}.md")
     if os.path.isfile(legacy_path):
         return legacy_path
     return None
@@ -110,11 +128,14 @@ def write_lesson(
     after = revision.revision_of(fm, body)
 
     if after != before:
+        basename = os.path.basename(path)
+        if basename.endswith(".md"):
+            basename = basename[: -len(".md")]
         _journal(
             root,
             {
                 "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "lesson": str(fm.get("name") or os.path.basename(path)),
+                "lesson": str(fm.get("name") or basename),
                 "from": before,
                 "to": after,
                 "status": fm.get("status"),
@@ -167,6 +188,12 @@ def read_revisions(root: str) -> tuple[list[dict], int]:
 
 
 def history(root: str, slug: str) -> list[dict]:
-    """One lesson's content changes, oldest first."""
+    """One lesson's content changes, oldest first.
+
+    Matches canonically, so `history foo` finds records journaled as
+    `lesson_foo` (or `lesson_foo.md` via the filename fallback in
+    write_lesson) and vice versa.
+    """
     records, _ = read_revisions(root)
-    return [r for r in records if r.get("lesson") == slug]
+    want = canonical_slug(slug)
+    return [r for r in records if canonical_slug(str(r.get("lesson") or "")) == want]

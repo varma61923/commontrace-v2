@@ -309,10 +309,14 @@ def plan(
     when no budget can answer it, which is itself the finding.
     """
     n_per_arm = required_n_per_arm(effect, baseline, power)
+    # A stopped (rate=0) or out-of-range experiment has no design: fail loud
+    # rather than rendering "0 occasions needed", which reads as answered.
+    if not 0.0 < rate < 1.0:
+        raise ValueError(f"holdout rate must be in (0.0, 1.0), got {rate}")
     # The control arm is the binding one at any rate below 50%, and both arms
     # must reach n_per_arm, so the requirement is set by whichever is smaller.
     smaller_share = min(rate, 1.0 - rate)
-    occasions_needed = math.ceil(n_per_arm / smaller_share) if smaller_share > 0 else 0
+    occasions_needed = math.ceil(n_per_arm / smaller_share)
 
     rate_for_budget = None
     verdict = "ok"

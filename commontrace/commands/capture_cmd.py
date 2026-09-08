@@ -10,6 +10,7 @@ import sys
 import uuid
 
 from commontrace import frontmatter, paths, templates, trace_io, validate
+from commontrace.commands import _validators
 from commontrace.frontmatter import locked
 
 
@@ -196,6 +197,12 @@ def _find_trace_by_occasion(tdir: str, occasion_id: str) -> str | None:
 
 
 def run(args: argparse.Namespace) -> int:
+    paths.warn_if_implicit_cwd_store(args.dest)
+    if not _validators.check_text_size(
+        {"title": args.title, "context": args.context, "solution": args.solution},
+        what="trace",
+    ):
+        return 1
     root = paths.resolve_root(args.dest)
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)

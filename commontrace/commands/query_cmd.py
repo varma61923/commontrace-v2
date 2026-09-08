@@ -278,9 +278,15 @@ def _index_is_unusable(root: str) -> str:
         if mtime > newest_lesson:
             newest_lesson, newest_name = mtime, os.path.basename(path)
     if newest_lesson == 0.0:
-        return ""
+        # No lessons on disk but possibly a stale non-empty index (e.g. all
+        # lessons deleted after a build): trusting it would rank ghosts.
+        return "no active lessons on disk (a stale index would rank ghosts)"
     if newest_lesson > index_mtime:
         return f"{newest_name} changed after the index was last built"
+    # Deletions of 1-of-N advance no survivor's mtime, so this gate cannot
+    # see them without reading the index (which needs numpy); build_index.py
+    # performs the full slug-set comparison at build time, and `commontrace
+    # index` after deleting lessons is the supported refresh path.
     return ""
 
 

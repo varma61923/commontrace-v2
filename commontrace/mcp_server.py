@@ -194,6 +194,27 @@ def _agent_actor(who: str = "") -> str:
     return f"mcp:{who}" if who else "mcp:agent"
 
 
+def _coerce_tags(tags: object) -> list[str] | None:
+    """A loosely-typed MCP client may send a single string instead of a list;
+    iterating it char-by-char would corrupt tags to single letters (",".join
+    on "mytag" -> "m,y,t,a,g"). Accept a bare string as one tag, mirroring
+    distill_cmd._safe_tags' isinstance guard."""
+    if tags is None:
+        return None
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        return None
+    return [str(t) for t in tags]
+
+
+def _sanitize_comment(text: str) -> str:
+    """Approval/rejection notes are embedded in `<!-- ... -->`; an agent-
+    controlled `-->` would break out of the comment and inject markdown/HTML
+    into the lesson body that retrieval later injects verbatim."""
+    return str(text).replace("-->", "--&gt;").replace("--", "—")
+
+
 def _lesson_path(root: str, slug: str) -> str:
     from commontrace.commands.lesson_cmd import _SLUG_RE, _resolve_lesson_path
 
@@ -455,8 +476,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         argv = ["--title", title, "--context", context_text, "--solution", solution_text,
                 "--dest", root]
-        if tags:
-            argv += ["--tags", ",".join(str(t) for t in tags)]
+        coerced = _coerce_tags(tags)
+        if coerced:
+            argv += ["--tags", ",".join(str(t) for t in coerced)]
         if agent_type:
             argv += ["--agent-type", agent_type]
         if agent_id:
@@ -649,7 +671,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if value and key in _AGENT_WRITABLE:
                         fm[key] = value
                 if tags is not None:
-                    fm["tags"] = [str(t) for t in tags]
+                    coerced_tags = _coerce_tags(tags)
+                    if coerced_tags is not None:
+                        fm["tags"] = coerced_tags
                 if importance is not None:
                     fm["importance"] = int(importance)
                 for name, text in sections.items():
@@ -716,7 +740,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                         return _err(f"refusing to activate {slug!r}: it does not satisfy the "
                                     "lesson schema.", schema_errors=errors)
                     fm["status"] = "active"
-                    note = f"Approved by {approved_by}" + (f": {rationale}" if rationale else "")
+                    safe_by = _sanitize_comment(approved_by)
+                    safe_rationale = _sanitize_comment(rationale)
+                    note = f"Approved by {safe_by}" + (f": {safe_rationale}" if rationale else "")
                     body = body.rstrip() + f"\n\n<!-- {note} -->\n"
                     activated = lesson_io.write_lesson(
                         path, fm, body, root=root, actor=_agent_actor(approved_by),
@@ -746,7 +772,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if fm.get("status") != "review":
                         return _err(f"{slug!r} has status {fm.get('status')!r}, not 'review'.")
                     fm["status"] = "archived"
-                    body = body.rstrip() + f"\n\n<!-- Rejected: {reason} -->\n"
+                    body = body.rstrip() + f"\n\n<!-- Rejected: {_sanitize_comment(reason)} -->\n"
                     lesson_io.write_lesson(path, fm, body, root=root,
                                            actor=_agent_actor(), reason=reason)
             except LocalStoreError as exc:

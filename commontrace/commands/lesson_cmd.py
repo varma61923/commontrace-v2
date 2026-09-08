@@ -110,43 +110,56 @@ def run_new(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
     ldir = paths.lessons_dir(root)
+    paths.warn_if_implicit_cwd_store(args.dest)
+    if not _validators.check_text_size(
+        {"description": args.description, "applies_when": args.applies_when,
+         "do_not_apply_when": args.do_not_apply_when,
+         "importance_rationale": args.importance_rationale},
+        what="lesson",
+    ):
+        return 1
     os.makedirs(ldir, exist_ok=True)
     filename = f"{args.slug}.md" if args.slug.startswith("lesson_") else f"lesson_{args.slug}.md"
     out_path = os.path.join(ldir, filename)
-    if os.path.exists(out_path):
-        print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
-        return 1
+    # Locked check-then-act: two concurrent `lesson new --slug same` both
+    # passed the exists check and the last writer won silently. Hold the
+    # file lock across the check and the write so the loser gets exit 1,
+    # matching run_approve/run_reject's locked RMW pattern.
+    with frontmatter.locked(out_path):
+        if os.path.exists(out_path):
+            print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
+            return 1
 
-    fm = templates.lesson_frontmatter(
-        slug=args.slug,
-        description=args.description,
-        agent_type=args.agent_type or paths.store_agent_type(root),
-        domain=args.domain,
-        tags=[t.strip() for t in args.tags.split(",") if t.strip()],
-        applies_when=args.applies_when,
-        do_not_apply_when=args.do_not_apply_when,
-        importance=args.importance,
-        importance_rationale=args.importance_rationale,
-        source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
-        # Scaffolded at `review`, not `active`.
-        #
-        # `lesson new` writes a body that is entirely template text
-        # ("## Rule\n[1 actionable sentence]"). Creating that at status
-        # `active` made it live the instant it was scaffolded: retrievable by
-        # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
-        # published to the whole fleet by `sync --push` -- all before a single
-        # word of it had been written.
-        #
-        # It also bypassed the one control the protocol defines for exactly
-        # this: run_approve's own docstring says a lesson "is only ever
-        # activated by an explicit human/Validator call to this command,
-        # never automatically by whatever proposed it". `commontrace distill`
-        # already honours that by writing candidates at `review`; this path
-        # was the inconsistent one.
-        status="review",
-    )
-    lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
-                           actor=_actor(), reason="scaffolded by `lesson new`")
+        fm = templates.lesson_frontmatter(
+            slug=args.slug,
+            description=args.description,
+            agent_type=args.agent_type or paths.store_agent_type(root),
+            domain=args.domain,
+            tags=[t.strip() for t in args.tags.split(",") if t.strip()],
+            applies_when=args.applies_when,
+            do_not_apply_when=args.do_not_apply_when,
+            importance=args.importance,
+            importance_rationale=args.importance_rationale,
+            source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
+            # Scaffolded at `review`, not `active`.
+            #
+            # `lesson new` writes a body that is entirely template text
+            # ("## Rule\n[1 actionable sentence]"). Creating that at status
+            # `active` made it live the instant it was scaffolded: retrievable by
+            # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
+            # published to the whole fleet by `sync --push` -- all before a single
+            # word of it had been written.
+            #
+            # It also bypassed the one control the protocol defines for exactly
+            # this: run_approve's own docstring says a lesson "is only ever
+            # activated by an explicit human/Validator call to this command,
+            # never automatically by whatever proposed it". `commontrace distill`
+            # already honours that by writing candidates at `review`; this path
+            # was the inconsistent one.
+            status="review",
+        )
+        lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
+                               actor=_actor(), reason="scaffolded by `lesson new`")
     print(f"[commontrace] created {out_path}")
     print(
         f"  Written at status=review. Fill in the Rule/Why/How-to-apply sections, then:\n"

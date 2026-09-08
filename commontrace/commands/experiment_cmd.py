@@ -398,6 +398,11 @@ def _run_plan(args: argparse.Namespace, root: str) -> int:
         print("[commontrace] --baseline and --detect must be strictly between 0 and 1.",
               file=sys.stderr)
         return 1
+    if not 0.0 < args.holdout_rate < 1.0:
+        print(f"[commontrace] --holdout-rate must be in (0.0, 1.0), got {args.holdout_rate}. "
+              "A stopped experiment (rate 0) has no design to plan.",
+              file=sys.stderr)
+        return 1
     design = experiment.plan(
         effect=args.detect, baseline=baseline, rate=args.holdout_rate,
         occasions_budget=args.occasions,

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
+import uuid
 from dataclasses import dataclass
 
 from commontrace import experiment, frontmatter, lesson_io, paths
@@ -128,8 +130,12 @@ def configure(
         rate=rate,
         # Derived from the moment it was set rather than random, so the salt
         # itself records WHEN this randomization began -- which is the first
-        # thing anyone asks when two of them appear in one log.
-        salt=f"{now[:19].replace(':', '').replace('-', '')}-{rate:g}",
+        # thing anyone asks when two of them appear in one log. Timestamp
+        # alone has 1-second granularity and collides when configure is
+        # called twice in the same second, pooling two experiments under one
+        # salt; the uuid suffix makes every rotation unique while keeping
+        # the human-readable timestamp prefix.
+        salt=f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
         detect=detect,
         started_at=now,
         note=note,
@@ -348,9 +354,12 @@ def _opt_float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)  # type: ignore[arg-type]
+        out = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(out):
+        return None
+    return out
 
 
 def _opt_int(value: object) -> int | None:
@@ -364,6 +373,13 @@ def _opt_int(value: object) -> int | None:
 
 def _float_or(value: object, default: float) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        out = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+    # NaN/Inf parse successfully but break every downstream consumer:
+    # rate=nan silently stops the experiment (nan > 0 is False) then raises
+    # in is_held_out (math.isfinite check). Fall back to defaults instead,
+    # honouring load_config's "Never raises" contract.
+    if not math.isfinite(out):
+        return default
+    return out

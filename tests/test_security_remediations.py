@@ -189,7 +189,11 @@ class TestSubprocessScriptLookupIsolation:
         # Must NOT find the script from CWD
         assert resolved is None, f"Expected None, but resolved untrusted CWD script: {resolved}"
 
-    def test_find_reference_script_finds_script_in_repo_root(self, tmp_path):
+    def test_find_reference_script_finds_script_in_repo_root(self, tmp_path, monkeypatch):
+        # Store-root scripts run only with explicit opt-in
+        # (COMMONTRACE_ALLOW_STORE_SCRIPTS=1): by default an untrusted clone
+        # must not be able to plant an executable script the victim runs.
+        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
         script_path = clean_root / "benchmark" / "my_script.py"
@@ -212,6 +216,22 @@ class TestSubprocessScriptLookupIsolation:
         assert resolved is not None
         assert os.path.exists(resolved)
         assert os.path.basename(resolved) == "measure_performance.py"
+
+    def test_find_reference_script_ignores_store_root_by_default(self, tmp_path, monkeypatch):
+        # Without opt-in, a store-root script must not resolve even when it
+        # exists -- this is the untrusted-clone RCE guard. Packaged scripts
+        # still resolve (previous test); only the store-root candidate is gated.
+        monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
+        clean_root = tmp_path / "repo_root"
+        clean_root.mkdir()
+        script_path = clean_root / "benchmark" / "my_script.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# Planted script\n", encoding="utf-8")
+
+        resolved = _shellout.find_reference_script(
+            str(clean_root), os.path.join("benchmark", "my_script.py")
+        )
+        assert resolved is None
 
 
 # ==============================================================================

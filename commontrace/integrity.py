@@ -373,8 +373,10 @@ def check_arm_balance(rows: list[Assignment]) -> Finding:
     """
     if not rows:
         return Finding("arm_balance", SEVERITY_OK, "No assignments yet.", "", {})
-    rates = {r.rate for r in rows}
-    configured = sum(rates) / len(rates)
+    # Row-weighted mean: the MLE of the assignment probability. Averaging
+    # distinct rates instead (e.g. 90 rows @0.1 + 10 @0.5 -> 0.3 instead of
+    # 0.14) tests against a rate that matches neither run and mis-reports.
+    configured = sum(r.rate for r in rows) / len(rows)
     n = len(rows)
     k = sum(1 for r in rows if not r.injected)
     observed = k / n

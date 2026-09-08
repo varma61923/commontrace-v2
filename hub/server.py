@@ -926,6 +926,17 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
     rate_limiter = make_rate_limiter(config)
+    if config.rate_limit_backend == "memory":
+        # In-process buckets reset on restart and N replicas allow ~N× the
+        # configured rate. Warning only: memory is the correct default for
+        # single-process eval/test (postgres would add a DB round-trip per
+        # request). Multi-replica deployments want
+        # HUB_RATE_LIMIT_BACKEND=postgres (hub/DEPLOYMENT.md §6).
+        logger.warning(
+            "rate limiting is in-process (HUB_RATE_LIMIT_BACKEND=memory): "
+            "limits reset on restart and do not coordinate across replicas; "
+            "set HUB_RATE_LIMIT_BACKEND=postgres for shared enforcement"
+        )
     mcp = build_mcp_server(config, session_factory, rate_limiter)
     inner_app = mcp.streamable_http_app(
         streamable_http_path=config.streamable_http_path,

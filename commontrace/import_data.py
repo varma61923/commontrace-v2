@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import csv
 import json
-import sys
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -26,9 +25,10 @@ from typing import Any, Iterator
 # (128 KiB) is a defense against a pathological file, not a limit a real
 # CRM/support-system export is expected to respect, and this module's own
 # iter_csv had no protection against the raw `_csv.Error` a field over that
-# limit raises.
+# limit raises. 10 MiB per field: large enough for legitimate exports,
+# small enough that one malicious field cannot exhaust RAM.
 try:
-    csv.field_size_limit(sys.maxsize)
+    csv.field_size_limit(10 * 1024 * 1024)
 except OverflowError:
     csv.field_size_limit(2**31 - 1)
 

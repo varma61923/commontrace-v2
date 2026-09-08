@@ -39,24 +39,44 @@ def packaged_reference_dir() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reference")
 
 
+def _store_scripts_allowed() -> bool:
+    """Whether a reference script may be executed from the store root.
+
+    The store root is attacker-influenced (`--dest` > `$COMMONTRACE_ROOT` >
+    cwd): executing `<root>/memory/attention/query.py` by default means a
+    cloned/forked store can plant code that the victim runs with their own
+    permissions. The packaged copy is preferred; the store-root copy runs
+    only with explicit opt-in (`COMMONTRACE_ALLOW_STORE_SCRIPTS=1`), for a
+    contributor iterating on the reference scripts in their own checkout.
+    """
+    return os.environ.get("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def find_reference_script(root: str, relative: str) -> str | None:
     """Locate a reference-implementation script (attention/query.py, benchmark/...).
 
-    Checked in order: the store root, then the copy bundled in the installed
-    package. The first lets a repo checkout's edited copy win, which is what a
-    contributor expects; the second is what makes the command work for someone
-    who only ran `pip install commontrace`.
-
-    The store-root candidate is kept for a repo checkout that still has a
-    script at the historical path, and for an operator who deliberately drops
-    an edited copy into their own store.
+    Checked in order: the copy bundled in the installed package, then -- only
+    with `COMMONTRACE_ALLOW_STORE_SCRIPTS=1` -- the store root. The packaged
+    copy is what makes the command work for someone who only ran
+    `pip install commontrace`; preferring it also means an untrusted clone
+    cannot plant an executable script the victim runs by pointing `--dest`
+    (or cwd) at it. The store-root candidate remains for a contributor who
+    deliberately drops an edited copy into their own store and opts in.
     """
-    candidates = [
-        os.path.join(root, relative),
-        os.path.join(packaged_reference_dir(), os.path.basename(relative)),
-    ]
-    for c in candidates:
+    candidates = [os.path.join(packaged_reference_dir(), os.path.basename(relative))]
+    if _store_scripts_allowed():
+        candidates.append(os.path.join(root, relative))
+    for i, c in enumerate(candidates):
         if os.path.isfile(c):
+            if i > 0:
+                print(
+                    "[commontrace] warning: running reference script from store root "
+                    f"{c} (COMMONTRACE_ALLOW_STORE_SCRIPTS=1); packaged copy ignored. "
+                    "Only set this for a repo checkout you trust.",
+                    file=sys.stderr,
+                )
             return c
     return None
 

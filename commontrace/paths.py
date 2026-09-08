@@ -59,6 +59,31 @@ def resolve_root(explicit: str | None = None) -> str:
     return cwd
 
 
+def warn_if_implicit_cwd_store(explicit: str | None) -> None:
+    """Warn when a write is about to materialize a new store in the cwd.
+
+    `resolve_root` silently falls back to the cwd when no `--dest`, no
+    `$COMMONTRACE_ROOT`/`$JUSTDOIT_ROOT`, and no `./memory/` exist -- and
+    write paths (`capture`, `lesson new`) then `makedirs` a store wherever
+    the user happened to be. Read-only paths stay silent (a warning there
+    would be noise); call this only before creating store directories.
+    """
+    if explicit is not None:
+        return
+    if os.environ.get("COMMONTRACE_ROOT") or os.environ.get("JUSTDOIT_ROOT"):
+        return
+    if os.path.isdir(os.path.join(os.getcwd(), "memory")):
+        return
+    print(
+        "[commontrace] warning: no store found (--dest not given, "
+        "$COMMONTRACE_ROOT unset, no ./memory/ in cwd); "
+        f"creating a new store at {os.getcwd()}. "
+        "To use an existing store, pass --dest or set $COMMONTRACE_ROOT. "
+        "To silence (intentional init here), run `commontrace init` first.",
+        file=sys.stderr,
+    )
+
+
 def memory_dir(root: str) -> str:
     return os.path.join(root, "memory")
 

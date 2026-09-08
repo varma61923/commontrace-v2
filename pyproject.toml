@@ -55,7 +55,7 @@ attention = [
 # hub/requirements.txt's own header explains.
 hub-sync = [
     "mcp>=2.0,<3.0",
-    "httpx>=0.27.0",
+    "httpx>=0.27.0,<1.0",
 ]
 # `commontrace serve` -- the LOCAL store over MCP stdio
 # (commontrace/mcp_server.py), for agents that cannot run a shell.
@@ -70,7 +70,7 @@ serve = [
     "mcp>=2.0,<3.0",
 ]
 dev = [
-    "pytest>=7.0",
+    "pytest>=7.0,<9.0",
     "ruff>=0.4,<1.0",
     # hub/tests/ uses @pytest_asyncio.fixture / async def test_* throughout
     # (hub/tests/conftest.py). CI's hub-tests job already installs this
@@ -78,7 +78,7 @@ dev = [
     # `pip install -e ".[dev]"` and then `pytest hub/tests/` -- the natural
     # thing to try -- got an immediate collection failure with nothing in
     # this extra explaining why.
-    "pytest-asyncio>=0.23",
+    "pytest-asyncio>=0.23,<1.0",
     # tests/test_mcp_server.py drives the local MCP server, including one test
     # that spawns `commontrace serve` as a real subprocess and speaks MCP to
     # it -- the only thing that proves stdout stays clean enough to carry the

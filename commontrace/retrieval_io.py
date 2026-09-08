@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
+import tempfile
 from dataclasses import dataclass
 
 from commontrace import paths, retrieval
@@ -58,6 +60,10 @@ def _float_or(value: object, default: float) -> float:
     try:
         out = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        return default
+    # NaN/Inf parse but poison every comparison (x >= nan is False):
+    # a nan floor would silently yield empty results. Fall back instead.
+    if not math.isfinite(out):
         return default
     return out
 
@@ -203,19 +209,38 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         note=note,
     )
+    # Atomic + locked + fsynced, matching holdout_io.configure: the previous
+    # fixed ".tmp" name without a lock raced concurrent configures and a
+    # crash mid-write lost the config. Unique tmp via mkstemp, lock the
+    # target, fsync before replace.
+    from commontrace import frontmatter
+
     os.makedirs(paths.memory_dir(root), exist_ok=True)
-    tmp = config_path(root) + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(
-            {
-                "scorer": config.scorer,
-                "floor": config.floor,
-                "configured_at": config.configured_at,
-                "note": config.note,
-            },
-            fh,
-            indent=2,
-        )
-        fh.write("\n")
-    os.replace(tmp, config_path(root))
+    target = config_path(root)
+    with frontmatter.locked(target):
+        fd, tmp = tempfile.mkstemp(
+            dir=os.path.dirname(target) or ".",
+            prefix=CONFIG_NAME + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(
+                    {
+                        "scorer": config.scorer,
+                        "floor": config.floor,
+                        "configured_at": config.configured_at,
+                        "note": config.note,
+                    },
+                    fh,
+                    indent=2,
+                )
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     return config
