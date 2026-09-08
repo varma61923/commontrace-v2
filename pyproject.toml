@@ -70,7 +70,14 @@ serve = [
     "mcp>=2.0,<3.0",
 ]
 dev = [
-    "pytest>=7.0,<9.0",
+    # >=9.0.3, not the previous >=7.0: every release below 9.0.3, including
+    # the newest 8.x (8.4.2), carries a known vulnerability
+    # (PYSEC-2026-1845). A wider floor (e.g. >=7.0) still lets a resolver
+    # land on 8.4.2, which is exactly what tripped CI's own pip-audit job --
+    # it flags any version the specifier permits, not just the one actually
+    # installed. The full suite (client + hub) is verified green on
+    # pytest 9.1.1.
+    "pytest>=9.0.3,<10.0",
     "ruff>=0.4,<1.0",
     # hub/tests/ uses @pytest_asyncio.fixture / async def test_* throughout
     # (hub/tests/conftest.py). CI's hub-tests job already installs this

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`pytest`'s dev-extra range still permitted a known-vulnerable version.**
+  `pyproject.toml`'s `[dev]` extra capped `pytest` at `<9.0`, whose newest
+  release (8.4.2) carries PYSEC-2026-1845, fixed in 9.0.3. CI's own
+  `pip-audit` job flags any version a range specifier *permits*, not just
+  the one actually installed, so the cap was making that job fail
+  regardless of what a contributor's environment happened to resolve.
+  Raised the floor to `>=9.0.3` (not just the ceiling) so the vulnerable
+  range is unreachable; the full suite (client + hub) is verified green
+  on pytest 9.1.1.
+
 - **A non-finite `rank` in a holdout log line crashed the entire read.**
   `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN` tokens by
   default, and `holdout_io._opt_int` converted with `int(value)`, which
