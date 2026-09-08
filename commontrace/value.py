@@ -175,9 +175,26 @@ def compute(
             low += item_low
             high += item_high
 
+    reason = ""
+    if counted == 0 and memories:
+        # $0/zero occasions here is a correct measurement, not "nothing is
+        # working" -- but nothing at the top level said so, and $0 reads as
+        # a verdict to anyone who has not also read every memory's
+        # `why_not`. Name the strongest trend directly: the memory whose
+        # (unestablished) effect times its current injection count is
+        # largest, which is also the one closest to clearing the power bar.
+        best = max(memories, key=lambda m: abs(m.effect) * max(m.n_injected, 1))
+        reason = (
+            f"Every memory here is UNDERPOWERED or measured with no effect, so the "
+            f"total below is correctly {'0' if value_per_occasion is None else '$0'} -- "
+            "that is 'not enough evidence yet', not 'this does not work'. The "
+            f"strongest trend so far is `{best.slug}` at {best.effect:+.1%} on "
+            f"{best.n_injected} injection(s); see `memories` for what each one still "
+            "needs."
+        )
     return ValueReport(
         readable=True,
-        reason="",
+        reason=reason,
         memories=memories,
         occasions_improved=round(total, 2),
         ci_low=round(low, 2), ci_high=round(high, 2),
@@ -198,6 +215,10 @@ def render(report: ValueReport, unit: str = "occasion") -> str:
         f"memory, over the measured window "
         f"(95% CI {report.ci_low:+,.0f} to {report.ci_high:+,.0f}).",
         "",
+    ]
+    if report.reason:
+        lines += [report.reason, ""]
+    lines += [
         f"Computed from {report.n_counted} memory/memories whose causal effect is "
         f"established. {report.n_excluded} contributed nothing, listed below with why.",
         "",

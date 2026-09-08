@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import experiment, integrity, revision, value
+from commontrace import distill, experiment, integrity, revision, value
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -253,6 +253,17 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
     (20,000 by default) EACH, so a full page of results (`MAX_SEARCH_LIMIT`
     = 200) can legitimately run to millions of characters -- enough to
     blow a calling agent's own context budget, not just run up its bill.
+
+    Brief mode also drops the operational/bookkeeping fields below when
+    they hold their default (empty/false/zero) value -- measured on a real
+    5-result page where none of them were populated, these ~14 fields cost
+    roughly as many tokens as `brief`'s own truncation saved, which meant
+    "browse many with brief, then get_trace the one you want" cost MORE
+    than a single non-brief call, not less. A field that actually holds
+    something (a real `agent_id`, a non-zero `trust`, an `outcome`) is
+    still shipped in brief mode -- only the empty defaults are omitted, and
+    only when brief; full mode is unchanged so an existing caller reading
+    any of these off a normal result keeps working exactly as before.
     """
     out = {
         "id": trace.id,
@@ -261,6 +272,26 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
         "solution_text": _preview(trace.solution_text) if brief else trace.solution_text,
         "tags": list(trace.tags or []),
         "agent_type": trace.agent_type,
+        "created_at": _iso(trace.created_at),
+        "trust": trace.trust,
+        # Whether this trace is quarantined. Surfaced (unlike the
+        # models.py column comment's original framing of these as
+        # "governance fields, not part of the wire object") because a caller
+        # that reaches a quarantined trace of its OWN -- via get_trace/
+        # vote_trace by id, which do not filter quarantine the way
+        # search_traces/list_tags do -- otherwise gets the full body back
+        # with no indication it is excluded from search and pending review.
+        # Safe to expose on every call site: get_trace/vote_trace are
+        # org-scoped to the trace's owner, and the one cross-org call site
+        # (commons_overlap/commons_search's `_to_commons_wire(hit)`) only
+        # ever reaches rows already filtered to `quarantined.is_(False)`,
+        # so this is always False there. Kept unconditional (not folded
+        # into `optional` below) because its own absence must never be
+        # mistaken for "not quarantined" -- the one field on this object
+        # where silence is not a safe default to imply.
+        "quarantined": trace.quarantined,
+    }
+    optional = {
         "agent_id": trace.agent_id,
         "profile": trace.profile,
         "extensions": dict(trace.extensions or {}),
@@ -268,8 +299,6 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
         "review_after": trace.review_after,
         "supersedes_trace_id": trace.supersedes_trace_id or "",
         "contributor": trace.contributor,
-        "created_at": _iso(trace.created_at),
-        "trust": trace.trust,
         "retrievals": trace.retrievals,
         "depth": trace.depth,
         "votes": votes,
@@ -283,19 +312,6 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
         # rather than merely asserted -- a customer can see for themselves
         # that nothing of theirs is flagged.
         "shared_with_commons": trace.shared_with_commons,
-        # Whether this trace is quarantined, and why. Surfaced (unlike the
-        # models.py column comment's original framing of these as
-        # "governance fields, not part of the wire object") because a caller
-        # that reaches a quarantined trace of its OWN -- via get_trace/
-        # vote_trace by id, which do not filter quarantine the way
-        # search_traces/list_tags do -- otherwise gets the full body back
-        # with no indication it is excluded from search and pending review.
-        # Safe to expose on every call site: get_trace/vote_trace are
-        # org-scoped to the trace's owner, and the one cross-org call site
-        # (commons_overlap/commons_search's `_to_commons_wire(hit)`) only
-        # ever reaches rows already filtered to `quarantined.is_(False)`,
-        # so this is always False there.
-        "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
     }
     if brief:
@@ -303,6 +319,9 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
         # whether a short-but-complete field and a truncated one look the
         # same -- they don't rely on noticing the trailing "…" either.
         out["brief"] = True
+        out.update({k: v for k, v in optional.items() if v})
+    else:
+        out.update(optional)
     return out
 
 
@@ -828,6 +847,17 @@ async def search_traces(
 
     stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
     chosen = hub_search.ChosenTerms((), (), ())
+    # A trace whose OWN recorded outcome says the attempt failed
+    # (`outcome.resolved: false` -- an agent's self-logged, unresolved
+    # occasion, not a curated solution) sorts after every other trace at
+    # the same relevance, rather than competing with them on text match
+    # alone. A hand-written lesson and a fleet's own escalated retry of the
+    # same query otherwise rank on equal footing, and text relevance alone
+    # cannot tell them apart: both describe the same failure in the same
+    # words. This is a ranking floor, not a filter -- a failed attempt is
+    # still findable, just never placed ahead of a better-standing result
+    # for the same query.
+    failed_outcome = case((Trace.outcome["resolved"].astext == "false", 1), else_=0)
     if query:
         frequencies = (
             await session.execute(hub_search.term_frequency_stmt(org_id, query))
@@ -836,19 +866,20 @@ async def search_traces(
         if chosen.used:
             tsquery = hub_search.tsquery_for(chosen.used)
             stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
-            # id.desc() as a tiebreaker: created_at alone is not unique
-            # enough under concurrent inserts (or two rows sharing a
+            # id.desc() as a final tiebreaker: created_at alone is not
+            # unique enough under concurrent inserts (or two rows sharing a
             # timestamp) to make OFFSET/LIMIT paging deterministic --
             # without a total order, Postgres is free to break ties by
             # physical row order, which is not guaranteed stable across two
             # separate queries.
             stmt = stmt.order_by(
+                failed_outcome.asc(),
                 hub_search.relevance(Trace.search_vector, tsquery).desc(),
                 Trace.created_at.desc(),
                 Trace.id.desc(),
             )
     else:
-        stmt = stmt.order_by(Trace.created_at.desc(), Trace.id.desc())
+        stmt = stmt.order_by(failed_outcome.asc(), Trace.created_at.desc(), Trace.id.desc())
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
@@ -2125,6 +2156,60 @@ async def holdout_assign(
     }
 
 
+def _cluster_representatives(traces: list[dict]) -> dict[str, str]:
+    """id -> the id its whole near-duplicate cluster is randomized under.
+
+    Without this, a fleet's own habit of contributing a trace of what
+    happened after each occasion -- the exact pattern `commontrace capture`
+    encourages on the local tier -- creates one new, independent trace id
+    per occasion that is a near-duplicate of whatever lesson it resolved.
+    `holdout_assign` treats every id it is given as its own randomization
+    unit, so those duplicates each accumulate their own handful of
+    injections instead of one lesson's injections accumulating on one id --
+    which is exactly the shape that keeps a real, large effect UNDERPOWERED
+    forever. `commontrace/distill.py` exists to solve the identical problem
+    for the local tier's own lesson corpus; this reuses its clustering
+    rather than inventing a second implementation of "these are probably
+    the same thing".
+
+    A cluster's representative prefers a member with no recorded FAILED
+    outcome (`outcome.resolved is not False`): an unresolved, escalated
+    occasion log should not become the one id the whole cluster's
+    observations -- and the causal effect a customer eventually reads --
+    are attributed to, when a better-standing member of the same cluster is
+    available. Ids that cluster with nothing map to themselves, so a
+    genuinely distinct trace is completely unaffected by this.
+
+    Clusters on whatever text `traces` already carries, which may be
+    brief-truncated (`_to_wire(..., brief=True)`); a degraded grouping on
+    truncated text still only ever falls back to today's per-id behavior,
+    never to a wrong answer, so this is an acceptable degradation rather
+    than a correctness risk.
+    """
+    candidates = [
+        distill.TraceCandidate(
+            id=t["id"], path="", title=t.get("title", ""),
+            context_text=t.get("context_text", ""), solution_text=t.get("solution_text", ""),
+            tags=list(t.get("tags") or []), agent_type=t.get("agent_type", ""),
+        )
+        for t in traces if isinstance(t, dict) and t.get("id")
+    ]
+    if len(candidates) < 2:
+        return {c.id: c.id for c in candidates}
+    outcome_by_id = {
+        t["id"]: (t.get("outcome") or {}) for t in traces if isinstance(t, dict) and t.get("id")
+    }
+    clusters = distill.find_clusters(candidates, existing_lessons_source_traces=[])
+    representative_of: dict[str, str] = {c.id: c.id for c in candidates}
+    for cluster in clusters:
+        preferred = [c for c in cluster.traces if outcome_by_id.get(c.id, {}).get("resolved") is not False]
+        pool = preferred or cluster.traces
+        rep_id = distill.representative(distill.Cluster(traces=pool, shared_terms=cluster.shared_terms)).id
+        for c in cluster.traces:
+            representative_of[c.id] = rep_id
+    return representative_of
+
+
 async def holdout_for_results(
     session: AsyncSession,
     org_id: str,
@@ -2149,6 +2234,15 @@ async def holdout_for_results(
     ExperimentNotRunning: a caller of THAT tool has explicitly asked to
     run an experiment and should be told it is off, while a caller of
     search_traces has only asked to search.
+
+    Near-duplicate results (see `_cluster_representatives`) are assigned
+    ONE holdout decision, under whichever member best represents the
+    cluster -- but every id in `traces` still gets a `withhold`/`inject`
+    verdict of its own in the response, so this is invisible at the wire
+    level: a caller checking `holdout.withhold` for a specific id it
+    fetched sees exactly the same shape as before, just backed by an
+    experiment that is no longer fragmenting its own statistical power
+    across duplicates the caller never asked to see as separate memories.
     """
     org = await session.get(Organization, org_id)
     if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
@@ -2156,10 +2250,13 @@ async def holdout_for_results(
     ids = [t["id"] for t in traces if isinstance(t, dict) and t.get("id")]
     if not ids:
         return {}
-    assignment = await holdout_assign(session, org_id, ids, occasion_id, actor=actor)
+    representative_of = _cluster_representatives(traces)
+    assign_ids = list({representative_of.get(i, i) for i in ids})
+    assignment = await holdout_assign(session, org_id, assign_ids, occasion_id, actor=actor)
+    rep_withheld = set(assignment["withhold"])
     return {
         "occasion_id": assignment["occasion_id"],
-        "withhold": assignment["withhold"],
+        "withhold": [i for i in ids if representative_of.get(i, i) in rep_withheld],
         "note": assignment["note"],
     }
 

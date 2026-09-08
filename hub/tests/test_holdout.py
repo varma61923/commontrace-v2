@@ -34,6 +34,7 @@ from sqlalchemy import update as sa_update
 
 from commontrace import revision
 from hub import crud, manage, plans
+from hub.abuse import make_rate_limiter
 from hub.db import session_scope
 from hub.models import HoldoutObservation, Organization, Trace
 
@@ -58,13 +59,42 @@ async def other_org(session_factory):
         return o.id
 
 
+# Genuinely unrelated incident topics, not "topic {i}": crud.holdout_for_
+# results clusters near-duplicate search results (hub/crud.py:
+# _cluster_representatives), and a shared boilerplate sentence differing
+# only by an appended index number still shares enough vocabulary to
+# cluster under Jaccard similarity -- these traces need to share close to
+# NO tokens with each other, the same way distinct real lessons would, so
+# `_traces(..., n)` continues to produce `n` INDEPENDENT randomization
+# units rather than collapsing into one.
+_UNRELATED_TOPICS = [
+    "database connection pool exhaustion under concurrent load",
+    "stale cache serving expired pricing data to checkout",
+    "race condition in webhook retry backoff logic",
+    "memory leak in long running background worker process",
+    "certificate expiry breaking outbound TLS handshake calls",
+    "deadlock between two concurrent schema migration jobs",
+    "unicode normalization breaking full text search index",
+    "clock skew causing signed token validation failures",
+    "orphaned child rows after cascading delete bug",
+    "N plus one query pattern degrading dashboard latency",
+    "flaky integration test caused by shared fixture state",
+    "incorrect timezone conversion in scheduled report export",
+]
+
+
 async def _traces(session_factory, org_id, n):
+    if n > len(_UNRELATED_TOPICS):
+        raise ValueError(f"only {len(_UNRELATED_TOPICS)} unrelated topics available, got n={n}")
     ids = []
     async with session_scope(session_factory) as session:
         for i in range(n):
+            topic = _UNRELATED_TOPICS[i]
             t = Trace(
-                org_id=org_id, title=f"lesson {i}", context_text="c",
-                solution_text="s", tags=[], agent_type="code",
+                org_id=org_id, title=f"lesson {i}",
+                context_text=topic,
+                solution_text=f"resolved by addressing {topic}",
+                tags=[], agent_type="code",
             )
             session.add(t)
             await session.flush()
@@ -253,6 +283,115 @@ class TestSearchIntegration:
     async def test_an_empty_result_set_records_nothing(self, session_factory, org):
         async with session_scope(session_factory) as session:
             assert await crud.holdout_for_results(session, org, [], "occ-1") == {}
+
+
+class TestNearDuplicateClustering:
+    """A fleet's own habit of contributing a trace of what happened after
+    each occasion creates one new, independent trace id per occasion that
+    is a near-duplicate of whatever lesson it resolved. Without clustering,
+    each duplicate accumulates its own handful of holdout observations
+    instead of one lesson's observations accumulating on one id -- the
+    shape that keeps a real, large effect UNDERPOWERED forever."""
+
+    async def _near_duplicates(self, session_factory, config, org_id, n, *, failed_ids=()):
+        """`n` traces that are all near-duplicates of ONE lesson (shared
+        vocabulary, varying only the trailing occasion number), the shape
+        `commontrace capture`-style self-logging actually produces."""
+        rate_limiter = make_rate_limiter(config)
+        ids = []
+        async with session_scope(session_factory) as session:
+            for i in range(n):
+                outcome = {"resolved": False} if i in failed_ids else None
+                result = await crud.contribute_trace(
+                    session, org_id, config, rate_limiter,
+                    title=f"connection pool exhausted (occasion {i})",
+                    context_text="connection pool exhausted running the test suite in parallel",
+                    solution_text="dispose the sqlalchemy engine in the fixture teardown",
+                    tags=[], agent_type="code", outcome=outcome,
+                )
+                ids.append(result["id"])
+        return ids
+
+    async def test_near_duplicates_share_one_holdout_decision(self, session_factory, config, org):
+        """The core property: all near-duplicate results in one search page
+        resolve to the SAME withhold/inject verdict, because they are the
+        same randomization unit underneath -- not `n` independent coin
+        flips that would only agree by chance."""
+        await self._near_duplicates(session_factory, config, org, 8)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            holdout = await crud.holdout_for_results(session, org, found["traces"], "occ-1")
+        withheld = set(holdout["withhold"])
+        all_ids = {t["id"] for t in found["traces"]}
+        # Either every one of them is withheld, or none of them are --
+        # never a split, which independent per-id coin flips would produce
+        # with overwhelming probability at n=8.
+        assert withheld == all_ids or withheld == set()
+
+    async def test_observations_accumulate_on_one_trace_id(self, session_factory, config, org):
+        """This is the statistical-power fix, made concrete: 20 near-
+        duplicate occasions produce ONE trace id with ~20 observations in
+        the causal analysis, not 20 trace ids with ~1 each."""
+        await self._near_duplicates(session_factory, config, org, 20)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            for i in range(20):
+                await crud.holdout_for_results(session, org, found["traces"], f"occ-{i}")
+        for i in range(20):
+            await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+        assert report["n_observations"] == 20
+        assert len(report["effects"]) == 1, (
+            "20 near-duplicate injections should attribute to one trace id, "
+            f"not fragment across {len(report['effects'])}"
+        )
+
+    async def test_representative_prefers_a_non_failed_member(self, session_factory, config, org):
+        """The one id a cluster's observations get attributed to should not
+        be an unresolved, escalated occasion log when a better-standing
+        member of the same cluster exists -- that id's title is what a
+        customer reading `causal_effects`/`value_delivered` sees as "the
+        lesson"."""
+        ids = await self._near_duplicates(
+            session_factory, config, org, 6, failed_ids={0, 1, 2, 3, 4}
+        )
+        only_ok = ids[5]
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            await crud.holdout_for_results(session, org, found["traces"], "occ-1")
+        async with session_scope(session_factory) as session:
+            trace_ids = (
+                await session.execute(select(func.distinct(HoldoutObservation.trace_id)))
+            ).scalars().all()
+        assert [str(t) for t in trace_ids] == [only_ok]
+
+    async def test_genuinely_distinct_traces_are_not_merged(self, session_factory, org):
+        """The control: unrelated lessons must keep getting independent
+        holdout decisions -- clustering must never merge traces that
+        share no real content, only coincidental structure."""
+        await _traces(session_factory, org, 6)  # the fixture's own unrelated-topics bank
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            for i in range(30):
+                await crud.holdout_for_results(session, org, found["traces"], f"occ-{i}")
+        for i in range(30):
+            await _resolve(session_factory, org, f"occ-{i}", True)
+        async with session_scope(session_factory) as session:
+            report = await crud.causal_effects(session, org)
+        assert len(report["effects"]) == 6
+
+    async def test_withhold_list_never_names_an_id_outside_the_input(
+        self, session_factory, config, org
+    ):
+        """The wire contract is unchanged: `withhold` is drawn from exactly
+        the ids `traces` supplied, even though one shared cluster decision
+        produced every verdict in it."""
+        ids = await self._near_duplicates(session_factory, config, org, 5)
+        async with session_scope(session_factory) as session:
+            found = await crud.search_traces(session, org, limit=50)
+            holdout = await crud.holdout_for_results(session, org, found["traces"], "occ-1")
+        assert set(holdout["withhold"]) <= set(ids)
 
 
 class TestRecordingOutcomes:

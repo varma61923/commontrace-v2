@@ -108,6 +108,30 @@ class TestTheThreeRules:
         phantom = next(m for m in report.memories if m.slug == "phantom")
         assert not phantom.counted and "not established" in phantom.why_not
 
+    def test_when_nothing_is_counted_the_top_level_reason_names_the_best_trend(self):
+        """$0 from an all-UNDERPOWERED run is a correct measurement, but
+        the top-level `reason` used to stay empty in that case -- nothing
+        distinguished it from '$0 because this doesn't help' at a glance.
+        The strongest (unestablished) trend should be named directly."""
+        report = value.compute([
+            effect("weak", ex.VERDICT_UNDERPOWERED, 5, 0.05, -0.20, 0.30),
+            effect("strong", ex.VERDICT_UNDERPOWERED, 11, 0.62, -0.05, 1.00),
+        ], sound())
+        assert report.readable
+        assert report.n_counted == 0
+        assert report.occasions_improved == 0.0
+        assert "strong" in report.reason
+        assert "62" in report.reason  # the effect size, not just the slug
+        assert "not enough evidence" in report.reason.lower()
+        assert report.reason in value.render(report)
+
+    def test_a_fully_established_run_gets_no_extra_reason_text(self):
+        """The new top-level explanation is specifically for the '$0 and
+        why' case -- an ordinary readable report with something counted
+        must not grow unrequested text."""
+        report = value.compute([effect("a", ex.VERDICT_HELPS, 1000, 0.10, 0.05, 0.15)], sound())
+        assert report.reason == ""
+
     def test_memories_that_hurt_are_subtracted_not_dropped(self):
         """THE rule. A figure that sums only the winners is a brochure, and
         this product's whole claim is that it will tell a customer when its

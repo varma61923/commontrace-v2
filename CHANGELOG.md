@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Hub's own randomized holdout fragmented a fleet's statistical
+  power across near-duplicate traces.** Every occasion a fleet resolved
+  and then contributed a trace of -- the exact pattern `commontrace
+  capture` encourages locally -- became a new, independent randomization
+  unit in `holdout_assign`, so instead of one lesson's injections
+  accumulating on one id, they split across dozens of near-identical
+  traces that individually never cleared the power threshold. A real,
+  deployed audit measured this at ~19x: 56-59 tracked "memories" per
+  vertical against 3 lessons actually seeded, with two of four verticals
+  showing $0.00 in `value_delivered` despite real, large effects (+62%,
+  +56%) that simply never accumulated enough injections on one id to
+  reach significance. `hub/crud.py:holdout_for_results` now clusters
+  near-duplicate search results with `commontrace.distill` (the same
+  clustering the local tier's own `commontrace distill` uses) before
+  assignment, preferring a cluster member with no recorded failed
+  outcome as the representative; the wire response is unchanged; a
+  re-run of the same audit against the fix measured the tracked-memory
+  count dropping from 21 to 8 for one 20-occasion vertical.
+- **A trace's own recorded failure could outrank a working solution for
+  the same query.** `search_traces` ranked purely on text relevance, so
+  an agent's unresolved, escalated occasion log and a hand-written,
+  working lesson describing the same failure ranked on equal footing --
+  text relevance cannot tell them apart, since both describe the same
+  failure in the same words. A live spot-check found the canonical
+  lesson missing from the top 5 results entirely in 2 of 3 real queries,
+  buried behind its own low-quality duplicates. Traces with
+  `outcome.resolved: false` now sort after every other result at the
+  same relevance -- a ranking floor, not a filter, so a failed attempt
+  stays findable, just never ahead of a better-standing result. Re-run
+  against the fix: the same previously-buried lesson now ranks #1.
+- **`search_traces(brief=True)` shipped ~14 always-present metadata
+  fields even at their empty/default value**, so the docstring's own
+  recommended "browse many with brief, then `get_trace` the one you
+  want" pattern measured *worse* than a single non-brief call, not
+  better, on a real corpus. Brief mode now omits an operational field
+  (`agent_id`, `extensions`, `votes`, `outcome`, ten more) when it holds
+  its default value; a field that actually holds something still ships.
+  Full mode is unchanged. Measured: brief-mode payload savings on a
+  5-result page went from 16% to 37%.
+- **`value_delivered` returning $0.00 read as "this doesn't work" rather
+  than "not enough data yet"** when every memory was UNDERPOWERED --
+  `reason` stayed empty in exactly that case, with no top-level signal
+  distinguishing a correct measurement from a null result. It now names
+  the strongest (unestablished) trend and its current injection count
+  directly, e.g. "the strongest trend so far is `X` at +62% on 11
+  injection(s)."
 - **`pytest`'s dev-extra range still permitted a known-vulnerable version,
   and fixing it broke `pytest-asyncio` collection.** `pyproject.toml`'s
   `[dev]` extra capped `pytest` at `<9.0`, whose newest release (8.4.2)

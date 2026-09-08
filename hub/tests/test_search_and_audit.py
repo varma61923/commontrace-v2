@@ -35,13 +35,15 @@ async def other_org(session_factory):
         return o.id
 
 
-async def _contribute(session_factory, config, org_id, title, context, solution, tags=None, actor="test"):
+async def _contribute(
+    session_factory, config, org_id, title, context, solution, tags=None, actor="test", outcome=None,
+):
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         return await crud.contribute_trace(
             session, org_id, config, rate_limiter,
             title=title, context_text=context, solution_text=solution,
-            tags=tags or [], agent_type="code", actor=actor,
+            tags=tags or [], agent_type="code", actor=actor, outcome=outcome,
         )
 
 
@@ -155,6 +157,74 @@ class TestFullTextSearch:
         assert len(page["traces"]) == 1
 
 
+class TestFailedOutcomeRanking:
+    """A trace whose own `outcome.resolved` is False -- an agent's
+    self-logged, unresolved attempt, not a curated solution -- must never
+    outrank a same-relevance trace with no such marker. Text relevance
+    alone cannot separate them: both describe the same failure in the same
+    words, so without this a hand-written lesson and a fleet's own escalated
+    retry of the same query rank on equal footing."""
+
+    async def test_a_failed_occasion_sorts_after_an_otherwise_equal_result(
+        self, session_factory, config, org
+    ):
+        await _contribute(
+            session_factory, config, org, "escalated attempt",
+            "connection pool exhausted running tests", "gave up, escalated",
+            outcome={"resolved": False, "escalated": True},
+        )
+        await _contribute(
+            session_factory, config, org, "the actual fix",
+            "connection pool exhausted running tests", "dispose the engine in teardown",
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="connection pool exhausted tests")
+        titles = [t["title"] for t in page["traces"]]
+        assert titles == ["the actual fix", "escalated attempt"]
+
+    async def test_a_resolved_occasion_is_not_demoted(self, session_factory, config, org):
+        """The floor is specifically for a recorded FAILURE, not for having
+        an outcome at all -- a successfully resolved occasion competes on
+        relevance exactly as before."""
+        await _contribute(
+            session_factory, config, org, "resolved once",
+            "connection pool exhausted running tests", "dispose the engine",
+            outcome={"resolved": True},
+        )
+        await _contribute(
+            session_factory, config, org, "no outcome recorded",
+            "connection pool exhausted running tests", "dispose the engine",
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="connection pool exhausted tests")
+        # Both equally eligible for the top spot -- neither is demoted.
+        assert {t["title"] for t in page["traces"][:2]} == {"resolved once", "no outcome recorded"}
+
+    async def test_the_floor_also_applies_with_no_query(self, session_factory, config, org):
+        await _contribute(
+            session_factory, config, org, "failed", "c", "unresolved",
+            outcome={"resolved": False},
+        )
+        await _contribute(session_factory, config, org, "clean", "c", "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="")
+        assert page["traces"][-1]["title"] == "failed"
+
+    async def test_a_failed_result_is_still_returned_not_dropped(
+        self, session_factory, config, org
+    ):
+        """A ranking floor, not a filter: still findable, just never ahead
+        of a better-standing result for the same query."""
+        await _contribute(
+            session_factory, config, org, "only match",
+            "extremely specific unmatched vocabulary here", "unresolved",
+            outcome={"resolved": False},
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="extremely specific unmatched vocabulary")
+        assert len(page["traces"]) == 1
+
+
 class TestBriefMode:
     """context_text/solution_text are each allowed up to 20,000 characters
     (HubConfig.max_text_chars), so a full page at MAX_SEARCH_LIMIT can
@@ -226,6 +296,66 @@ class TestBriefMode:
             trace = await crud.get_trace(session, org, contributed["id"])
         assert trace["context_text"] == long_context
         assert "brief" not in trace
+
+    async def test_default_valued_operational_fields_are_omitted_in_brief_mode(
+        self, session_factory, config, org
+    ):
+        """`brief=True` exists so 'browse many, then get_trace the one you
+        pick' costs less than one non-brief call -- which measurably failed
+        while every one of these ~14 fields was always present, even at
+        their empty/false/zero default, on every brief result. None of them
+        were set on this trace, so none of them should ship."""
+        await _contribute(session_factory, config, org, "t", "some context", "some solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        # Not `retrievals`: search_traces increments it (as a side effect
+        # of being returned by THIS call) before hydrating the wire dict,
+        # so it is never actually 0 on a result -- pre-existing behavior,
+        # unrelated to this trimming.
+        for field in (
+            "agent_id", "profile", "extensions", "watch_condition", "review_after",
+            "supersedes_trace_id", "contributor", "depth", "votes",
+            "related", "outcome", "shared_with_commons", "quarantine_reason",
+        ):
+            assert field not in trace, f"{field!r} should be omitted at its default in brief mode"
+        assert trace["retrievals"] == 1
+        # Always present regardless -- never conditionally dropped.
+        for field in ("id", "title", "context_text", "solution_text", "tags",
+                      "agent_type", "created_at", "trust", "quarantined", "brief"):
+            assert field in trace
+
+    async def test_a_populated_operational_field_still_ships_in_brief_mode(
+        self, session_factory, config, org
+    ):
+        """Only the DEFAULT value is omitted -- a field actually holding
+        something must still reach the caller in brief mode, same as full."""
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            await crud.contribute_trace(
+                session, org, config, rate_limiter,
+                title="t", context_text="some context", solution_text="some solution",
+                tags=[], agent_type="code",
+                outcome={"resolved": True, "tokens_used": 42},
+            )
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert trace["outcome"] == {"resolved": True, "tokens_used": 42}
+
+    async def test_full_mode_still_ships_every_field_at_its_default(
+        self, session_factory, config, org
+    ):
+        """The trimming above is brief-only -- an existing full-mode caller
+        reading any of these fields off a normal result must see exactly
+        what it always has, default value included."""
+        await _contribute(session_factory, config, org, "t", "some context", "some solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=False)
+        trace = page["traces"][0]
+        assert trace["agent_id"] == ""
+        assert trace["votes"] == []
+        assert trace["outcome"] == {}
+        assert trace["shared_with_commons"] is False
 
 
 class TestBatchHydration:
