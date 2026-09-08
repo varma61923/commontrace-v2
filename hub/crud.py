@@ -44,6 +44,7 @@ from hub.abuse import (
     suspicion_reason,
     validate_size,
 )
+from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
 from hub.models import (
     MAX_FEEDBACK_TEXT_CHARS,
@@ -1592,6 +1593,15 @@ class DeletionNotReady(ValueError):
     has elapsed, with no matching request, or past the token's expiry."""
 
 
+class SubscriptionCancellationFailed(RuntimeError):
+    """Raised when confirm_org_deletion (or hub/manage.py:purge_org)
+    could not cancel an org's live Stripe subscription. The org is NOT
+    deleted when this is raised -- see billing.cancel_subscription's
+    docstring for why leaving a subscription active with no org row left
+    to reconcile it against is worse than a deletion that must be
+    retried."""
+
+
 def _hash_deletion_token(raw_token: str) -> str:
     # A 256-bit random token has no meaningful offline-brute-force surface
     # for a slow KDF to defend against (unlike a human-memorable password),
@@ -1651,7 +1661,8 @@ async def cancel_org_deletion(session: AsyncSession, org_id: str, actor: str = A
 
 
 async def confirm_org_deletion(
-    session: AsyncSession, org_id: str, token: str, actor: str = AUDIT_ACTOR_UNKNOWN
+    session: AsyncSession, org_id: str, token: str, actor: str = AUDIT_ACTOR_UNKNOWN,
+    stripe: StripeSettings = StripeSettings(),
 ) -> bool:
     """The second call: permanently deletes the org and everything scoped
     to it (api_keys, traces, votes, kb_submissions -- all FK
@@ -1663,6 +1674,17 @@ async def confirm_org_deletion(
     DELETION_GRACE_SECONDS has elapsed since the request, or a token past
     its DELETION_TOKEN_TTL_HOURS expiry -- the last two are exactly the
     window the two-call design exists to create.
+
+    If this org has a live Stripe subscription (`stripe_subscription_id`),
+    it is cancelled FIRST, before anything is deleted. An org row deleted
+    out from under an active subscription would keep charging that
+    customer's card every billing cycle with no CommonTrace account left
+    to ever notice -- charged and gone is a strictly worse failure than a
+    deletion that has to be retried, so `SubscriptionCancellationFailed`
+    is raised (and nothing is deleted) rather than deleting anyway on a
+    Stripe error. `stripe` defaults to an unconfigured `StripeSettings()`
+    for every caller (almost all of hub/tests/) that has no Stripe
+    settings to pass and no subscription that could exist to cancel.
     """
     org = await session.get(Organization, org_id)
     if org is None:
@@ -1679,15 +1701,26 @@ async def confirm_org_deletion(
     if not secrets.compare_digest(_hash_deletion_token(token), org.deletion_token_hash):
         raise DeletionNotReady("confirmation token does not match the pending request")
 
+    if org.stripe_subscription_id:
+        try:
+            await cancel_subscription(stripe, subscription_id=org.stripe_subscription_id)
+        except StripeError as exc:
+            raise SubscriptionCancellationFailed(
+                f"could not cancel the active Stripe subscription for org {org_id}; "
+                f"account deletion was NOT performed: {exc}"
+            ) from exc
+
     trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
     if trace_ids:
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
     org_name = org.name
+    had_subscription = bool(org.stripe_subscription_id)
     await session.delete(org)
     await audit.record(
         session, actor=actor, action="confirm_org_deletion", org_id=org_id,
         target_type="org", target_id=org_id,
-        summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+        summary=f"name={org_name!r} n_traces={len(trace_ids)} "
+                f"stripe_subscription_cancelled={had_subscription} irreversible",
     )
     return True
 

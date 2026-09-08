@@ -124,6 +124,35 @@ async def _post(path: str, secret_key: str, data: dict[str, str]) -> dict:
     return response.json()
 
 
+async def _delete(path: str, secret_key: str) -> dict:
+    """DELETE to Stripe's API. Its own tiny function for the same reason
+    `_post` is one: an isolated seam tests can monkeypatch without
+    touching the real network."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.delete(f"{STRIPE_API_BASE}/{path}", auth=(secret_key, ""))
+    if response.status_code >= 400:
+        raise StripeError(f"Stripe DELETE {path} returned {response.status_code}: {response.text[:500]}")
+    return response.json()
+
+
+async def cancel_subscription(settings: StripeSettings, *, subscription_id: str) -> None:
+    """Cancel a Stripe subscription IMMEDIATELY (not at period end).
+
+    Called before permanently deleting an org that has one
+    (hub/crud.py:confirm_org_deletion, hub/manage.py:purge_org) -- an org
+    row deleted with its subscription still active keeps charging that
+    customer's card on every future billing cycle, with no CommonTrace
+    account left to ever notice or reconcile it. Raises StripeError on
+    failure; every caller must refuse to proceed with deletion when this
+    raises rather than delete the org anyway. An uncancelled subscription
+    with the org record still in place can be retried or handled by an
+    operator going straight to Stripe; the same subscription with no org
+    row left at all is a customer with no path back to their own billing
+    relationship.
+    """
+    await _delete(f"subscriptions/{subscription_id}", settings.secret_key)
+
+
 async def create_checkout_session(
     settings: StripeSettings, *, org: Organization, plan: str, success_url: str, cancel_url: str,
 ) -> str:

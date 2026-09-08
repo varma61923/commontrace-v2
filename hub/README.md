@@ -554,6 +554,16 @@ on that log has the whole grace window to notice and `revoke-key` a
 credential they don't recognize before `confirm_account_deletion` can
 possibly succeed.
 
+If this org has ever used self-serve billing (`hub/billing.py`) and has a
+live Stripe subscription, `confirm_account_deletion` cancels it FIRST,
+before deleting anything -- deleting the org row out from under an active
+subscription would leave it charging that customer's card every billing
+cycle with no CommonTrace account left to ever notice. If Stripe cannot
+be reached to cancel it, nothing is deleted: the call fails with
+`deletion_blocked` instead, so a client knows to retry rather than treat
+the deletion as done. `python -m hub.manage purge-org` does the same
+cancel-first check at the operator-CLI trust level.
+
 ### Why there's no `lessons` table
 
 `Trace` and `Lesson` are both loaded by `hub/schema_validation.py` (per the

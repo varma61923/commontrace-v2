@@ -48,7 +48,7 @@ apply to it and needs to be re-verified against that system.
 
 | Table (`hub/models.py`) | Contents |
 |---|---|
-| `organizations` | Org id + display name. Plus, while a self-service whole-account deletion is pending: a hashed confirmation token and its request/expiry timestamps (never the raw token -- see §3). |
+| `organizations` | Org id + display name. Plus, while a self-service whole-account deletion is pending: a hashed confirmation token and its request/expiry timestamps (never the raw token -- see §3). If this org has ever used self-serve billing (`hub/billing.py`): a Stripe customer id and, while subscribed, a Stripe subscription id -- never card details or any other payment data, which stay with Stripe entirely. Deleting the org (either path in §3) cancels a live subscription first; see §3's own note on why. |
 | `api_keys` | Argon2 hash of each org's API key (never the raw key), a non-secret lookup prefix, issuance/revocation/last-used timestamps. |
 | `traces` | The `Trace` object (title, context_text, solution_text, tags, agent_type, extensions, outcome, ...) plus `org_id`, `quarantined`/`quarantine_reason` (abuse-control state), `trust`/`retrievals`/`depth` (Hub-computed). For Knowledge Base entries only: `commons_votes`/`commons_review_after` (standing inputs) and, once an operator withdraws one, `commons_retracted_at`/`commons_retraction_reason` — see §5 on why a retracted entry is retained rather than deleted. |
 | `votes` | Up/down votes + optional feedback, per (trace, org). |
@@ -112,6 +112,18 @@ never a customer's own submission either unless an operator republishes it).
      in that chain would leave the same content sitting in its neighbors.
 
   Both trust levels are irreversible, with no soft-delete and no undo.
+
+  **Whole-account deletion and a live Stripe subscription.** Both
+  `confirm_account_deletion` and `purge-org` cancel a live subscription
+  *before* deleting anything else. Deleting the org row first would leave
+  the subscription active with no CommonTrace account left to ever
+  reconcile it against, which means the customer's card keeps being
+  charged every billing cycle for a product that no longer exists — worse
+  than a deletion that fails and has to be retried. If Stripe cannot be
+  reached to cancel it, nothing is deleted (`confirm_account_deletion`
+  fails with `deletion_blocked`; `purge-org` prints an error and returns
+  false) rather than deleting the account and leaving the subscription
+  stranded. See `hub/billing.py:cancel_subscription`.
 
 ## 4. Does deleting an org's trace ever have to reach into another org's data?
 

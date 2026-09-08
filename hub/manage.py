@@ -122,6 +122,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment
 from hub import audit, auth, commons, crud, outcomes, plans
+from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
 from hub.models import (
@@ -138,6 +139,16 @@ from hub.models import (
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
     return make_session_factory(make_engine(HubConfig.from_env()))
+
+
+def _default_stripe_settings() -> StripeSettings:
+    config = HubConfig.from_env()
+    return StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
 
 
 async def create_org(name: str, session_factory=None) -> None:
@@ -1207,22 +1218,50 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
     return True
 
 
-async def purge_org(org_id: str, session_factory=None) -> bool:
+async def purge_org(org_id: str, session_factory=None, stripe: StripeSettings | None = None) -> bool:
     """Permanently deletes an org and everything scoped to it (api_keys,
     traces, and traces' votes/trace_relations all cascade via FK
-    ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3."""
+    ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3.
+
+    If this org has a live Stripe subscription, it is cancelled FIRST --
+    see hub.billing.cancel_subscription's docstring for why an org row
+    deleted out from under an active subscription is worse than a
+    deletion that has to be retried: the customer's card keeps being
+    charged every billing cycle with no CommonTrace account left to ever
+    notice. On a cancellation failure, nothing is deleted and this prints
+    an error and returns False, the same as an org id that doesn't exist.
+    `stripe` defaults to this deployment's real HUB_STRIPE_* settings,
+    read lazily via HubConfig.from_env() -- and ONLY if this org actually
+    has a subscription to cancel, so a test that seeds an org with no
+    subscription never needs to pass one. A test that DOES seed a
+    subscription must pass its own `stripe=` (even an unconfigured one is
+    fine) to reach that code at all in a process with no
+    HUB_DATABASE_URL/HUB_STRIPE_* set.
+    """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
         if org is None:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
             return False
+        if org.stripe_subscription_id:
+            active_stripe = stripe or _default_stripe_settings()
+            try:
+                await cancel_subscription(active_stripe, subscription_id=org.stripe_subscription_id)
+            except StripeError as exc:
+                print(
+                    f"error: could not cancel the active Stripe subscription for org {org_id}; "
+                    f"account was NOT deleted: {exc}",
+                    file=sys.stderr,
+                )
+                return False
         trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
         if trace_ids:
             # Same dangling-reference cleanup as purge_trace, batched for every
             # trace this org owns, before the cascade deletes them.
             await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
         org_name = org.name
+        had_subscription = bool(org.stripe_subscription_id)
         await session.delete(org)
         # Recorded AFTER the delete and deliberately NOT cascaded away with
         # it -- see AuditLogEntry's docstring: the purge is exactly the event
@@ -1230,7 +1269,8 @@ async def purge_org(org_id: str, session_factory=None) -> bool:
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_org",
             org_id=org_id, target_type="org", target_id=org_id,
-            summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+            summary=f"name={org_name!r} n_traces={len(trace_ids)} "
+                    f"stripe_subscription_cancelled={had_subscription} irreversible",
         )
     print(f"permanently deleted organization {org_id} and all its api_keys/traces/votes.")
     return True

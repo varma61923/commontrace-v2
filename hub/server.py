@@ -240,6 +240,12 @@ def _error_response(exc: Exception) -> dict:
         # should surface this to a human, not treat it as a bug to fix and
         # retry immediately.
         return {"error": "deletion_not_ready", "detail": str(exc)}
+    if isinstance(exc, crud.SubscriptionCancellationFailed):
+        # Distinct from deletion_not_ready: the token and timing were fine,
+        # but nothing was deleted -- an external dependency (Stripe) has to
+        # actually confirm the subscription is cancelled first, so a client
+        # should retry rather than treat this as a bug in the request.
+        return {"error": "deletion_blocked", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -248,6 +254,20 @@ def _error_response(exc: Exception) -> dict:
 
 def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rate_limiter: RateLimiter):
     from mcp.server.mcpserver import MCPServer
+
+    # Only for confirm_account_deletion, to cancel a live Stripe
+    # subscription before an org's row (and with it, its
+    # stripe_subscription_id) is gone for good -- see
+    # crud.confirm_org_deletion's own docstring. Unconfigured
+    # (StripeSettings() equivalent) on any deployment that never set the
+    # Stripe env vars, which is a no-op there since no org can hold a
+    # subscription id in the first place.
+    stripe_settings = StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
 
     mcp = MCPServer(
         name="commontrace",
@@ -719,13 +739,19 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         everything scoped to it. Irreversible. Fails with
         'deletion_not_ready' if called too soon after
         request_account_deletion, with an expired or mismatched token, or
-        with no pending request at all.
+        with no pending request at all. Fails with 'deletion_blocked',
+        and deletes nothing, if this org has a paid Stripe subscription
+        that could not be cancelled -- retry once whatever is stopping
+        Stripe from reaching us clears, since deleting the account while
+        leaving the subscription active would keep charging the card on
+        file with no account left to ever notice.
         """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 await crud.confirm_org_deletion(
                     session, org_id, confirmation_token, actor=auth.get_current_actor(),
+                    stripe=stripe_settings,
                 )
             return {"deleted": True}
         except Exception as exc:  # noqa: BLE001

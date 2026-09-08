@@ -418,6 +418,58 @@ class TestCreateBillingPortalSession:
         assert captured["data"] == {"customer": "cus_1", "return_url": "https://example.test/app"}
 
 
+class TestCancelSubscription:
+    """Called before permanently deleting an org that has a live
+    subscription (hub/crud.py:confirm_org_deletion,
+    hub/manage.py:purge_org) -- see cancel_subscription's own docstring
+    for why leaving it uncancelled is worse than a deletion that has to
+    be retried."""
+
+    async def test_it_deletes_the_subscription_by_id(self, monkeypatch):
+        captured = {}
+
+        async def fake_delete(path, secret_key):
+            captured["path"] = path
+            captured["secret_key"] = secret_key
+            return {"id": "sub_1", "status": "canceled"}
+
+        monkeypatch.setattr(billing, "_delete", fake_delete)
+        settings = StripeSettings(secret_key="sk_test")
+        await billing.cancel_subscription(settings, subscription_id="sub_1")
+        assert captured["path"] == "subscriptions/sub_1"
+        assert captured["secret_key"] == "sk_test"
+
+    async def test_a_failure_raises_stripe_error(self, monkeypatch):
+        async def failing_delete(path, secret_key):
+            raise billing.StripeError("Stripe 404: no such subscription")
+
+        monkeypatch.setattr(billing, "_delete", failing_delete)
+        settings = StripeSettings(secret_key="sk_test")
+        with pytest.raises(billing.StripeError):
+            await billing.cancel_subscription(settings, subscription_id="sub_gone")
+
+
+class TestDeleteRaisesOnAnErrorResponse:
+    async def test_a_4xx_response_becomes_a_stripe_error(self, monkeypatch):
+        class _FakeResponse:
+            status_code = 404
+            text = "no_such_subscription"
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def delete(self, *a, **kw):
+                return _FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: _FakeClient())
+        with pytest.raises(billing.StripeError, match="404"):
+            await billing._delete("subscriptions/sub_gone", "sk_test")
+
+
 class TestPostRaisesOnAnErrorResponse:
     async def test_a_4xx_response_becomes_a_stripe_error(self, monkeypatch):
         class _FakeResponse:

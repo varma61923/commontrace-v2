@@ -417,6 +417,73 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
     assert result is False
 
 
+async def test_purge_org_cancels_a_live_stripe_subscription_first(
+    session_factory, two_orgs, monkeypatch
+):
+    """An org row deleted out from under an active Stripe subscription
+    keeps charging that customer's card every billing cycle with no
+    CommonTrace account left to ever notice -- see
+    billing.cancel_subscription's own docstring."""
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, two_orgs["org_a"])
+        org.stripe_customer_id = "cus_1"
+        org.stripe_subscription_id = "sub_1"
+
+    cancelled = {}
+
+    async def fake_cancel(settings, *, subscription_id):
+        cancelled["subscription_id"] = subscription_id
+
+    from hub.billing import StripeSettings
+
+    monkeypatch.setattr(manage, "cancel_subscription", fake_cancel)
+    result = await manage.purge_org(
+        two_orgs["org_a"], session_factory=session_factory, stripe=StripeSettings(secret_key="sk_test")
+    )
+    assert result is True
+    assert cancelled["subscription_id"] == "sub_1"
+    async with session_scope(session_factory) as session:
+        assert await session.get(Organization, two_orgs["org_a"]) is None
+
+
+async def test_purge_org_a_failed_cancellation_blocks_deletion(
+    session_factory, two_orgs, monkeypatch, capsys
+):
+    """The org must survive intact so the operator can retry once
+    whatever is stopping Stripe from being reachable clears."""
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, two_orgs["org_a"])
+        org.stripe_customer_id = "cus_1"
+        org.stripe_subscription_id = "sub_1"
+
+    from hub.billing import StripeError, StripeSettings
+
+    async def failing_cancel(settings, *, subscription_id):
+        raise StripeError("Stripe 500")
+
+    monkeypatch.setattr(manage, "cancel_subscription", failing_cancel)
+    result = await manage.purge_org(
+        two_orgs["org_a"], session_factory=session_factory, stripe=StripeSettings(secret_key="sk_test")
+    )
+    assert result is False
+    assert "could not cancel" in capsys.readouterr().err
+    async with session_scope(session_factory) as session:
+        surviving = await session.get(Organization, two_orgs["org_a"])
+        assert surviving is not None
+        assert surviving.stripe_subscription_id == "sub_1"
+
+
+async def test_purge_org_with_no_subscription_never_calls_stripe(
+    session_factory, two_orgs, monkeypatch
+):
+    async def must_not_be_called(*a, **kw):
+        raise AssertionError("cancel_subscription must not run when there is nothing to cancel")
+
+    monkeypatch.setattr(manage, "cancel_subscription", must_not_be_called)
+    result = await manage.purge_org(two_orgs["org_a"], session_factory=session_factory)
+    assert result is True
+
+
 async def _submit_via_cli_path(session_factory, config, org_id, title="t"):
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
