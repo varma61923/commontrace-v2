@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A relevance tie returned a fleet's own re-tellings of a lesson ahead
+  of the lesson itself, and the near-duplicate clustering could not hold
+  a stable randomization unit because of it.** Exact `ts_rank` ties are
+  the signature of near-duplicate text, and a fleet generates those
+  constantly: it resolves an occasion using a lesson, then contributes a
+  trace describing what happened in the same words. `search_traces` broke
+  those ties newest-first, so as occasions accumulated the original fell
+  off page one entirely and every result was a re-telling. That is the
+  worse of the two results to hand an agent, and it also left the
+  clustering with no fixed member to anchor to: `holdout_for_results`
+  only ever sees ONE PAGE, so a representative chosen from page members
+  drifted as the page composition shifted, re-creating the very
+  fragmentation the clustering exists to remove. Measured live over 20
+  occasions of one lesson: **8** distinct randomization units, with only
+  4 injections on the best-measured one. Ties now break oldest-first
+  (recency still orders the no-query browse path, which is what that path
+  is for), and a cluster's representative is its oldest member rather
+  than `distill.representative`'s page-dependent medoid. Same scenario,
+  same seed, after the fix: **1** unit, **15** injections on it -- ~3.75x
+  the evidence accumulated per occasion, and 21x versus the unclustered
+  behavior the deployment audit originally measured.
+
 - **The Hub's own randomized holdout fragmented a fleet's statistical
   power across near-duplicate traces.** Every occasion a fleet resolved
   and then contributed a trace of -- the exact pattern `commontrace

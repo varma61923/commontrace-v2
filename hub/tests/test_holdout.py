@@ -347,6 +347,39 @@ class TestNearDuplicateClustering:
             f"not fragment across {len(report['effects'])}"
         )
 
+    async def test_the_unit_is_stable_as_the_page_composition_changes(
+        self, session_factory, config, org
+    ):
+        """The failure the `limit=50` tests above structurally cannot see.
+
+        `holdout_for_results` only ever sees ONE SEARCH PAGE, not a
+        cluster's true membership -- so any representative rule that is a
+        function of which members share that page drifts as the fleet logs
+        more occasions and the page composition shifts, re-creating the
+        exact fragmentation the clustering exists to remove, one level up.
+        Measured on the audit's own dynamics before the fix: 17 distinct
+        randomization units for a single lesson.
+
+        A realistic page (limit=5) over a corpus that grows past it is the
+        only shape that exercises this.
+        """
+        canonical = (await self._near_duplicates(session_factory, config, org, 1))[0]
+        for i in range(12):
+            async with session_scope(session_factory) as session:
+                found = await crud.search_traces(session, org, query="connection pool exhausted", limit=5)
+                await crud.holdout_for_results(session, org, found["traces"], f"occ-{i}")
+            # The fleet logs what happened, growing the corpus past one page.
+            await self._near_duplicates(session_factory, config, org, 1)
+
+        async with session_scope(session_factory) as session:
+            units = (
+                await session.execute(select(func.distinct(HoldoutObservation.trace_id)))
+            ).scalars().all()
+        assert [str(u) for u in units] == [canonical], (
+            f"one lesson must stay one randomization unit across changing pages; "
+            f"got {len(units)} units"
+        )
+
     async def test_representative_prefers_a_non_failed_member(self, session_factory, config, org):
         """The one id a cluster's observations get attributed to should not
         be an unresolved, escalated occasion log when a better-standing

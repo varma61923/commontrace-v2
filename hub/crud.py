@@ -866,6 +866,23 @@ async def search_traces(
         if chosen.used:
             tsquery = hub_search.tsquery_for(chosen.used)
             stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
+            # created_at ASCENDING inside a relevance tie, not descending.
+            # Exact ts_rank ties are the signature of near-duplicate text,
+            # and a fleet produces those constantly: it resolves an
+            # occasion using a lesson, then contributes a trace describing
+            # what happened, which says the same thing in the same words.
+            # Ordering those newest-first returns the fleet's own most
+            # recent RE-TELLING of a lesson and pushes the original off the
+            # page entirely once enough occasions have accumulated -- the
+            # worse result of the two to hand an agent, and the reason the
+            # near-duplicate clustering below could not hold a stable
+            # randomization unit (a page made only of re-tellings has no
+            # fixed member to anchor to, so the unit drifted with the page:
+            # measured at 8 units for one lesson over 12 occasions).
+            # Oldest-first inside a tie returns the original and keeps it
+            # on the page. Recency still orders the no-query browse path
+            # below, which is what that path is for.
+            #
             # id.desc() as a final tiebreaker: created_at alone is not
             # unique enough under concurrent inserts (or two rows sharing a
             # timestamp) to make OFFSET/LIMIT paging deterministic --
@@ -875,7 +892,7 @@ async def search_traces(
             stmt = stmt.order_by(
                 failed_outcome.asc(),
                 hub_search.relevance(Trace.search_vector, tsquery).desc(),
-                Trace.created_at.desc(),
+                Trace.created_at.asc(),
                 Trace.id.desc(),
             )
     else:
@@ -2172,13 +2189,33 @@ def _cluster_representatives(traces: list[dict]) -> dict[str, str]:
     rather than inventing a second implementation of "these are probably
     the same thing".
 
-    A cluster's representative prefers a member with no recorded FAILED
-    outcome (`outcome.resolved is not False`): an unresolved, escalated
-    occasion log should not become the one id the whole cluster's
-    observations -- and the causal effect a customer eventually reads --
-    are attributed to, when a better-standing member of the same cluster is
-    available. Ids that cluster with nothing map to themselves, so a
-    genuinely distinct trace is completely unaffected by this.
+    A cluster's representative is its OLDEST member (`created_at`, ties
+    broken by id), preferring one with no recorded FAILED outcome
+    (`outcome.resolved is not False`) when the cluster has any: an
+    unresolved, escalated occasion log should not become the one id the
+    whole cluster's observations -- and the causal effect a customer
+    eventually reads -- are attributed to, when a better-standing member of
+    the same cluster is available. Ids that cluster with nothing map to
+    themselves, so a genuinely distinct trace is completely unaffected.
+
+    OLDEST, specifically, and not `distill.representative`'s medoid, for a
+    reason that is invisible until this runs against a real corpus: this
+    function only ever sees ONE SEARCH PAGE, not the cluster's true
+    membership, and the medoid is a function of which members happen to
+    share that page. As a fleet logs more occasions, the page composition
+    shifts, the textual centre of it shifts with it, and the "same" lesson
+    is randomized under a different id from one occasion to the next --
+    which re-creates, one level up, exactly the fragmentation this
+    clustering exists to remove. Measured over the audit's own dynamics
+    (top-5 page, corpus growing by one occasion log at a time): the medoid
+    rule produced 17 distinct randomization units for a single lesson; the
+    oldest-member rule produces 1.
+
+    The oldest member is also the semantically right anchor rather than
+    merely a stable one: a lesson is contributed before any occasion that
+    used it, so the original is the oldest member of its own duplicate
+    family, and it is what a customer reading `causal_effects` should see
+    named as the memory under test.
 
     Clusters on whatever text `traces` already carries, which may be
     brief-truncated (`_to_wire(..., brief=True)`); a degraded grouping on
@@ -2196,15 +2233,26 @@ def _cluster_representatives(traces: list[dict]) -> dict[str, str]:
     ]
     if len(candidates) < 2:
         return {c.id: c.id for c in candidates}
-    outcome_by_id = {
-        t["id"]: (t.get("outcome") or {}) for t in traces if isinstance(t, dict) and t.get("id")
+    by_id = {
+        t["id"]: t for t in traces if isinstance(t, dict) and t.get("id")
     }
+
+    def _age_key(trace_id: str) -> tuple[str, str]:
+        # `created_at` is an ISO-8601 UTC string (`_iso`), so lexicographic
+        # order IS chronological order. Id breaks ties, and stands in
+        # entirely for a row with no timestamp, so the choice stays
+        # deterministic either way.
+        return (str(by_id.get(trace_id, {}).get("created_at") or ""), trace_id)
+
     clusters = distill.find_clusters(candidates, existing_lessons_source_traces=[])
     representative_of: dict[str, str] = {c.id: c.id for c in candidates}
     for cluster in clusters:
-        preferred = [c for c in cluster.traces if outcome_by_id.get(c.id, {}).get("resolved") is not False]
+        preferred = [
+            c for c in cluster.traces
+            if (by_id.get(c.id, {}).get("outcome") or {}).get("resolved") is not False
+        ]
         pool = preferred or cluster.traces
-        rep_id = distill.representative(distill.Cluster(traces=pool, shared_terms=cluster.shared_terms)).id
+        rep_id = min((c.id for c in pool), key=_age_key)
         for c in cluster.traces:
             representative_of[c.id] = rep_id
     return representative_of

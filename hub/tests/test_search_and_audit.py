@@ -157,6 +157,65 @@ class TestFullTextSearch:
         assert len(page["traces"]) == 1
 
 
+class TestRelevanceTieOrdering:
+    """Exact ts_rank ties are the signature of near-duplicate text, and a
+    fleet produces those constantly: it resolves an occasion using a
+    lesson, then contributes a trace saying the same thing in the same
+    words. Inside a tie the ORIGINAL is the better result to hand an
+    agent, and keeping it on the page is also what lets the near-duplicate
+    clustering hold a stable randomization unit."""
+
+    async def test_the_original_wins_a_relevance_tie_against_its_own_retellings(
+        self, session_factory, config, org
+    ):
+        original = await _contribute(
+            session_factory, config, org, "pool exhausted",
+            "connection pool exhausted running the suite", "dispose the engine",
+        )
+        for _ in range(4):
+            await _contribute(
+                session_factory, config, org, "pool exhausted",
+                "connection pool exhausted running the suite", "dispose the engine",
+            )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(
+                session, org, query="connection pool exhausted running the suite", limit=3
+            )
+        assert page["traces"][0]["id"] == original["id"]
+
+    async def test_the_original_stays_on_page_one_as_retellings_accumulate(
+        self, session_factory, config, org
+    ):
+        """The property the clustering depends on: an original that falls
+        off the page once enough re-tellings exist leaves a page with no
+        fixed member to anchor a randomization unit to."""
+        original = await _contribute(
+            session_factory, config, org, "pool exhausted",
+            "connection pool exhausted running the suite", "dispose the engine",
+        )
+        for _ in range(12):
+            await _contribute(
+                session_factory, config, org, "pool exhausted",
+                "connection pool exhausted running the suite", "dispose the engine",
+            )
+            async with session_scope(session_factory) as session:
+                page = await crud.search_traces(
+                    session, org, query="connection pool exhausted running the suite", limit=5
+                )
+            assert original["id"] in {t["id"] for t in page["traces"]}
+
+    async def test_recency_still_orders_the_no_query_browse_path(
+        self, session_factory, config, org
+    ):
+        """Oldest-first applies inside a relevance tie, not to browsing --
+        `search_traces` with no query is a recency feed and stays one."""
+        await _contribute(session_factory, config, org, "first", "c", "s")
+        newest = await _contribute(session_factory, config, org, "second", "c", "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="")
+        assert page["traces"][0]["id"] == newest["id"]
+
+
 class TestFailedOutcomeRanking:
     """A trace whose own `outcome.resolved` is False -- an agent's
     self-logged, unresolved attempt, not a curated solution -- must never
