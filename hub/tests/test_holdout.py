@@ -34,7 +34,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 
-from commontrace import revision
+from commontrace import experiment, revision
 from hub import crud, manage, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
@@ -1065,14 +1065,53 @@ class TestTheWorkingSet:
     """
 
     async def _established(self, session_factory, org, n=120, helps=True):
-        """One trace with a real, established effect in the given direction."""
-        traces = await _traces(session_factory, org, 1)
-        for i in range(n):
-            result = await _assign(session_factory, org, traces, f"occ-{i}")
-            injected = bool(result["inject"])
-            good = (i % 10 < 8) if (injected == helps) else (i % 10 < 3)
-            await _resolve(session_factory, org, f"occ-{i}", good)
-        return traces
+        """One trace with a real, established effect in the given direction.
+
+        The occasions are CHOSEN so the realized arm split matches the
+        configured rate exactly. Arms are still decided by the production
+        hash (`experiment.is_held_out`) -- this only picks which occasion
+        ids to run -- and that is what makes the fixture deterministic.
+
+        It has to be. Drawing occasions in order gives a fair binomial
+        split, and `integrity.check_arm_balance` reports a split far enough
+        from the configured rate as INVALIDATES at ARM_BALANCE_ALPHA=0.001,
+        on the stated premise that "assignment is a deterministic hash, so
+        this is not sampling noise". For ONE trace over 120 occasions it is
+        sampling noise: measured here, a fair draw trips that check 0.067%
+        of the time, which across the ~20 experiments this suite builds and
+        a 13-job CI matrix is a ~16% chance of one red job per run. It cost
+        exactly that once -- `working_set` correctly returned "COMPROMISED,
+        no block" and every test built on this helper failed for a reason
+        unrelated to what it was testing.
+        """
+        [trace] = await _traces(session_factory, org, 1)
+        async with session_scope(session_factory) as session:
+            record = await session.get(Organization, org)
+            rate, salt = record.holdout_rate, record.holdout_salt
+
+        want_withheld = n // 2
+        withheld: list[str] = []
+        injected: list[str] = []
+        candidate = 0
+        while len(withheld) < want_withheld or len(injected) < n - want_withheld:
+            occasion = f"occ-{candidate}"
+            candidate += 1
+            if experiment.is_held_out(trace, occasion, rate=rate, salt=salt):
+                if len(withheld) < want_withheld:
+                    withheld.append(occasion)
+            elif len(injected) < n - want_withheld:
+                injected.append(occasion)
+
+        # 80% success in the arm the effect favours, 30% in the other, so the
+        # direction is whatever `helps` asks for and the size is far past any
+        # significance threshold.
+        for arm_is_injected, occasions in ((False, withheld), (True, injected)):
+            favoured = arm_is_injected == helps
+            for i, occasion in enumerate(occasions):
+                await _assign(session_factory, org, [trace], occasion)
+                good = (i % 10 < 8) if favoured else (i % 10 < 3)
+                await _resolve(session_factory, org, occasion, good)
+        return [trace]
 
     async def test_a_proven_trace_is_promoted_into_the_block(self, session_factory, org):
         [trace] = await self._established(session_factory, org)
@@ -1200,6 +1239,24 @@ class TestTheWorkingSet:
                 .where(HoldoutObservation.org_id == org_id)
                 .values(created_at=func.now() - timedelta(days=days))
             )
+
+    async def test_the_fixture_builds_an_uncompromised_experiment(
+        self, session_factory, org
+    ):
+        """Guards the determinism `_established` now buys. Every test in this
+        class reads a `working_set` block, and that block is empty whenever
+        the integrity audit cannot vouch for the sample -- so a fixture whose
+        arm split wanders trips `check_arm_balance` occasionally and fails
+        those tests for a reason none of them is about."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+        audit = causal["integrity"]
+        assert audit["effects_readable"] is True, audit
+        balance = next(f for f in audit["findings"] if f["check"] == "arm_balance")
+        assert balance["severity"] == "OK", balance
+        assert balance["numbers"]["withheld"] == 60
+        assert balance["numbers"]["total"] == 120
 
     async def test_evidence_older_than_the_horizon_is_not_pinned(
         self, session_factory, org
