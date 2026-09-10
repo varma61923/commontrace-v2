@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
 from hub import crud
 from hub.abuse import make_rate_limiter
@@ -252,8 +253,6 @@ class TestTheKnowledgeBaseSurfaceGetsTheSameFix:
     async def test_a_superseded_shared_trace_is_no_longer_commons_visible(
         self, session_factory, config, org
     ):
-        from sqlalchemy import select
-
         trace = await _contribute(session_factory, config, org)
         async with session_scope(session_factory) as session:
             row = await session.get(Trace, trace["id"])
@@ -266,3 +265,35 @@ class TestTheKnowledgeBaseSurfaceGetsTheSameFix:
             stmt = select(Trace.id).where(Trace.id == trace["id"], *crud.commons_visible())
             visible = (await session.execute(stmt)).scalar_one_or_none()
         assert visible is None, "a superseded trace is still served from the Knowledge Base"
+
+
+class TestForkedAmendmentsAllStayLive:
+    """amend_trace's own docstring (and test_manage.py's
+    test_amendment_chain_includes_a_fork_off_an_ancestor) documents that the
+    supersession graph is allowed to fork: two independent amend_trace calls
+    against the same still-unmutated trace_id -- a retry with no
+    idempotency_key, or two agents correcting the same trace concurrently --
+    are both accepted, producing two children of one parent rather than one
+    call being rejected as stale. superseded_by_trace_id is a single scalar
+    column, so it can only name ONE of a forked parent's children -- whichever
+    amend_trace call ran last -- but that is a known, accepted limitation of
+    that convenience field, not a search-correctness bug: both forks
+    correctly end up with superseded_at IS NULL and both must stay live and
+    searchable, which is what this test pins. (crud.amendment_chain, not this
+    column, is the authoritative source for a fork's full set of children.)
+    """
+
+    async def test_both_forks_of_the_same_parent_are_independently_live(
+        self, session_factory, config, org
+    ):
+        v1 = await _contribute(session_factory, config, org, title="parent")
+        fork_a = await _amend(session_factory, config, org, v1["id"], title="fork a")
+        fork_b = await _amend(session_factory, config, org, v1["id"], title="fork b")
+
+        async with session_scope(session_factory) as session:
+            row_a = await session.get(Trace, fork_a["id"])
+            row_b = await session.get(Trace, fork_b["id"])
+            parent = await session.get(Trace, v1["id"])
+        assert row_a.superseded_at is None
+        assert row_b.superseded_at is None
+        assert parent.superseded_at is not None

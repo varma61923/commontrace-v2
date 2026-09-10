@@ -2101,6 +2101,28 @@ async def amend_trace(
     # Skipped entirely on the idempotent-replay paths above (both return
     # before reaching here), which is correct: a replay observes the
     # amendment that already happened rather than re-performing it.
+    #
+    # `original` is not required to be the current head of its lineage --
+    # amend_trace intentionally accepts a stale (already-superseded)
+    # trace_id too, and this is how the supersession graph FORKS (see this
+    # function's docstring on idempotency_key, and
+    # test_manage.py:test_amendment_chain_includes_a_fork_off_an_ancestor):
+    # two independent amend_trace calls against the same still-unmutated
+    # original are both accepted, producing two children of one parent.
+    # superseded_by_trace_id is a single scalar column, so on a fork it can
+    # only end up naming ONE child -- whichever amend_trace call reaches
+    # this line last, silently overwriting the other's pointer -- while
+    # supersedes_trace_id (the backward pointer, set below on `amended`)
+    # stays accurate for every child regardless of forking, since each
+    # child gets its own row. This is an accepted limitation of the
+    # forward pointer as a search/commons-visibility convenience, not a
+    # correctness bug: superseded_at is set correctly on `original` either
+    # way (excluding it from search_traces/commons_visible()), and both
+    # forked children still get superseded_at IS NULL and stay live and
+    # independently searchable, which is what actually matters for this
+    # column's purpose. crud.amendment_chain, not this scalar, is the
+    # authoritative source when a fork's complete set of children matters
+    # (e.g. hub/manage.py:purge_trace's delete of a whole lineage).
     original.superseded_at = datetime.now(timezone.utc)
     original.superseded_by_trace_id = amended_id
 
