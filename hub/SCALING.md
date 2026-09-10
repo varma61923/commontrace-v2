@@ -67,8 +67,55 @@ cost-side objection to it, which is the half answerable without a
 customer.
 
 It also says nothing about **concurrency**. Every number above is a single
-query against an otherwise idle database. Cost per customer at N
-simultaneous customers is a different measurement and is not made here.
+query against an otherwise idle database. That measurement is now made
+separately, by `hub/bench_concurrency.py` — see "Concurrency: measured"
+below.
+
+## Concurrency: measured
+
+Reproduce: `python -m hub.bench_concurrency --clients 1,8,32,128 --backend both`
+
+N simultaneous authenticated clients through the real
+`ApiKeyAuthMiddleware`, against an empty handler — so what is measured is
+the per-request *floor* (key verification plus two rate-limiter
+decisions), not query cost, which is what the rest of this document
+covers. 400 requests per level, one Hub process, co-located Postgres:
+
+| backend | clients | rps | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| memory | 1 | 392 | 2.5 ms | 3.1 ms | 3.6 ms |
+| memory | 8 | 605 | 12.1 ms | 18.5 ms | 37.9 ms |
+| memory | 32 | 484 | 56.9 ms | 134.8 ms | 157.0 ms |
+| memory | 128 | 480 | 223.7 ms | 363.2 ms | 511.7 ms |
+| postgres | 1 | 142 | 6.9 ms | 8.4 ms | 9.7 ms |
+| postgres | 8 | 191 | 40.5 ms | 51.2 ms | 84.5 ms |
+| postgres | 32 | 161 | 186.4 ms | 307.5 ms | 352.4 ms |
+| postgres | 128 | 165 | 692.3 ms | 854.4 ms | 1375.7 ms |
+
+**Neither backend scales with concurrency.** 128× the clients buys 1.23×
+the throughput on memory and 1.16× on postgres; past ~8 clients, added
+load becomes queue and shows up entirely in the tail. For a single
+process that is partly physics — one event loop is one core for Python
+bytecode — and the practical answer is more replicas. Two things here are
+not physics, and both are worth naming:
+
+**The multi-replica configuration is the slow one.** `postgres` is the
+documented choice for any deployment with more than one replica
+(`hub/DEPLOYMENT.md` §6), and it serves **2.9× less throughput** with a
+**2.7× worse p99** than the single-process default. The mechanism is
+already conceded in `hub/abuse.py:PostgresRateLimiter`'s own docstring:
+its `check()` is a sync method called un-awaited from async code, so it
+blocks the ASGI event loop on `run_coroutine_threadsafe(...).result()`
+twice per authenticated request. Every other request on that replica
+waits. This is the shape the benchmark exists to catch, and it is a fixed
+cost paid before any real work begins.
+
+**p99 at 128 clients is 512 ms (memory) / 1.38 s (postgres) for an empty
+handler.** Any real SLO has to be stated on top of that floor, not
+independently of it.
+
+These are single-process numbers on a developer machine, so read them as
+a shape and a ratio rather than a capacity plan.
 
 ## Two findings from the first run, both of which changed the answer
 
