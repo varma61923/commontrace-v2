@@ -199,3 +199,76 @@ class TestTheMcpRetrieveToolMakesTheSameDistinction:
         )._no_active_lessons_note(_store(tmp_path, traces=["a"]))
         assert not note.startswith("[commontrace]")
         assert "\n" not in note
+
+
+class TestDoctorAnswersWhyRetrievalIsEmpty:
+    """`doctor` is where someone goes when the product is misbehaving.
+
+    It checked the ENVIRONMENT -- Python version, importable deps, files on
+    disk -- and reported a wall of green OKs to a store that could not
+    serve a single retrieval, because "lessons in store: 1 found" counts
+    lessons at any status and `query` only ranks ACTIVE ones. The one
+    question the tool was actually being run to answer went unanswered.
+    """
+
+    def _doctor(self, root, capsys):
+        from commontrace.cli import main
+
+        main(["doctor", "--dest", str(root)])
+        return capsys.readouterr().out
+
+    def test_a_store_with_no_active_lessons_is_flagged_not_passed(self, tmp_path, capsys):
+        root = _store(tmp_path, lessons=[("lesson_mine", "review")])
+        out = self._doctor(root, capsys)
+        assert "retrieval ready" in out
+        assert "[WARN]" in out
+
+    def test_the_flag_carries_the_counts_that_explain_it(self, tmp_path, capsys):
+        """"0 active, 1 at review" is the whole diagnosis in one line --
+        a bare WARN would just relocate the confusion."""
+        root = _store(tmp_path, traces=["a"], lessons=[("lesson_mine", "review")])
+        out = self._doctor(root, capsys)
+        assert "0 active" in out
+        assert "1 at review" in out
+
+    def test_it_prints_the_same_next_step_query_would(self, tmp_path, capsys):
+        """Two tools disagreeing about the fix is worse than one staying
+        quiet, so doctor defers to the same diagnosis `query` gives."""
+        root = _store(tmp_path, lessons=[("lesson_mine", "review")])
+        out = self._doctor(root, capsys)
+        assert "commontrace lesson approve lesson_mine" in out
+
+    def test_a_healthy_store_passes_without_the_extra_advice(self, tmp_path, capsys):
+        """Advice printed at a store that is working is noise, and noise is
+        how the message that does matter gets skipped."""
+        root = _store(tmp_path, lessons=[("lesson_a", "active")])
+        out = self._doctor(root, capsys)
+        assert "1 active" in out
+        assert "lesson approve" not in out
+
+    def test_a_brand_new_store_is_not_warned_at_twice(self, tmp_path, capsys):
+        """"Nothing here yet" is the CORRECT state of a fresh install, not a
+        problem, and "lessons in store - 0 found" already says it once.
+
+        The first version of this check warned unconditionally, which added
+        a second alarm to a store that had done nothing wrong -- and
+        flattened "you have not started" back together with "you started
+        and it is stuck", which is the distinction this whole diagnosis
+        exists to draw. tests/test_doctor.py caught it by asserting a fresh
+        install produces exactly one warning; this pins the reasoning next
+        to the code that has to keep it true.
+        """
+        out = self._doctor(_store(tmp_path), capsys)
+        warns = [ln for ln in out.splitlines() if ln.startswith("[WARN]")]
+        assert not any("retrieval ready" in ln for ln in warns), (
+            f"a fresh store was warned at for being fresh: {warns}"
+        )
+
+    def test_a_store_with_traces_but_nothing_active_IS_warned(self, tmp_path, capsys):
+        """The other side of that line: this user did the work and it is not
+        serving. Staying quiet here would be the original bug."""
+        out = self._doctor(_store(tmp_path, traces=["a", "b"]), capsys)
+        warns = [ln for ln in out.splitlines() if ln.startswith("[WARN]")]
+        assert any("retrieval ready" in ln for ln in warns), (
+            f"a stuck store was not flagged: {warns}"
+        )

@@ -8,7 +8,7 @@ import re
 import shutil
 import sys
 
-from commontrace import frontmatter, paths
+from commontrace import frontmatter, paths, store_state
 from commontrace.commands._shellout import find_reference_script
 
 
@@ -178,6 +178,44 @@ def run(args: argparse.Namespace) -> int:
             except OSError:
                 n_lessons = 0
         _check("lessons in store", n_lessons > 0, f"{n_lessons} found")
+
+        # A headcount is not an answer to "why does query return nothing".
+        # `doctor` is where someone goes when the product is not behaving,
+        # and until this block existed it could report a wall of green OKs
+        # to a store that cannot serve a single retrieval -- every
+        # dependency installed, every file present, and no ACTIVE lesson
+        # for `query` to rank. Retrieval readiness is the health check
+        # this tool was actually being run for.
+        state = store_state.inspect(root)
+        # Only reported when the store has CONTENT that is not serving.
+        #
+        # A freshly `init`-ed store has nothing active and that is correct,
+        # not a problem -- "lessons in store: 0 found" above already says
+        # so once. Warning about it a second time is how a health check
+        # teaches people to skim past its warnings, which is the failure
+        # mode _check's own docstring is about. The first version of this
+        # block warned unconditionally and flattened "you have not started"
+        # back together with "you started and it is stuck" -- the exact
+        # distinction this diagnosis exists to draw.
+        stuck = state.active == 0 and (state.traces > 0 or state.lessons > 0)
+        if stuck:
+            _check(
+                "retrieval ready (>= 1 ACTIVE lesson)",
+                False,
+                f"{state.active} active, {state.review} at review, {state.traces} trace(s)",
+            )
+            # The same diagnosis `query` and the MCP `retrieve` tool give,
+            # so the tools agree rather than sending someone in different
+            # directions.
+            print()
+            print(store_state.why_no_results(root, searched="query"))
+            print()
+        elif state.active:
+            _check(
+                "retrieval ready (>= 1 ACTIVE lesson)",
+                True,
+                f"{state.active} active, {state.review} at review, {state.traces} trace(s)",
+            )
 
         # What this store says it is, versus what every command will actually
         # read back. These can disagree silently, and when they do, every
