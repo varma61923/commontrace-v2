@@ -257,6 +257,39 @@ class Trace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     outcome: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
+    # Bi-temporal supersession: the forward half of the amendment chain
+    # `supersedes_trace_id` only ever points backward. crud.py:amend_trace
+    # creates a NEW row and leaves the original one it amends untouched --
+    # correct for history (nothing is mutated), but it meant the original
+    # carried no signal of its own that a correction exists. search_traces
+    # had no predicate that could tell a live trace from one someone had
+    # since amended, so a search could return the STALE original --
+    # sometimes instead of its correction, if the old text happened to
+    # rank higher -- with nothing on the row itself to say it had been
+    # superseded. Reproduced against a live Hub before this existed: amend
+    # a trace, search for the old wording, get the old wording back.
+    #
+    # The fix (the idea, not the code, adapted from Zep/Graphiti's
+    # bi-temporal fact model: a superseded fact is invalidated, never
+    # deleted, and the invalidation itself is a timestamped, queryable
+    # event) is to record the fact of supersession on the row that WAS
+    # superseded, set atomically in the same transaction as the amending
+    # INSERT. Two columns, not one: `_by` says WHAT superseded it (a
+    # forward pointer, letting a caller walk the chain in either
+    # direction without a self-join), `_at` says WHEN, which is what a
+    # partial index and a WHERE clause can act on directly.
+    #
+    # Not a ForeignKey, matching `supersedes_trace_id`'s own precedent
+    # just above: the trace THIS one points to may later be purged
+    # (hub/manage.py:purge_trace's amendment-chain walk), and a dangling
+    # FK would block that deletion rather than let the chain be cleaned
+    # up. NULL means "this is the current head" -- still true, still the
+    # right thing to search for.
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    superseded_by_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+
     # Hub-computed / read-only fields ------------------------------------
     trust: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
     # BigInteger, not Integer: these are unbounded monotonic counters --
@@ -450,6 +483,18 @@ class Trace(Base):
             postgresql_where=text(
                 "shared_with_commons AND NOT quarantined AND commons_retracted_at IS NULL"
             ),
+        ),
+        # search_traces now excludes a superseded trace from its default
+        # result set (superseded_at IS NULL) alongside its existing org_id
+        # + quarantined predicate. A superseded trace is expected to
+        # eventually be a minority of any active org's rows -- the same
+        # reasoning as ix_traces_commons above -- so a partial index over
+        # just the live ones keeps the common case (search an org) off the
+        # full table instead of scanning every historical version.
+        Index(
+            "ix_traces_org_live",
+            "org_id",
+            postgresql_where=text("superseded_at IS NULL"),
         ),
     )
 

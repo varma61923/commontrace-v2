@@ -298,6 +298,16 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: boo
         "watch_condition": trace.watch_condition,
         "review_after": trace.review_after,
         "supersedes_trace_id": trace.supersedes_trace_id or "",
+        # The forward half of the same chain -- see hub/models.py's
+        # docstring on these two columns. Empty string / None, matching
+        # supersedes_trace_id's own convention, when this trace is still
+        # the current head. get_trace is unaffected by superseded_at (it
+        # fetches by id regardless -- see search_traces's docstring for
+        # why the exclusion belongs there, not here): a caller who already
+        # has the id of a superseded trace can still retrieve it and see
+        # what replaced it.
+        "superseded_by_trace_id": trace.superseded_by_trace_id or "",
+        "superseded_at": trace.superseded_at.isoformat() if trace.superseded_at else "",
         "contributor": trace.contributor,
         "retrievals": trace.retrievals,
         "depth": trace.depth,
@@ -350,12 +360,25 @@ def commons_visible() -> list:
     itself, the second is a matcher precondition -- and folding them in
     here would silently break `vote_trace`, which correctly applies
     neither.
+
+    `superseded_at IS NULL` is the newest of the five, for the same reason
+    search_traces gained it (hub/models.py:Trace.superseded_at's
+    docstring): a trace an org later amends stops being the org's own
+    current answer, and amend_trace does not carry `shared_with_commons`
+    forward onto the new row -- re-sharing a correction is a separate,
+    explicit decision this function does not make for the org. Left
+    unfiltered, the stale, superseded original would keep being served to
+    every OTHER org from the Knowledge Base indefinitely, which is a worse
+    version of the bug this predicate fixes for per-org search: there it
+    misled the org that wrote it, here it would mislead every org that
+    didn't.
     """
     return [
         Trace.shared_with_commons.is_(True),
         Trace.commons_source == "seed",
         Trace.quarantined.is_(False),
         Trace.commons_retracted_at.is_(None),
+        Trace.superseded_at.is_(None),
     ]
 
 
@@ -845,7 +868,22 @@ async def search_traces(
     for tag in tags or []:
         reject_unstorable_text(tag, "tag")
 
-    stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    # Trace.superseded_at.is_(None): the bi-temporal fix (hub/models.py's
+    # docstring on the column has the full story). Before this predicate
+    # existed, amend_trace's own docstring correctly described the chain
+    # as "supersedes, does not mutate" -- but nothing here acted on that:
+    # a search could return the STALE original, occasionally in place of
+    # its correction, whenever the old wording happened to rank higher.
+    # Reproduced against a live Hub before this predicate existed: amend a
+    # trace, search the old wording, get the old wording back. A
+    # superseded trace is still reachable directly via get_trace (Zep's
+    # "invalidated, never deleted" -- see the model docstring) and via
+    # `superseded_by_trace_id` from whichever row now supersedes it; it is
+    # simply no longer offered as a live search RESULT, which is the one
+    # place staleness actually reaches an agent's context.
+    stmt = select(Trace).where(
+        Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None)
+    )
     chosen = hub_search.ChosenTerms((), (), ())
     # A trace whose OWN recorded outcome says the attempt failed
     # (`outcome.resolved: false` -- an agent's self-logged, unresolved
@@ -1952,6 +1990,20 @@ async def amend_trace(
             else None
         ),
     )
+    # Bi-temporal supersession (hub/models.py:Trace.superseded_at, adapted
+    # from Zep/Graphiti's bi-temporal fact model): the row being amended
+    # records its own invalidation, set in the SAME flush as the amending
+    # INSERT so the two are atomic -- a reader can never observe a new
+    # head with no superseded original, or vice versa. `original` is
+    # already the loaded, session-attached row fetched above; mutating its
+    # attributes and letting flush() emit the UPDATE is the ordinary
+    # SQLAlchemy unit-of-work pattern, not a second explicit statement.
+    # Skipped entirely on the idempotent-replay paths above (both return
+    # before reaching here), which is correct: a replay observes the
+    # amendment that already happened rather than re-performing it.
+    original.superseded_at = datetime.now(timezone.utc)
+    original.superseded_by_trace_id = amended_id
+
     session.add(amended)
     try:
         await session.flush()
