@@ -1156,6 +1156,39 @@ class TestTheWorkingSet:
             theirs = await crud.working_set(session, other_org)
         assert theirs["entries"] == [] and theirs["block"] == ""
 
+    async def test_an_amended_trace_drops_out_of_the_block(self, session_factory, config, org):
+        """The same staleness bi-temporal supersession fixed for
+        search_traces/commons_visible (hub/models.py:Trace.superseded_at),
+        for the ONE surface where it would otherwise never be noticed: this
+        block is pinned into a system prompt and never re-fetched mid
+        -session. Before this test existed, amending a promoted trace left
+        its pre-correction wording pinned here forever -- the effect was
+        real, but the text backing it was gone."""
+        [trace] = await self._established(session_factory, org)
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            await crud.amend_trace(
+                session, org, trace, config, rate_limiter,
+                solution_text="the corrected fix", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["entries"] == []
+        assert ws["established"] is False
+        assert "amended or removed" in ws["reason"]
+
+    async def test_a_purged_trace_drops_out_of_the_block(self, session_factory, org):
+        """Same fix, other cause: hub/manage.py:purge_trace removes a row
+        entirely rather than superseding it. Before this test existed the
+        block pinned a '(deleted trace)' placeholder title with an empty
+        solution body -- worse than stale, since there was nothing to read."""
+        [trace] = await self._established(session_factory, org)
+        await manage.purge_trace(trace, session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["entries"] == []
+        assert ws["established"] is False
+
 
 class TestTheOperatorCLIReachesTheSameNumbers:
     """`hub.manage value` -- crud.value_delivered from the operator CLI.

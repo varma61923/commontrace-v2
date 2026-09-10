@@ -2910,10 +2910,42 @@ async def working_set(
                 select(Trace.id, Trace.solution_text).where(
                     Trace.org_id == org_id,
                     Trace.id.in_([e["trace_id"] for e in helps]),
+                    # A trace amend_trace has since superseded, or one an
+                    # operator has since purged (hub/manage.py:purge_trace),
+                    # is no longer this fleet's own current answer. The
+                    # effect above was measured against the TEXT that was
+                    # actually shown on each occasion, not against the
+                    # trace's identity -- so unlike search_traces/
+                    # commons_visible (hub/models.py:Trace.superseded_at),
+                    # there is no safe "resolve forward to the new head"
+                    # here: inheriting an old effect onto amended wording
+                    # would be evidence for content nobody ever tested.
+                    # Excluding it from this query, and therefore from
+                    # `helps` below, is the same "degrades honestly rather
+                    # than inventing a block" rule this function already
+                    # applies to a compromised experiment -- it drops out of
+                    # the pinned block entirely rather than being pinned
+                    # with stale or (pre-existing gap, closed by the same
+                    # filter) missing text.
+                    Trace.superseded_at.is_(None),
                 )
             )
         ).all()
     )
+    helps = [e for e in helps if e["trace_id"] in bodies]
+    if not helps:
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "Every trace with an established causal effect has since been amended or "
+                "removed, so none of them are this fleet's current answer any more -- each "
+                "effect was measured against wording that no longer exists. `search_traces` "
+                "reaches the current versions; they earn a place here once the running "
+                "experiment establishes an effect for the new wording."
+            ),
+            "note": "",
+        }
 
     lines: list[str] = []
     entries: list[dict] = []
