@@ -588,6 +588,53 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             return _error_response(exc)
 
     @mcp.tool()
+    async def working_set(budget_chars: int = crud.DEFAULT_WORKING_SET_CHARS) -> dict:
+        """Your fleet's proven memory, small enough to pin to a system prompt.
+
+        Call this ONCE at session start, paste `block` into your system
+        prompt, and leave it there unchanged. That is the whole point: an
+        unchanged system prompt keeps the model provider's prefix cache
+        valid, so this memory costs its tokens once for the session rather
+        than once per query. Re-fetching it mid-session, or editing it,
+        throws away the saving.
+
+        It is not a replacement for `search_traces`, and using it that way
+        would make your fleet worse. This block holds only what has already
+        been PROVEN to help; `search_traces` reaches your entire corpus,
+        including everything still being measured and everything relevant
+        to a task nobody has hit before. Pin this, then search as normal.
+
+        What earns a place here is the part worth understanding.
+        Membership is not curated, not most-recent, and not most-retrieved
+        -- it is decided by your own randomized holdout. A trace appears
+        only once the experiment has ESTABLISHED that injecting it
+        improves outcomes, ranked by how many occasions it actually
+        improved. Anything still under test is deliberately absent, and
+        that absence is doing real work: a trace pinned into every
+        session would be injected on every occasion, which would destroy
+        the control arm still measuring it. A trace is either being
+        randomized or it has graduated -- never both.
+
+        So an empty block is a statement about EVIDENCE, not about your
+        corpus: `established: false` means nothing has been proven yet,
+        not that nothing is stored. Keep searching, keep reporting
+        outcomes with `record_occasion_outcome`, and entries appear here
+        as the experiment answers for them. A COMPROMISED experiment
+        yields no block at all, for the same reason it yields no value
+        figure.
+
+        `gauge` reports how much of the character budget is spent, so you
+        can see at a glance whether the block is near its ceiling.
+
+        Reads only your own data. Not metered."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.working_set(session, org_id, budget_chars=budget_chars)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @mcp.tool()
     async def value_delivered(value_per_occasion: float = 0.0) -> dict:
         """What your fleet's memory has been worth, causally, in occasions.
 

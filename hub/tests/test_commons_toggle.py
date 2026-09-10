@@ -84,6 +84,7 @@ class TestCommonsEnabledByDefault:
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage", "fleet_outcomes",
             "holdout_assign", "record_occasion_outcome", "value_delivered",
+            "working_set",
         }
 
 

@@ -1043,6 +1043,120 @@ class TestWhatTheMemoryWasWorth:
         assert theirs["occasions_improved"] == 0.0
 
 
+class TestTheWorkingSet:
+    """Memory that costs its tokens once per session instead of once per
+    query -- and the rule that decides what gets in.
+
+    The design worth defending here is that membership is EARNED. Only a
+    trace the holdout has established as HELPS is pinned, which is also
+    what keeps the method honest: a trace pinned into every session is
+    injected on every occasion, so pinning one still under test would
+    destroy the control arm still measuring it. A trace is either being
+    randomized or it has graduated -- never both.
+    """
+
+    async def _established(self, session_factory, org, n=120, helps=True):
+        """One trace with a real, established effect in the given direction."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(n):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            injected = bool(result["inject"])
+            good = (i % 10 < 8) if (injected == helps) else (i % 10 < 3)
+            await _resolve(session_factory, org, f"occ-{i}", good)
+        return traces
+
+    async def test_a_proven_trace_is_promoted_into_the_block(self, session_factory, org):
+        [trace] = await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["established"] is True
+        assert [e["trace_id"] for e in ws["entries"]] == [trace]
+        assert trace in ws["block"]
+        assert ws["chars_used"] > 0
+
+    async def test_nothing_is_promoted_before_the_experiment_answers(
+        self, session_factory, org
+    ):
+        """An empty block is a statement about evidence, not about the
+        corpus -- and it must say so rather than quietly falling back to a
+        most-retrieved list that would look identical but carry none."""
+        await _traces(session_factory, org, 3)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["established"] is False
+        assert ws["entries"] == [] and ws["block"] == ""
+        assert "not about the corpus" in ws["reason"] or "evidence" in ws["reason"]
+
+    async def test_a_trace_still_under_test_is_never_pinned(self, session_factory, org):
+        """THE invariant. Pinning a trace that is still being randomized
+        would inject it on every occasion and destroy its own control arm,
+        so an UNDERPOWERED trace must stay out however promising it looks."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(8):  # far too few occasions to establish anything
+            await _assign(session_factory, org, traces, f"occ-{i}")
+            await _resolve(session_factory, org, f"occ-{i}", True)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+            ws = await crud.working_set(session, org)
+        assert causal["effects"], "expected an effect row to exist but be unestablished"
+        assert all(e["verdict"] != "HELPS" for e in causal["effects"])
+        assert ws["entries"] == []
+
+    async def test_a_trace_measured_as_hurting_is_never_pinned(self, session_factory, org):
+        await self._established(session_factory, org, helps=False)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["entries"] == []
+
+    async def test_a_compromised_experiment_yields_no_block(self, session_factory, org):
+        """Same rule as the value figure: a biased selection baked into
+        every future session's prompt is the worst place for it."""
+        traces = await _traces(session_factory, org, 1)
+        for i in range(120):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            if bool(result["inject"]) or i % 4 == 0:
+                await _resolve(session_factory, org, f"occ-{i}", i % 2 == 0)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert ws["established"] is False
+        assert ws["block"] == ""
+        assert "COMPROMISED" in ws["reason"]
+
+    async def test_the_block_respects_its_character_budget(self, session_factory, org):
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            tiny = await crud.working_set(session, org, budget_chars=40)
+        assert tiny["chars_used"] <= 40
+        assert tiny["budget_chars"] == 40
+
+    async def test_the_gauge_reports_budget_use(self, session_factory, org):
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        assert "chars]" in ws["gauge"] and "%" in ws["gauge"]
+        assert ws["gauge"] in ws["block"]
+
+    async def test_it_is_stable_across_calls_so_the_prefix_cache_survives(
+        self, session_factory, org
+    ):
+        """The entire cost saving depends on the pasted block not changing
+        between sessions for an unchanged corpus -- a block that reshuffled
+        would invalidate the prefix cache it exists to preserve."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            first = await crud.working_set(session, org)
+            second = await crud.working_set(session, org)
+        assert first["block"] == second["block"]
+
+    async def test_another_orgs_proven_memory_is_never_visible(
+        self, session_factory, org, other_org
+    ):
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            theirs = await crud.working_set(session, other_org)
+        assert theirs["entries"] == [] and theirs["block"] == ""
+
+
 class TestTheOperatorCLIReachesTheSameNumbers:
     """`hub.manage value` -- crud.value_delivered from the operator CLI.
 

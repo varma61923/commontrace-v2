@@ -2604,6 +2604,189 @@ async def value_delivered(
     }
 
 
+# --- The working set: memory that costs nothing per query ---------------
+#
+# WHY THIS EXISTS
+#
+# Retrieval is not free, and this product's own measurements say how much:
+# one `search_traces` page costs roughly 1,160 tokens, paid again on every
+# call, and paid whether or not the corpus had anything useful to say. An
+# agent doing twenty lookups in a session spends ~23,000 tokens on
+# retrieval alone.
+#
+# The comparison worth making is against the simplest design in the field.
+# Nous Research's Hermes Agent (MIT) keeps memory in two small files read
+# once at session start and pasted into the system prompt, where they stay
+# unchanged for the whole session -- deliberately, so the provider's prefix
+# cache is never invalidated. That buys zero marginal cost per query, for a
+# total budget of roughly 1,300 tokens. At twenty lookups it is ~26x
+# cheaper than retrieving.
+#
+# What it cannot do is decide what belongs in those 1,300 tokens. Hermes
+# fills them by asking the agent to curate its own notes; Mem0, Zep and
+# Letta fill their equivalents by automatic extraction and grade themselves
+# on recall benchmarks (LoCoMo, LongMemEval) -- "did you remember the
+# fact", never "did remembering it make the work go better".
+#
+# This Hub can answer the second question, because it already runs a
+# randomized holdout per trace. So the working set is selected by MEASURED
+# CAUSAL EFFECT: a trace earns a place in the always-on block by having
+# been established as HELPS by the fleet's own experiment, and nothing
+# else gets in. The experiment stops being only a report and becomes the
+# PROMOTION MECHANISM.
+#
+# That also resolves what would otherwise be a real methodological
+# problem. A trace pinned into every session's prompt is injected on every
+# occasion, which would quietly destroy the control arm it is still being
+# measured against. Restricting the block to traces whose effect is
+# already established means nothing under test is ever pinned: a trace is
+# either still being randomized, or it has graduated. Never both.
+
+# Hermes Agent's MEMORY.md ships a 2,200-character budget and its own
+# usage gauge; this default is deliberately the same order of magnitude,
+# for the same reason (a block big enough to matter and small enough that
+# a cached system prompt stays cheap). Callers can ask for less.
+DEFAULT_WORKING_SET_CHARS = 2000
+MAX_WORKING_SET_CHARS = 8000
+# Enough of a solution to act on without fetching the trace. A caller that
+# needs the whole thing has the id and `get_trace`.
+_WORKING_SET_ENTRY_CHARS = 320
+
+
+def _working_set_entry(title: str, solution: str, trace_id: str, effect: float, n: int) -> str:
+    """One line of the block: what to do, how well it is known to work."""
+    body = " ".join((solution or "").split())
+    if len(body) > _WORKING_SET_ENTRY_CHARS:
+        body = body[:_WORKING_SET_ENTRY_CHARS].rsplit(" ", 1)[0] + "…"
+    head = " ".join((title or "").split())
+    return f"- {head} → {body} ({effect:+.0%} resolution over {n} measured occasions) [{trace_id}]"
+
+
+async def working_set(
+    session: AsyncSession, org_id: str, budget_chars: int = DEFAULT_WORKING_SET_CHARS
+) -> dict:
+    """The fleet's proven memory, small enough to pin to a system prompt.
+
+    Returns a block to paste ONCE at session start and leave unchanged, so
+    it costs its tokens a single time and rides the provider's prefix cache
+    for the rest of the session, instead of being re-fetched per query.
+
+    Membership is earned, not curated: only traces the running holdout has
+    established as HELPS appear here, ranked by how many occasions each one
+    actually improved (effect x times injected -- `commontrace/value.py`'s
+    quantity, not a popularity count). A trace still under test is
+    deliberately absent, because pinning it would inject it on every
+    occasion and destroy the control arm that is still measuring it.
+
+    Degrades honestly rather than inventing a block. With no established
+    effects yet -- a fleet in its first weeks, or one with no experiment
+    running -- this returns `established: false` and an empty block, and
+    says which it was, instead of silently falling back to a
+    most-retrieved list that would look identical to a measured one while
+    carrying no evidence at all. `search_traces` is the right tool until
+    the experiment has an answer.
+    """
+    budget_chars = _clamp_int(
+        budget_chars, 1, MAX_WORKING_SET_CHARS, DEFAULT_WORKING_SET_CHARS
+    )
+    causal = await causal_effects(session, org_id)
+    audit = causal.get("integrity") or {}
+
+    # A compromised experiment yields no block, for the same reason it
+    # yields no value figure (commontrace/value.py): if a named mechanism
+    # is biasing the effects, it biases the selection made from them, and
+    # a prompt that every future session inherits is the worst possible
+    # place to bake in a biased choice.
+    if not audit.get("effects_readable", True):
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "The experiment these effects came from is COMPROMISED, so nothing has been "
+                "promoted. Read `fleet_outcomes.causal.integrity` and fix what it names; a "
+                "working set chosen from biased effects would carry that bias into every "
+                "future session's prompt."
+            ),
+            "note": "",
+        }
+
+    helps = [
+        e for e in causal.get("effects", [])
+        if e.get("verdict") == experiment.VERDICT_HELPS
+    ]
+    helps.sort(key=lambda e: (e.get("effect") or 0.0) * (e.get("n_injected") or 0), reverse=True)
+
+    if not helps:
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "No trace has an established causal effect yet, so nothing has earned a place "
+                "in an always-on block. This is a statement about evidence, not about the "
+                "corpus: keep using `search_traces` (which reaches everything), keep reporting "
+                "outcomes with `record_occasion_outcome`, and traces will be promoted here as "
+                "the experiment answers for them."
+            ),
+            "note": "",
+        }
+
+    bodies = dict(
+        (
+            await session.execute(
+                select(Trace.id, Trace.solution_text).where(
+                    Trace.org_id == org_id,
+                    Trace.id.in_([e["trace_id"] for e in helps]),
+                )
+            )
+        ).all()
+    )
+
+    lines: list[str] = []
+    entries: list[dict] = []
+    used = 0
+    for e in helps:
+        line = _working_set_entry(
+            e.get("title") or "", bodies.get(e["trace_id"], ""), e["trace_id"],
+            e.get("effect") or 0.0, e.get("n_injected") or 0,
+        )
+        if used + len(line) + 1 > budget_chars:
+            # Ranked by measured contribution, so the first thing that does
+            # not fit ends the block -- a smaller later entry squeezed in
+            # ahead of a larger, better-evidenced one would make the block's
+            # contents depend on their lengths rather than on the evidence.
+            break
+        lines.append(line)
+        used += len(line) + 1
+        entries.append({
+            "trace_id": e["trace_id"], "title": e.get("title"),
+            "effect": e.get("effect"), "n_injected": e.get("n_injected"),
+            "occasions_improved": round((e.get("effect") or 0.0) * (e.get("n_injected") or 0), 2),
+        })
+
+    pct = round(100 * used / budget_chars) if budget_chars else 0
+    gauge = f"[{pct}% — {used:,}/{budget_chars:,} chars]"
+    header = (
+        f"## Fleet memory — {len(entries)} lesson(s) with a measured effect\n"
+        f"{gauge}\n"
+    )
+    return {
+        "block": header + "\n".join(lines),
+        "entries": entries,
+        "established": True,
+        "chars_used": used,
+        "budget_chars": budget_chars,
+        "gauge": gauge,
+        "reason": "",
+        "note": (
+            "Paste this ONCE at session start and do not change it mid-session: an unchanged "
+            "system prompt keeps the provider's prefix cache valid, which is what makes this "
+            "memory cost its tokens once per session instead of once per query. Everything "
+            "here has an established causal effect; anything still being measured is "
+            "deliberately absent and reachable via `search_traces`."
+        ),
+    }
+
+
 def _integrity_from_wire(wire: dict) -> integrity.IntegrityReport | None:
     """Rebuild just enough of the audit for `value.compute` to gate on.
 

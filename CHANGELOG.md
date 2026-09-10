@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`working_set` — memory that costs its tokens once per session instead
+  of once per query, and earns its contents.** Retrieval is not free:
+  measured on a live Hub, one `search_traces` page costs ~231 tokens and
+  is paid again on every call. The simplest design in the field, Nous
+  Research's Hermes Agent (MIT), avoids that entirely by reading two small
+  files into the system prompt once at session start and never changing
+  them mid-session, deliberately, so the provider's prefix cache is never
+  invalidated — roughly 1,300 tokens for a whole session and zero marginal
+  cost per query.
+
+  What Hermes cannot do is decide what belongs in those tokens; it asks
+  the agent to curate its own notes. Mem0, Zep and Letta fill their
+  equivalents by automatic extraction and grade themselves on recall
+  benchmarks (LoCoMo, LongMemEval) — "did you remember the fact", never
+  "did remembering it make the work go better". This Hub already answers
+  the second question per trace, so `working_set` selects by MEASURED
+  CAUSAL EFFECT: a trace is pinned only once the fleet's own randomized
+  holdout has established it as HELPS, ranked by occasions actually
+  improved. The experiment stops being only a report and becomes the
+  promotion mechanism.
+
+  That rule also resolves what would otherwise be a methodological hole. A
+  trace pinned into every session is injected on every occasion, which
+  would destroy the control arm still measuring it — so restricting the
+  block to established effects means nothing under test is ever pinned. A
+  trace is either being randomized or it has graduated, never both. A
+  COMPROMISED experiment yields no block at all, for the same reason it
+  yields no value figure, and a fleet with no established effects yet gets
+  an empty block that says so rather than a most-retrieved list that would
+  look identical while carrying no evidence.
+
+  Measured live, end to end: a trace promoted after its effect was
+  established at +51% over 63 occasions produced a 112-token block against
+  231 tokens per search — **41x cheaper at 20 lookups per session, 103x at
+  50** — while remaining strictly additive, since `search_traces` still
+  reaches the entire corpus including everything still under test.
+
 ### Fixed
 
 - **A relevance tie returned a fleet's own re-tellings of a lesson ahead
