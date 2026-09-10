@@ -509,7 +509,11 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
-        """Contribute a new trace. Returns its id and quarantine status.
+        """Contribute a new trace. Returns its id, quarantine status, and
+        `possible_duplicates` -- ids of other live traces in this org a
+        bounded heuristic thinks may be the same thing as this one.
+        Informational only; nothing is merged or blocked automatically.
+        Call `amend_trace` yourself if one of them should be superseded.
 
         Pass a client-generated `idempotency_key` (e.g. a UUID minted once
         per logical contribution) to make retries after a lost/timed-out

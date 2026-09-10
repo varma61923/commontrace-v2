@@ -1039,6 +1039,89 @@ async def search_health(
     }
 
 
+async def _possible_duplicates(
+    session: AsyncSession,
+    org_id: str,
+    trace_id: str,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+) -> list[str]:
+    """Ids of other LIVE traces in this org that look like the same thing
+    as the one just contributed -- so the caller can `amend_trace` instead
+    of leaving two disagreeing answers to the same problem both live.
+
+    Graphiti (getzep/graphiti, cloned to scratch for this pass under
+    Apache-2.0) resolves this with an LLM call per extracted fact: every
+    new edge is checked against related existing edges for semantic
+    contradiction, and a contradicted edge is invalidated automatically
+    (graphiti_core/utils/maintenance/edge_operations.py:resolve_edge_
+    contradictions). That is the wrong shape to adopt here -- adapting the
+    idea, not the code: `commontrace/distill.py`'s own docstring already
+    made this call deliberately for the identical tradeoff ("a headless
+    CLI command has no standing agent session to call out to, and baking
+    in a hardcoded model call/API-key dependency here would be a much
+    bigger, riskier addition than this pass is scoped for"), and this is
+    the Hub's write path, hit far more often than a batch CLI command.
+    Automatic invalidation is also a stronger claim than this module wants
+    to make unilaterally: `amend_trace` already exists as the explicit,
+    human/agent-decided path for "this replaces that", and this function
+    does not call it -- it only surfaces candidates.
+
+    So: zero-LLM, using the same word-overlap Jaccard clustering
+    `_cluster_representatives` above already reuses from distill.py for
+    an unrelated problem (collapsing near-duplicate randomization units),
+    rather than a third implementation of "these are probably the same
+    thing". And bounded, per this module's own established discipline
+    against scanning the tenant on a write (hub/crud.py's module
+    docstring; see also `_reserve_trace_slot`): candidates come from ONE
+    indexed query (`Trace.tags.overlap`, backed by `ix_traces_tags_gin`,
+    the same idiom `search_traces` already uses), capped at 25 rows, and
+    skipped entirely when the new trace has no tags to narrow on --
+    exactly the shape `_cluster_representatives` documents as bounded to
+    "one search page, not the cluster's true membership". A trace that
+    happens not to cluster with anything in this bounded, recent sample
+    is simply not flagged; a full-corpus guarantee is not the point, an
+    agent about to contribute a near-duplicate of something recent is.
+    """
+    if not tags:
+        return []
+    stmt = (
+        select(Trace.id, Trace.title, Trace.context_text, Trace.solution_text, Trace.tags, Trace.agent_type)
+        .where(
+            Trace.org_id == org_id,
+            Trace.id != trace_id,
+            Trace.superseded_at.is_(None),
+            Trace.quarantined.is_(False),
+            Trace.tags.overlap(tags),
+        )
+        .order_by(Trace.created_at.desc())
+        .limit(25)
+    )
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return []
+    candidates = [
+        distill.TraceCandidate(
+            id=trace_id, path="", title=title, context_text=context_text,
+            solution_text=solution_text, tags=tags, agent_type=agent_type,
+        )
+    ] + [
+        distill.TraceCandidate(
+            id=row.id, path="", title=row.title, context_text=row.context_text,
+            solution_text=row.solution_text, tags=list(row.tags), agent_type=row.agent_type,
+        )
+        for row in rows
+    ]
+    for cluster in distill.find_clusters(candidates, existing_lessons_source_traces=[]):
+        cluster_ids = {c.id for c in cluster.traces}
+        if trace_id in cluster_ids:
+            return sorted(cluster_ids - {trace_id})
+    return []
+
+
 async def contribute_trace(
     session: AsyncSession,
     org_id: str,
@@ -1108,6 +1191,12 @@ async def contribute_trace(
     returning stale content. Omitting the key (the default) is unaffected
     -- NULL never conflicts with anything under the backing
     UNIQUE(org_id, idempotency_key).
+
+    `possible_duplicates` in the return value: ids of other live traces in
+    this org that a bounded, zero-LLM heuristic (`_possible_duplicates`
+    above) thinks may be the same thing as this one -- informational only,
+    never blocking and never auto-amending. `[]` on an idempotent replay,
+    matching that path's "store nothing new" contract.
     """
     tags = tags or []
 
@@ -1256,7 +1345,15 @@ async def contribute_trace(
             f"n_tags={len(tags)} quarantined={trace.quarantined}"
         ),
     )
-    return {"id": trace.id, "quarantined": trace.quarantined, "quarantine_reason": trace.quarantine_reason}
+    possible_duplicates = await _possible_duplicates(
+        session, org_id, trace.id, title, context_text, solution_text, tags, agent_type,
+    )
+    return {
+        "id": trace.id,
+        "quarantined": trace.quarantined,
+        "quarantine_reason": trace.quarantine_reason,
+        "possible_duplicates": possible_duplicates,
+    }
 
 
 def _idempotent_replay_or_conflict(
@@ -1282,6 +1379,9 @@ def _idempotent_replay_or_conflict(
         "id": existing.id,
         "quarantined": existing.quarantined,
         "quarantine_reason": existing.quarantine_reason,
+        # A replay stores nothing new, so there is nothing new to check for
+        # duplicates of -- see contribute_trace's docstring on this key.
+        "possible_duplicates": [],
     }
 
 
