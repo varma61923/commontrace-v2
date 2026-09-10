@@ -17,6 +17,7 @@ example.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -1177,14 +1178,26 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
     )
-    async def _report_rls_status() -> None:
-        # Startup, not per-request: it is one diagnostic query, and the
-        # answer cannot change without an operator changing the role or
-        # the migrations. See hub/db.py:warn_if_rls_is_inert for why a
-        # silently-bypassed policy is worth a loud line.
-        await warn_if_rls_is_inert(session_factory)
+    # Startup, not per-request: one diagnostic query, and the answer cannot
+    # change without an operator changing the role or the migrations. See
+    # hub/db.py:warn_if_rls_is_inert for why a silently-bypassed policy is
+    # worth a loud line.
+    #
+    # Chained onto the existing lifespan rather than registered with
+    # `add_event_handler`, which Starlette removed (1.6 has no such
+    # attribute) -- and which no test caught, because nothing exercised
+    # build_app's startup. The MCP app installs its own lifespan for the
+    # session manager, so this composes with it exactly as hub/main.py
+    # does for engine disposal rather than replacing it.
+    _previous_lifespan = inner_app.router.lifespan_context
 
-    inner_app.add_event_handler("startup", _report_rls_status)
+    @contextlib.asynccontextmanager
+    async def _lifespan_with_rls_check(app):
+        async with _previous_lifespan(app):
+            await warn_if_rls_is_inert(session_factory)
+            yield
+
+    inner_app.router.lifespan_context = _lifespan_with_rls_check
     inner_app.add_middleware(
         LoadShedMiddleware,
         max_concurrent=config.max_concurrent_requests,
