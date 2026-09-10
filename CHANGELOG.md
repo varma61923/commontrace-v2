@@ -46,7 +46,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   50** — while remaining strictly additive, since `search_traces` still
   reaches the entire corpus including everything still under test.
 
+- **Graduation into `working_set` now expires, so a pinned lesson cannot
+  outlive the evidence for it.** The promotion rule above creates its own
+  blind spot: a pinned trace is injected on every occasion, so it is never
+  withheld, so it stops accumulating the withheld arm its effect was
+  computed from. Graduation *freezes* the measurement. Left alone, "has a
+  measured causal effect" quietly decays into "had one once, against a
+  world that has since moved on" — and the upstream fix, API change or
+  dependency bump that made the lesson obsolete are all invisible to it.
+
+  Every competing system addresses the same staleness with a **proxy for**
+  usefulness rather than a measurement of it. Mem0 scales retrieval rank by
+  an Ebbinghaus-style recency/access curve (~0.3x–1.5x, a soft rerank, not
+  a delete); the 2026 survey literature converges on "differential
+  exponential decay keyed to relevance, access frequency and temporal
+  pattern". All of them can only see whether a memory was recently *read*.
+  A lesson nobody happened to retrieve decays; an obsolete lesson everyone
+  keeps retrieving does not.
+
+  This Hub measures the thing itself, so it does not have to guess — and it
+  deliberately does not claim what it cannot see. `causal_effects` now
+  dates every estimate (`last_measured_at`, from the last resolved
+  observation the estimate was actually computed from), and `working_set`
+  drops any entry whose evidence is older than a configurable horizon
+  (`evidence_horizon_days`, default 180). The reason string is explicit
+  that this is **not** a finding that the lesson stopped working: it is
+  that nobody has checked. Leaving the block is precisely what returns the
+  trace to the randomizer, which is the only mechanism that can produce a
+  fresh answer, so the horizon acts as the working set's *renewal period*
+  rather than a punishment — the trace is promoted again as soon as the
+  experiment re-establishes it.
+
+  Each entry also carries `evidence_age_days`, and both new fields are
+  structured metadata only: they are deliberately kept **out** of the
+  pinned `block` text, because an age changes daily and a block whose text
+  changes daily invalidates the prefix cache the whole feature exists to
+  preserve. Pinned by a test.
+
 ### Fixed
+
+- **`working_set` kept pinning a promoted trace's text after that trace was
+  corrected or deleted.** The block is pasted into a system prompt once and
+  never re-fetched mid-session, so unlike `search_traces` nothing ever
+  re-reads it to notice staleness — which made this the one surface where
+  the bi-temporal supersession gap below would never have been spotted.
+  Amending a promoted trace (`amend_trace` writes a NEW row) left its
+  *pre-correction* wording pinned indefinitely: the effect was real, but
+  the text backing it had been superseded. Purging one
+  (`hub/manage.py:purge_trace`) was worse — the block went on pinning a
+  `"(deleted trace)"` placeholder title with an empty solution body, so the
+  prompt carried a lesson with nothing in it to read.
+
+  Both now drop out of the block entirely, following the same "degrades
+  honestly rather than inventing a block" rule the function already applied
+  to a compromised experiment. There is deliberately no "resolve forward to
+  the amended version" here, unlike `search_traces`/`commons_visible`: the
+  effect was measured against the specific text shown on each occasion, so
+  inheriting it onto rewritten wording would be presenting evidence for
+  content nobody ever tested.
 
 - **A relevance tie returned a fleet's own re-tellings of a lesson ahead
   of the lesson itself, and the near-duplicate clustering could not hold

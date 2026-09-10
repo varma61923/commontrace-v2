@@ -2656,6 +2656,25 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     ]
     effects = experiment.analyze(observations, alpha=alpha)
 
+    # WHEN each estimate stopped being updated. `analyze` pools a trace's
+    # entire history with no notion of time, so an effect established in a
+    # fleet's first month and never observed since carries exactly the same
+    # authority here as one measured yesterday. That is correct for an audit
+    # table -- the estimate IS what those occasions showed -- and it is not
+    # sufficient for `working_set`, which pins the winners into every future
+    # session's prompt on the strength of it. Dated here so the promotion
+    # decision can see the age of the evidence it is acting on.
+    #
+    # Read from the RESOLVED observations only, and from `unique` rather than
+    # the raw rows: those are the occasions the estimate was actually
+    # computed from, so they are what "last measured" can honestly mean.
+    last_measured: dict[str, datetime] = {}
+    for r in unique:
+        if r.succeeded is None or r.at is None:
+            continue
+        if r.lesson not in last_measured or r.at > last_measured[r.lesson]:
+            last_measured[r.lesson] = r.at
+
     titles = dict(
         (
             await session.execute(
@@ -2690,6 +2709,12 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 "min_detectable_effect": e.min_detectable_effect,
                 "verdict": e.verdict,
                 "note": e.note,
+                # Empty string, not null, matching the wire convention the
+                # trace fields already use for "there is no such value".
+                "last_measured_at": (
+                    last_measured[e.lesson_slug].isoformat()
+                    if e.lesson_slug in last_measured else ""
+                ),
             }
             for e in effects
         ],
@@ -2822,9 +2847,60 @@ async def value_delivered(
 # a cached system prompt stays cheap). Callers can ask for less.
 DEFAULT_WORKING_SET_CHARS = 2000
 MAX_WORKING_SET_CHARS = 8000
+
+# How long a measured effect stays fresh enough to PIN. A policy number,
+# not a measurement -- and the honest half of a problem this design creates
+# for itself.
+#
+# Every competing memory system ages memory out on a PROXY for usefulness.
+# Mem0 scales retrieval rank by an Ebbinghaus-style recency/access curve
+# (roughly 0.3x-1.5x, a soft rerank rather than a delete); the 2026 survey
+# literature converges on "differential exponential decay keyed to
+# relevance, access frequency and temporal pattern". Every one of those is
+# a guess dressed as a measurement, because none of those systems can see
+# whether a memory still WORKS -- only whether it was recently read. A
+# lesson nobody happened to retrieve decays; an obsolete lesson everyone
+# keeps retrieving does not.
+#
+# This Hub measures the thing itself, and therefore has to confront what
+# the measurement's age means. Promotion here is what freezes it: a pinned
+# trace is injected on EVERY occasion, so it is never withheld, so it stops
+# accumulating the withheld arm its effect was computed from. Graduation
+# ends the experiment for that trace. Left alone, "has a measured causal
+# effect" quietly becomes "had one once, against a world that has since
+# moved on" -- and the upstream fix, the API change, or the dependency bump
+# that made the lesson obsolete are all invisible to it.
+#
+# So graduation expires. Past this horizon an entry leaves the pinned
+# block, which is not a demotion so much as a renewal: leaving the block is
+# precisely what allows the trace to be randomized again, and randomization
+# is the only thing that can produce fresh evidence. It re-earns its place
+# when the experiment answers for it a second time. This horizon is
+# therefore the RENEWAL PERIOD of the working set. The default is
+# deliberately generous -- long enough that a genuinely stable lesson is
+# not churned, short enough that no fleet's system prompt carries a claim
+# nobody has checked in half a year.
+DEFAULT_EVIDENCE_HORIZON_DAYS = 180
+MAX_EVIDENCE_HORIZON_DAYS = 36500
 # Enough of a solution to act on without fetching the trace. A caller that
 # needs the whole thing has the id and `get_trace`.
 _WORKING_SET_ENTRY_CHARS = 320
+
+
+def _evidence_age_days(last_measured_at: str, now: datetime) -> float | None:
+    """Days since the last resolved observation behind an effect estimate.
+
+    `None` when the estimate carries no date at all, which the caller treats
+    exactly as it treats an expired one: an effect whose evidence cannot be
+    dated cannot be shown to be current, and a block that every future
+    session inherits is the wrong place to assume in its favour.
+    """
+    if not last_measured_at:
+        return None
+    # Clamped at zero: `now` is this replica's clock and the timestamp is the
+    # database's, so a few seconds of skew between them is ordinary and must
+    # not surface as a negative age.
+    return max(0.0, (now - datetime.fromisoformat(last_measured_at)).total_seconds() / 86400.0)
 
 
 def _working_set_entry(title: str, solution: str, trace_id: str, effect: float, n: int) -> str:
@@ -2837,7 +2913,10 @@ def _working_set_entry(title: str, solution: str, trace_id: str, effect: float, 
 
 
 async def working_set(
-    session: AsyncSession, org_id: str, budget_chars: int = DEFAULT_WORKING_SET_CHARS
+    session: AsyncSession,
+    org_id: str,
+    budget_chars: int = DEFAULT_WORKING_SET_CHARS,
+    evidence_horizon_days: int = DEFAULT_EVIDENCE_HORIZON_DAYS,
 ) -> dict:
     """The fleet's proven memory, small enough to pin to a system prompt.
 
@@ -2862,6 +2941,9 @@ async def working_set(
     """
     budget_chars = _clamp_int(
         budget_chars, 1, MAX_WORKING_SET_CHARS, DEFAULT_WORKING_SET_CHARS
+    )
+    evidence_horizon_days = _clamp_int(
+        evidence_horizon_days, 1, MAX_EVIDENCE_HORIZON_DAYS, DEFAULT_EVIDENCE_HORIZON_DAYS
     )
     causal = await causal_effects(session, org_id)
     audit = causal.get("integrity") or {}
@@ -2947,6 +3029,42 @@ async def working_set(
             "note": "",
         }
 
+    # Graduation expires (DEFAULT_EVIDENCE_HORIZON_DAYS above has the full
+    # argument). An effect nobody has observed inside the horizon is not
+    # evidence that the lesson still works -- it is evidence that it worked,
+    # once. Dropping it here is what returns the trace to the randomizer,
+    # which is the only mechanism that can produce a fresh answer.
+    now = datetime.now(timezone.utc)
+    ages = {
+        e["trace_id"]: _evidence_age_days(e.get("last_measured_at") or "", now)
+        for e in helps
+    }
+    expired = [
+        e for e in helps
+        if ages[e["trace_id"]] is None or ages[e["trace_id"]] > evidence_horizon_days
+    ]
+    helps = [e for e in helps if e not in expired]
+    if not helps:
+        oldest = min(
+            (ages[e["trace_id"]] for e in expired if ages[e["trace_id"]] is not None),
+            default=None,
+        )
+        measured = f"{oldest:.0f} days ago" if oldest is not None else "at an unrecorded time"
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                f"Every established effect for this fleet was last measured {measured}, past "
+                f"the {evidence_horizon_days}-day evidence horizon, so nothing is pinned. This "
+                "is not a finding that those lessons stopped working -- it is that pinning a "
+                "trace stops it being withheld, which stops the experiment that measured it, "
+                "so the evidence has not moved since. Leaving the block is what returns them "
+                "to the randomizer: keep reporting outcomes with `record_occasion_outcome` and "
+                "each one is promoted again as soon as the experiment re-establishes it."
+            ),
+            "note": "",
+        }
+
     lines: list[str] = []
     entries: list[dict] = []
     used = 0
@@ -2967,6 +3085,16 @@ async def working_set(
             "trace_id": e["trace_id"], "title": e.get("title"),
             "effect": e.get("effect"), "n_injected": e.get("n_injected"),
             "occasions_improved": round((e.get("effect") or 0.0) * (e.get("n_injected") or 0), 2),
+            # Structured metadata ONLY -- deliberately not rendered into
+            # `block`. The age changes every day, and a block whose text
+            # changes daily invalidates the provider's prefix cache on every
+            # session, which is the entire saving this function exists to
+            # produce (see the header above). A caller that wants to show the
+            # age reads it from here.
+            "last_measured_at": e.get("last_measured_at") or "",
+            "evidence_age_days": (
+                round(ages[e["trace_id"]], 1) if ages[e["trace_id"]] is not None else None
+            ),
         })
 
     pct = round(100 * used / budget_chars) if budget_chars else 0

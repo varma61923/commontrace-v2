@@ -27,6 +27,8 @@ corrupt a result:
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
@@ -1176,6 +1178,90 @@ class TestTheWorkingSet:
         assert ws["entries"] == []
         assert ws["established"] is False
         assert "amended or removed" in ws["reason"]
+
+    async def _backdate(self, session_factory, org_id, days):
+        """Age this org's whole observation history by `days`.
+
+        The horizon is measured from the last RESOLVED observation behind an
+        estimate, so moving `created_at` back is the honest way to reach the
+        expiry branch -- the effect, the arms and the verdict all stay exactly
+        as the analysis computed them.
+        """
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                sa_update(HoldoutObservation)
+                .where(HoldoutObservation.org_id == org_id)
+                .values(created_at=func.now() - timedelta(days=days))
+            )
+
+    async def test_evidence_older_than_the_horizon_is_not_pinned(
+        self, session_factory, org
+    ):
+        """Graduation expires. Pinning a trace stops it being withheld, which
+        stops the experiment that measured it -- so an effect nobody has
+        observed in a long time is evidence that the lesson worked ONCE, not
+        that it still works. Competing systems age memory out on access
+        recency because they cannot see the difference; this one can."""
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=400)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org, evidence_horizon_days=180)
+        assert ws["entries"] == []
+        assert ws["established"] is False
+        assert "evidence horizon" in ws["reason"]
+        assert "stopped working" in ws["reason"], (
+            "the reason must not claim decay it did not measure"
+        )
+
+    async def test_evidence_inside_the_horizon_is_still_pinned(
+        self, session_factory, org
+    ):
+        """The other side of the same boundary: an effect measured recently
+        keeps its place, so the horizon expires stale evidence rather than
+        quietly emptying the block."""
+        [trace] = await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=10)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org, evidence_horizon_days=180)
+        assert [e["trace_id"] for e in ws["entries"]] == [trace]
+        assert ws["established"] is True
+
+    async def test_each_entry_reports_the_age_of_its_evidence(
+        self, session_factory, org
+    ):
+        """A caller must be able to see how old the evidence behind a pinned
+        lesson is -- that is the number every competitor has to approximate
+        with an access-recency heuristic."""
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=30)
+        async with session_scope(session_factory) as session:
+            ws = await crud.working_set(session, org)
+        [entry] = ws["entries"]
+        assert entry["last_measured_at"], "an effect must carry the date it was last measured"
+        assert 29 <= entry["evidence_age_days"] <= 31
+
+    async def test_the_age_is_kept_out_of_the_pinned_block(self, session_factory, org):
+        """The block's text must not carry anything that changes daily: a
+        block whose text moves invalidates the prefix cache on every session,
+        which is the whole saving this function exists to produce."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            fresh = await crud.working_set(session, org)
+        await self._backdate(session_factory, org, days=30)
+        async with session_scope(session_factory) as session:
+            aged = await crud.working_set(session, org)
+        assert aged["block"] == fresh["block"], "block text must not depend on evidence age"
+        assert aged["entries"][0]["evidence_age_days"] != fresh["entries"][0]["evidence_age_days"]
+
+    async def test_causal_effects_dates_every_estimate(self, session_factory, org):
+        """The audit surface carries the date too -- `working_set` reads it
+        from there rather than re-querying, so the two can never disagree
+        about when a trace was last measured."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+        assert causal["effects"]
+        assert all(e["last_measured_at"] for e in causal["effects"])
 
     async def test_a_purged_trace_drops_out_of_the_block(self, session_factory, org):
         """Same fix, other cause: hub/manage.py:purge_trace removes a row
