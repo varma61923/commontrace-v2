@@ -157,9 +157,19 @@ def test_every_tool_has_a_description_for_the_model(server):
 # --- retrieve ------------------------------------------------------------
 
 def test_retrieve_on_an_empty_store_explains_itself(server):
+    """The note now says WHICH kind of nothing this is.
+
+    It used to read "This store has no active lessons yet. `capture` your
+    work, then `propose_lessons` once a pattern repeats" for all three
+    no-active-lesson states -- right for this one, and a loop with no exit
+    for an operator whose lessons are all proposed and merely unapproved.
+    An empty store is told it is empty; the other two get their own note
+    (see tests/test_store_state.py).
+    """
     out = call(server, "retrieve", task="customer cannot reset their password")
     assert out["ok"] and out["lessons"] == [] and out["n_active"] == 0
-    assert "no active lessons" in out["note"]
+    assert "empty" in out["note"]
+    assert "capture" in out["note"]
 
 
 def test_retrieve_returns_the_body_not_just_the_frontmatter(server):

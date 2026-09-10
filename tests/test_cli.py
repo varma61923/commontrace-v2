@@ -533,12 +533,23 @@ def test_query_lexical_finds_matching_lesson(store, capsys):
 
 
 def test_query_lexical_reports_no_matches_cleanly(store, capsys):
+    """Exits 0 and SAYS something useful, rather than failing or going
+    silent.
+
+    This used to assert the literal string "no lexical matches", which was
+    the same sentence the CLI printed for four different situations --
+    including a freshly initialised store, where it was accompanied by
+    "try `commontrace lesson list`" and that list is empty. The store here
+    is exactly that case, so the assertion now checks what the message is
+    FOR: naming the state and a command that moves it forward.
+    """
     main(["init", "--agent-type", "code", "--dest", str(store)])
     capsys.readouterr()
     rc = main(["query", "something nobody has a lesson about", "--lexical", "--dest", str(store)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "no lexical matches" in out
+    assert "empty" in out
+    assert "commontrace capture" in out
 
 
 def test_query_rejects_a_negative_top_k(store, capsys):
@@ -575,7 +586,25 @@ def test_query_lexical_excludes_review_status_lessons(store, capsys):
     rc = main(["query", "widgets", "--lexical", "--dest", str(store)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "lesson_pending_review" not in out
+
+    # The guarantee is that a review lesson is never SERVED -- not that its
+    # name never appears on screen. `query` now explains why a store with
+    # only review lessons returns nothing, and that explanation ends in
+    # `commontrace lesson approve lesson_pending_review`, because naming
+    # the real slug is the entire value of the message.
+    #
+    # So this asserts the guarantee directly rather than through a
+    # substring that the guidance also trips: a served lesson prints as a
+    # result line carrying its relevance score, and no such line may exist
+    # for a lesson still under review.
+    result_lines = [ln for ln in out.splitlines() if "rel=" in ln]
+    assert not any("lesson_pending_review" in ln for ln in result_lines), (
+        f"an unapproved lesson was served as a result: {result_lines}"
+    )
+    # ...and the explanation is still the one for this state, so a future
+    # change that stopped serving it for the WRONG reason would show up.
+    assert "status=review" in out
+    assert "commontrace lesson approve lesson_pending_review" in out
 
 
 def test_sync_partial_hub_config_still_prints_setup_instructions(store, capsys, monkeypatch):

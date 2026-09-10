@@ -12,6 +12,7 @@ from commontrace import (
     paths,
     retrieval,
     retrieval_io,
+    store_state,
 )
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
@@ -204,7 +205,11 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             file=sys.stderr,
         )
     if not ranked:
-        print("[commontrace] no lexical matches. Try `commontrace lesson list` for a full view.")
+        # Which of the four "nothing came back" cases this is, and the one
+        # command that moves the caller forward -- see commontrace/store_state.py.
+        # The old message said "try lesson list" unconditionally, which shows
+        # an empty list in exactly the cases where the user is most lost.
+        print(store_state.why_no_results(root, searched="query"))
         return 0
 
     withheld: set[str] = set()

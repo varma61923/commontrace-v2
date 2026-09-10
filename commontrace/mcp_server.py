@@ -72,6 +72,7 @@ from commontrace import (
     retrieval,
     retrieval_io,
     revision,
+    store_state,
     taxonomy,
     templates,
     trace_io,
@@ -264,6 +265,43 @@ def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dic
     return out
 
 
+def _no_active_lessons_note(root: str) -> str:
+    """Which of the three "no active lessons" states this store is in.
+
+    All three used to get "`capture` your work, then `propose_lessons` once
+    a pattern repeats", which is right for an empty store and actively
+    misleading for the other two. An operator whose lessons are all sitting
+    at status=review has already captured and already proposed; what they
+    need is `approve`, and telling them to capture more sends them round a
+    loop that cannot terminate.
+
+    Phrased for an agent reading a JSON field rather than a terminal, so it
+    names MCP tools and CLI commands as the reader can actually reach them.
+    """
+    state = store_state.inspect(root)
+    if state.review:
+        plural = "s" if state.review != 1 else ""
+        slugs = ", ".join(state.review_slugs[:3])
+        return (
+            f"This store has {state.review} lesson{plural} at status=review and none active. "
+            "Retrieval only returns ACTIVE lessons, and promotion is a deliberate human gate "
+            "-- an unreviewed rule injected into every future run is how memory starts doing "
+            f"harm. An operator approves with `commontrace lesson approve <slug>` ({slugs})."
+        )
+    if state.traces:
+        plural = "s" if state.traces != 1 else ""
+        return (
+            f"This store has {state.traces} trace{plural} but no lessons yet. Traces are raw "
+            "experience; retrieval ranks the curated rules distilled from them. Call "
+            "`propose_lessons` once a pattern repeats (it needs >= 2 similar traces), or an "
+            "operator can write one directly with `commontrace lesson new`."
+        )
+    return (
+        "This store is empty -- nothing has been captured yet. `capture` your work, then "
+        "`propose_lessons` once a pattern repeats."
+    )
+
+
 def build_server(root: str, *, allow_approval: bool = True):
     """Build the MCP server for the store at `root`. See module docstring."""
     try:
@@ -446,8 +484,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."
                 if active else
-                "This store has no active lessons yet. `capture` your work, then "
-                "`propose_lessons` once a pattern repeats."
+                _no_active_lessons_note(root)
             )
         return _ok(**result)
 
