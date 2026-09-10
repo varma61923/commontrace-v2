@@ -2239,9 +2239,27 @@ async def holdout_assign(
     trace_ids: list[str],
     occasion_id: str,
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    pinned: list[str] | None = None,
 ) -> dict:
     """For each trace eligible on this occasion, decide inject or withhold,
     record the decision, and return it.
+
+    `pinned` is the caller's own working-set block: the trace ids that are
+    already in this session's system prompt (`working_set` returns exactly
+    this list in `entries[].trace_id`). They are excluded from the
+    randomization entirely -- reported as `inject`, with NO observation
+    recorded -- and passing them is what keeps the experiment honest.
+
+    The note below says injecting a withheld trace "biases the measured
+    effect toward zero". A pinned trace does precisely that, structurally,
+    without the agent doing anything wrong: `working_set` puts it in the
+    system prompt for the whole session, so when this function later draws
+    it into the WITHHELD arm for a search result, the occasion is treated
+    anyway -- the trace is still sitting in the prompt -- and is recorded as
+    a control. `working_set`'s own contract says a trace is "either being
+    randomized or it has graduated, never both"; nothing enforced that,
+    because only the caller knows what it actually pasted. This parameter is
+    how it says so. Omitting it preserves the previous behaviour exactly.
 
     Idempotent by construction, and it has to be: an agent that times out
     and retries must get the SAME arms back, or the retry would move an
@@ -2294,8 +2312,17 @@ async def holdout_assign(
         ).all()
     )
 
+    # Already in the caller's system prompt, so there is no arm to assign:
+    # a "withheld" verdict here would be recorded as a control while the
+    # trace remains visible to the agent for the whole session. Skipped
+    # before any decision is taken, so no observation row is written.
+    pinned_ids = {str(p) for p in (pinned or [])}
     decisions = []
+    already_pinned = []
     for row in valid:
+        if row.id in pinned_ids:
+            already_pinned.append(row.id)
+            continue
         withheld = experiment.is_held_out(
             row.id, occasion_id, rate=org.holdout_rate, salt=org.holdout_salt
         )
@@ -2336,13 +2363,23 @@ async def holdout_assign(
     return {
         "occasion_id": occasion_id,
         "holdout_rate": org.holdout_rate,
-        "inject": [d["trace_id"] for d in decisions if d["injected"]],
+        # Pinned traces are reported as inject because that is the truth --
+        # they are in the prompt already -- but they are deliberately absent
+        # from the recorded observations, so they contribute to neither arm.
+        "inject": [d["trace_id"] for d in decisions if d["injected"]] + already_pinned,
         "withhold": [d["trace_id"] for d in decisions if not d["injected"]],
+        "pinned": already_pinned,
         "note": (
             "Withheld traces must NOT be used on this occasion. Injecting one anyway "
             "moves it into the treated arm without the record saying so, which does "
             "not fail loudly -- it biases the measured effect toward zero. Report the "
             "result with record_occasion_outcome(occasion_id, succeeded)."
+            + (
+                f" {len(already_pinned)} trace(s) you reported as already pinned were "
+                "left out of the randomization entirely: a trace in the system prompt "
+                "cannot serve as its own control."
+                if already_pinned else ""
+            )
         ),
     }
 
@@ -2438,8 +2475,16 @@ async def holdout_for_results(
     traces: list[dict],
     occasion_id: str,
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    pinned: list[str] | None = None,
 ) -> dict:
     """Assign holdout arms for whatever a search just returned.
+
+    `pinned` -- the trace ids already in the caller's system prompt, as
+    returned by `working_set` -- are dropped BEFORE clustering, not after.
+    Dropping them afterwards would not be enough: `_cluster_representatives`
+    can elect a pinned trace as the representative of a near-duplicate
+    cluster, and the whole cluster would then inherit that trace's arm. See
+    `holdout_assign` for why a pinned trace has no arm to inherit.
 
     The friction this removes is the reason it exists. The local tier makes
     running an experiment a single flag (`commontrace query --experiment`):
@@ -2469,10 +2514,15 @@ async def holdout_for_results(
     org = await session.get(Organization, org_id)
     if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
         return {}
-    ids = [t["id"] for t in traces if isinstance(t, dict) and t.get("id")]
+    pinned_ids = {str(p) for p in (pinned or [])}
+    measurable = [
+        t for t in traces
+        if isinstance(t, dict) and t.get("id") and t["id"] not in pinned_ids
+    ]
+    ids = [t["id"] for t in measurable]
     if not ids:
         return {}
-    representative_of = _cluster_representatives(traces)
+    representative_of = _cluster_representatives(measurable)
     assign_ids = list({representative_of.get(i, i) for i in ids})
     assignment = await holdout_assign(session, org_id, assign_ids, occasion_id, actor=actor)
     rep_withheld = set(assignment["withhold"])
@@ -3116,7 +3166,11 @@ async def working_set(
             "system prompt keeps the provider's prefix cache valid, which is what makes this "
             "memory cost its tokens once per session instead of once per query. Everything "
             "here has an established causal effect; anything still being measured is "
-            "deliberately absent and reachable via `search_traces`."
+            "deliberately absent and reachable via `search_traces`. "
+            "PASS `entries[].trace_id` BACK as `pinned` on every search_traces and "
+            "holdout_assign call for the rest of this session: these traces are in your "
+            "prompt from now on, so the experiment must stop drawing them into its control "
+            "arm -- a trace cannot serve as its own control while the agent can still read it."
         ),
     }
 

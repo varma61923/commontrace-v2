@@ -109,6 +109,13 @@ async def _assign(session_factory, org_id, trace_ids, occasion):
         return await crud.holdout_assign(session, org_id, trace_ids, occasion)
 
 
+async def _assign_pinned(session_factory, org_id, trace_ids, occasion, pinned):
+    async with session_scope(session_factory) as session:
+        return await crud.holdout_assign(
+            session, org_id, trace_ids, occasion, pinned=pinned
+        )
+
+
 async def _resolve(session_factory, org_id, occasion, succeeded):
     async with session_scope(session_factory) as session:
         return await crud.record_occasion_outcome(session, org_id, occasion, succeeded)
@@ -1274,6 +1281,105 @@ class TestTheWorkingSet:
             ws = await crud.working_set(session, org)
         assert ws["entries"] == []
         assert ws["established"] is False
+
+
+class TestAPinnedTraceIsNotItsOwnControl:
+    """`working_set` puts a trace in the system prompt for a whole session.
+    Nothing stopped the experiment from later drawing that same trace into
+    the WITHHELD arm for a search result -- and a withheld occasion whose
+    trace is still sitting in the prompt is a treated occasion recorded as a
+    control. `holdout_assign`'s own note describes the consequence exactly:
+    it "does not fail loudly -- it biases the measured effect toward zero".
+
+    `working_set`'s docstring already claimed a trace is "either being
+    randomized or it has graduated, never both". Only the caller knows what
+    it actually pasted, so `pinned` is how it says so.
+    """
+
+    async def test_a_pinned_trace_is_never_withheld(self, session_factory, org):
+        traces = await _traces(session_factory, org, 3)
+        withheld_somewhere = False
+        for i in range(40):
+            result = await _assign(session_factory, org, traces, f"occ-{i}")
+            if traces[0] in result["withhold"]:
+                withheld_somewhere = True
+                break
+        assert withheld_somewhere, "expected this trace to land in the control arm unpinned"
+
+        pinned_result = await _assign_pinned(
+            session_factory, org, traces, "pinned-occ", pinned=[traces[0]]
+        )
+        assert traces[0] not in pinned_result["withhold"]
+        assert traces[0] in pinned_result["inject"]
+        assert pinned_result["pinned"] == [traces[0]]
+
+    async def test_a_pinned_trace_records_no_observation(self, session_factory, org):
+        """The load-bearing assertion. Reporting it as `inject` would be no
+        better than withholding it if the row still landed: the occasion
+        would join the treated arm and inflate its own effect. It must
+        contribute to NEITHER arm."""
+        traces = await _traces(session_factory, org, 2)
+        await _assign_pinned(
+            session_factory, org, traces, "occ-pinned", pinned=[traces[0]]
+        )
+        async with session_scope(session_factory) as session:
+            rows = (
+                await session.execute(
+                    select(HoldoutObservation.trace_id).where(
+                        HoldoutObservation.org_id == org,
+                        HoldoutObservation.occasion_id == "occ-pinned",
+                    )
+                )
+            ).scalars().all()
+        assert traces[0] not in rows, "a pinned trace must contribute to neither arm"
+        assert traces[1] in rows, "unpinned traces must still be measured normally"
+
+    async def test_omitting_pinned_changes_nothing(self, session_factory, org):
+        """Strictly additive: a client that never passes `pinned` behaves
+        exactly as it did before the parameter existed."""
+        traces = await _traces(session_factory, org, 2)
+        plain = await _assign(session_factory, org, traces, "occ-plain")
+        assert plain["pinned"] == []
+        assert sorted(plain["inject"] + plain["withhold"]) == sorted(traces)
+
+    async def test_a_pinned_trace_cannot_return_as_a_cluster_representative(
+        self, session_factory, config, org
+    ):
+        """`holdout_for_results` clusters near-duplicates and randomizes the
+        whole cluster under one representative. Dropping pinned ids only
+        AFTER assignment would miss this: a pinned trace elected as the
+        representative would hand its arm to every duplicate. They are
+        dropped before clustering for exactly this reason."""
+        rate_limiter = make_rate_limiter(config)
+        made = []
+        async with session_scope(session_factory) as session:
+            for i in range(3):
+                t = await crud.contribute_trace(
+                    session, org, config, rate_limiter,
+                    title="connection pool exhaustion under load",
+                    context_text="the pool runs out of connections under concurrent load",
+                    solution_text=f"raise the pool ceiling and add backpressure ({i})",
+                    tags=["db"], agent_type="code", actor="test",
+                )
+                made.append(t["id"])
+
+        traces = [{"id": t} for t in made]
+        async with session_scope(session_factory) as session:
+            holdout = await crud.holdout_for_results(
+                session, org, traces, "occ-cluster", pinned=[made[0]]
+            )
+        assert made[0] not in holdout.get("withhold", [])
+
+        async with session_scope(session_factory) as session:
+            rows = (
+                await session.execute(
+                    select(HoldoutObservation.trace_id).where(
+                        HoldoutObservation.org_id == org,
+                        HoldoutObservation.occasion_id == "occ-cluster",
+                    )
+                )
+            ).scalars().all()
+        assert made[0] not in rows
 
 
 class TestTheOperatorCLIReachesTheSameNumbers:

@@ -85,6 +85,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pinned `working_set` trace could be drawn into its own control arm,
+  silently biasing the effect it was promoted for.** `working_set`'s
+  contract says a trace is "either being randomized or it has graduated,
+  never both", and nothing enforced it. The block goes into the system
+  prompt for a whole session; `search_traces` (via `holdout_for_results`)
+  then assigns arms to every result it returns, promoted traces included.
+  When one drew the WITHHELD arm, the occasion was recorded as a control
+  while the trace was still sitting in the agent's prompt — a treated
+  occasion counted as untreated. `holdout_assign`'s own note already
+  described the consequence precisely: it "does not fail loudly — it biases
+  the measured effect toward zero". Nothing in `integrity.audit` could see
+  it either, because the arms remain balanced and deterministic; only the
+  *content of the prompt* was wrong, and the Hub never saw that.
+
+  Left alone this is self-defeating: promotion contaminates the estimate
+  that justified the promotion, eroding it until the trace is demoted
+  again, and the fleet's headline `value_delivered` figure is biased down
+  with it.
+
+  Only the caller knows what it actually pasted, so `search_traces` and
+  `holdout_assign` now take `pinned` — the `entries[].trace_id` a
+  `working_set` block handed back. Those ids are excluded from the
+  randomization entirely and reported as `inject` with **no observation
+  recorded**, so they contribute to neither arm. They are dropped *before*
+  near-duplicate clustering, not after: `_cluster_representatives` can
+  elect a pinned trace as a cluster's representative, and the whole cluster
+  would otherwise inherit an arm from a trace that has none. Strictly
+  additive — omitting `pinned` behaves exactly as before.
+
 - **`working_set` kept pinning a promoted trace's text after that trace was
   corrected or deleted.** The block is pasted into a system prompt once and
   never re-fetched mid-session, so unlike `search_traces` nothing ever

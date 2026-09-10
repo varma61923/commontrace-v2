@@ -433,6 +433,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         offset: int = 0,
         occasion_id: str = "",
         brief: bool = False,
+        pinned: list[str] | None = None,
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
@@ -481,6 +482,14 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         withheld trace anyway does not fail loudly, it moves that occasion
         into the treated arm without the record saying so, which biases the
         measured effect toward zero.
+
+        `pinned` is how you avoid doing exactly that by accident. If you
+        pasted a `working_set` block into your system prompt, pass its
+        `entries[].trace_id` here on every call for the rest of the session.
+        Those traces are excluded from the randomization instead of being
+        drawn into the control arm, because a trace sitting in your prompt
+        cannot serve as its own control -- it is being used on every
+        occasion whether or not the experiment says so.
         """
         try:
             org_id = auth.get_current_org_id()
@@ -491,7 +500,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                 if occasion_id:
                     result["holdout"] = await crud.holdout_for_results(
                         session, org_id, result["traces"], occasion_id,
-                        actor=auth.get_current_actor(),
+                        actor=auth.get_current_actor(), pinned=pinned,
                     )
                 return result
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
@@ -799,7 +808,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             return _error_response(exc)
 
     @mcp.tool()
-    async def holdout_assign(trace_ids: list, occasion_id: str) -> dict:
+    async def holdout_assign(
+        trace_ids: list, occasion_id: str, pinned: list[str] | None = None
+    ) -> dict:
         """Randomized holdout: for each trace eligible on this occasion,
         decide whether to inject it or deliberately withhold it, and record
         the decision so the two arms can later be compared.
@@ -820,13 +831,20 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         occasion into the treated arm without the record saying so, which
         biases the measured effect toward zero.
 
+        `pinned` -- the `entries[].trace_id` of any `working_set` block you
+        pasted into your system prompt -- are excluded from the
+        randomization and returned under `pinned` rather than assigned an
+        arm. Pass them: a trace in your prompt is used on every occasion, so
+        letting it be drawn into the control arm records a treated occasion
+        as a control and biases its own measured effect toward zero.
+
         Requires an operator to have started an experiment for your org."""
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 return await crud.holdout_assign(
                     session, org_id, list(trace_ids), occasion_id,
-                    actor=auth.get_current_actor(),
+                    actor=auth.get_current_actor(), pinned=pinned,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
