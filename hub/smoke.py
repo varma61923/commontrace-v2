@@ -232,6 +232,11 @@ CORE_TOOLS = [
     # effect turned into a quantity a price can attach to, which STRATEGY.md
     # 11.5 names as this product's pricing basis. Org-scoped and unmetered.
     "value_delivered",
+    # the graduated subset of that instrument (hub/crud.py:working_set) --
+    # the memories whose effect is already established, rendered once per
+    # session as a pinnable block instead of paid for on every query.
+    # Org-scoped and unmetered like the rest of this list.
+    "working_set",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

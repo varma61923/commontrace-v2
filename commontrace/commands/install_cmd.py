@@ -24,6 +24,10 @@ _HUB_TOOLS = [
     # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
     "value_delivered",
+    # the graduated subset of that measurement: the memories whose effect
+    # is already established, rendered once per session as a pinnable
+    # block instead of paid for on every query
+    "working_set",
     # entitlements
     "account_usage",
     # self-service deletion

@@ -47,6 +47,14 @@ subtracted rather than dropped, nothing at all if the experiment is
 COMPROMISED -- and attaches your own supplied rate to it if you pass one;
 this is this product's pricing basis (STRATEGY.md §11.5), so it is worth
 knowing it exists even though it reads like a footnote to `fleet_outcomes`.
+`working_set(budget_chars)` is the other end of that same instrument: it
+returns only the memories whose effect is already *established* as helping,
+packed to a character budget, as one block an agent pins to its system
+prompt once per session instead of paying for on every query. Because the
+block does not change between turns, a provider's prompt-prefix cache can
+serve it; a memory that were both pinned and still under randomization
+would be injected on every occasion and destroy its own control arm, so a
+trace is either being randomized or graduated, never both.
 `hub/smoke.py` pins the tool surface, so a tool
 appearing or disappearing fails a post-deploy check rather than
 surprising a client.
