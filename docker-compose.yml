@@ -16,6 +16,17 @@ services:
   db:
     image: postgres:16
     environment:
+      # NOTE: this role becomes the cluster SUPERUSER (the Postgres image
+      # makes POSTGRES_USER one), and Postgres skips every row-level
+      # security policy for a superuser -- silently, with no error. So the
+      # RLS installed by migration d5c8b3a91e77 is INERT in this compose
+      # stack. Tenant isolation still rests on hub/crud.py's own org_id
+      # predicates, which is where it rested before RLS existed; what you
+      # do NOT have here is the database-enforced backstop.
+      # The Hub logs a warning at startup saying so (hub/db.py:
+      # warn_if_rls_is_inert). For a deployment that wants the backstop,
+      # create a separate non-superuser role that owns nothing and has no
+      # BYPASSRLS, and point HUB_DATABASE_URL at that role instead.
       POSTGRES_USER: commontrace
       # Overridable via the shell environment (`POSTGRES_PASSWORD=... docker
       # compose up`); unset behaves identically to before. Production uses a

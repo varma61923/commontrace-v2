@@ -20,6 +20,21 @@ present here by default. The fixture below applies them, building the SQL
 from the migration module's own constants so the two cannot drift: if
 someone changes the policy in the migration, these tests exercise the
 changed policy rather than a stale copy of the old one.
+
+THE SUPERUSER TRAP, which these tests found the hard way. Postgres skips
+every policy for a superuser or a BYPASSRLS role, silently -- no error,
+no warning. The first version of these tests connected as whatever role
+the test URL named and passed locally, where that role happens to be
+unprivileged; in CI the same role is the cluster's POSTGRES_USER and
+therefore superuser, and all four enforcement tests failed while the
+control still passed. That was the tests working: the deployment shape
+CI uses is the one docker-compose.yml ships, so the shipped default
+would have installed the policies and bypassed them.
+
+So enforcement is asserted through `enforcing_factory`, which connects as
+a purpose-made unprivileged role whenever the ambient one would bypass.
+Asserting through a role that cannot be subject to RLS would be asserting
+nothing.
 """
 from __future__ import annotations
 
@@ -76,6 +91,68 @@ async def rls(session_factory):
                 await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
 
 
+_RLS_ROLE = "commontrace_rls_test"
+_RLS_ROLE_PASSWORD = "rls-test-only"  # noqa: S105 - a throwaway local test role
+
+
+@pytest_asyncio.fixture
+async def enforcing_factory(session_factory, config):
+    """A session factory whose connections are actually subject to RLS.
+
+    When the ambient test role already cannot bypass (the usual local
+    setup), this is just `session_factory` -- no extra role, no second
+    engine. When it CAN bypass (CI, where POSTGRES_USER is the cluster
+    superuser), a throwaway unprivileged role is created and granted only
+    what the tests need, and a second engine connects as that role.
+
+    Skips rather than silently passing if neither is possible: a test that
+    cannot subject itself to the policy has not verified the policy.
+    """
+    import dataclasses
+
+    from sqlalchemy.engine import make_url
+
+    from hub.db import make_engine, make_session_factory, rls_status
+
+    async with session_factory() as session:
+        status = await rls_status(session)
+    if not status["bypasses_rls"]:
+        yield session_factory
+        return
+
+    tables = (*_SCOPED_TABLES, "traces")
+    try:
+        async with session_scope(session_factory) as session:
+            await session.execute(text(
+                f"DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+                f"'{_RLS_ROLE}') THEN CREATE ROLE {_RLS_ROLE} LOGIN PASSWORD "
+                f"'{_RLS_ROLE_PASSWORD}'; END IF; END$$"
+            ))
+            await session.execute(text(f"GRANT USAGE ON SCHEMA public TO {_RLS_ROLE}"))
+            for table in tables:
+                await session.execute(text(
+                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {_RLS_ROLE}"
+                ))
+            await session.execute(text(
+                f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {_RLS_ROLE}"
+            ))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(
+            f"role {status['role']!r} bypasses RLS and an unprivileged role could not "
+            f"be created to test enforcement through: {exc}"
+        )
+
+    url = make_url(config.database_url).set(
+        username=_RLS_ROLE, password=_RLS_ROLE_PASSWORD
+    )
+    engine = make_engine(dataclasses.replace(config, database_url=url.render_as_string(
+        hide_password=False)))
+    try:
+        yield make_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def two_orgs(session_factory):
     """Two orgs, each with one trace whose title carries a shared marker."""
@@ -111,28 +188,28 @@ class TestAForgottenPredicateIsNotABreach:
         assert len(await _titles(session_factory, pattern)) == 2
 
     async def test_with_rls_the_same_query_returns_only_the_callers_rows(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """The guarantee: same unsafe SQL, scoped connection, zero rows
         belonging to anyone else."""
         a_id, _b_id, pattern = two_orgs
         token = auth.current_org_id.set(a_id)
         try:
-            titles = await _titles(session_factory, pattern)
+            titles = await _titles(enforcing_factory, pattern)
         finally:
             auth.current_org_id.reset(token)
         assert titles == [t for t in titles if t.endswith("owned by A")]
         assert len(titles) == 1
 
     async def test_the_other_org_sees_its_own_row_and_not_the_first(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """Symmetry, so a policy that happened to hide everything would not
         pass: B must still see B."""
         _a_id, b_id, pattern = two_orgs
         token = auth.current_org_id.set(b_id)
         try:
-            titles = await _titles(session_factory, pattern)
+            titles = await _titles(enforcing_factory, pattern)
         finally:
             auth.current_org_id.reset(token)
         assert len(titles) == 1 and titles[0].endswith("owned by B")
@@ -140,19 +217,19 @@ class TestAForgottenPredicateIsNotABreach:
 
 class TestOperatorPathsAreUnaffected:
     async def test_an_unscoped_connection_still_sees_every_org(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """hub/manage.py, the benchmarks and alembic legitimately act
         across orgs and never set the contextvar. Their behaviour must be
         exactly what it was before RLS existed, or this migration breaks
         every operator tool at once."""
         _a_id, _b_id, pattern = two_orgs
-        assert len(await _titles(session_factory, pattern)) == 2
+        assert len(await _titles(enforcing_factory, pattern)) == 2
 
 
 class TestWritesCannotCrossTenants:
     async def test_writing_a_row_into_another_org_is_refused(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """The WITH CHECK half. Reading another tenant is the famous
         failure; writing INTO one is the quieter and worse one, because it
@@ -161,7 +238,7 @@ class TestWritesCannotCrossTenants:
         token = auth.current_org_id.set(a_id)
         try:
             with pytest.raises(Exception) as exc_info:
-                async with session_scope(session_factory) as session:
+                async with session_scope(enforcing_factory) as session:
                     session.add(Trace(org_id=b_id, title="forged", context_text="x",
                                       solution_text="x", agent_type="code"))
         finally:
@@ -171,39 +248,39 @@ class TestWritesCannotCrossTenants:
 
 class TestTheKnowledgeBaseStillWorks:
     async def test_a_shared_trace_stays_readable_across_orgs(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """The Knowledge Base is cross-org BY DESIGN -- commons_search and
         commons_overlap read what other orgs published. A policy that only
         allowed an org its own rows would silently empty it, and the
         emptiness would look like "no matches" rather than like a bug."""
         a_id, b_id, pattern = two_orgs
-        async with session_scope(session_factory) as session:
+        async with session_scope(enforcing_factory) as session:
             await session.execute(
                 text("UPDATE traces SET shared_with_commons = true WHERE org_id = :o"),
                 {"o": b_id},
             )
         token = auth.current_org_id.set(a_id)
         try:
-            titles = await _titles(session_factory, pattern)
+            titles = await _titles(enforcing_factory, pattern)
         finally:
             auth.current_org_id.reset(token)
         assert len(titles) == 2, "B's published Knowledge Base entry became invisible to A"
 
     async def test_shared_does_not_also_grant_write_access(
-        self, rls, session_factory, two_orgs
+        self, rls, enforcing_factory, two_orgs
     ):
         """Readable is not writable: marking a row shared must not let
         another org edit it."""
         a_id, b_id, _pattern = two_orgs
-        async with session_scope(session_factory) as session:
+        async with session_scope(enforcing_factory) as session:
             await session.execute(
                 text("UPDATE traces SET shared_with_commons = true WHERE org_id = :o"),
                 {"o": b_id},
             )
         token = auth.current_org_id.set(a_id)
         try:
-            async with session_scope(session_factory) as session:
+            async with session_scope(enforcing_factory) as session:
                 result = await session.execute(
                     text("UPDATE traces SET title = 'hijacked' WHERE org_id = :o"),
                     {"o": b_id},
@@ -217,3 +294,63 @@ class TestTheKnowledgeBaseStillWorks:
             assert "row-level security" in str(exc).lower()
         finally:
             auth.current_org_id.reset(token)
+
+
+class TestTheHubNoticesWhenRlsCannotBite:
+    """The failure mode that makes RLS worse than nothing: policies that
+    exist, are listed by pg_policies, satisfy an audit -- and are skipped
+    silently because the connecting role is a superuser or has BYPASSRLS.
+
+    This is not hypothetical. The Postgres image makes POSTGRES_USER the
+    cluster superuser, this repo's docker-compose.yml pointed
+    HUB_DATABASE_URL at exactly that role, and CI runs the same shape --
+    so the shipped default would have installed these policies and
+    bypassed every one of them without a word."""
+
+    async def test_status_reports_whether_policies_can_actually_bite(
+        self, rls, session_factory
+    ):
+        from hub.db import rls_status
+
+        async with session_factory() as session:
+            status = await rls_status(session)
+        assert status["policy_count"] > 0, "the rls fixture installed policies"
+        # enforced is exactly "policies exist AND this role cannot bypass",
+        # which is the only combination that means anything.
+        assert status["enforced"] == (not status["bypasses_rls"])
+
+    async def test_a_bypassing_role_is_reported_as_not_enforced(
+        self, rls, session_factory
+    ):
+        """Pinned from the database's own answer rather than from a mock,
+        so it stays true if Postgres ever changes who is exempt."""
+        from hub.db import rls_status
+
+        async with session_scope(session_factory) as session:
+            bypasses = bool((await session.execute(text(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            ))).scalar_one())
+        async with session_factory() as session:
+            status = await rls_status(session)
+        assert status["bypasses_rls"] == bypasses
+        if bypasses:
+            assert status["enforced"] is False
+
+    async def test_the_warning_never_breaks_startup_on_a_dead_database(self):
+        """A diagnostic that can take the server down with it is worse than
+        the thing it diagnoses, so an unreachable database returns None
+        rather than raising."""
+        import dataclasses
+
+        from hub.config import HubConfig
+        from hub.db import make_engine, make_session_factory, warn_if_rls_is_inert
+
+        cfg = dataclasses.replace(
+            HubConfig(database_url="postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nope"),
+            db_statement_timeout_ms=0,
+        )
+        engine = make_engine(cfg)
+        try:
+            assert await warn_if_rls_is_inert(make_session_factory(engine)) is None
+        finally:
+            await engine.dispose()

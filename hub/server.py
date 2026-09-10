@@ -43,7 +43,7 @@ from hub.admin import add_admin_routes
 from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.console import CONSOLE_PATH, add_console_routes
-from hub.db import session_scope
+from hub.db import session_scope, warn_if_rls_is_inert
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
 from hub.signup import add_signup_routes
@@ -1177,6 +1177,14 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
     )
+    async def _report_rls_status() -> None:
+        # Startup, not per-request: it is one diagnostic query, and the
+        # answer cannot change without an operator changing the role or
+        # the migrations. See hub/db.py:warn_if_rls_is_inert for why a
+        # silently-bypassed policy is worth a loud line.
+        await warn_if_rls_is_inert(session_factory)
+
+    inner_app.add_event_handler("startup", _report_rls_status)
     inner_app.add_middleware(
         LoadShedMiddleware,
         max_concurrent=config.max_concurrent_requests,
