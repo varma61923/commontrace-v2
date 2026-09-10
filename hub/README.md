@@ -221,6 +221,37 @@ rows belonging to `org_b` may ever appear in any tool's responses,
 and `get_trace` on a known `org_b` id must 404, never 403 (never confirm the
 id exists). `hub/tests/test_tenant_isolation.py` enforces exactly that.
 
+**Two independent layers now enforce it.** The first is the one that does
+the work on every normal path: every read in `hub/crud.py` filters by
+`org_id` in the SQL `WHERE` clause. The second is Postgres row-level
+security, which exists because the first is a *discipline* — it holds for
+every query somebody remembered to write correctly, and one omitted
+predicate in one future query is a cross-tenant read no existing test
+would catch.
+
+`hub/db.py:session_scope` issues
+`SELECT set_config('app.org_id', :org, true)` at the start of every
+transaction, taking the org from the contextvar the auth middleware
+already sets, so no call site has to remember to pass it. The policies
+(`hub/alembic/versions/d5c8b3a91e77_row_level_security.py`) then make a
+missing `WHERE` return **zero rows instead of another tenant's**.
+`hub/tests/test_row_level_security.py` proves it by running the mistake
+itself — a query with no `org_id` predicate at all — and includes a
+control asserting that same query really does leak when RLS is off, so
+the test cannot pass for the wrong reason.
+
+Operator paths (`hub/manage.py`, the benchmarks, alembic) never set the
+contextvar and are treated as unscoped, exactly as before. Knowledge Base
+entries stay readable across orgs, because that is what the Knowledge Base
+is; the write policy grants no such latitude, so no caller can create or
+alter a row in another org's name.
+
+RLS is worth not over-trusting, and the migration lists its limits in
+full: FK and `UNIQUE` checks run outside the policy and remain a side
+channel, RLS does not sanitise query logs, views need
+`security_invoker = true`, and logical replication ignores policies unless
+per-publication filters are configured.
+
 An earlier design opened a second door alongside the six protocol tools:
 an org could opt a trace into a shared corpus other orgs' queries could
 match against (`share_trace`/`unshare_trace`). That design is retired --

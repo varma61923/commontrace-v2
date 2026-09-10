@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from hub import auth
 from hub.config import HubConfig
 
 
@@ -66,8 +68,37 @@ async def session_scope(
     """
     async with session_factory() as session:
         try:
+            await _scope_to_current_org(session)
             yield session
             await session.commit()
         except BaseException:
             await session.rollback()
             raise
+
+
+async def _scope_to_current_org(session: AsyncSession) -> None:
+    """Tell Postgres which org this transaction belongs to, for RLS.
+
+    The org comes from the `auth.current_org_id` contextvar the auth
+    middleware already sets per request, so no call site has to pass it and
+    no path can forget to -- which is the point: a rule every caller must
+    remember is the rule this exists to stop relying on.
+
+    `set_config(..., true)` is the transaction-local form, i.e. the
+    parameterised equivalent of SET LOCAL. It is used rather than
+    f-string-building a `SET LOCAL app.org_id = '<id>'` statement because
+    SET LOCAL cannot take a bind parameter, and interpolating a
+    request-derived value into SQL is a injection sink -- a documented
+    footgun of exactly this pattern in other projects that adopted it.
+
+    Unset (operator CLI, benchmarks, alembic, anything outside a request)
+    leaves the setting empty, which the policies read as "unscoped" -- the
+    behaviour those paths had before RLS existed. See
+    hub/alembic/versions/d5c8b3a91e77_row_level_security.py.
+    """
+    org_id = auth.current_org_id.get(None)
+    if not org_id:
+        return
+    await session.execute(
+        text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)}
+    )
