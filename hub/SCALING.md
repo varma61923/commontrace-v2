@@ -117,6 +117,53 @@ independently of it.
 These are single-process numbers on a developer machine, so read them as
 a shape and a ratio rather than a capacity plan.
 
+### What the blocking limiter actually cost — two wrong guesses, then the answer
+
+The obvious reading of the table above is that the blocking `.result()`
+call is what makes `postgres` slow, so awaiting it should recover the
+gap. `hub/abuse.py:_await_on_pool_loop` now awaits it. **It did not
+recover the gap**, and the number is recorded here rather than quietly
+dropped:
+
+| | rps @128 | p99 @128 |
+|---|---|---|
+| blocking `.result()` | 165 | 1376 ms |
+| awaited | 177 | 1333 ms |
+
+That is noise. The second guess — the connection pool — is also wrong:
+raising `_SharedPgPool._POOL_MAX_SIZE` from 5 to 32 moved throughput from
+177 to 170 rps, i.e. nothing. Neither waiting nor connections is the
+ceiling.
+
+The reason is structural, and it is a property of the benchmark as much
+as of the code: when *every* request needs a limiter decision, freeing
+the event loop cannot help, because everything it could switch to is
+queued behind the same work. Throughput here is bounded by per-request
+CPU on one process — including the cross-thread handoff to the pool's
+loop, which is paid whether or not the caller blocks.
+
+**The defect was real, but it was never a throughput defect.** It shows
+up in work that does *not* need a limiter decision. An unauthenticated
+`/healthz`, polled while 32 clients hammer the limited path:
+
+| | p50 | p95 | p99 | probes completed |
+|---|---|---|---|---|
+| blocking | 42.3 ms | 58.6 ms | 62.8 ms | 81 |
+| awaited | **2.3 ms** | **5.3 ms** | **8.6 ms** | **448** |
+
+A replica whose health endpoint answers in 63 ms because something else
+is rate-limited looks unhealthy to a load balancer for reasons that have
+nothing to do with its health, and gets pulled from rotation under
+exactly the load where it is needed. That is what awaiting the future
+fixes — not the RPS column.
+
+**Where the throughput ceiling actually is** remains open. The candidate
+the evidence now points at is per-request CPU on a single event loop, of
+which the `postgres` backend's two cross-thread round trips per request
+are the largest addition. Moving the pool onto the serving loop (no
+handoff at all) is the change that would test it. Not attempted here,
+and not claimed.
+
 ## Two findings from the first run, both of which changed the answer
 
 The first run reported **two** paths as linear-or-worse. Both turned out

@@ -126,7 +126,9 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
         return _page("Create account", _FORM.format(path=SIGNUP_PATH, error=""))
 
     async def signup(request: Request) -> Response:
-        allowed, _retry_after = signup_limiter.check(resolve_client_key(request, trusted_proxy_hops))
+        allowed, _retry_after = await signup_limiter.check(
+            resolve_client_key(request, trusted_proxy_hops)
+        )
         if not allowed:
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,

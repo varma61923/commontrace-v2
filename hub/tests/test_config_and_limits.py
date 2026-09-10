@@ -109,37 +109,42 @@ class TestSignupAndBillingDefaultOff:
 
 
 class TestRateLimiterReportsWhenToComeBack:
-    def test_an_allowed_call_asks_for_no_wait(self):
-        allowed, retry_after = RateLimiter(per_minute=60, burst=5).check("k")
+    @pytest.mark.asyncio
+    async def test_an_allowed_call_asks_for_no_wait(self):
+        allowed, retry_after = await RateLimiter(per_minute=60, burst=5).check("k")
         assert allowed is True and retry_after == 0.0
 
-    def test_a_refused_call_says_how_long_until_a_token_exists(self):
+    @pytest.mark.asyncio
+    async def test_a_refused_call_says_how_long_until_a_token_exists(self):
         """Without this a refused client can only guess -- and every client
         guessing short against a limiter already saying no is what turns one
         burst into a sustained stampede."""
         limiter = RateLimiter(per_minute=60, burst=2)  # 1 token/sec
         for _ in range(2):
-            assert limiter.check("k")[0] is True
-        allowed, retry_after = limiter.check("k")
+            assert (await limiter.check("k"))[0] is True
+        allowed, retry_after = await limiter.check("k")
         assert allowed is False
         assert 0 < retry_after <= 1.01
         assert max(1, math.ceil(retry_after)) == 1
 
-    def test_a_deny_everything_limiter_does_not_promise_a_finite_wait(self):
+    @pytest.mark.asyncio
+    async def test_a_deny_everything_limiter_does_not_promise_a_finite_wait(self):
         """per_minute=0 never refills; advertising a short wait would invite
         an endless retry loop."""
-        allowed, retry_after = RateLimiter(per_minute=0, burst=10).check("k")
+        allowed, retry_after = await RateLimiter(per_minute=0, burst=10).check("k")
         assert allowed is False
         assert retry_after >= 60
 
-    def test_allow_still_works_for_every_existing_caller(self):
+    @pytest.mark.asyncio
+    async def test_allow_still_works_for_every_existing_caller(self):
         limiter = RateLimiter(per_minute=60, burst=1)
-        assert limiter.allow("k") is True
-        assert limiter.allow("k") is False
+        assert await limiter.allow("k") is True
+        assert await limiter.allow("k") is False
 
 
 class TestRateLimiterMemoryIsBounded:
-    def test_tracked_keys_are_capped(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_tracked_keys_are_capped(self, monkeypatch):
         """The idle sweep alone evicts nothing until a bucket has been
         untouched for an hour. A client-address-keyed limiter is keyed on
         something the peer chooses (any address out of an IPv6 /64), so an
@@ -149,17 +154,18 @@ class TestRateLimiterMemoryIsBounded:
         monkeypatch.setattr(RateLimiter, "_MAX_TRACKED_KEYS", 50)
         limiter = RateLimiter(per_minute=600, burst=10)
         for i in range(500):
-            limiter.allow(f"2001:db8::{i:x}")
+            await limiter.allow(f"2001:db8::{i:x}")
         assert len(limiter._buckets) <= 50
 
-    def test_eviction_never_lowers_another_clients_limit(self):
+    @pytest.mark.asyncio
+    async def test_eviction_never_lowers_another_clients_limit(self):
         """A re-created bucket starts full, so the worst case is that a
         flooding client resets its OWN limit."""
         limiter = RateLimiter(per_minute=60, burst=1)
-        assert limiter.allow("victim") is True
-        assert limiter.allow("victim") is False   # victim is out of tokens
+        assert await limiter.allow("victim") is True
+        assert await limiter.allow("victim") is False   # victim is out of tokens
         limiter._evict_if_over_capacity(0.0)      # a no-op below capacity
-        assert limiter.allow("victim") is False   # still limited, not reset by others
+        assert await limiter.allow("victim") is False   # still limited, not reset by others
 
 
 class TestMetricsEndpoint:
@@ -238,40 +244,44 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
     anti-brute-force limiter, not the per-org fair-use one, the binding
     constraint on this product's own documented onboarding."""
 
-    def test_a_refund_returns_a_token(self):
+    @pytest.mark.asyncio
+    async def test_a_refund_returns_a_token(self):
         limiter = RateLimiter(per_minute=60, burst=2)
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is False
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is False
         limiter.refund("1.2.3.4")
-        assert limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
 
-    def test_a_refund_never_exceeds_capacity(self):
+    @pytest.mark.asyncio
+    async def test_a_refund_never_exceeds_capacity(self):
         """Otherwise a long-lived valid client would accumulate an unbounded
         credit and the limiter would stop meaning anything for that key."""
         limiter = RateLimiter(per_minute=60, burst=2)
         for _ in range(50):
             limiter.refund("1.2.3.4")
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is False
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is False
 
     def test_refunding_an_unseen_key_is_a_no_op(self):
         limiter = RateLimiter(per_minute=60, burst=1)
         limiter.refund("never-seen")
         assert limiter._buckets == {}
 
-    def test_a_source_that_always_succeeds_is_never_throttled(self):
+    @pytest.mark.asyncio
+    async def test_a_source_that_always_succeeds_is_never_throttled(self):
         """The valid-client path: spend then refund, indefinitely."""
         limiter = RateLimiter(per_minute=1, burst=1)
         for _ in range(200):
-            assert limiter.allow("1.2.3.4") is True
+            assert await limiter.allow("1.2.3.4") is True
             limiter.refund("1.2.3.4")
 
-    def test_a_source_that_always_fails_is_still_throttled(self):
+    @pytest.mark.asyncio
+    async def test_a_source_that_always_fails_is_still_throttled(self):
         """The brute-force path is unchanged: no refund, so the budget is
         spent exactly as before."""
         limiter = RateLimiter(per_minute=60, burst=5)
-        allowed = [limiter.allow("9.9.9.9") for _ in range(20)]
+        allowed = [await limiter.allow("9.9.9.9") for _ in range(20)]
         assert allowed[:5] == [True] * 5
         assert False in allowed[5:]

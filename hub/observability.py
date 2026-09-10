@@ -346,7 +346,7 @@ def add_health_routes(
 
     async def readyz(request: Request) -> JSONResponse:
         client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
-        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             # Retry-After for the same reason hub/server.py's 429s carry it:
             # an orchestrator that backs off by a known interval stops
@@ -383,7 +383,7 @@ def add_health_routes(
         -- which is exactly when you want to be able to read it.
         """
         client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
-        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             seconds = str(max(1, math.ceil(retry_after)))
             return JSONResponse(

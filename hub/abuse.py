@@ -310,10 +310,10 @@ class RateLimiter:
         self._lock = threading.Lock()
         self._last_sweep = time.monotonic()
 
-    def allow(self, key: str) -> bool:
-        return self.check(key)[0]
+    async def allow(self, key: str) -> bool:
+        return (await self.check(key))[0]
 
-    def check(self, key: str) -> tuple[bool, float]:
+    async def check(self, key: str) -> tuple[bool, float]:
         """(allowed, retry_after_seconds).
 
         `retry_after` is 0.0 when allowed, and otherwise how long until this
@@ -418,8 +418,8 @@ class RateLimiterBackend(Protocol):
     through the middleware to catch it; hub/tests/test_auth_middleware.py
     only ever constructed it with the in-memory RateLimiter."""
 
-    def allow(self, key: str) -> bool: ...
-    def check(self, key: str) -> tuple[bool, float]: ...
+    async def allow(self, key: str) -> bool: ...
+    async def check(self, key: str) -> tuple[bool, float]: ...
     def refund(self, key: str) -> None: ...
 
 
@@ -511,6 +511,12 @@ _RATE_LIMIT_REFUND_SQL = """
 # broken install) would kill that thread without ever signalling
 # `_ready`, and __init__ would hang forever instead of raising.
 _POOL_STARTUP_TIMEOUT_SECONDS = 30.0
+
+# How long a rate-limit decision may take before the caller gives up. Kept
+# from the blocking implementation this replaced: past this, the database
+# is broken rather than slow, and a request needs an answer more than it
+# needs to keep waiting for one.
+_POOL_CALL_TIMEOUT_SECONDS = 10.0
 
 
 class _SharedPgPool:
@@ -668,15 +674,63 @@ class PostgresRateLimiter:
         self._last_sweep = time.monotonic()
         self._shared = _get_shared_pool(_to_asyncpg_dsn(database_url))
 
-    def allow(self, key: str) -> bool:
-        future = asyncio.run_coroutine_threadsafe(self._allow_async(key), self._shared.loop)
-        return future.result(timeout=10.0)
+    async def _await_on_pool_loop(self, coro):
+        """Run `coro` on the pool's background loop and AWAIT the result.
+
+        The pool lives on its own loop in its own thread (see
+        `_SharedPgPool`), so the work has to be handed across; the only
+        question is what the caller does while it runs.
+        `run_coroutine_threadsafe` returns a concurrent.futures.Future, and
+        calling `.result()` on it blocks the CALLING thread -- which, for
+        every real caller here, is the ASGI event loop, so no other request
+        on the replica progressed until the query came back.
+        `asyncio.wrap_future` adapts that same future into an awaitable this
+        loop can suspend on instead, which frees it to serve other requests
+        for the duration. Same pool, same thread, same query, same
+        cross-replica correctness -- the difference is entirely in who
+        waits.
+
+        This does NOT buy throughput, and the measurement says so:
+        hub/bench_concurrency.py reports 165 -> 177 rps at 128 concurrent
+        clients, which is noise. Nor is the connection pool the ceiling --
+        raising it from 5 to 32 moved nothing. On a benchmark where EVERY
+        request needs a limiter decision, freeing the loop cannot help,
+        because everything it could switch to is queued behind the same
+        work. What this fixes is the case that benchmark cannot show: work
+        that does NOT need a limiter decision -- a health check, another
+        endpoint, an in-flight response -- no longer waits behind one.
+        Measured directly: an unauthenticated /healthz polled while 32
+        clients hammer the limited path goes from p50 42.3ms / p99 62.8ms
+        to p50 2.3ms / p99 8.6ms, completing 448 probes in the window
+        instead of 81. That is the real defect this closes -- a replica
+        whose health endpoint answers in 63ms because something ELSE is
+        rate-limited looks unhealthy to a load balancer for reasons that
+        have nothing to do with its health.
+        See hub/SCALING.md "Concurrency: measured".
+
+        The 10s ceiling is kept from the blocking version it replaces: a
+        rate-limit decision that has not come back in ten seconds is a
+        broken database, not a slow one, and the caller needs an answer
+        rather than an indefinite wait.
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self._shared.loop)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future), timeout=_POOL_CALL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # wrap_future's own cancellation does not reach across loops on
+            # its own; cancel the real future so the query is not left
+            # running on the pool thread after nobody is waiting for it.
+            future.cancel()
+            raise
+
+    async def allow(self, key: str) -> bool:
+        return await self._await_on_pool_loop(self._allow_async(key))
 
     async def _allow_async(self, key: str) -> bool:
         allowed, _retry_after = await self._refill_and_maybe_decrement(key)
         return allowed
 
-    def check(self, key: str) -> tuple[bool, float]:
+    async def check(self, key: str) -> tuple[bool, float]:
         """(allowed, retry_after_seconds) -- the method every real caller in
         this codebase actually uses (hub/server.py's ApiKeyAuthMiddleware,
         hub/crud.py's per-write-op and KB-submission limiters). `allow()`
@@ -690,8 +744,7 @@ class PostgresRateLimiter:
         this class was never given matching methods, and nothing exercised
         the Postgres backend through that middleware to catch it. See
         RateLimiter.check's docstring for what `retry_after` is for."""
-        future = asyncio.run_coroutine_threadsafe(self._check_async(key), self._shared.loop)
-        return future.result(timeout=10.0)
+        return await self._await_on_pool_loop(self._check_async(key))
 
     async def _check_async(self, key: str) -> tuple[bool, float]:
         allowed, tokens = await self._refill_and_maybe_decrement(key)

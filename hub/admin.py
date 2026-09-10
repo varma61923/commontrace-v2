@@ -848,13 +848,13 @@ def add_admin_routes(
 
     limiter = rate_limiter or RateLimiter(per_minute=120, burst=30)
 
-    def _guard(request: Request) -> Response | None:
+    async def _guard(request: Request) -> Response | None:
         # Rate limited BEFORE the credential check, keyed by client address,
         # for the same reason hub/server.py limits auth attempts: the compare
         # is cheap here, but an unauthenticated endpoint that hits Postgres on
         # every request is a lever without one.
         client_key = resolve_client_key(request, trusted_proxy_hops)
-        allowed, retry_after = limiter.check(client_key)
+        allowed, retry_after = await limiter.check(client_key)
         if not allowed:
             import math
             seconds = str(max(1, math.ceil(retry_after)))
@@ -865,7 +865,7 @@ def add_admin_routes(
         return None
 
     async def overview(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         async with session_scope(session_factory) as session:
@@ -873,7 +873,7 @@ def add_admin_routes(
         return _page("Overview", _render_overview(data))
 
     async def org_detail(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         org_id = request.path_params["org_id"]
@@ -905,7 +905,7 @@ def add_admin_routes(
     )
 
     async def kb(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         if not commons_enabled:
@@ -929,7 +929,7 @@ def add_admin_routes(
 
         Returns (form, target, None) to proceed, or (None, None, response).
         """
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return None, None, denied
         if not commons_enabled:

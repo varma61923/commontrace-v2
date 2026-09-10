@@ -214,22 +214,25 @@ def test_suspicion_none_for_normal_content(small_config):
     assert reason is None
 
 
-def test_rate_limiter_allows_up_to_burst_then_blocks():
+@pytest.mark.asyncio
+async def test_rate_limiter_allows_up_to_burst_then_blocks():
     limiter = RateLimiter(per_minute=60, burst=3)
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is False
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is False
 
 
-def test_rate_limiter_is_per_key():
+@pytest.mark.asyncio
+async def test_rate_limiter_is_per_key():
     limiter = RateLimiter(per_minute=60, burst=1)
-    assert limiter.allow("org-a") is True
-    assert limiter.allow("org-b") is True  # independent bucket, not shared with org-a
-    assert limiter.allow("org-a") is False
+    assert await limiter.allow("org-a") is True
+    assert await limiter.allow("org-b") is True  # independent bucket, not shared with org-a
+    assert await limiter.allow("org-a") is False
 
 
-def test_rate_limiter_evicts_idle_buckets(monkeypatch):
+@pytest.mark.asyncio
+async def test_rate_limiter_evicts_idle_buckets(monkeypatch):
     """Regression test for a real bug: `_buckets` never evicted an entry,
     so a long-running Hub accumulated one bucket per org that EVER called
     contribute_trace, without bound -- an org that called once and never
@@ -244,26 +247,27 @@ def test_rate_limiter_evicts_idle_buckets(monkeypatch):
     limiter._IDLE_TTL_SECONDS = 100.0
     limiter._SWEEP_INTERVAL_SECONDS = 10.0
 
-    assert limiter.allow("idle-org") is True
+    assert await limiter.allow("idle-org") is True
     assert "idle-org" in limiter._buckets
-    assert limiter.allow("busy-org") is True  # keeps this bucket touched throughout
+    assert await limiter.allow("busy-org") is True  # keeps this bucket touched throughout
 
     # Advance past the idle TTL for idle-org, but keep busy-org fresh so the
     # sweep has something to distinguish "idle" from "just created".
     for _ in range(12):
         clock[0] += 10.0
-        limiter.allow("busy-org")
+        await limiter.allow("busy-org")
 
     assert "idle-org" not in limiter._buckets, "idle bucket was never swept"
     assert "busy-org" in limiter._buckets, "an actively-used bucket must not be evicted"
 
     # A fresh call for the swept key behaves like a brand-new key -- full
     # burst capacity, not a resumed or half-empty bucket.
-    assert limiter.allow("idle-org") is True
-    assert limiter.allow("idle-org") is True
+    assert await limiter.allow("idle-org") is True
+    assert await limiter.allow("idle-org") is True
 
 
-def test_zero_per_minute_denies_every_key_from_the_first_call():
+@pytest.mark.asyncio
+async def test_zero_per_minute_denies_every_key_from_the_first_call():
     """A bucket for any never-seen key started pre-filled to `burst`
     tokens regardless of the configured rate, so per_minute=0 (an operator
     explicitly asking for zero throughput) previously still let each new
@@ -273,14 +277,15 @@ def test_zero_per_minute_denies_every_key_from_the_first_call():
     whichever key happened to exhaust its initial allowance first."""
     limiter = RateLimiter(per_minute=0, burst=5)
     for _ in range(5):
-        assert limiter.allow("org-x") is False
-    assert limiter.allow("org-brand-new") is False
+        assert await limiter.allow("org-x") is False
+    assert await limiter.allow("org-brand-new") is False
 
 
-def test_negative_per_minute_also_denies_every_key():
+@pytest.mark.asyncio
+async def test_negative_per_minute_also_denies_every_key():
     limiter = RateLimiter(per_minute=-1, burst=5)
-    assert limiter.allow("org-x") is False
-    assert limiter.allow("idle-org") is False
+    assert await limiter.allow("org-x") is False
+    assert await limiter.allow("idle-org") is False
 
 
 # --- HUB_RATE_LIMIT_BACKEND config -----------------------------------------
@@ -312,54 +317,61 @@ def test_to_asyncpg_dsn_passes_through_a_bare_dsn_unchanged():
 # --- PostgresRateLimiter (needs a real Postgres -- see conftest.py) --------
 
 
-def test_pg_rate_limiter_allows_up_to_burst_then_blocks(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_allows_up_to_burst_then_blocks(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=60, burst=3)
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is False
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is False
 
 
-def test_pg_rate_limiter_is_per_key(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_is_per_key(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=60, burst=1)
-    assert limiter.allow("org-a") is True
-    assert limiter.allow("org-b") is True  # independent bucket, not shared with org-a
-    assert limiter.allow("org-a") is False
+    assert await limiter.allow("org-a") is True
+    assert await limiter.allow("org-b") is True  # independent bucket, not shared with org-a
+    assert await limiter.allow("org-a") is False
 
 
-def test_pg_rate_limiter_zero_per_minute_denies_every_key_from_the_first_call(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_zero_per_minute_denies_every_key_from_the_first_call(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=0, burst=5)
     for _ in range(5):
-        assert limiter.allow("org-x") is False
-    assert limiter.allow("org-brand-new") is False
+        assert await limiter.allow("org-x") is False
+    assert await limiter.allow("org-brand-new") is False
 
 
-def test_pg_rate_limiter_negative_per_minute_also_denies_every_key(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_negative_per_minute_also_denies_every_key(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=-1, burst=5)
-    assert limiter.allow("org-x") is False
-    assert limiter.allow("idle-org") is False
+    assert await limiter.allow("org-x") is False
+    assert await limiter.allow("idle-org") is False
 
 
-def test_pg_rate_limiter_refills_continuously_over_time(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_refills_continuously_over_time(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=6000, burst=1)  # ~100 tokens/sec
-    assert limiter.allow("org-x") is True
-    assert limiter.allow("org-x") is False
+    assert await limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is False
     time.sleep(0.05)  # comfortably >= 1 token refilled at 100/sec
-    assert limiter.allow("org-x") is True
+    assert await limiter.allow("org-x") is True
 
 
-def test_pg_rate_limiter_namespaces_by_limiter_name(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_namespaces_by_limiter_name(pg_limiter_factory):
     """Two limiters with different limiter_name but the same key must not
     share a bucket -- e.g. the write limiter and the read limiter must not
     let one org's write-rate exhaustion also block its reads."""
     write_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="write-ns-test")
     read_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="read-ns-test")
-    assert write_limiter.allow("org-shared-key") is True
-    assert write_limiter.allow("org-shared-key") is False
-    assert read_limiter.allow("org-shared-key") is True  # unaffected by the write bucket
+    assert await write_limiter.allow("org-shared-key") is True
+    assert await write_limiter.allow("org-shared-key") is False
+    assert await read_limiter.allow("org-shared-key") is True  # unaffected by the write bucket
 
 
-def test_pg_rate_limiter_shares_state_across_instances(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_shares_state_across_instances(pg_limiter_factory):
     """The whole point of this backend: two PostgresRateLimiter instances
     constructed with the same limiter_name -- standing in for two replicas
     of a horizontally-scaled Hub -- enforce one shared limit instead of
@@ -369,14 +381,15 @@ def test_pg_rate_limiter_shares_state_across_instances(pg_limiter_factory):
     replica_a = pg_limiter_factory(per_minute=60, burst=2, limiter_name=shared_name)
     replica_b = pg_limiter_factory(per_minute=60, burst=2, limiter_name=shared_name)
 
-    assert replica_a.allow("org-x") is True
-    assert replica_b.allow("org-x") is True
+    assert await replica_a.allow("org-x") is True
+    assert await replica_b.allow("org-x") is True
     # Burst of 2 is now exhausted across BOTH replicas combined, not 2 each.
-    assert replica_a.allow("org-x") is False
-    assert replica_b.allow("org-x") is False
+    assert await replica_a.allow("org-x") is False
+    assert await replica_b.allow("org-x") is False
 
 
-def test_pg_rate_limiter_sweeps_idle_rows(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_sweeps_idle_rows(pg_limiter_factory):
     """Same regression this module already covers for RateLimiter's
     in-memory buckets (test_rate_limiter_evicts_idle_buckets above): a
     bucket idle past the TTL is swept, and a fresh call for that key
@@ -388,19 +401,20 @@ def test_pg_rate_limiter_sweeps_idle_rows(pg_limiter_factory):
     limiter._IDLE_TTL_SECONDS = 0.05
     limiter._SWEEP_INTERVAL_SECONDS = 0.0
 
-    assert limiter.allow("idle-org") is True
-    assert limiter.allow("idle-org") is False  # bucket exhausted
+    assert await limiter.allow("idle-org") is True
+    assert await limiter.allow("idle-org") is False  # bucket exhausted
 
     time.sleep(0.2)  # past the idle TTL
-    assert limiter.allow("busy-org") is True  # triggers the sweep as a side effect
+    assert await limiter.allow("busy-org") is True  # triggers the sweep as a side effect
     time.sleep(0.2)  # let the fire-and-forget sweep task actually run
 
     # A fresh call for the swept key behaves like a brand-new key -- full
     # burst capacity again, not a resumed or exhausted bucket.
-    assert limiter.allow("idle-org") is True
+    assert await limiter.allow("idle-org") is True
 
 
-def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_factory):
     _skip_if_no_pg()
     config = HubConfig(database_url=PG_TEST_DATABASE_URL, rate_limit_backend="postgres")
     limiter = abuse.make_rate_limiter(config)
@@ -410,7 +424,7 @@ def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_f
         # limiter_name, so a fixed key could collide with state a previous
         # run against a persistent local test DB left behind.
         key = f"org-{uuid.uuid4().hex[:8]}"
-        assert limiter.allow(key) is True
+        assert await limiter.allow(key) is True
     finally:
         limiter.close()
 
@@ -423,51 +437,56 @@ def test_make_rate_limiter_selects_postgres_backend_when_configured(pg_limiter_f
 # silently breaking HUB_RATE_LIMIT_BACKEND=postgres for every request.
 
 
-def test_pg_rate_limiter_check_matches_allow_up_to_burst(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_check_matches_allow_up_to_burst(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=60, burst=2)
-    assert limiter.check("org-x") == (True, 0.0)
-    assert limiter.check("org-x") == (True, 0.0)
-    allowed, retry_after = limiter.check("org-x")
+    assert await limiter.check("org-x") == (True, 0.0)
+    assert await limiter.check("org-x") == (True, 0.0)
+    allowed, retry_after = await limiter.check("org-x")
     assert allowed is False
     assert retry_after > 0.0
 
 
-def test_pg_rate_limiter_check_retry_after_shrinks_as_the_bucket_refills(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_check_retry_after_shrinks_as_the_bucket_refills(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=60, burst=1)  # 1 token/sec -- slow enough
-    assert limiter.check("org-x")[0] is True                     # that a short sleep denies
-    _, retry_after_immediate = limiter.check("org-x")            # again but visibly refills,
+    assert (await limiter.check("org-x"))[0] is True                     # that a short sleep denies
+    _, retry_after_immediate = await limiter.check("org-x")            # again but visibly refills,
     assert retry_after_immediate > 0.0                           # rather than crossing the
     time.sleep(0.2)                                              # allow threshold outright.
-    _, retry_after_later = limiter.check("org-x")
+    _, retry_after_later = await limiter.check("org-x")
     assert 0.0 < retry_after_later < retry_after_immediate
 
 
-def test_pg_rate_limiter_check_zero_per_minute_reports_the_deny_all_retry_after(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_check_zero_per_minute_reports_the_deny_all_retry_after(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=0, burst=5)
-    allowed, retry_after = limiter.check("org-x")
+    allowed, retry_after = await limiter.check("org-x")
     assert allowed is False
     assert retry_after == RateLimiter._DENY_ALL_RETRY_AFTER_SECONDS
 
 
-def test_pg_rate_limiter_refund_gives_back_one_token(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_refund_gives_back_one_token(pg_limiter_factory):
     limiter = pg_limiter_factory(per_minute=60, burst=1)
-    assert limiter.check("org-x") == (True, 0.0)
-    assert limiter.check("org-x")[0] is False  # exhausted
+    assert await limiter.check("org-x") == (True, 0.0)
+    assert (await limiter.check("org-x"))[0] is False  # exhausted
 
     limiter.refund("org-x")
     time.sleep(0.2)  # refund is fire-and-forget; give the background write time to land
 
-    assert limiter.check("org-x")[0] is True  # refunded token is spendable again
+    assert (await limiter.check("org-x"))[0] is True  # refunded token is spendable again
 
 
-def test_pg_rate_limiter_refund_never_exceeds_capacity(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_refund_never_exceeds_capacity(pg_limiter_factory):
     # per_minute=1 (not 60): natural refill during this test's sleeps must
     # stay negligible, so any extra allowed check() can only be explained
     # by the refunds themselves, not passive time-based refill.
     limiter = pg_limiter_factory(per_minute=1, burst=1)
     limiter.refund("org-never-checked")  # no row exists yet -- must be a no-op, not an error
     time.sleep(0.1)
-    assert limiter.check("org-never-checked") == (True, 0.0)  # fresh key starts at capacity
+    assert await limiter.check("org-never-checked") == (True, 0.0)  # fresh key starts at capacity
 
     # Two refunds on top of an exhausted, capacity-1 bucket must still cap
     # at capacity -- if they summed unbounded, this would grant TWO more
@@ -475,17 +494,18 @@ def test_pg_rate_limiter_refund_never_exceeds_capacity(pg_limiter_factory):
     limiter.refund("org-never-checked")
     limiter.refund("org-never-checked")
     time.sleep(0.1)
-    assert limiter.check("org-never-checked")[0] is True    # one token, refunded (capped)
-    assert limiter.check("org-never-checked")[0] is False   # and only one -- not two
+    assert (await limiter.check("org-never-checked"))[0] is True    # one token, refunded (capped)
+    assert (await limiter.check("org-never-checked"))[0] is False   # and only one -- not two
 
 
-def test_pg_rate_limiter_refund_is_namespaced_by_limiter_name(pg_limiter_factory):
+@pytest.mark.asyncio
+async def test_pg_rate_limiter_refund_is_namespaced_by_limiter_name(pg_limiter_factory):
     write_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="write-refund-test")
     auth_limiter = pg_limiter_factory(per_minute=60, burst=1, limiter_name="auth-refund-test")
-    assert write_limiter.check("org-shared") == (True, 0.0)
+    assert await write_limiter.check("org-shared") == (True, 0.0)
     auth_limiter.refund("org-shared")  # must not touch write_limiter's bucket for the same key
     time.sleep(0.2)
-    assert write_limiter.check("org-shared")[0] is False
+    assert (await write_limiter.check("org-shared"))[0] is False
 
 
 @pytest.mark.asyncio

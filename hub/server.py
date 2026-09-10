@@ -115,7 +115,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_key = resolve_client_key(request, self._trusted_proxy_hops)
-        allowed, retry_after = self._auth_rate_limiter.check(client_key)
+        allowed, retry_after = await self._auth_rate_limiter.check(client_key)
         if not allowed:
             return _rate_limited_response("too many auth attempts", retry_after)
 
@@ -159,7 +159,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # hole: only a caller holding a valid key for this org can reach it,
         # and it cannot be used to do any work.
         if request.method != "DELETE":
-            allowed, retry_after = self._read_rate_limiter.check(authenticated.org_id)
+            allowed, retry_after = await self._read_rate_limiter.check(authenticated.org_id)
             if not allowed:
                 return _rate_limited_response("too many requests", retry_after)
 

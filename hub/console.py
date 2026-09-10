@@ -877,7 +877,9 @@ def add_console_routes(
         return _page("Sign in", _SIGNIN.format(path=CONSOLE_PATH, error=""), signed_in=False)
 
     async def signin(request: Request) -> Response:
-        allowed, retry_after = signin_limiter.check(resolve_client_key(request, trusted_proxy_hops))
+        allowed, retry_after = await signin_limiter.check(
+            resolve_client_key(request, trusted_proxy_hops)
+        )
         if not allowed:
             return _page(
                 "Sign in",
@@ -1082,7 +1084,7 @@ def add_console_routes(
         # threat here is one link being hit hard by whoever holds it, from
         # however many addresses, not a fleet of distinct guessers -- an
         # address-keyed limiter would not bound that at all.
-        allowed, retry_after = share_view_limiter.check(f"share:{org_id}")
+        allowed, retry_after = await share_view_limiter.check(f"share:{org_id}")
         if not allowed:
             return HTMLResponse(
                 "This report is being viewed heavily right now -- try again shortly.",

@@ -1130,7 +1130,7 @@ async def contribute_trace(
                 profile,
             )
 
-    allowed, retry_after = rate_limiter.check(org_id)
+    allowed, retry_after = await rate_limiter.check(org_id)
     if not allowed:
         raise RateLimited(
             f"org {org_id} exceeded contribute_trace rate limit", retry_after=retry_after
@@ -1861,7 +1861,7 @@ async def amend_trace(
     # payloads (a title past the column width became a hard 500 rather than
     # a clean rejection), and spam that quarantine would have caught on the
     # way in.
-    allowed, retry_after = rate_limiter.check(org_id)
+    allowed, retry_after = await rate_limiter.check(org_id)
     if not allowed:
         raise RateLimited(f"org {org_id} exceeded write rate limit", retry_after=retry_after)
 
@@ -3091,7 +3091,7 @@ async def submit_kb_entry(
     # deliberate, occasional action, not a bulk capture path, so it does
     # not need its own tuning -- but it gets its own bucket so a fleet
     # capturing traces at volume cannot starve its own ability to submit.
-    allowed, retry_after = rate_limiter.check(f"kb_submit:{org_id}")
+    allowed, retry_after = await rate_limiter.check(f"kb_submit:{org_id}")
     if not allowed:
         raise RateLimited(
             f"org {org_id} exceeded submit_kb_entry rate limit", retry_after=retry_after
