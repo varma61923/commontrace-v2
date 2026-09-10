@@ -351,10 +351,31 @@ async def test_pg_rate_limiter_negative_per_minute_also_denies_every_key(pg_limi
 
 @pytest.mark.asyncio
 async def test_pg_rate_limiter_refills_continuously_over_time(pg_limiter_factory):
-    limiter = pg_limiter_factory(per_minute=6000, burst=1)  # ~100 tokens/sec
+    """1 token/sec, matching its sibling above, and for the same reason.
+
+    This used per_minute=6000 -- 100 tokens/sec, so a token refilled every
+    10ms -- and the "denied" assertion below therefore required TWO
+    database round trips to complete inside 10ms. That is not a property
+    of the limiter, it is a property of how fast the machine happens to
+    be, and CI called the bluff: the second call was allowed because a
+    token had legitimately refilled while it was in flight.
+
+    Measured on an idle developer machine, the pair takes 1.9ms with the
+    old blocking implementation and 2.3ms now that check/allow await
+    rather than block -- so awaiting cost ~0.4ms, and the margin was only
+    ever ~5x on hardware nobody shares. A loaded CI runner has no trouble
+    exceeding 10ms.
+
+    At 1 token/sec the denial window is a full second, which no plausible
+    pair of round trips crosses, and the sleep still proves continuous
+    refill rather than a fixed window. Please do not speed this back up:
+    the runtime it saves is milliseconds and the cost is a test that
+    fails for reasons unrelated to the code under test.
+    """
+    limiter = pg_limiter_factory(per_minute=60, burst=1)  # 1 token/sec
     assert await limiter.allow("org-x") is True
     assert await limiter.allow("org-x") is False
-    time.sleep(0.05)  # comfortably >= 1 token refilled at 100/sec
+    time.sleep(1.1)  # > 1s, so exactly one token has refilled (capped at burst)
     assert await limiter.allow("org-x") is True
 
 
