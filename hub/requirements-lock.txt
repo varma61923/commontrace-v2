@@ -52,9 +52,9 @@
 # committing -- a lock file that pins an untested combination is worse than
 # no lock file, because it looks authoritative.
 
-alembic==1.19.1
+alembic==1.19.2
 annotated-types==0.8.0
-anyio==4.15.0
+anyio==4.15.1
 argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
 asyncpg==0.31.0
@@ -86,7 +86,7 @@ python-multipart==0.0.32
 referencing==0.37.0
 rpds-py==2026.6.3
 SQLAlchemy==2.0.52
-sse-starlette==3.4.10
+sse-starlette==3.4.11
 starlette==1.6.0
 truststore==0.10.4
 typing-inspection==0.4.4
