@@ -21,9 +21,22 @@ def make_engine(config: HubConfig) -> AsyncEngine:
     an idle timeout on a managed Postgres or a proxy in between; pool_pre_ping
     catches the case where that happened anyway.
     """
+    connect_args = {}
+    if config.db_statement_timeout_ms > 0:
+        # Applied by Postgres itself, per connection, so it still bounds a
+        # query whose caller has already timed out and walked away -- the
+        # case no application-side timeout can reach, and the one that
+        # otherwise leaves a runaway query holding a pooled connection
+        # nobody is waiting for. asyncpg passes server_settings straight
+        # through as connection parameters.
+        connect_args["server_settings"] = {
+            "statement_timeout": str(config.db_statement_timeout_ms)
+        }
+
     return create_async_engine(
         config.database_url,
         pool_pre_ping=True,
+        connect_args=connect_args,
         pool_size=config.db_pool_size,
         max_overflow=config.db_max_overflow,
         pool_timeout=config.db_pool_timeout,

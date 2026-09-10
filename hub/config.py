@@ -314,6 +314,28 @@ class HubConfig:
     db_pool_size: int = 10
     db_max_overflow: int = 5
     db_pool_timeout: int = 30       # seconds to wait for a free connection
+    # Bounds on how much work one replica will accept before shedding it,
+    # rather than queueing it until everything times out together.
+    # hub/bench_concurrency.py measured the shape being bounded here: at
+    # 128 concurrent clients p99 reached 1.3s against an EMPTY handler,
+    # with nothing anywhere to stop it growing further.
+    #
+    # statement_timeout is Postgres-side, so it also covers a query whose
+    # client has already given up -- the one case an application-side
+    # timeout cannot reach, and the one that keeps a runaway query burning
+    # a connection nobody is waiting for.
+    db_statement_timeout_ms: int = 30_000
+    # Application-side ceiling on one request. Shorter than the pool's own
+    # 30s wait would be self-defeating (a request would expire while
+    # queued for a connection it was about to get), so this is the pool
+    # timeout plus the statement timeout, rounded up: the longest a
+    # legitimately slow request can take before something is wrong.
+    request_timeout_seconds: int = 60
+    # In-flight requests per replica before new ones are refused outright.
+    # A refusal with Retry-After is strictly kinder than unbounded
+    # queueing: the caller learns immediately and can back off, instead of
+    # waiting out a timeout to discover the same thing. 0 disables the cap.
+    max_concurrent_requests: int = 512
     db_pool_recycle: int = 1800     # recycle connections older than 30 min
 
     # --- Lifecycle ---
@@ -391,6 +413,12 @@ class HubConfig:
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),
             db_pool_timeout=_env_int_in_range("HUB_DB_POOL_TIMEOUT", 30, 1, 3600),
+            db_statement_timeout_ms=_env_int_in_range(
+                "HUB_DB_STATEMENT_TIMEOUT_MS", 30_000, 0, 3_600_000),
+            request_timeout_seconds=_env_int_in_range(
+                "HUB_REQUEST_TIMEOUT_SECONDS", 60, 0, 3600),
+            max_concurrent_requests=_env_int_in_range(
+                "HUB_MAX_CONCURRENT_REQUESTS", 512, 0, 100_000),
             db_pool_recycle=_env_int_in_range("HUB_DB_POOL_RECYCLE", 1800, -1, 86_400),
             graceful_shutdown_seconds=_env_int_in_range("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30, 0, 3600),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),

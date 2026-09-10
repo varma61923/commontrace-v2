@@ -16,6 +16,8 @@ example.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import math
 
@@ -170,6 +172,126 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         finally:
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
+
+
+class LoadShedMiddleware:
+    """Bound how much work one replica accepts, and how long any of it runs.
+
+    hub/bench_concurrency.py measured what this replaces. At 128 concurrent
+    clients against an EMPTY handler, p99 reached 1.3s and throughput was
+    flat from 8 clients upward -- every additional client became queue, and
+    nothing anywhere stopped that queue growing. A slow database makes it
+    worse in the way that is hardest to diagnose: requests pile onto a 10+5
+    connection pool with a 30s pool_timeout until they all fail at once, so
+    the first symptom is total failure rather than degradation.
+
+    Two bounds, doing different jobs:
+
+    `max_concurrent` sheds load. Past N requests in flight the next one is
+    refused immediately with 503 and a Retry-After instead of joining the
+    queue. Refusing fast is kinder than queueing: the caller learns now and
+    can back off rather than waiting out a timeout to be told the same
+    thing, and the requests already admitted keep the latency they were
+    promised instead of everyone degrading together. That is why the
+    semaphore is *tested* and never *waited on* -- acquiring with a timeout
+    would reintroduce the queue this exists to prevent.
+
+    `timeout` bounds one request: not too many requests, but one that will
+    not finish.
+
+    RAW ASGI, deliberately, and this is the whole reason the class is not a
+    BaseHTTPMiddleware like its neighbours. Under BaseHTTPMiddleware the
+    timeout does not work -- measured, not assumed: with a 1s timeout over
+    a handler that sleeps 4s, the client gets its 504 after 4.01s. Wrapping
+    `call_next` in wait_for cancels the middleware's own side of the
+    plumbing, but the downstream handler keeps running to completion, so
+    the bound relabels a slow response instead of stopping it and buys
+    exactly nothing. Driving the child app as a task this class owns is
+    what makes cancellation actually reach the handler.
+
+    Both bounds default to on; hub/config.py's `max_concurrent_requests=0`
+    disables the cap and `request_timeout_seconds=0` the timeout, for a
+    deployment that does this at its edge proxy and does not want two
+    layers disagreeing about which one refused a request.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_concurrent: int, timeout_seconds: int):
+        self.app = app
+        self._timeout = timeout_seconds if timeout_seconds > 0 else None
+        self._semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+
+    async def __call__(self, scope, receive, send) -> None:
+        # Only HTTP is bounded. A websocket has no meaningful "request
+        # duration", and cancelling `lifespan` would take down startup.
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        if self._semaphore is not None:
+            if self._semaphore.locked():
+                await _send_json(send, 503, _OVERLOADED_BODY, [(b"retry-after", b"1")])
+                return
+            async with self._semaphore:
+                await self._run(scope, receive, send)
+            return
+        await self._run(scope, receive, send)
+
+    async def _run(self, scope, receive, send) -> None:
+        if self._timeout is None:
+            await self.app(scope, receive, send)
+            return
+
+        # Whether any bytes are already committed to the wire. Past that
+        # point a 504 is not available -- the status line has been sent --
+        # so the only honest thing left is to stop writing.
+        started = False
+
+        async def tracking_send(message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        task = asyncio.create_task(self.app(scope, receive, tracking_send))
+        try:
+            await asyncio.wait_for(task, timeout=self._timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "request exceeded %ss and was cancelled: %s %s",
+                self._timeout, scope.get("method", "?"), scope.get("path", "?"),
+            )
+            if not started:
+                # 504, not 500: nothing is known to be broken. The request
+                # ran out of time, which is a different thing to tell a
+                # client, and the only one of the two worth retrying.
+                await _send_json(send, 504, _timeout_body(self._timeout))
+
+
+_OVERLOADED_BODY = {"error": "overloaded", "detail": "too many concurrent requests"}
+
+
+def _timeout_body(seconds: int) -> dict:
+    return {"error": "timeout", "detail": f"request exceeded {seconds}s"}
+
+
+async def _send_json(send, status: int, body: dict, extra_headers=()) -> None:
+    """Emit a JSON response through the raw ASGI `send`.
+
+    LoadShedMiddleware refuses and times out below Starlette's Response
+    machinery, so it writes the two messages itself. `Retry-After` is here
+    for the same reason _rate_limited_response carries it: a refused client
+    that is not told when to come back can only guess, and guessing short
+    against an overloaded replica turns one burst into a sustained one. One
+    second is the honest floor -- unlike a rate limiter this cap has no
+    bucket to compute a real refill time from, and capacity may free up
+    immediately.
+    """
+    payload = json.dumps(body).encode()
+    headers = [(b"content-type", b"application/json"),
+               (b"content-length", str(len(payload)).encode())]
+    headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": payload})
 
 
 def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
@@ -1055,7 +1177,13 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
     )
+    inner_app.add_middleware(
+        LoadShedMiddleware,
+        max_concurrent=config.max_concurrent_requests,
+        timeout_seconds=config.request_timeout_seconds,
+    )
     # Added last => outermost: a request id exists (and the request gets
-    # logged) even for calls the auth middleware rejects with a 401.
+    # logged) even for calls the auth middleware rejects with a 401, and
+    # for one LoadShedMiddleware sheds or times out.
     inner_app.add_middleware(RequestContextMiddleware)
     return inner_app
