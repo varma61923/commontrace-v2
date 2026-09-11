@@ -771,7 +771,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             return _error_response(exc)
 
     @mcp.tool()
-    async def value_delivered(value_per_occasion: float = 0.0) -> dict:
+    async def value_delivered(
+        value_per_occasion: float = 0.0, rate_tiers: list[dict] | None = None
+    ) -> dict:
         """What your fleet's memory has been worth, causally, in occasions.
 
         Not a usage number and not a correlational one. For each memory whose
@@ -796,6 +798,20 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         nothing and you get the count. No price is stored anywhere -- this
         product ships the quantity and takes the rate from you.
 
+        `rate_tiers` is that rate stated properly, for organisations where one
+        flat number prices a password reset and an averted outage the same way.
+        Pass `[{"name": "L1", "share": 0.55, "cost_per_occasion": 8.0}, ...]`
+        with shares summing to 1. Both are your inputs, echoed back in the
+        response as inputs: nothing here measures which tier an occasion
+        belonged to, and only `occasions_improved` was measured at all.
+
+        When a rate is given and the run is readable you also get `ledger` --
+        one line per counted memory, each carrying a SHA-256 over the previous
+        line, so editing a figure, deleting the memory that HURT, or
+        reordering to bury it all break the chain. Recompute it with
+        `commontrace.value.verify_ledger`, or reimplement it: the hash is over
+        the printed fields in a fixed order, on purpose.
+
         Reads only your own data. Not metered."""
         try:
             org_id = auth.get_current_org_id()
@@ -803,6 +819,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                 return await crud.value_delivered(
                     session, org_id,
                     value_per_occasion=(value_per_occasion or None),
+                    rate_tiers=rate_tiers,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)

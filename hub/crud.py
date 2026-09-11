@@ -2788,7 +2788,10 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
 
 
 async def value_delivered(
-    session: AsyncSession, org_id: str, value_per_occasion: float | None = None
+    session: AsyncSession,
+    org_id: str,
+    value_per_occasion: float | None = None,
+    rate_tiers: list[dict] | None = None,
 ) -> dict:
     """What this fleet's memory was worth, causally, in its own units.
 
@@ -2813,6 +2816,23 @@ async def value_delivered(
     `value_per_occasion` is the caller's. This function returns a COUNT of
     occasions; currency enters only if the caller supplies a rate, and no
     price is stored anywhere.
+
+    `rate_tiers` is the same statement made properly. A flat rate prices a
+    password reset and an averted SLA breach identically, which is the first
+    thing a finance team rejects. Supplied as
+    `[{"name": ..., "share": ..., "cost_per_occasion": ...}, ...]`, shares
+    summing to 1, it prices the measured occasions against the mix the
+    customer actually agreed to. It is still entirely the caller's: nothing
+    here measures which tier an occasion belonged to, and the tiers are echoed
+    back in the response as inputs so a negotiated assumption can never be
+    read back later as a finding.
+
+    When a rate is available and the run is readable the response also carries
+    `ledger`: one hash-chained line per counted memory, each hash covering the
+    previous one, so editing a figure, dropping the memory that HURT, or
+    reordering to bury it all break the chain. `commontrace.value.verify_ledger`
+    recomputes it, and is written to be reimplementable by whoever audits the
+    invoice.
     """
     causal = await causal_effects(session, org_id)
     effects = [
@@ -2828,7 +2848,25 @@ async def value_delivered(
         for e in causal.get("effects", [])
     ]
     audit = _integrity_from_wire(causal.get("integrity") or {})
-    report = value.compute(effects, audit, value_per_occasion=value_per_occasion)
+    # A malformed rate card is the caller's mistake, not a server fault, and
+    # it has to surface as one: silently falling back to the flat rate would
+    # price the invoice against a number the customer thought they had
+    # replaced. RateCard's own validation raises ValueError, which this
+    # tool's error envelope already renders as a structured tool error.
+    card = None
+    if rate_tiers:
+        card = value.RateCard(tiers=tuple(
+            value.Tier(
+                name=str(t.get("name") or ""),
+                share=float(t.get("share", 0.0)),
+                cost_per_occasion=float(t.get("cost_per_occasion", 0.0)),
+            )
+            for t in rate_tiers
+        ))
+    report = value.compute(
+        effects, audit, value_per_occasion=value_per_occasion, rate_card=card
+    )
+    ledger = report.ledger()
     titles = {e["trace_id"]: e.get("title") for e in causal.get("effects", [])}
 
     return {
@@ -2839,8 +2877,24 @@ async def value_delivered(
         "n_counted": report.n_counted,
         "n_excluded": report.n_excluded,
         "value_per_occasion": value_per_occasion,
+        # Echoed back as INPUTS. The tiers and the mix are contractual; only
+        # `occasions_improved` above was measured, and keeping the two
+        # labelled apart on the wire is what stops a negotiated assumption
+        # being quoted later as a finding.
+        "rate_tiers": [
+            {"name": t.name, "share": t.share, "cost_per_occasion": t.cost_per_occasion}
+            for t in (card.tiers if card else ())
+        ],
+        "rate_applied": report.rate,
         "money": report.money,
         "money_range": list(report.money_range) if report.money_range else None,
+        "ledger": [
+            {"index": e.index, "trace_id": e.slug, "verdict": e.verdict,
+             "occasions_improved": e.occasions_improved, "rate": e.rate,
+             "money": e.money, "previous_hash": e.previous_hash,
+             "entry_hash": e.entry_hash}
+            for e in ledger
+        ],
         "memories": [
             {"trace_id": m.slug, "title": titles.get(m.slug, "(deleted trace)"),
              "verdict": m.verdict, "n_injected": m.n_injected, "effect": m.effect,

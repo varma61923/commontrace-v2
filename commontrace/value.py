@@ -58,9 +58,103 @@ Three rules, and the third is the one that matters:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 
 from commontrace import experiment, integrity
+
+# Domain separator for the audit chain below. Hashing the empty string as a
+# genesis would let a ledger built here be spliced into any other SHA-256
+# chain that also started from nothing; naming the chain in its own first link
+# makes that impossible.
+_LEDGER_GENESIS = hashlib.sha256(b"commontrace-value-ledger-v1").hexdigest()
+
+# The separator between fields of a hashed row. 0x1F (ASCII unit separator) is
+# the same byte `experiment.is_held_out` puts between the parts of its own
+# hash preimage, and for the same reason: it cannot occur in any of the fields,
+# so no combination of values can be re-split into a different row that hashes
+# the same.
+_FIELD_SEP = "\x1f"
+
+
+@dataclass(frozen=True)
+class Tier:
+    """One line of a contractual rate card.
+
+    `share` is the fraction of occasions this tier is agreed to represent, and
+    `cost_per_occasion` is what one of them is worth. BOTH are inputs supplied
+    by the customer, not quantities this package measures -- see RateCard.
+    """
+
+    name: str
+    share: float
+    cost_per_occasion: float
+
+
+@dataclass(frozen=True)
+class RateCard:
+    """What the customer has agreed an improved occasion is worth.
+
+    A flat per-occasion rate is the wrong shape for the work it prices.
+    Resolving a password reset and averting an SLA breach are both "one
+    occasion", and a finance team asked to accept one number for both will
+    reject the number rather than the premise. A rate card states the mix
+    explicitly: the tiers, what share of occasions each is agreed to be, and
+    what one occasion in that tier is worth.
+
+    THE IMPORTANT PART, and the reason this is a separate type rather than a
+    dict of numbers: none of this is measured. This package measures occasions
+    improved -- causally, against a randomized control, and it refuses to state
+    even that when the audit says the sample cannot support it. The tiers, the
+    mix and the rates are all contractual, and `blended_rate` is arithmetic
+    performed on the customer's own assumptions. Keeping them in a named type
+    that travels with the report is what stops a negotiated input from being
+    read back later as a finding.
+    """
+
+    tiers: tuple[Tier, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not self.tiers:
+            raise ValueError("a rate card needs at least one tier")
+        for tier in self.tiers:
+            if tier.share < 0:
+                raise ValueError(f"tier {tier.name!r} has a negative share")
+            if tier.cost_per_occasion < 0:
+                raise ValueError(
+                    f"tier {tier.name!r} has a negative cost per occasion; a tier "
+                    "that costs nothing to get wrong should be priced at zero, and "
+                    "one that pays you to fail is not a tier"
+                )
+        total = sum(t.share for t in self.tiers)
+        # Tolerance, not equality: a mix written as thirds in a contract cannot
+        # sum to exactly one in binary floating point, and rejecting it would
+        # be pedantry aimed at the customer's own paperwork.
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"tier shares sum to {total:.6f}, not 1.0 -- every occasion has to "
+                "land in exactly one tier or the blended rate prices a volume that "
+                "was never measured"
+            )
+
+    @property
+    def blended_rate(self) -> float:
+        """The share-weighted cost of one improved occasion."""
+        return sum(t.share * t.cost_per_occasion for t in self.tiers)
+
+
+@dataclass(frozen=True)
+class LedgerEntry:
+    """One tamper-evident line of the value ledger."""
+
+    index: int
+    slug: str
+    verdict: str
+    occasions_improved: float
+    rate: float
+    money: float
+    previous_hash: str
+    entry_hash: str
 
 
 @dataclass(frozen=True)
@@ -89,25 +183,120 @@ class ValueReport:
     n_counted: int
     n_excluded: int
     value_per_occasion: float | None = None
+    rate_card: RateCard | None = None
+
+    @property
+    def rate(self) -> float | None:
+        """What one improved occasion is worth, however it was supplied.
+
+        A rate card wins over a flat rate when both are given: it is the more
+        specific statement of the same contractual fact, and silently
+        preferring the vaguer one would price the work against a number the
+        customer has already superseded.
+        """
+        if self.rate_card is not None:
+            return self.rate_card.blended_rate
+        return self.value_per_occasion
 
     @property
     def money(self) -> float | None:
-        if self.value_per_occasion is None or not self.readable:
+        rate = self.rate
+        if rate is None or not self.readable:
             return None
-        return self.occasions_improved * self.value_per_occasion
+        return self.occasions_improved * rate
 
     @property
     def money_range(self) -> tuple[float, float] | None:
-        if self.value_per_occasion is None or not self.readable:
+        rate = self.rate
+        if rate is None or not self.readable:
             return None
-        return (self.ci_low * self.value_per_occasion,
-                self.ci_high * self.value_per_occasion)
+        return (self.ci_low * rate, self.ci_high * rate)
+
+    def ledger(self) -> list[LedgerEntry]:
+        """A hash-chained line per counted memory, or nothing at all.
+
+        Each entry carries the SHA-256 of its own fields prefixed by the
+        previous entry's hash, so the chain is only reproducible if every line
+        is present, unmodified and in order. Editing one figure, deleting an
+        inconvenient HURTS line, or reordering to bury one changes that
+        entry's hash and every hash after it -- which is the property an
+        invoice needs and a spreadsheet does not have.
+
+        Returns [] when the run is not readable or no rate was agreed. That is
+        the same refusal `money` makes, for the same reason: a ledger is a
+        stronger claim than a number, so it must not exist in any case where
+        the number itself would be withheld. A chain of verifiable lines
+        computed off a compromised experiment would be worse than no ledger --
+        it would make an unsupportable figure look audited.
+        """
+        rate = self.rate
+        if rate is None or not self.readable:
+            return []
+        entries: list[LedgerEntry] = []
+        previous = _LEDGER_GENESIS
+        for index, memory in enumerate(m for m in self.memories if m.counted):
+            money = memory.occasions_improved * rate
+            # Fixed field order and fixed precision: the hash has to be
+            # reproducible by the customer from the printed numbers, so it
+            # cannot depend on repr() drift between platforms or on how a
+            # serializer happened to order a dict.
+            row = _FIELD_SEP.join((
+                str(index),
+                memory.slug,
+                memory.verdict,
+                f"{memory.occasions_improved:.6f}",
+                f"{rate:.6f}",
+                f"{money:.6f}",
+            ))
+            digest = hashlib.sha256(
+                (previous + _FIELD_SEP + row).encode("utf-8")
+            ).hexdigest()
+            entries.append(LedgerEntry(
+                index=index, slug=memory.slug, verdict=memory.verdict,
+                occasions_improved=memory.occasions_improved, rate=rate,
+                money=round(money, 2), previous_hash=previous, entry_hash=digest,
+            ))
+            previous = digest
+        return entries
+
+
+def verify_ledger(entries: list[LedgerEntry]) -> int | None:
+    """Recompute the chain. Returns the index of the first bad entry, or None.
+
+    The half of the audit trail that belongs to the reader. A ledger nobody
+    can check is a decoration, so this is deliberately written to be portable:
+    it reads only the printed fields of each entry, so a customer can
+    reimplement it in whatever language their finance team audits in and get
+    the same answer from the same invoice.
+
+    An empty ledger verifies -- there is nothing to contradict. Callers that
+    care about the difference between "verified" and "absent" check the length.
+    """
+    previous = _LEDGER_GENESIS
+    for position, entry in enumerate(entries):
+        if entry.previous_hash != previous or entry.index != position:
+            return position
+        row = _FIELD_SEP.join((
+            str(entry.index),
+            entry.slug,
+            entry.verdict,
+            f"{entry.occasions_improved:.6f}",
+            f"{entry.rate:.6f}",
+            f"{entry.occasions_improved * entry.rate:.6f}",
+        ))
+        if hashlib.sha256(
+            (previous + _FIELD_SEP + row).encode("utf-8")
+        ).hexdigest() != entry.entry_hash:
+            return position
+        previous = entry.entry_hash
+    return None
 
 
 def compute(
     effects: list[experiment.CausalEffect],
     report: integrity.IntegrityReport | None = None,
     value_per_occasion: float | None = None,
+    rate_card: RateCard | None = None,
 ) -> ValueReport:
     """Causal value delivered, or a refusal to state one.
 
@@ -124,7 +313,7 @@ def compute(
                    "unexamined comparison is not a measurement.",
             memories=[], occasions_improved=0.0, ci_low=0.0, ci_high=0.0,
             n_counted=0, n_excluded=len(effects),
-            value_per_occasion=value_per_occasion,
+            value_per_occasion=value_per_occasion, rate_card=rate_card,
         )
     if not report.readable:
         blocking = "; ".join(f.headline for f in report.blocking)
@@ -138,7 +327,7 @@ def compute(
             ),
             memories=[], occasions_improved=0.0, ci_low=0.0, ci_high=0.0,
             n_counted=0, n_excluded=len(effects),
-            value_per_occasion=value_per_occasion,
+            value_per_occasion=value_per_occasion, rate_card=rate_card,
         )
 
     memories: list[MemoryValue] = []
@@ -199,7 +388,7 @@ def compute(
         occasions_improved=round(total, 2),
         ci_low=round(low, 2), ci_high=round(high, 2),
         n_counted=counted, n_excluded=len(effects) - counted,
-        value_per_occasion=value_per_occasion,
+        value_per_occasion=value_per_occasion, rate_card=rate_card,
     )
 
 

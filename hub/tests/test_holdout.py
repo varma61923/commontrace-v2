@@ -34,7 +34,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 
-from commontrace import experiment, revision
+from commontrace import experiment, revision, value
 from hub import crud, manage, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
@@ -1437,6 +1437,79 @@ class TestAPinnedTraceIsNotItsOwnControl:
                 )
             ).scalars().all()
         assert made[0] not in rows
+
+
+class TestTieredValuationAndTheAuditLedger:
+    """Pricing the measured occasions against a contractual rate card, and
+    handing the customer a chain they can recompute themselves."""
+
+    async def _established(self, session_factory, org, n=120):
+        return await TestTheWorkingSet()._established(session_factory, org, n=n)
+
+    _TIERS = [
+        {"name": "L1 informational", "share": 0.55, "cost_per_occasion": 8.0},
+        {"name": "L2 transactional", "share": 0.30, "cost_per_occasion": 35.0},
+        {"name": "L3 technical", "share": 0.13, "cost_per_occasion": 120.0},
+        {"name": "critical escalation", "share": 0.02, "cost_per_occasion": 350.0},
+    ]
+
+    async def test_a_rate_card_prices_the_run_and_is_echoed_as_an_input(
+        self, session_factory, org
+    ):
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
+        blended = sum(t["share"] * t["cost_per_occasion"] for t in self._TIERS)
+        assert worth["rate_applied"] == pytest.approx(blended)
+        assert worth["money"] == pytest.approx(worth["occasions_improved"] * blended)
+        assert [t["name"] for t in worth["rate_tiers"]] == [
+            t["name"] for t in self._TIERS
+        ], "the tiers must come back as the inputs they are"
+
+    async def test_the_ledger_verifies_and_covers_every_counted_memory(
+        self, session_factory, org
+    ):
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
+        assert worth["ledger"], "a priced, readable run must carry a ledger"
+        entries = [
+            value.LedgerEntry(
+                index=e["index"], slug=e["trace_id"], verdict=e["verdict"],
+                occasions_improved=e["occasions_improved"], rate=e["rate"],
+                money=e["money"], previous_hash=e["previous_hash"],
+                entry_hash=e["entry_hash"],
+            )
+            for e in worth["ledger"]
+        ]
+        assert value.verify_ledger(entries) is None
+        counted = [m for m in worth["memories"] if m["counted"]]
+        assert len(entries) == len(counted)
+
+    async def test_no_rate_means_a_count_and_no_ledger(self, session_factory, org):
+        """Unchanged behaviour for every existing caller: ask for no price and
+        you get the measured quantity, with nothing implying an invoice."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org)
+        assert worth["occasions_improved"] > 0
+        assert worth["money"] is None
+        assert worth["ledger"] == []
+
+    async def test_a_malformed_rate_card_is_refused_rather_than_ignored(
+        self, session_factory, org
+    ):
+        """Shares that do not cover every occasion price a volume nobody
+        measured. Falling back to some other number would be worse than the
+        error: the customer would be invoiced against an assumption they
+        thought they had replaced."""
+        await self._established(session_factory, org)
+        with pytest.raises(ValueError, match="sum to"):
+            async with session_scope(session_factory) as session:
+                await crud.value_delivered(
+                    session, org,
+                    rate_tiers=[{"name": "half", "share": 0.5, "cost_per_occasion": 10.0}],
+                )
 
 
 class TestTheOperatorCLIReachesTheSameNumbers:
