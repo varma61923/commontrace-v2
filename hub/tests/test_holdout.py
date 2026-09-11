@@ -1486,6 +1486,48 @@ class TestTieredValuationAndTheAuditLedger:
         counted = [m for m in worth["memories"] if m["counted"]]
         assert len(entries) == len(counted)
 
+    async def test_co_injected_traces_produce_no_total_but_still_a_policy_figure(
+        self, session_factory, org
+    ):
+        """The Hub's NORMAL case, not an edge one: holdout_assign takes a
+        LIST of traces for one occasion, so two traces routinely share
+        occasions -- and adding their contributions would attribute one
+        improved occasion twice, then price it twice.
+
+        Refusing the sum is correct and, alone, useless: it would be the
+        answer for almost every real fleet. The policy-level comparison
+        (occasions that got any memory against occasions that got none)
+        counts each occasion exactly once, so it survives, and is what the
+        customer is told instead."""
+        [first] = await self._established(session_factory, org, n=120)
+        # A second trace assigned on the SAME occasions the first ran on.
+        [second] = await _traces(session_factory, org, 1)
+        for i in range(120):
+            occasion = f"occ-{i}"
+            await _assign(session_factory, org, [second], occasion)
+
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+
+        shared = {frozenset(p) for p in causal["co_injection"]["pairs"]}
+        assert frozenset((first, second)) in shared, (
+            "the two traces ran on the same occasions, which is what this asserts "
+            "the Hub notices"
+        )
+        # Whether the SUM is offered depends on which traces ended up counted;
+        # what must never happen is a priced total over co-injected traces.
+        if not worth["aggregate_readable"]:
+            assert worth["money"] is None
+            assert worth["ledger"] == []
+            assert "overlapping occasions" in worth["aggregate_reason"]
+        # The valid aggregate is reported either way, on unique occasions.
+        policy = worth["policy_effect"]
+        assert policy is not None
+        assert policy["n_treated"] + policy["n_control"] <= 120, (
+            "one occasion must count once, however many traces it received"
+        )
+
     async def test_no_signing_key_leaves_the_ledger_unsigned_but_explicit(
         self, session_factory, org
     ):

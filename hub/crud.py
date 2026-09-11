@@ -19,6 +19,7 @@ property testable without spinning up a live MCP transport for every case.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import math
@@ -2703,6 +2704,15 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     # is the other tier's vocabulary and sends them looking for an object they
     # do not have.
     report = integrity.audit(assignments, unit=integrity.UNIT_TRACE)
+    # Built from the same rows, for the same reason the audit is: a caller
+    # that adds these effects together needs to know whether doing so counts
+    # any occasion twice (commontrace/value.py:OccasionOverlap).
+    _overlap = value.overlap_from_assignments(assignments)
+    # The policy-level comparison on unique occasions, from the same rows.
+    # On this Hub one occasion routinely receives several traces
+    # (holdout_assign takes a list), so the per-trace effects below cannot be
+    # added -- this is the aggregate that can be.
+    _policy = value.policy_effect(assignments)
 
     unique, _ = integrity.normalize(assignments)
     observations = [
@@ -2752,6 +2762,45 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         # `effects` without reading this can quote a number that a named,
         # identified mechanism is biasing.
         "integrity": _integrity_wire(report),
+        # Which traces were injected on the same occasions as which others.
+        # Computed here because this is where the raw assignments already
+        # are -- `value_delivered` needs it to know whether the per-trace
+        # contributions may be ADDED (one occasion that received two traces
+        # would otherwise be counted, and billed, twice) and re-querying
+        # hundreds of thousands of rows for it would be the expensive half
+        # of this call run a second time. Pairs only, not occasion ids: the
+        # question is which traces collide, and shipping the ids would put
+        # an unbounded list on the wire to answer a bounded question.
+        "co_injection": {
+            "pairs": [sorted(pair) for pair in sorted(
+                _overlap.shared_pairs, key=lambda p: sorted(p)
+            )],
+            "unique_injected_occasions": _overlap.unique_injected_occasions,
+        },
+        # The whole-policy comparison on UNIQUE occasions: occasions that got
+        # any trace against occasions that got none. This is the aggregate
+        # that stays valid when the per-trace sum does not -- which on this
+        # Hub is the normal case, because holdout_assign takes a LIST of
+        # traces for one occasion, so traces routinely share occasions.
+        "policy_effect": {
+            "readable": _policy.readable,
+            "reason": _policy.reason,
+            "n_treated": _policy.n_treated,
+            "n_control": _policy.n_control,
+            "rate_treated": _policy.rate_treated,
+            "rate_control": _policy.rate_control,
+            "effect": _policy.effect,
+            "ci_95": [_policy.ci_low, _policy.ci_high],
+            "p_value": _policy.p_value,
+            "significant": _policy.significant,
+            "occasions_improved": _policy.occasions_improved,
+            "note": (
+                "Occasions that received ANY memory against occasions that received "
+                "none. Attributes nothing to an individual memory -- that is what the "
+                "per-trace effects above are for -- but counts every occasion exactly "
+                "once, which is what makes it addable when those are not."
+            ),
+        },
         "effects": [
             {
                 "trace_id": e.lesson_slug,
@@ -2877,9 +2926,36 @@ async def value_delivered(
             )
             for t in rate_tiers
         ))
-    report = value.compute(
-        effects, audit, value_per_occasion=value_per_occasion, rate_card=card
+    # Rebuilt from the wire projection rather than re-querying: causal_effects
+    # computed it over the same assignments this figure is derived from, and
+    # the two must agree about which traces collide or the total could be
+    # certified against a different experiment than the one it prices.
+    wire_overlap = causal.get("co_injection") or {}
+    overlap = value.OccasionOverlap(
+        shared_pairs=frozenset(
+            frozenset(pair) for pair in wire_overlap.get("pairs", []) if len(pair) == 2
+        ),
+        unique_injected_occasions=int(wire_overlap.get("unique_injected_occasions", 0)),
     )
+    wire_policy = causal.get("policy_effect") or {}
+    policy = value.PolicyEffect(
+        n_treated=int(wire_policy.get("n_treated", 0)),
+        n_control=int(wire_policy.get("n_control", 0)),
+        rate_treated=float(wire_policy.get("rate_treated", 0.0)),
+        rate_control=float(wire_policy.get("rate_control", 0.0)),
+        effect=float(wire_policy.get("effect", 0.0)),
+        ci_low=float((wire_policy.get("ci_95") or [0.0, 0.0])[0]),
+        ci_high=float((wire_policy.get("ci_95") or [0.0, 0.0])[1]),
+        p_value=float(wire_policy.get("p_value", 1.0)),
+        significant=bool(wire_policy.get("significant", False)),
+        readable=bool(wire_policy.get("readable", False)),
+        reason=str(wire_policy.get("reason", "")),
+    )
+    report = value.compute(
+        effects, audit, value_per_occasion=value_per_occasion, rate_card=card,
+        overlap=overlap,
+    )
+    report = dataclasses.replace(report, policy=policy)
     ledger = report.ledger()
     titles = {e["trace_id"]: e.get("title") for e in causal.get("effects", [])}
 
@@ -2911,6 +2987,30 @@ async def value_delivered(
         "ci_95": [report.ci_low, report.ci_high],
         "n_counted": report.n_counted,
         "n_excluded": report.n_excluded,
+        # Whether those per-trace contributions may be ADDED, which is a
+        # different question from whether each one is readable. False when
+        # two counted traces were injected on the same occasions: the sum
+        # would attribute one improved occasion more than once, and this is
+        # the quantity an invoice is computed from. The per-trace figures
+        # below stand either way.
+        "aggregate_readable": report.aggregate_readable,
+        "aggregate_reason": report.aggregate_reason,
+        # How many DISTINCT occasions received anything -- the ceiling the
+        # total cannot exceed, and the denominator needed to judge whether a
+        # number is large.
+        "unique_occasions": report.unique_occasions,
+        # The same total over EVERY measured trace, not only the ones whose
+        # effect cleared significance. `occasions_improved` selects on the
+        # data it reports, which biases its magnitude away from zero; this
+        # does not. Reported beside it so the size of that selection is a
+        # figure rather than a caveat. Never billed on -- it includes
+        # effects the experiment did not establish.
+        "occasions_improved_unselected": report.occasions_improved_unselected,
+        "n_examined": report.n_examined,
+        # The aggregate that stays valid when the per-trace sum does not,
+        # carried through from causal_effects so both surfaces report the
+        # same comparison over the same occasions.
+        "policy_effect": causal.get("policy_effect"),
         "value_per_occasion": value_per_occasion,
         # Echoed back as INPUTS. The tiers and the mix are contractual; only
         # `occasions_improved` above was measured, and keeping the two

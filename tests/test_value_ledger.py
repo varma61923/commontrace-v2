@@ -19,6 +19,14 @@ import pytest
 
 from commontrace import experiment, integrity, value
 
+# "These memories were injected on occasions that do not overlap", which is
+# the precondition a SUM of their contributions needs: without it one
+# occasion that received two of them would be counted twice, and value.py
+# withholds the total and the ledger rather than double-attributing. Stated
+# explicitly here so each test below says which world it is in.
+DISJOINT = value.OccasionOverlap(shared_pairs=frozenset(), unique_injected_occasions=400)
+
+
 SUPPORT_CARD = value.RateCard(tiers=(
     value.Tier("L1 informational", 0.55, 8.00),
     value.Tier("L2 transactional", 0.30, 35.00),
@@ -79,7 +87,7 @@ class TestTheRateCardPricesTheReport:
     def test_a_card_prices_the_same_occasions_as_a_flat_rate_would(self):
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         assert report.readable
         assert report.money == pytest.approx(
@@ -93,6 +101,7 @@ class TestTheRateCardPricesTheReport:
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
             _clean_audit(), value_per_occasion=1.0, rate_card=SUPPORT_CARD,
+            overlap=DISJOINT,
         )
         assert report.rate == pytest.approx(SUPPORT_CARD.blended_rate)
 
@@ -112,7 +121,7 @@ class TestTheLedger:
                 _effect("hurts", experiment.VERDICT_HURTS, -0.03),
                 _effect("weak", experiment.VERDICT_UNDERPOWERED, 0.09),
             ],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         ledger = report.ledger()
         assert [e.slug for e in ledger] == ["helps", "hurts"]
@@ -123,7 +132,7 @@ class TestTheLedger:
         brochure, now visible on the invoice itself."""
         report = value.compute(
             [_effect("hurts", experiment.VERDICT_HURTS, -0.03)],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         [entry] = report.ledger()
         assert entry.money < 0
@@ -135,7 +144,7 @@ class TestTheLedger:
                 _effect("b", experiment.VERDICT_HELPS, 0.04),
                 _effect("c", experiment.VERDICT_HELPS, 0.03),
             ],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         ledger = report.ledger()
         import dataclasses
@@ -152,7 +161,7 @@ class TestTheLedger:
                 _effect("hurts", experiment.VERDICT_HURTS, -0.03),
                 _effect("c", experiment.VERDICT_HELPS, 0.03),
             ],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         ledger = report.ledger()
         assert value.verify_ledger(ledger) is None
@@ -165,7 +174,7 @@ class TestTheLedger:
                 _effect("a", experiment.VERDICT_HELPS, 0.05),
                 _effect("b", experiment.VERDICT_HELPS, 0.04),
             ],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         ledger = report.ledger()
         assert value.verify_ledger(list(reversed(ledger))) == 0
@@ -175,7 +184,7 @@ class TestTheLedger:
         other SHA-256 chain that also started from nothing."""
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         [entry] = report.ledger()
         assert entry.previous_hash == value._LEDGER_GENESIS
@@ -201,7 +210,7 @@ class TestTheLedgerSignature:
                 _effect("helps", experiment.VERDICT_HELPS, 0.05),
                 _effect("hurts", experiment.VERDICT_HURTS, -0.03),
             ],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
 
     def test_a_genuine_signature_verifies(self):
@@ -253,7 +262,7 @@ class TestTheLedgerSignature:
 
         fabricated = value.compute(
             [_effect("helps", experiment.VERDICT_HELPS, 0.05)],
-            _clean_audit(), rate_card=SUPPORT_CARD,
+            _clean_audit(), rate_card=SUPPORT_CARD, overlap=DISJOINT,
         ).ledger()
         assert value.verify_ledger(fabricated) is None  # internally consistent...
         assert not value.verify_ledger_signature(  # ...but not genuinely issued
@@ -326,7 +335,7 @@ class TestTheLedgerRefusesWhenTheNumberWould:
         assert not compromised.readable
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
-            compromised, rate_card=SUPPORT_CARD,
+            compromised, rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         assert report.money is None
         assert report.ledger() == []
@@ -340,7 +349,7 @@ class TestTheLedgerRefusesWhenTheNumberWould:
     def test_an_unaudited_run_gets_no_ledger(self):
         report = value.compute(
             [_effect("a", experiment.VERDICT_HELPS, 0.05)],
-            None, rate_card=SUPPORT_CARD,
+            None, rate_card=SUPPORT_CARD, overlap=DISJOINT,
         )
         assert not report.readable
         assert report.ledger() == []

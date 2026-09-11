@@ -507,6 +507,30 @@ def _miss(search: dict) -> str:
 
 
 
+def _policy_block(policy: dict) -> str:
+    """The aggregate that stays valid when the per-trace sum does not:
+    occasions that received any memory against occasions that received none,
+    counting each occasion exactly once."""
+    if not policy or not policy.get("readable"):
+        reason = (policy or {}).get("reason", "")
+        return (
+            '<p class="muted">A whole-policy comparison is not available yet'
+            + (f": {h(reason)}" if reason else "")
+            + "</p>"
+        )
+    ci = policy.get("ci_95") or [0.0, 0.0]
+    return (
+        f"<p><b>{_signed(policy.get('effect'))}</b> across "
+        f"{_num(policy.get('n_treated', 0))} occasions that received a memory, against "
+        f"{_num(policy.get('n_control', 0))} that received none "
+        f"(95% CI {_ci(ci)}) — "
+        f"<b>{policy.get('occasions_improved', 0.0):+,.0f} occasions</b>.</p>"
+        '<p class="muted">Every occasion counts once here, however many memories it '
+        "received. That is what makes this figure addable when the per-memory ones are "
+        "not; it attributes nothing to an individual memory.</p>"
+    )
+
+
 def _value_block(worth: dict) -> str:
     """What the memory was worth, in occasions -- and a refusal when it cannot
     be said.
@@ -526,6 +550,22 @@ def _value_block(worth: dict) -> str:
             "<p class=\"muted\">A value figure is the one artifact where a caveat "
             "reliably gets separated from the number it qualifies, so there is no "
             "figure to separate.</p></div>"
+        )
+
+    # The per-trace contributions may not always be added: on this Hub one
+    # occasion routinely receives several traces (holdout_assign takes a
+    # list), and summing them would attribute one improved occasion more
+    # than once -- then price it more than once. When that is the case there
+    # is no total to render, and the policy-level comparison over unique
+    # occasions is what this page shows instead (commontrace/value.py).
+    if not worth.get("aggregate_readable", True):
+        return (
+            '<div class="verdict"><h2>What has this been worth?</h2>'
+            "<p><b>No total is stated.</b> " + h(worth.get("aggregate_reason", "")) + "</p>"
+            + _policy_block(worth.get("policy_effect") or {})
+            + '<p class="muted">Each memory\'s own measured effect is unaffected and '
+            "is shown below -- it is adding them together that would count the same "
+            "improved occasion twice.</p></div>"
         )
 
     improved = worth.get("occasions_improved") or 0.0

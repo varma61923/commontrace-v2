@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The value aggregate no longer double-attributes occasions, no longer
+  sums interval endpoints, and reports what its own selection is worth.**
+  Three separate defects sat in the arithmetic that turned per-memory
+  effects into the figure an invoice is computed from, and each one made a
+  number that looked like a measurement.
+
+  *Double attribution.* Summing `effect x n_injected` across memories is a
+  count of occasions only if no occasion was counted twice -- and nothing
+  guaranteed that. One support contact matching three traces, all injected,
+  resolving once, was three improved occasions in the total, then three
+  times the money. On the Hub this is the NORMAL case, not an edge one:
+  `holdout_assign` takes a list of traces for a single occasion.
+  `value.OccasionOverlap` (built from the assignment log the validity audit
+  already reads) answers whether the sum is a count at all, and when it is
+  not there is no total, no money and no ledger -- the same rule this module
+  already applied to a compromised experiment, one level up. The per-memory
+  effects are untouched: the addition was unsound, not the estimates.
+
+  *And an aggregate that survives it.* Refusing a total would be the answer
+  for nearly every real fleet, so `value.policy_effect` supplies the one
+  that stays valid: occasions that received ANY memory against occasions
+  that received none -- one row per occasion by construction, so
+  double-counting cannot arise. It attributes nothing to an individual
+  memory, which is the trade. Validated by simulation against a known
+  ground truth: bias -0.003 on a true +0.15 lift, and 95% interval coverage
+  of 95% over 40 runs.
+
+  *The interval.* Summing the per-memory 95% ENDPOINTS is not a 95%
+  interval for the sum under any assumption -- too wide for independent
+  estimates, whose errors partly cancel, and undefined for dependent ones
+  without the covariance. Now combined in quadrature, with the independence
+  that requires being exactly what the overlap gate establishes.
+
+  *The selection.* Counting only memories that cleared significance selects
+  on the same data it then reports, biasing the total's magnitude away from
+  zero. `occasions_improved_unselected` reports the same total without that
+  selection, so the size of the winner's curse is a figure beside the
+  billable one rather than a caveat nobody reads.
+
 - **A store can require that the approver of a lesson is not its author.**
   Activating a lesson is the one action with fleet-wide blast radius -- an
   `active` lesson is injected into every later retrieval verbatim -- and
