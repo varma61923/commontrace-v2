@@ -357,6 +357,14 @@ def run_approve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
+    # Point at the release machinery rather than cutting one automatically.
+    # Approving is one lesson changing state; a release is a decision about
+    # the SET the fleet runs, and silently cutting one per approval would
+    # make the history a log of individual edits -- which is what the
+    # revision journal already is -- instead of a record of deployments
+    # somebody chose. Six approvals over an afternoon are usually one
+    # deployment, and only the operator knows where that boundary is.
+    print("  `commontrace release cut` records the active set as a rollback point.")
     return 0
 
 

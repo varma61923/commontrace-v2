@@ -163,7 +163,21 @@ commontrace distill              # find repeated patterns across memory/traces/,
 commontrace lesson list --status review
 commontrace lesson approve lesson_candidate_20260101_1 --rationale "..."
 commontrace lesson reject lesson_candidate_20260101_2 --reason "..."
+commontrace release cut --reason "Q1 support set"   # a rollback point
 ```
+
+**A release is what the fleet is running, as one thing.** A lesson has a
+slug and its text has a revision; neither answers "what were we running on
+Monday", which is what rollback and attribution are actually about.
+`release cut` records the active set — content-addressed, append-only,
+pinned to each lesson's revision — and `release diff`/`release rollback`
+work from there. Cutting from a release the store has moved past is refused
+(two curators each approving a lesson would otherwise lose one of the
+decisions), and a rollback refuses to "restore" a lesson whose text has
+been rewritten since, because flipping a status back would put a *different*
+rule under the same name. Approving does not cut a release automatically:
+six approvals over an afternoon are usually one deployment, and only you
+know where that boundary is.
 
 `distill` clusters traces by word-overlap similarity (pure Python, no LLM
 call, no API key) and never writes anything above `status: review` — a

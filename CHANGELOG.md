@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Immutable releases: what the fleet was running, as one named thing.**
+  This product had two of the three identities a deployable change needs --
+  a lesson (a mutable slug) and a revision (content identity for one
+  lesson's text) -- and was missing the third. Nothing answered "what was
+  the fleet running on Monday", which is the question rollback, attribution
+  and atomic promotion all turn out to be: `status: active` is a property of
+  each file NOW, carrying no memory of when the set changed or what from,
+  and approving six lessons one at a time means the fleet runs five
+  intermediate combinations nobody chose and nobody measured.
+
+  `commontrace/release.py` adds a content-addressed, append-only snapshot of
+  exactly which (lesson, revision) pairs were active together, what it
+  replaced, and who cut it. It stores revisions rather than text, so it can
+  never disagree with the lessons themselves. `commontrace release
+  cut|list|show|diff|rollback` drives it.
+
+  Three properties do the work. **Stale-base rejection**: cutting from a
+  release the store has moved past is refused, because two curators each
+  approving a lesson and cutting from what they saw loses a deployment
+  decision, not a text edit. **A rewritten lesson is its own diff category**,
+  not a remove plus an add -- "we changed what this rule says" and "we
+  swapped one rule for another" are different deployments. And **a rollback
+  refuses to restore a lesson whose text has changed since**: the target
+  release pinned a revision the store no longer holds, so flipping a status
+  would put back a different rule under the same name; `--allow-partial`
+  proceeds once the operator has seen which ones. Rolling back appends
+  rather than rewinds, because returning to an earlier state is itself a
+  deployment and is the single fact everyone asks about afterwards.
+
+  Deliberately does NOT gate retrieval yet: a release records the active set
+  rather than deciding it, so a store that never cuts one behaves exactly as
+  it does today. Making retrieval resolve through a release (so a fleet can
+  run an older set without editing files, and canary/ring targeting has
+  something to target) changes what every agent reads and belongs behind its
+  own decision.
+
 - **Pre-registration, and a raw export the customer can re-run the
   arithmetic from.** `experiment.plan` already worked out what it takes to
   answer the question before a run starts; nothing recorded that plan, and a
