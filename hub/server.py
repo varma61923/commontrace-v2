@@ -44,7 +44,7 @@ from hub.admin import add_admin_routes
 from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.console import CONSOLE_PATH, add_console_routes
-from hub.db import session_scope, warn_if_rls_is_inert
+from hub.db import check_row_level_security, session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
 from hub.signup import add_signup_routes
@@ -1230,8 +1230,10 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     )
     # Startup, not per-request: one diagnostic query, and the answer cannot
     # change without an operator changing the role or the migrations. See
-    # hub/db.py:warn_if_rls_is_inert for why a silently-bypassed policy is
-    # worth a loud line.
+    # hub/db.py:check_row_level_security for why a silently-bypassed policy
+    # is worth REFUSING to start over rather than merely logging about --
+    # and why an undeterminable answer (unreachable database) still never
+    # blocks startup.
     #
     # Chained onto the existing lifespan rather than registered with
     # `add_event_handler`, which Starlette removed (1.6 has no such
@@ -1244,7 +1246,11 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_rls_check(app):
         async with _previous_lifespan(app):
-            await warn_if_rls_is_inert(session_factory)
+            await check_row_level_security(
+                session_factory,
+                allow_bypass=config.allow_rls_bypass,
+                require=config.require_rls,
+            )
             yield
 
     inner_app.router.lifespan_context = _lifespan_with_rls_check

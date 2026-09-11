@@ -300,6 +300,39 @@ class HubConfig:
     # out-of-band for exactly that purpose.
     ledger_signing_key: str = ""
 
+    # --- Tenant isolation: row-level security ---
+    # Postgres skips EVERY row-level-security policy for a superuser or a
+    # role holding BYPASSRLS -- silently, with no error and no log line. So
+    # the dangerous state is not "RLS missing", it is "RLS installed,
+    # listed by pg_policies, passing an audit, and doing nothing". This
+    # deployment's own docker-compose.yml shipped exactly that shape until
+    # the runtime role below existed, because the Postgres image makes
+    # POSTGRES_USER the cluster superuser.
+    #
+    # False (default) means the Hub REFUSES TO START when it positively
+    # determines that state: policies exist AND the connecting role bypasses
+    # them. Fail closed, because a silently-bypassed policy is worse than an
+    # absent one -- it is a guarantee an operator believes in and does not
+    # have. This is the same shape as `allow_insecure_http` below: unsafe by
+    # configuration is allowed, but only with an explicit acknowledgment,
+    # never by accident.
+    #
+    # Set true to acknowledge a deployment that intentionally connects as an
+    # owner/superuser (the pre-existing evaluation shape) and accept that
+    # tenant isolation rests entirely on hub/crud.py's own org_id predicates,
+    # with no database-enforced backstop behind them.
+    allow_rls_bypass: bool = False
+
+    # The stronger, opt-in form of the same question. `allow_rls_bypass`
+    # catches policies that exist but cannot bite; it says nothing about
+    # policies that are not there at all (a database built by
+    # `Base.metadata.create_all` rather than by alembic, a deployment that
+    # has not migrated yet, or a policy somebody dropped). Set true and the
+    # Hub additionally refuses to start unless RLS is affirmatively
+    # enforced -- for a deployment that wants the backstop as a checked
+    # precondition rather than as something it hopes is still installed.
+    require_rls: bool = False
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -433,6 +466,8 @@ class HubConfig:
             readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
             trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
+            allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
+            require_rls=_env_bool("HUB_REQUIRE_RLS", False),
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),

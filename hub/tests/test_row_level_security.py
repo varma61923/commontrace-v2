@@ -154,6 +154,31 @@ async def enforcing_factory(session_factory, config):
 
 
 @pytest_asyncio.fixture
+async def bypassing_factory(session_factory):
+    """The mirror image of `enforcing_factory`: a session factory whose
+    connections DO bypass RLS, for the tests that assert the Hub refuses to
+    start on exactly that.
+
+    The ambient role is usually already this in CI (POSTGRES_USER is the
+    cluster superuser, which is the whole point of the audited finding).
+    Where it is not -- a local setup whose role is unprivileged -- there is
+    no way to manufacture a bypassing role without superuser rights we do
+    not have, so this skips rather than passing vacuously: a test that could
+    not put the server in the dangerous state has not checked the refusal.
+    """
+    from hub.db import rls_status
+
+    async with session_factory() as session:
+        status = await rls_status(session)
+    if not status["bypasses_rls"]:
+        pytest.skip(
+            f"role {status['role']!r} cannot bypass RLS, so the inert-policy state "
+            "this asserts a refusal on is not reachable here"
+        )
+    return session_factory
+
+
+@pytest_asyncio.fixture
 async def two_orgs(session_factory):
     """Two orgs, each with one trace whose title carries a shared marker."""
     marker = uuid.uuid4().hex[:10]
@@ -336,14 +361,18 @@ class TestTheHubNoticesWhenRlsCannotBite:
         if bypasses:
             assert status["enforced"] is False
 
-    async def test_the_warning_never_breaks_startup_on_a_dead_database(self):
+    async def test_the_check_never_breaks_startup_on_a_dead_database(self):
         """A diagnostic that can take the server down with it is worse than
         the thing it diagnoses, so an unreachable database returns None
-        rather than raising."""
+        rather than raising -- and, crucially, keeps doing so under the
+        strictest flags. "Cannot determine" is not "determined to be
+        unsafe": refusing here would turn a transient blip at boot into a
+        crash-loop, for a process that would have reported itself unready
+        through /readyz anyway."""
         import dataclasses
 
         from hub.config import HubConfig
-        from hub.db import make_engine, make_session_factory, warn_if_rls_is_inert
+        from hub.db import check_row_level_security, make_engine, make_session_factory
 
         cfg = dataclasses.replace(
             HubConfig(database_url="postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nope"),
@@ -351,6 +380,83 @@ class TestTheHubNoticesWhenRlsCannotBite:
         )
         engine = make_engine(cfg)
         try:
-            assert await warn_if_rls_is_inert(make_session_factory(engine)) is None
+            factory = make_session_factory(engine)
+            assert await check_row_level_security(factory) is None
+            assert await check_row_level_security(
+                factory, allow_bypass=False, require=True
+            ) is None
         finally:
             await engine.dispose()
+
+
+class TestTheHubRefusesToStartWhenRlsCannotBite:
+    """The audited P0: the shipped stack installed tenant-isolation policies
+    and served traffic as a role that bypasses them, so the policies were
+    inert -- and the Hub's only response was one log line at startup.
+
+    A silently-bypassed policy is worse than an absent one: it is a
+    guarantee an operator believes in and does not have. So the default is
+    now to refuse to start, with the unsafe configuration reachable only by
+    naming it (HUB_ALLOW_RLS_BYPASS), exactly as HUB_ALLOW_INSECURE_HTTP
+    gates serving credentials over plaintext."""
+
+    async def test_installed_but_bypassed_policies_refuse_startup(
+        self, rls, bypassing_factory
+    ):
+        from hub.db import RowLevelSecurityError, check_row_level_security
+
+        with pytest.raises(RowLevelSecurityError, match="INSTALLED BUT INERT"):
+            await check_row_level_security(bypassing_factory, allow_bypass=False)
+
+    async def test_the_refusal_names_the_way_out(self, rls, bypassing_factory):
+        """A refusal an operator cannot act on just moves the outage. The
+        message has to name both remedies: the role to connect as, and the
+        flag that says the current one is deliberate."""
+        from hub.db import RowLevelSecurityError, check_row_level_security
+
+        with pytest.raises(RowLevelSecurityError) as excinfo:
+            await check_row_level_security(bypassing_factory, allow_bypass=False)
+        message = str(excinfo.value)
+        assert "HUB_ALLOW_RLS_BYPASS" in message
+        assert "non-superuser" in message
+
+    async def test_an_acknowledged_bypass_is_allowed_through(
+        self, rls, bypassing_factory
+    ):
+        """The escape hatch has to actually work, or the only way to run the
+        pre-existing shape is to not upgrade."""
+        from hub.db import check_row_level_security
+
+        status = await check_row_level_security(bypassing_factory, allow_bypass=True)
+        assert status is not None
+        assert status["enforced"] is False
+
+    async def test_an_enforcing_connection_starts_normally(self, rls, enforcing_factory):
+        from hub.db import check_row_level_security
+
+        status = await check_row_level_security(enforcing_factory, allow_bypass=False)
+        assert status is not None
+        assert status["enforced"] is True
+
+    async def test_require_rls_refuses_when_no_policies_are_installed(
+        self, session_factory
+    ):
+        """The stronger, opt-in form. `allow_bypass` catches policies that
+        cannot bite; it says nothing about policies that are not there at
+        all -- a database nobody migrated, or one somebody dropped them
+        from. Deliberately runs WITHOUT the `rls` fixture, so there is
+        nothing installed to bypass."""
+        from hub.db import RowLevelSecurityError, check_row_level_security
+
+        with pytest.raises(RowLevelSecurityError, match="HUB_REQUIRE_RLS"):
+            await check_row_level_security(session_factory, require=True)
+
+    async def test_require_rls_accepts_an_enforcing_connection(
+        self, rls, enforcing_factory
+    ):
+        from hub.db import check_row_level_security
+
+        status = await check_row_level_security(
+            enforcing_factory, allow_bypass=False, require=True
+        )
+        assert status["enforced"] is True

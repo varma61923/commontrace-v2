@@ -53,9 +53,66 @@ local-checkout instructions in [`hub/README.md`](README.md).
 | A secret store | For `HUB_DATABASE_URL` and issued API keys. Not a `.env` file in your repo. |
 | TLS termination | The Hub speaks plain HTTP. Put it behind your load balancer / ingress — API keys travel in an `Authorization` header and must not cross the network in cleartext. |
 | `HUB_ALLOW_INSECURE_HTTP=true` if `HUB_HOST` isn't loopback | The Hub refuses to start bound to a non-loopback interface (e.g. `0.0.0.0`, needed for container/pod networking) unless this is set — a deliberate acknowledgment that a proxy in front is terminating TLS, not a guess the Hub makes about your network. Never set it because the Hub itself is meant to be reached directly without a proxy. |
+| **Two database roles** | One owner for migrations, one non-superuser runtime role for serving. See §2.1 — the Hub refuses to start if it finds itself serving as a role that silently bypasses the tenant-isolation policies. |
 
 No Redis, no message broker, no object storage. State lives entirely in
 Postgres.
+
+### 2.1 Two database roles, and why the Hub refuses to start without them
+
+Postgres skips **every** row-level-security policy for a superuser or a role
+holding `BYPASSRLS` — silently. No error, no warning, no log line. The
+policies still exist, `pg_policies` still lists them, an audit still finds
+them, and they do nothing.
+
+That is worse than not having RLS at all, because it is a guarantee an
+operator believes in and does not have. It is also not hypothetical: the
+official Postgres image makes `POSTGRES_USER` the cluster superuser, and
+this repo's own `docker-compose.yml` pointed `HUB_DATABASE_URL` at exactly
+that role — so the shipped evaluation stack installed migration
+`d5c8b3a91e77`'s tenant-isolation policies and bypassed all of them.
+
+So the deployment has two roles with different jobs:
+
+| Role | Used by | Rights |
+|---|---|---|
+| **owner** (`commontrace`) | `alembic upgrade head`, one-shot, never serving | owns the schema, full DDL |
+| **runtime** (`commontrace_app`) | the Hub process, every request | `SELECT/INSERT/UPDATE/DELETE` only; `NOSUPERUSER`, `NOBYPASSRLS`, no `CREATE` on the schema |
+
+`docker compose up` creates both: `hub/postgres-init/10-runtime-role.sql`
+runs once at first initialisation, before any table exists, and uses
+`ALTER DEFAULT PRIVILEGES` so every table alembic creates afterwards — and
+every table a future migration adds — grants the runtime role its DML
+rights automatically. There is nothing to keep in sync by hand.
+
+**On a managed Postgres** (RDS/Cloud SQL/Neon), run the same statements once
+as the owner; the script's own header carries them, including the one-off
+`GRANT ... ON ALL TABLES` an existing database with tables already in it
+needs. Then point `HUB_DATABASE_URL` at the runtime role and keep the
+owner's credentials for migrations only.
+
+`hub/db.py:check_row_level_security` verifies this at startup:
+
+- **Policies exist and the role bypasses them** → the Hub **refuses to
+  start**, naming both remedies. Set `HUB_ALLOW_RLS_BYPASS=true` to
+  acknowledge a deployment that intends to serve as owner/superuser and
+  accept that tenant isolation rests on `hub/crud.py`'s own `org_id`
+  predicates alone.
+- **`HUB_REQUIRE_RLS=true`** (opt-in) → additionally refuses unless the
+  policies are affirmatively installed *and* enforced, so a database nobody
+  migrated, or one somebody dropped the policies from, is refused too.
+- **Undeterminable** (the database is unreachable at boot) → warns and
+  continues, always. "Cannot determine" is not "determined to be unsafe",
+  and a diagnostic that turns a transient blip into a crash-loop is worse
+  than the thing it diagnoses — `/readyz` already reports the process
+  unready in that case.
+
+One consequence worth knowing: with `HUB_RATE_LIMIT_BACKEND=postgres`, the
+`hub_rate_limit_buckets` table is created by the **owner** (the init script
+does it), not by the app at runtime. A role with no `CREATE` on the schema
+cannot run `CREATE TABLE IF NOT EXISTS` *even when the table already
+exists* — Postgres checks the schema privilege before the existence check —
+so on a hand-built database, create that table as the owner too.
 
 ## 2. Configuration
 
@@ -557,6 +614,11 @@ across a revocation, re-revoke those key ids immediately.
 
 - [ ] TLS terminated in front of the Hub (API keys are bearer credentials).
 - [ ] `HUB_DATABASE_URL` from a secret store, not a file in the repo.
+- [ ] `HUB_DATABASE_URL` points at the **runtime** role, not the owner — a
+      `NOSUPERUSER`/`NOBYPASSRLS` role with DML grants only, so the
+      tenant-isolation policies actually apply (§2.1). The Hub refuses to
+      start otherwise; if you had to set `HUB_ALLOW_RLS_BYPASS=true` to get
+      it up, that is a finding, not a fix.
 - [ ] Postgres not publicly reachable; Hub reaches it over a private network.
 - [ ] API keys issued with an expiry (`issue-key <org_id> <days>`) rather
       than never expiring.

@@ -461,6 +461,8 @@ def _to_asyncpg_dsn(database_url: str) -> str:
 # Base metadata -- created with CREATE TABLE IF NOT EXISTS (see
 # _SharedPgPool._setup) rather than an Alembic migration, and never touched
 # by `alembic upgrade head`.
+_RATE_LIMIT_TABLE_EXISTS_SQL = "SELECT to_regclass('hub_rate_limit_buckets') IS NOT NULL"
+
 _RATE_LIMIT_DDL = """
     CREATE TABLE IF NOT EXISTS hub_rate_limit_buckets (
         limiter_name text NOT NULL,
@@ -628,10 +630,23 @@ class _SharedPgPool:
         pool = await asyncpg.create_pool(dsn, min_size=self._POOL_MIN_SIZE, max_size=self._POOL_MAX_SIZE)
         try:
             async with pool.acquire() as conn:
-                await conn.execute(_RATE_LIMIT_DDL)
+                # Checked BEFORE the DDL, not left to IF NOT EXISTS, because
+                # of the least-privilege runtime role this deployment now
+                # ships (hub/postgres-init/10-runtime-role.sql, added so the
+                # RLS policies can actually bite). Postgres evaluates the
+                # schema's CREATE privilege ahead of the IF NOT EXISTS
+                # existence check, so a role with only DML grants gets
+                # "permission denied for schema public" for this statement
+                # EVEN WHEN THE TABLE ALREADY EXISTS -- verified against
+                # Postgres 16. Without this check, choosing the
+                # database-backed limiter (the one a horizontally-scaled
+                # deployment needs) and the non-bypassing role (the one
+                # tenant isolation needs) would be mutually exclusive.
+                if not await conn.fetchval(_RATE_LIMIT_TABLE_EXISTS_SQL):
+                    await conn.execute(_RATE_LIMIT_DDL)
         except asyncpg.exceptions.DuplicateTableError:
-            # Another replica created it between our IF NOT EXISTS check and
-            # the CREATE -- the table exists either way, which is all this
+            # Another replica created it between the existence check and the
+            # CREATE -- the table exists either way, which is all this
             # cares about.
             pass
         return pool

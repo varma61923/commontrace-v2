@@ -246,9 +246,25 @@ entries stay readable across orgs, because that is what the Knowledge Base
 is; the write policy grants no such latitude, so no caller can create or
 alter a row in another org's name.
 
-RLS is worth not over-trusting, and the migration lists its limits in
-full: FK and `UNIQUE` checks run outside the policy and remain a side
-channel, RLS does not sanitise query logs, views need
+**A policy only counts if the connecting role is subject to it.** Postgres
+skips every policy for a superuser or a `BYPASSRLS` role, silently — no
+error, no log line — which makes "installed but inert" a worse state than
+"not installed": a guarantee an operator believes in and does not have.
+This repo shipped that state, because the Postgres image makes
+`POSTGRES_USER` the cluster superuser and `docker-compose.yml` served as
+exactly that role. Two changes close it: the compose stack now creates a
+`NOSUPERUSER`/`NOBYPASSRLS` runtime role that owns nothing
+(`hub/postgres-init/10-runtime-role.sql`) and serves as that, keeping the
+owner for migrations only; and `hub/db.py:check_row_level_security`
+**refuses to start** when it finds policies installed that the connecting
+role would bypass, unless `HUB_ALLOW_RLS_BYPASS=true` says so deliberately
+(`HUB_REQUIRE_RLS=true` is the stronger form — policies must be present and
+enforced). An unreachable database at boot still only warns: "cannot
+determine" is not "determined to be unsafe". See `hub/DEPLOYMENT.md` §2.1.
+
+RLS is worth not over-trusting even when it does bite, and the migration
+lists its limits in full: FK and `UNIQUE` checks run outside the policy and
+remain a side channel, RLS does not sanitise query logs, views need
 `security_invoker = true`, and logical replication ignores policies unless
 per-publication filters are configured.
 

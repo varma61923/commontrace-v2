@@ -16,25 +16,45 @@ services:
   db:
     image: postgres:16
     environment:
-      # NOTE: this role becomes the cluster SUPERUSER (the Postgres image
-      # makes POSTGRES_USER one), and Postgres skips every row-level
-      # security policy for a superuser -- silently, with no error. So the
-      # RLS installed by migration d5c8b3a91e77 is INERT in this compose
-      # stack. Tenant isolation still rests on hub/crud.py's own org_id
-      # predicates, which is where it rested before RLS existed; what you
-      # do NOT have here is the database-enforced backstop.
-      # The Hub logs a warning at startup saying so (hub/db.py:
-      # warn_if_rls_is_inert). For a deployment that wants the backstop,
-      # create a separate non-superuser role that owns nothing and has no
-      # BYPASSRLS, and point HUB_DATABASE_URL at that role instead.
+      # This role becomes the cluster SUPERUSER (the Postgres image makes
+      # POSTGRES_USER one) and OWNS the schema. It is used for exactly two
+      # things -- initialisation and migrations -- and never to serve
+      # traffic, because Postgres skips every row-level-security policy for
+      # a superuser, silently, with no error. Serving as this role is what
+      # made migration d5c8b3a91e77's tenant-isolation policies INERT in
+      # this stack: installed, listed by pg_policies, doing nothing.
+      #
+      # The `hub` service below therefore connects as `commontrace_app`
+      # instead -- a login role that owns nothing, is NOSUPERUSER and
+      # NOBYPASSRLS, and holds only DML grants, created by
+      # hub/postgres-init/10-runtime-role.sql (mounted below and run once at
+      # first initialisation, before any migration). With that role the
+      # policies actually bite, and hub/db.py:check_row_level_security
+      # REFUSES TO START if they ever cannot.
       POSTGRES_USER: commontrace
       # Overridable via the shell environment (`POSTGRES_PASSWORD=... docker
       # compose up`); unset behaves identically to before. Production uses a
       # managed Postgres + secret store per hub/DEPLOYMENT.md, not this file.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-not-for-production}
       POSTGRES_DB: commontrace_hub
+      # Read by hub/postgres-init/10-runtime-role.sql for the non-superuser
+      # runtime role. Same placeholder discipline as POSTGRES_PASSWORD above:
+      # overridable from the shell, and not a value any real deployment keeps.
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-change-me-not-for-production}
     volumes:
       - hub_pgdata:/var/lib/postgresql/data
+      # Run ONCE, at first initialisation of an empty data directory, before
+      # the migrate service creates any table -- which is what lets the
+      # script's ALTER DEFAULT PRIVILEGES cover every table alembic is about
+      # to create, and every table a future migration adds. Read-only: the
+      # database must never be able to rewrite its own bootstrap.
+      #
+      # NOTE for an existing stack: this runs only on a FRESH volume. To
+      # adopt the runtime role on a stack that already has data, either
+      # `docker compose down -v` (destroys the data) or run the script once
+      # by hand against the existing database, as the owner -- the script's
+      # own header has the statements for that case.
+      - ./hub/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U commontrace -d commontrace_hub"]
       interval: 5s
@@ -60,7 +80,14 @@ services:
   hub:
     build: .
     environment:
-      HUB_DATABASE_URL: postgresql+asyncpg://commontrace:${POSTGRES_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
+      # commontrace_app, NOT commontrace: the runtime role owns nothing and
+      # cannot bypass row-level security, so migration d5c8b3a91e77's tenant
+      # isolation policies actually apply to every query this process makes.
+      # See the db service's comment above and
+      # hub/postgres-init/10-runtime-role.sql. Pointing this back at the
+      # owner/superuser role makes the Hub refuse to start unless
+      # HUB_ALLOW_RLS_BYPASS=true also says that is deliberate.
+      HUB_DATABASE_URL: postgresql+asyncpg://commontrace_app:${POSTGRES_APP_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
       HUB_HOST: 0.0.0.0
       HUB_PORT: 8420
       HUB_LOG_LEVEL: INFO

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Hub now refuses to start when row-level security is installed but
+  cannot bite, and the shipped stack serves as a role that cannot bypass
+  it.** Postgres skips every RLS policy for a superuser or a `BYPASSRLS`
+  role silently -- no error, no log line -- so "installed but inert" is a
+  worse state than "not installed": a guarantee an operator believes in and
+  does not have. This repo shipped exactly that, because the Postgres image
+  makes `POSTGRES_USER` the cluster superuser and `docker-compose.yml`
+  pointed `HUB_DATABASE_URL` at it, and the only response was one warning
+  line at startup. Two halves now close it. `hub/postgres-init/
+  10-runtime-role.sql` creates `commontrace_app` -- `NOSUPERUSER`,
+  `NOBYPASSRLS`, owning nothing, holding DML grants only, with
+  `ALTER DEFAULT PRIVILEGES` so every table a future migration adds is
+  covered automatically -- and the compose `hub` service serves as it while
+  `migrate` keeps the owner. `hub/db.py:check_row_level_security` (renamed
+  from `warn_if_rls_is_inert`, because it can now refuse) raises unless
+  `HUB_ALLOW_RLS_BYPASS=true` acknowledges the unsafe shape, with
+  `HUB_REQUIRE_RLS=true` as the stronger opt-in form that also rejects
+  policies being absent entirely. An unreachable database at boot still only
+  warns: "cannot determine" is not "determined to be unsafe", and a
+  diagnostic that crash-loops a process on a transient blip is worse than
+  what it diagnoses. `hub/abuse.py`'s Postgres rate limiter now checks
+  whether its table exists before issuing DDL, because Postgres refuses
+  `CREATE TABLE IF NOT EXISTS` to a role without schema `CREATE` *even when
+  the table already exists* -- without that, the database-backed limiter and
+  the non-bypassing role would have been mutually exclusive.
+
 - **Content-safety screening for lesson/trace text, closing the OWASP
   ASI06 (Memory & Context Poisoning) gap: nothing previously inspected
   what a captured trace or an activated lesson actually said before
