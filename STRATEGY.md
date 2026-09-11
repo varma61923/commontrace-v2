@@ -2197,3 +2197,117 @@ the floor is, what the cap is, and what the platform fee covers are
 commercial terms that need a first real contract to fix. The difference from
 §11.5 is that these are now the last mile of a decision rather than the
 whole of it.
+
+## 25. Update (2026-09-11): the instrument was auditing everything except itself
+
+§20 built the validity audit; §21 pinned the treatment it audits. Both
+assumed the audit's OWN mechanics were sound. A pass through the codebase
+this week, done by deliberately trying to break the causal claim rather than
+extend it, found that assumption was wrong in one specific, structural way —
+and found three smaller ones downstream of it. All four are fixed, tested
+against the exact failure they name, and merged into the branch this
+section describes.
+
+### 25.1 The working set could contaminate the number it was promoted for
+
+`working_set` (§18) pins a trace into every future session's prompt once
+the holdout has established it as `HELPS`. Nothing stopped `search_traces`
+from later drawing that same trace into the WITHHELD arm for an unrelated
+result page — recording a treated occasion as a control, because the trace
+was sitting in the prompt the whole time regardless of what the arm
+assignment said. `holdout_assign`'s own note already named the mechanism:
+"biases the measured effect toward zero." Nobody had connected it to
+promotion.
+
+This is not a rounding error. It means the act of a memory working —
+getting promoted — started eroding the evidence that promoted it, on every
+occasion after. `search_traces` and `holdout_assign` now take `pinned`, the
+trace ids a `working_set` block returned; those ids are excluded from
+randomization entirely, with **no observation recorded**, rather than
+recorded into either arm. Dropped before near-duplicate clustering, not
+after, because a pinned trace elected as a cluster's representative would
+otherwise hand its non-existent arm to every duplicate in the cluster.
+
+*Falsifier, already run:* a fixture pinning one trace and confirming zero
+rows land in `holdout_observations` for it, against the prior code where the
+same fixture wrote a row. The regression is caught by a test that fails on
+the code before this fix and passes after — not merely a new assertion that
+happens to be green.
+
+### 25.2 A lesson that worked faster looked like it was losing data
+
+`check_differential_attrition` — the check §20 calls load-bearing — compared
+terminal outcome-recording rates between arms with no notion of time.
+Outcomes arrive some interval after assignment, and a lesson that helps
+closes its occasions SOONER. So at any point before a run finishes, the
+treated arm has more outcomes on the books purely because it got there
+first, and the check read that head start as one arm losing data:
+`INVALIDATES`, effect unquotable, "more data will not fix it."
+
+Both halves were wrong whenever nothing was actually lost. Measured on a
+fleet where the treated arm reports in 5 minutes, the control in 90, and
+every occasion eventually reports: the old check returns `INVALIDATES` at
+96.7% vs 50%; the fixed one returns `OK`, with the young control occasions
+correctly set aside as pending rather than counted as missing. **The
+estimate was being suppressed exactly when the memory was working, and the
+better the lesson the faster it disqualified itself.**
+
+The fix (`commontrace/survival.py`) is Kaplan-Meier and the log-rank test,
+in stdlib — no new dependency, matching how this package already computes
+its own two-proportion test and normal CDF rather than importing one. An
+occasion counts toward attrition only once it is older than the point by
+which most of the SLOWER arm's own outcomes had arrived; pooling the two
+arms' clocks would let the fast one set the horizon and misjudge the slow
+one prematurely, which is the same bug one level down. The speed
+difference itself is now reported by a separate `censoring_hazard` check
+that can reach `WEAKENS` — "re-read this later" — and structurally cannot
+reach `INVALIDATES`, because timing is not bias.
+
+### 25.3 The invoice said "trust me," not "check me"
+
+§24.2's whole argument is that a vendor billed on measured value cannot
+weaken its own validity checks without losing the ability to bill. That
+argument had a gap: the number `value_delivered` returns was
+self-reported arithmetic, auditable only by re-running the same code that
+produced it. A `RateCard` (contractual tiers, not a flat rate — a
+password reset and an averted SLA breach were being priced identically,
+which is the first thing a finance function pushes back on) now prices the
+measured occasions, and the response carries a hash-chained ledger: one
+line per counted memory, each entry's hash covering the previous one.
+Editing a figure, deleting the memory that `HURTS` before sending the
+invoice, or reordering to bury it all break the chain — verifiable by
+recomputing SHA-256 over the printed fields, in whatever language the
+customer's own auditor uses, not by trusting this codebase.
+
+The ledger inherits every refusal the number already had: no agreed rate,
+an unaudited run, or a `COMPROMISED` experiment all yield an empty ledger,
+not a chain computed over numbers that should not have been stated. A
+verifiable ledger built on a biased sample would be worse than none — it
+would make an unsupportable figure look audited.
+
+### 25.4 What this changes about §13.2's chain, and what it does not
+
+Link 3 (§18–19) still says what it said: the causal instrument exists and
+now has a cost number attached. What changes is a layer underneath it that
+§13.2 never named as a link because nobody had found a reason to doubt it
+— call it link 0: **is the instrument measuring what it claims to be
+measuring, under its own real operating conditions, including the
+condition of being used successfully?** §25.1 is the answer to "no" that
+would have mattered most, because it is the one failure mode a product can
+never self-report — a vendor whose promotion mechanism quietly erodes its
+own proof has no observable symptom except numbers that drift down for no
+stated reason, which reads as "the product stopped working" rather than
+"the audit was checking the wrong thing."
+
+This does not move any number in §24.3's table. It changes the confidence
+behind stating one at all. A customer's finance function asking "how do we
+know your holdout wasn't quietly biased by your own product succeeding"
+now has an answer with a name, a test, and a fix, instead of a claim that
+it doesn't happen.
+
+*Falsifier:* the next structural gap of this shape, found the same way this
+one was — by trying to break the number rather than extend it. This
+section is not a claim that none remain; it is a record that the method
+for finding them (audit the audit, not just the effect) produced a real
+one on the first deliberate pass, which is the argument for keeping the
+practice, not for stopping.

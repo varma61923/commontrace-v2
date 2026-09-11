@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A survival-analysis censoring check, so a lesson that works faster no
+  longer looks like it is losing data.** `check_differential_attrition`
+  compared terminal outcome-recording rates with no notion of time, and a
+  lesson that helps concludes its occasions SOONER — so mid-run, the
+  treated arm always has more outcomes on the books purely because it got
+  there first. The check read that head start as attrition and returned
+  `INVALIDATES`: effect unquotable, more data won't fix it. Measured on a
+  fleet where treated reports in 5 minutes, control in 90, and nothing is
+  ever lost: old reading `INVALIDATES` (96.7% vs 50%), new reading `OK`.
+  `commontrace/survival.py` adds Kaplan-Meier and the log-rank test
+  (stdlib only, same reasoning as this package's own two-proportion test
+  and normal CDF), and an occasion now counts toward attrition only once
+  it is older than the point by which the SLOWER arm's own outcomes had
+  mostly arrived — the horizon is per-arm, not pooled, so a fast arm can't
+  set the clock the slow arm gets judged against. The speed difference
+  itself is reported by a new `censoring_hazard` check that can reach
+  `WEAKENS` ("re-read later") and structurally cannot reach `INVALIDATES`,
+  because timing is not bias.
+
+- **A rate card and a hash-chained audit ledger for `value_delivered`.**
+  A flat per-occasion rate prices a password reset and an averted SLA
+  breach identically, which is the first thing a finance function
+  rejects. `commontrace/value.py`'s new `RateCard` states the mix
+  explicitly — named tiers, each a share of occasions and a cost per
+  occasion — and refuses a card whose shares don't sum to one occasion.
+  Every tier is echoed back on the wire as an INPUT, never a finding: none
+  of it is measured, only `occasions_improved` is. When a rate is agreed
+  and the run is readable, the response also carries a ledger — one line
+  per counted memory, each entry's SHA-256 covering the previous entry's
+  hash — so editing a figure, dropping the memory that `HURTS` before
+  invoicing, or reordering to bury it all break the chain.
+  `value.verify_ledger` recomputes it from the printed fields in a fixed
+  order, so a customer's own auditor can reimplement it independently
+  rather than trusting this codebase. The ledger inherits every refusal
+  the number already had — no rate, an unaudited run, or a `COMPROMISED`
+  experiment all yield an empty ledger, because a verifiable chain over a
+  biased sample would make an unsupportable figure look audited, which is
+  worse than no ledger at all.
+
+- **A trivial-prompt gate, so an acknowledgement never pays for a
+  retrieval.** A meaningful share of an agent's turns — "ok", "thanks",
+  "lgtm", "go ahead" — carry no content to match a lesson against; ranking
+  the corpus against them returns noise, and injecting that noise on an
+  occasion it had nothing to do with is exactly the marginal-eligibility
+  contamination `integrity.check_marginal_eligibility` exists to catch.
+  `commontrace/cache_gate.py` (adapted from Nous Hermes Agent's
+  `TRIVIAL_PROMPT_RE`) skips retrieval before the corpus is even read.
+  Anchored at both ends so it never swallows a real query sharing a first
+  word with an acknowledgement ("no results come back..." is not "no"),
+  and — the property that makes it safe rather than merely fast — it runs
+  BEFORE randomization: a skipped turn reads no store and is assigned no
+  arm, so it never becomes an occasion at all. The same filter applied
+  after assignment would drop occasions once their arm was known, which is
+  the one thing a holdout cannot survive.
+
 - **`working_set` — memory that costs its tokens once per session instead
   of once per query, and earns its contents.** Retrieval is not free:
   measured on a live Hub, one `search_traces` page costs ~231 tokens and
