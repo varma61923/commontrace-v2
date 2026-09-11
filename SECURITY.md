@@ -49,9 +49,12 @@ authentication or authorization bypass anywhere in `hub/`; a way to make the
 operator console (`/admin`) or customer console (`/app`) execute
 attacker-controlled content in another user's browser; a way to defeat the
 rate limiting or quota enforcement in `hub/abuse.py`/`hub/plans.py` at scale;
-and any of the standard classes (injection, deserialization, SSRF, path
-traversal) reachable through a documented CLI flag, MCP tool argument, or
-Hub API call.
+a way to get a secret, PII, or a prompt-injection payload past the
+content-safety screening in `commontrace/memory_guard.py` (contribute_trace/
+amend_trace's quarantine gate, or the `commontrace lesson approve`/
+`approve_lesson` activation gate) without tripping it; and any of the
+standard classes (injection, deserialization, SSRF, path traversal)
+reachable through a documented CLI flag, MCP tool argument, or Hub API call.
 
 **Out of scope**: findings that require an already-privileged position this
 project's own trust model assumes (e.g., an operator with direct database

@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Content-safety screening for lesson/trace text, closing the OWASP
+  ASI06 (Memory & Context Poisoning) gap: nothing previously inspected
+  what a captured trace or an activated lesson actually said before
+  storing or injecting it verbatim.** New `commontrace/memory_guard.py`
+  scans free text for three independent things: HIGH-confidence secrets
+  (AWS/GitHub/Slack/Stripe/Google/Anthropic tokens, PEM private key
+  blocks, JWTs -- structured shapes vanishingly unlikely to occur by
+  chance), prompt-injection patterns (instruction-override phrasing,
+  forged system-role blocks, jailbreak personas, hidden zero-width/bidi-
+  override Unicode), and PII (email, phone, SSN-shaped numbers, Luhn-
+  validated card numbers) -- the last of which never blocks anything on
+  its own, only secrets and injection findings do. Wired into two gates
+  that already existed: `hub/abuse.py:suspicion_reason` now also quarantines
+  a `contribute_trace`/`amend_trace` submission that trips a blocking
+  finding (excluded from `search_traces`, same as its existing spam
+  heuristic); `commontrace lesson approve` and the MCP `approve_lesson`
+  tool now refuse to activate a lesson that trips one -- an active lesson
+  is injected into every later retrieval verbatim, so this is the one gate
+  between drafted text and a live agent decision. The CLI path accepts
+  `--force` for a human to override a false positive (e.g. a lesson that
+  legitimately documents an example credential pattern); the MCP tool does
+  not, since an agent approving its own draft has no interactive human to
+  confirm one. See SECURITY.md's scope section.
+
 - **Issuer signatures for the value ledger, so a hash chain nobody can
   forge a replacement for is now also a hash chain nobody can fabricate in
   the first place.** `verify_ledger` proves a ledger is internally

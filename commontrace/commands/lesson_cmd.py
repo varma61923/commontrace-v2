@@ -6,7 +6,7 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, lesson_io, paths, templates, validate
+from commontrace import frontmatter, lesson_io, memory_guard, paths, templates, validate
 from commontrace.commands import _validators
 from commontrace.commands._format import cell, read_or_warn
 
@@ -69,8 +69,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument(
         "--force",
         action="store_true",
-        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding. "
-             "Refused by default -- an active lesson is injected into agents verbatim.",
+        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding, "
+             "or a high-confidence secret/prompt-injection pattern the content-safety scan "
+             "flagged. Refused by default -- an active lesson is injected into agents verbatim.",
     )
     ap.add_argument("--dest", default=None)
     ap.set_defaults(func=run_approve)
@@ -232,6 +233,22 @@ def _append_body_note(body: str, heading: str, text: str) -> str:
     return body.rstrip("\n") + f"\n\n## {heading}\n{date}: {text}\n"
 
 
+def _guard_fields(fm: dict, body: str) -> dict:
+    """Every free-text field a Lesson carries, for `memory_guard.scan_fields`
+    at the approval gate. `body` alone covers Rule/Why/How-to-apply/
+    Counter-examples -- scanned as one string rather than split by section,
+    since a secret or an injection payload is exactly as dangerous in any
+    one of them and splitting buys nothing a caller here needs."""
+    return {
+        "description": fm.get("description", ""),
+        "applies_when": fm.get("applies_when", ""),
+        "do_not_apply_when": fm.get("do_not_apply_when", ""),
+        "importance_rationale": fm.get("importance_rationale", ""),
+        "domain": fm.get("domain", ""),
+        "body": body,
+    }
+
+
 def run_approve(args: argparse.Namespace) -> int:
     """The generic-pipeline Validator step (protocol/PROTOCOL.md §6's
     "Validator" role, e.g. the code-review profile's Lambda): a candidate
@@ -270,6 +287,29 @@ def run_approve(args: argparse.Namespace) -> int:
             )
             return 1
 
+        # OWASP ASI06 (Memory & Context Poisoning): an active lesson is
+        # injected into every later retrieval verbatim, same reasoning as
+        # the scaffolding check above. Only HIGH-confidence secret/injection
+        # findings refuse here (`GuardReport.should_block`) -- PII and
+        # medium-confidence matches are not surfaced as a refusal at all,
+        # by commontrace/memory_guard.py's own design.
+        guard = memory_guard.scan_fields(_guard_fields(fm, body))
+        if guard.should_block and not args.force:
+            print(
+                f"[commontrace] refusing to approve {args.slug}: the content-safety scan "
+                f"flagged this lesson -- {guard.summary()}.\n"
+                "  Approving activates a lesson for retrieval and injection -- an agent\n"
+                "  injects whatever it is given, so a credential or a prompt-injection\n"
+                "  payload here would be replayed into every later decision this lesson\n"
+                "  matches. If this is a false positive (e.g. a lesson that legitimately\n"
+                f"  documents an example credential pattern), review {path} and pass\n"
+                "  --force if this really is the intended content.",
+                file=sys.stderr,
+            )
+            for f in guard.blocking_findings:
+                print(f"    - [{f.category}] {f.label} in {f.field}: {f.excerpt!r}", file=sys.stderr)
+            return 1
+
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
@@ -279,6 +319,12 @@ def run_approve(args: argparse.Namespace) -> int:
         print(
             f"[commontrace] warning: approved {args.slug} with --force while "
             f"{', '.join(unfilled)} still contain unedited scaffolding.",
+            file=sys.stderr,
+        )
+    if guard.should_block:
+        print(
+            f"[commontrace] warning: approved {args.slug} with --force while the "
+            f"content-safety scan still flagged it -- {guard.summary()}.",
             file=sys.stderr,
         )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")

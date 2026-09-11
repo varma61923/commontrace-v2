@@ -77,7 +77,7 @@ hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceR
 hub/db.py          async engine/session plumbing
 hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates against them
 hub/auth.py        API-key hashing/verification/rotation/expiry (HMAC fast path, argon2 fallback) + request-scoped org_id
-hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
+hub/abuse.py       size limits, per-org rate limiting, a spam + content-safety heuristic -> quarantine
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
@@ -669,6 +669,22 @@ simple — too many URLs, or near-zero character diversity — and is explicitly
 documented in its own docstring as a placeholder, not a moderation system.
 Replace/extend it as real abuse patterns are observed; do not read its
 current thresholds as a considered content-moderation policy.
+
+The same function also runs `commontrace/memory_guard.py`'s content-safety
+scan (OWASP ASI06: Memory & Context Poisoning) over the same three fields,
+and quarantines on a HIGH-confidence secret (a structured AWS/GitHub/Slack/
+Stripe/Google/Anthropic token shape, a PEM private key block, a JWT) or a
+prompt-injection pattern (instruction-override phrasing, a forged
+system-role block, hidden zero-width/bidi-override Unicode). PII findings
+(email, phone, a Luhn-valid card number) are surfaced by that module but
+never quarantine anything on their own — a support trace legitimately
+mentions a customer's email. This is pattern matching, not semantic
+understanding, and carries the same "not exhaustive" caveat as the spam
+heuristic; what it changes is the default, from nothing being checked to a
+known-dangerous shape being caught before it reaches `search_traces` (and,
+on the client side, before a lesson containing one can be activated —
+`commontrace lesson approve` / the MCP `approve_lesson` tool run the same
+scan).
 
 ### `related` / `CO_RETRIEVED` — partially implemented
 

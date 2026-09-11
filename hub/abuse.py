@@ -11,8 +11,10 @@ search useful for that org. contribute_trace runs through, in order:
   1. schema validation (hub/schema_validation.py)      -> hard reject, 4xx
   2. per-field / per-trace size limits (this module)     -> hard reject, 4xx
   3. per-org rate limiting (this module)                 -> hard reject, 429
-  4. a cheap suspicion heuristic (this module)           -> soft: store
-     quarantined=True, excluded from search_traces, pending manual review
+  4. a cheap suspicion heuristic, now including a content-safety scan for
+     secrets and prompt-injection payloads (commontrace/memory_guard.py,
+     OWASP ASI06) -> soft: store quarantined=True, excluded from
+     search_traces, pending manual review
 
 Rate limiting keys off org_id and, by default, is an in-memory token bucket
 (`RateLimiter` below). That is a known, documented MVP limitation: it resets
@@ -45,6 +47,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from commontrace import memory_guard
 from hub.config import HubConfig
 
 logger = logging.getLogger("commontrace.hub.abuse")
@@ -197,7 +200,21 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     """Return a short human-readable reason to quarantine this trace, or
     None if it looks fine. Deliberately simple and named as a placeholder:
     this is not a moderation system, just a first line of defense against
-    obvious spam. Replace/extend as real abuse patterns are observed."""
+    obvious spam. Replace/extend as real abuse patterns are observed.
+
+    Also runs `commontrace.memory_guard` over the same three fields --
+    OWASP ASI06 (Memory & Context Poisoning): a trace stored here is
+    fleet-wide history a later agent reads back, and a quarantined trace is
+    excluded from `search_traces` (hub/crud.py), so routing a detected
+    secret or prompt-injection payload through this same quarantine gate
+    keeps it out of retrieval until an operator reviews it -- the same
+    protection this function already gave spam, extended to content that is
+    actively dangerous rather than merely low-quality. Only HIGH-confidence
+    secret and injection findings quarantine on their own
+    (`GuardReport.should_block`); PII and medium-confidence matches do not
+    reach this function's decision at all, by that module's own design --
+    see `commontrace/memory_guard.py` for why.
+    """
     text = " ".join(str(fields.get(k, "")) for k in ("title", "context_text", "solution_text"))
 
     url_count = len(_URL_RE.findall(text))
@@ -207,6 +224,12 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     stripped = text.strip()
     if stripped and len(set(stripped.lower())) <= 3 and len(stripped) > 20:
         return "content has near-zero character diversity (likely filler/spam)"
+
+    guard = memory_guard.scan_fields({
+        k: fields.get(k, "") for k in ("title", "context_text", "solution_text")
+    })
+    if guard.should_block:
+        return guard.summary()
 
     return None
 

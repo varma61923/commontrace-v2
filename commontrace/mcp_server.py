@@ -69,6 +69,7 @@ from commontrace import (
     lesson_cache,
     lesson_io,
     mcp_tools,
+    memory_guard,
     paths,
     retrieval,
     retrieval_io,
@@ -781,6 +782,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             displaces a real one -- and it would be counted as coverage by
             every report the customer reads.
 
+            It also REFUSES a lesson whose content trips a high-confidence
+            secret or prompt-injection pattern (OWASP ASI06 -- see
+            `commontrace/memory_guard.py`), naming what was found. The same
+            "injected verbatim" property that makes stale scaffolding costly
+            makes a credential or an injection payload dangerous: this call
+            is the one gate between drafted text and every later agent
+            decision the lesson matches. There is no override on this path
+            -- fix the content and call approve_lesson again.
+
             And it records `approved_by` in the lesson, so an
             agent-approved lesson is distinguishable from a human-approved one
             afterwards. Approve your OWN draft only when you have genuinely
@@ -812,6 +822,29 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if errors:
                         return _err(f"refusing to activate {slug!r}: it does not satisfy the "
                                     "lesson schema.", schema_errors=errors)
+                    # OWASP ASI06 (Memory & Context Poisoning): an active
+                    # lesson is injected into every later retrieval verbatim
+                    # (this tool's own docstring), so a credential or a
+                    # prompt-injection payload reaching `active` here would
+                    # be replayed into every later decision the lesson
+                    # matches. No --force equivalent on this path, unlike
+                    # the CLI's `lesson approve`: an agent approving its own
+                    # draft has no interactive human to confirm a deliberate
+                    # override, so a HIGH-confidence finding refuses outright
+                    # -- edit the lesson and call approve_lesson again.
+                    from commontrace.commands.lesson_cmd import _guard_fields
+                    guard = memory_guard.scan_fields(_guard_fields(fm, body))
+                    if guard.should_block:
+                        return _err(
+                            f"refusing to activate {slug!r}: the content-safety scan flagged "
+                            f"this lesson -- {guard.summary()}. Edit it to remove the flagged "
+                            "content and try again.",
+                            findings=[
+                                {"category": f.category, "label": f.label,
+                                 "field": f.field, "excerpt": f.excerpt}
+                                for f in guard.blocking_findings
+                            ],
+                        )
                     fm["status"] = "active"
                     safe_by = _sanitize_comment(approved_by)
                     safe_rationale = _sanitize_comment(rationale)

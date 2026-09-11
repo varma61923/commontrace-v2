@@ -76,6 +76,14 @@ commontrace/**
 !commontrace/value.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
+# Secret/PII/prompt-injection screening (OWASP ASI06), imported at module
+# level by hub/abuse.py:suspicion_reason so the same content-safety scan
+# a customer's own `commontrace lesson approve` runs also gates
+# contribute_trace/amend_trace on the Hub -- one implementation, not a
+# copy that could drift and cover different patterns on each side. Pure
+# stdlib (re, dataclasses). Imported at module level, so without it the
+# container starts and dies.
+!commontrace/memory_guard.py
 # Near-duplicate clustering (hub/crud.py:_cluster_representatives, used by
 # holdout_for_results) -- the same reason as retrieval.py/_lexical.py
 # above: a customer's own `commontrace distill` and the Hub's holdout
