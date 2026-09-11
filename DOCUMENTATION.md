@@ -967,4 +967,4 @@ module-a (10) — first real use of the skill outside meta on a real project:
 
 | Path | Role |
 |---|---|
-| `https://github.com/denemlabs/commontrace-v2` | CommonTrace repository — /commontrace v2 is the protocol's reference implementation |
+| `https://github.com/varma61923/commontrace-v2` | CommonTrace repository — /commontrace v2 is the protocol's reference implementation |

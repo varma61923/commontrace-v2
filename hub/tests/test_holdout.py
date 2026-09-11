@@ -1486,6 +1486,55 @@ class TestTieredValuationAndTheAuditLedger:
         counted = [m for m in worth["memories"] if m["counted"]]
         assert len(entries) == len(counted)
 
+    async def test_no_signing_key_leaves_the_ledger_unsigned_but_explicit(
+        self, session_factory, org
+    ):
+        """verify_ledger alone proves the chain is internally consistent, not
+        who issued it -- its genesis and algorithm are both public, so a
+        party with write access to storage could fabricate an entire
+        replacement chain that verifies just as cleanly. Without a signing
+        key configured, value_delivered must say so rather than silently
+        returning a ledger that looks more authenticated than it is."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
+        assert worth["signature"] is None
+        assert worth["signature_algorithm"] is None
+        assert "not configured" in worth["signature_reason"]
+        assert worth["issued_at"]  # still timestamped even when unsigned
+
+    async def test_a_signing_key_produces_a_verifiable_signature(
+        self, session_factory, org
+    ):
+        await self._established(session_factory, org)
+        key = "test-issuer-signing-key"
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(
+                session, org, rate_tiers=self._TIERS, signing_key=key,
+            )
+        assert worth["signature"]
+        assert worth["signature_algorithm"] == "HMAC-SHA256"
+        assert worth["signature_reason"] == ""
+        entries = [
+            value.LedgerEntry(
+                index=e["index"], slug=e["trace_id"], verdict=e["verdict"],
+                occasions_improved=e["occasions_improved"], rate=e["rate"],
+                money=e["money"], previous_hash=e["previous_hash"],
+                entry_hash=e["entry_hash"],
+            )
+            for e in worth["ledger"]
+        ]
+        assert value.verify_ledger_signature(
+            entries, worth["signature"], key.encode("utf-8"),
+            org_id=org, issued_at=worth["issued_at"],
+        )
+        # The wrong key -- or the right key against a signature minted for a
+        # different org -- must not verify.
+        assert not value.verify_ledger_signature(
+            entries, worth["signature"], b"wrong-key",
+            org_id=org, issued_at=worth["issued_at"],
+        )
+
     async def test_no_rate_means_a_count_and_no_ledger(self, session_factory, org):
         """Unchanged behaviour for every existing caller: ask for no price and
         you get the measured quantity, with nothing implying an invoice."""

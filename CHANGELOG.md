@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Issuer signatures for the value ledger, so a hash chain nobody can
+  forge a replacement for is now also a hash chain nobody can fabricate in
+  the first place.** `verify_ledger` proves a ledger is internally
+  consistent -- each entry follows from the one before it back to a fixed
+  genesis -- but that genesis and the hashing algorithm are both
+  deliberately public (the whole point is that a customer can reimplement
+  the check), so anyone with write access to wherever a ledger is stored
+  could regenerate an entire replacement chain from different figures and
+  it would verify exactly as cleanly as the real one. `commontrace/value.py`
+  adds `sign_ledger`/`verify_ledger_signature`: an HMAC-SHA256 over the
+  chain's root, bound to the org and the issuance timestamp so a signature
+  cannot be replayed onto a different org's ledger or re-presented later as
+  fresher than it is. `hub/crud.py`'s `value_delivered` signs every
+  response when the new `HUB_LEDGER_SIGNING_KEY` is configured, returning
+  `signature`/`issued_at`/`signature_algorithm`; left unset, `signature` is
+  `null` and `signature_reason` says explicitly that this deployment has
+  not opted into issuer authentication, rather than letting an unsigned
+  ledger silently look more audited than it is. See hub/DEPLOYMENT.md
+  "Signing the value ledger".
+
 - **A survival-analysis censoring check, so a lesson that works faster no
   longer looks like it is losing data.** `check_differential_attrition`
   compared terminal outcome-recording rates with no notion of time, and a
@@ -2487,5 +2507,5 @@ dependency audit.")
   by the open taxonomy in PROTOCOL.md §7 (see "Changed" above; not a schema
   removal, since no schema file in this repo ever encoded that enum).
 
-[Unreleased]: https://github.com/denemlabs/commontrace-v2/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/denemlabs/commontrace-v2/releases/tag/v2.0.0
+[Unreleased]: https://github.com/varma61923/commontrace-v2/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/varma61923/commontrace-v2/releases/tag/v2.0.0

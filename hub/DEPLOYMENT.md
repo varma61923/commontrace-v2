@@ -296,6 +296,49 @@ No Stripe SDK — `hub/billing.py` calls Stripe's REST API directly over
 documented HMAC check, rather than adding a second pinned dependency for a
 handful of calls to one vendor.
 
+### Signing the value ledger
+
+`value_delivered`'s `ledger` (`commontrace/value.py`) is hash-chained: every
+line carries a SHA-256 over itself and the previous line's hash, so editing
+a figure, dropping the memory that measured as HURTING, or reordering to
+bury it all break the chain, and `commontrace.value.verify_ledger` proves
+it. That chain's genesis and algorithm are both public by design — the
+whole point is that a customer's finance team can reimplement the check
+independently — which means it only proves the ledger is *internally
+consistent*, not *who issued it*. Anyone with write access to wherever a
+ledger ends up stored (a compromised account, a malicious insider, an
+issuer understating its own invoice after the fact) could fabricate an
+entire replacement chain from different figures, and it would verify
+exactly as cleanly as the real one.
+
+Set `HUB_LEDGER_SIGNING_KEY` to close that gap. Every `value_delivered`
+response is then also signed with HMAC-SHA256
+(`commontrace.value.sign_ledger`) over the chain's root, bound to the org
+and the timestamp it was issued at, and returned as `signature` +
+`issued_at` alongside the ledger. A customer verifies it with
+`commontrace.value.verify_ledger_signature` against the same key — so a
+signature only validates for a ledger this deployment actually issued, not
+merely one that follows the public rules. Leave it unset and
+`value_delivered` still returns the hash-chained ledger, but `signature` is
+`null` and `signature_reason` says explicitly that this deployment has not
+opted into issuer authentication, rather than silently looking more audited
+than it is.
+
+```bash
+HUB_LEDGER_SIGNING_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+```
+
+Set it **identically across every replica**. Unlike `HUB_API_KEY_PEPPER`
+(which tolerates a per-process fallback, because a missing pepper only ever
+weakens one timing defense), a value ledger is meant to be verified by the
+customer *later*, against whichever replica happened to sign it at request
+time — a key that silently varied by process or by restart would make some
+invoices verify and others not, for no reason visible to the customer
+holding them. There is no key versioning here: rotating this value
+invalidates verification of every already-issued invoice unless you keep
+the retired key available out-of-band, specifically to still check
+signatures minted under it.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format:
@@ -536,6 +579,11 @@ across a revocation, re-revoke those key ids immediately.
       or the Billing Portal on a partial configuration, because either one
       without a registered webhook silently desyncs `Organization.plan`
       from what Stripe actually charged. See §4, "Self-serve billing".
+- [ ] `HUB_LEDGER_SIGNING_KEY` set (from a secret store, identical across
+      every replica) if any customer is billed off `value_delivered` —
+      otherwise its ledger is only hash-chained, not signed by the issuer,
+      and `signature` in the response is `null`. See §4, "Signing the value
+      ledger".
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an

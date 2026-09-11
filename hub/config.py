@@ -268,6 +268,38 @@ class HubConfig:
     stripe_price_team: str = ""
     stripe_price_scale: str = ""
 
+    # --- Value ledger signing (hub/crud.py value_delivered, commontrace/value.py) ---
+    # Empty (default) means invoices `value_delivered` returns are
+    # hash-chained (commontrace.value.verify_ledger) but NOT signed:
+    # `signature` in the response is null and `signature_reason` says why.
+    # A hash chain alone proves an invoice is internally consistent -- that
+    # nobody quietly edited one line, dropped the memory that HURT, or
+    # reordered to bury it -- but the chain's genesis and algorithm are both
+    # public by design (that is what lets a customer reimplement
+    # verify_ledger independently), so anyone with write access to wherever
+    # a ledger is stored could regenerate an entire REPLACEMENT chain from
+    # different figures and it would verify exactly as cleanly as the
+    # original. Setting this closes that gap: every ledger is additionally
+    # signed with HMAC-SHA256 under this key (commontrace.value.sign_ledger),
+    # so a signature only verifies for a chain this deployment actually
+    # issued, not any chain that merely follows the public rules.
+    #
+    # Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`,
+    # keep it in a secret store next to HUB_DATABASE_URL, and set it
+    # IDENTICALLY across every replica -- unlike HUB_API_KEY_PEPPER (which
+    # tolerates a per-process fallback because a missing pepper only ever
+    # weakens one specific timing defense), a value ledger is meant to be
+    # verifiable by the customer LATER, against a signature minted by
+    # whichever replica happened to serve that request; a key that silently
+    # varied by process or by restart would make some invoices verify and
+    # others not, for no reason the customer could see. Rotate by setting a
+    # new value and treating every signature issued under the old key as
+    # still valid only if you keep verifying against both -- this module
+    # does not version keys, so a rotation invalidates verification of
+    # already-issued invoices unless you keep the old key available
+    # out-of-band for exactly that purpose.
+    ledger_signing_key: str = ""
+
     # --- Transport safety ---
     # The Hub itself always speaks plain HTTP (I-06: TLS termination is
     # delegated to an upstream reverse proxy) -- that is a supported,
@@ -409,6 +441,7 @@ class HubConfig:
             stripe_webhook_secret=os.environ.get("HUB_STRIPE_WEBHOOK_SECRET", ""),
             stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),
             stripe_price_scale=os.environ.get("HUB_STRIPE_PRICE_SCALE", ""),
+            ledger_signing_key=os.environ.get("HUB_LEDGER_SIGNING_KEY", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),

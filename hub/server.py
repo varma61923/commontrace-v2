@@ -812,6 +812,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         `commontrace.value.verify_ledger`, or reimplement it: the hash is over
         the printed fields in a fixed order, on purpose.
 
+        That chain proves the ledger is internally consistent, not who issued
+        it -- its genesis and algorithm are public, so a wholesale
+        replacement chain would verify just as cleanly as the real one. If
+        this deployment has HUB_LEDGER_SIGNING_KEY configured, the response
+        also carries `signature` and `issued_at`: an HMAC-SHA256 over the
+        chain's root, checkable with `commontrace.value.
+        verify_ledger_signature`, that only verifies for a ledger this
+        deployment actually issued. Otherwise `signature` is null and
+        `signature_reason` says the deployment has not opted in.
+
         Reads only your own data. Not metered."""
         try:
             org_id = auth.get_current_org_id()
@@ -820,6 +830,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     session, org_id,
                     value_per_occasion=(value_per_occasion or None),
                     rate_tiers=rate_tiers,
+                    signing_key=config.ledger_signing_key,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)

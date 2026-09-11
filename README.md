@@ -415,7 +415,7 @@ memory and land in the same experiment arms.
 ### 1 — Install
 
 ```bash
-git clone https://github.com/denemlabs/commontrace-v2 commontrace
+git clone https://github.com/varma61923/commontrace-v2 commontrace
 cd commontrace
 ./install.sh                        # installs to ~/.commontrace (default)
 # or

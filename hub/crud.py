@@ -2792,6 +2792,7 @@ async def value_delivered(
     org_id: str,
     value_per_occasion: float | None = None,
     rate_tiers: list[dict] | None = None,
+    signing_key: str = "",
 ) -> dict:
     """What this fleet's memory was worth, causally, in its own units.
 
@@ -2833,6 +2834,19 @@ async def value_delivered(
     reordering to bury it all break the chain. `commontrace.value.verify_ledger`
     recomputes it, and is written to be reimplementable by whoever audits the
     invoice.
+
+    That chain alone only proves internal consistency, not who issued it --
+    its genesis and algorithm are both public, so anyone with write access to
+    wherever a ledger is stored could fabricate an entire replacement chain
+    that verifies just as cleanly. `signing_key` (from `HubConfig.
+    ledger_signing_key`, i.e. `HUB_LEDGER_SIGNING_KEY`) closes that: when set,
+    the response also carries `signature` and `issued_at`, an HMAC-SHA256
+    (`commontrace.value.sign_ledger`) over the chain's root bound to this org
+    and this timestamp, checkable with `commontrace.value.
+    verify_ledger_signature` against the same key. Left unset, `signature` is
+    `None` and `signature_reason` says so explicitly -- silently returning an
+    unsigned ledger with no signal would let a hash-chained invoice look more
+    authenticated than it is.
     """
     causal = await causal_effects(session, org_id)
     effects = [
@@ -2869,6 +2883,27 @@ async def value_delivered(
     ledger = report.ledger()
     titles = {e["trace_id"]: e.get("title") for e in causal.get("effects", [])}
 
+    # Issuer signature over the chain's root. Computed even for an empty
+    # ledger (ledger_root falls back to the chain genesis) -- "zero counted
+    # lines this period" is itself a fact worth being able to authenticate,
+    # not just a nonzero invoice.
+    issued_at = datetime.now(timezone.utc).isoformat()
+    if signing_key:
+        signature = value.sign_ledger(
+            ledger, signing_key.encode("utf-8"), org_id=org_id, issued_at=issued_at
+        )
+        signature_reason = ""
+    else:
+        signature = None
+        signature_reason = (
+            "HUB_LEDGER_SIGNING_KEY is not configured on this deployment: the "
+            "ledger above is hash-chained (internally consistent, checkable "
+            "with commontrace.value.verify_ledger) but not cryptographically "
+            "signed by the issuer, so a party with write access to the "
+            "underlying store could still fabricate a whole replacement chain "
+            "that verifies just as cleanly. See hub/DEPLOYMENT.md."
+        )
+
     return {
         "readable": report.readable,
         "reason": report.reason,
@@ -2895,6 +2930,12 @@ async def value_delivered(
              "entry_hash": e.entry_hash}
             for e in ledger
         ],
+        # Issuer authentication for the ledger above. `None` when this
+        # deployment has no signing key configured -- see signature_reason.
+        "issued_at": issued_at,
+        "signature": signature,
+        "signature_algorithm": "HMAC-SHA256" if signature else None,
+        "signature_reason": signature_reason,
         "memories": [
             {"trace_id": m.slug, "title": titles.get(m.slug, "(deleted trace)"),
              "verdict": m.verdict, "n_injected": m.n_injected, "effect": m.effect,

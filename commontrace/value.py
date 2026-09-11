@@ -59,6 +59,7 @@ Three rules, and the third is the one that matters:
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass, field
 
 from commontrace import experiment, integrity
@@ -290,6 +291,87 @@ def verify_ledger(entries: list[LedgerEntry]) -> int | None:
             return position
         previous = entry.entry_hash
     return None
+
+
+# --- Issuer authentication --------------------------------------------------
+#
+# WHY THIS EXISTS. verify_ledger() above proves the chain is INTERNALLY
+# CONSISTENT: every entry follows from the one before it, back to a fixed
+# public genesis, over a fixed public algorithm. That proves nothing about
+# WHO produced the chain. Both the genesis and the hashing algorithm are
+# public by design (verify_ledger's whole point is that a customer can
+# reimplement it), which means anyone with write access to wherever a ledger
+# is stored -- a compromised account, a malicious insider, an issuer
+# fabricating a smaller invoice after the fact -- can regenerate an entire
+# replacement chain from different figures, and it will verify exactly as
+# cleanly as the original. A hash chain alone catches EDITING one entry of
+# an existing ledger. It does not catch REPLACING the whole thing, and
+# "is this actually the invoice CommonTrace issued" is the second question,
+# not the first.
+#
+# The fix is an HMAC over the chain's root, keyed by a secret only the
+# issuer holds and that never appears anywhere in the printed ledger. A
+# party without that key can still run verify_ledger and confirm internal
+# consistency, but cannot produce a signature verify_ledger_signature
+# accepts -- so a wholesale fabrication is now distinguishable from a
+# genuine invoice too, without asking the customer to simply trust that
+# nobody with storage access tampered with the file.
+_SIGNATURE_DOMAIN = b"commontrace-value-ledger-signature-v1"
+
+
+def ledger_root(entries: list[LedgerEntry]) -> str:
+    """The single hash a signature covers.
+
+    The last entry's hash if the ledger is non-empty, or the chain genesis
+    if it is empty (an empty ledger is itself a fact worth being able to
+    sign -- "CommonTrace issued zero counted lines this period" is exactly
+    the kind of claim someone might want fabricated evidence against).
+    Signing only the root is sufficient, not a shortcut: verify_ledger
+    already proves every earlier entry is reachable ONLY by walking the
+    chain from genesis to that exact root, so a signature over the root
+    transitively covers every entry beneath it.
+    """
+    return entries[-1].entry_hash if entries else _LEDGER_GENESIS
+
+
+def sign_ledger(entries: list[LedgerEntry], key: bytes, *, org_id: str, issued_at: str) -> str:
+    """HMAC-SHA256 over (domain, org_id, issued_at, root), hex-encoded.
+
+    `key` is the whole point: it must be a secret the issuer holds
+    independently of anything printed on the invoice, kept outside this
+    module (see hub/config.py HUB_LEDGER_SIGNING_KEY), and never derived
+    from the ledger's own contents -- otherwise "signing" would just be
+    another public function of the same public data, exactly as
+    unauthenticated as entry_hash itself.
+
+    `org_id` and `issued_at` are bound into the payload alongside the root
+    so a valid signature minted for one org's ledger cannot be replayed as
+    if it were a fresh signature over a different org's chain, or over the
+    same chain re-dated to look more current. `_FIELD_SEP` (the same
+    separator `ledger()` uses) keeps the three fields from being re-split
+    into a different triple that happens to hash the same.
+    """
+    payload = _SIGNATURE_DOMAIN + _FIELD_SEP.encode("utf-8") + _FIELD_SEP.join(
+        (org_id, issued_at, ledger_root(entries))
+    ).encode("utf-8")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def verify_ledger_signature(
+    entries: list[LedgerEntry], signature: str, key: bytes, *, org_id: str, issued_at: str
+) -> bool:
+    """Whether `signature` is what `sign_ledger` produces for this exact
+    (org, timestamp, chain) -- i.e. whether whoever holds `key` actually
+    issued this invoice, not merely whether the chain is self-consistent
+    (verify_ledger covers that separately, with no key required).
+
+    `hmac.compare_digest` rather than `==`: a signature check is exactly the
+    kind of comparison a timing side-channel can turn into a byte-at-a-time
+    oracle, the same reasoning hub/auth.py's key comparison already applies
+    to API keys.
+    """
+    expected = sign_ledger(entries, key, org_id=org_id, issued_at=issued_at)
+    return hmac.compare_digest(expected, signature)
 
 
 def compute(
