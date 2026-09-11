@@ -61,6 +61,7 @@ import os
 from typing import Any
 
 from commontrace import (
+    cache_gate,
     evidence_io,
     experiment,
     frontmatter,
@@ -353,7 +354,26 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
+
+        A turn whose entire content is an acknowledgement -- "ok", "thanks",
+        "go ahead" -- is answered immediately with `skipped: true` and no
+        ranking pass, because there is nothing in it for a lesson to match.
         """
+        # Before the store is read, and before any arm is assigned. Both halves
+        # of that ordering matter: the saving is the corpus parse this skips,
+        # and the safety is that a skipped turn never becomes an occasion, so
+        # nothing is filtered after its arm is known (commontrace/cache_gate.py).
+        if cache_gate.is_trivial_prompt(task):
+            return _ok(
+                lessons=[], n_active=0, occasion_id=occasion_id or None,
+                skipped=True,
+                note=(
+                    "Nothing was retrieved: this turn carries no task to match a "
+                    "lesson against, so no corpus was read and no holdout arm was "
+                    "assigned -- it is not an occasion. Describe the work you are "
+                    "about to attempt, in a full sentence, to retrieve against it."
+                ),
+            )
         try:
             # The SAME loader and ranker `commontrace query` uses, on the same
             # (path, frontmatter) shape -- not a parallel implementation. If

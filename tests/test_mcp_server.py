@@ -172,6 +172,40 @@ def test_retrieve_on_an_empty_store_explains_itself(server):
     assert "capture" in out["note"]
 
 
+def test_retrieve_skips_a_contentless_turn_without_reading_the_store(server):
+    """"ok" cannot match a lesson, so it does not pay for a ranking pass."""
+    _curate(server)
+    out = call(server, "retrieve", task="ok")
+    assert out["ok"] and out["skipped"] is True
+    assert out["lessons"] == []
+    assert "not an occasion" in out["note"]
+
+
+def test_a_skipped_turn_never_becomes_an_occasion(server):
+    """The safety property. The gate runs BEFORE any arm is assigned, so a
+    skipped turn logs nothing -- which is what keeps it a pre-randomization
+    filter. The same filter applied after assignment would drop occasions
+    once their arm was known, and that is the one thing a holdout cannot
+    survive."""
+    _curate(server)
+    before = call(server, "store_status")
+    out = call(server, "retrieve", task="thanks", occasion_id="occ-trivial-1")
+    assert out["skipped"] is True
+    assert "withheld" not in out, "a skipped turn must not be given arms"
+    after = call(server, "store_status")
+    assert after == before, "a skipped turn must leave no trace in the store"
+
+
+def test_a_real_query_that_starts_like_an_acknowledgement_still_retrieves(server):
+    _curate(server)
+    out = call(
+        server, "retrieve",
+        task="no password reset email ever arrives for the customer",
+    )
+    assert not out.get("skipped")
+    assert out["lessons"], "a real query was swallowed by the trivial-prompt gate"
+
+
 def test_retrieve_returns_the_body_not_just_the_frontmatter(server):
     _curate(server)
     out = call(server, "retrieve", task="customer says the password reset email never arrived")
