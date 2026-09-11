@@ -209,6 +209,21 @@ class ApiKey(Base):
     # at verification time in hub/auth.py, so an expired key stops working
     # without anyone having to run a revocation job.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What this key may do, as distinct from which org it speaks for
+    # (hub/scopes.py). Before this column there was one privilege level per
+    # org, so a credential minted for a CI job could also delete the org.
+    #
+    # server_default is every scope: an existing key could do everything
+    # when it was issued, and narrowing live credentials from inside a
+    # migration would break running fleets on upgrade -- a decision that
+    # belongs to the operator, who can re-issue narrower keys whenever they
+    # choose. NOT NULL for the same reason `tags` is: a nullable array
+    # gives every reader two ways to spell "nothing" and one of them
+    # (hub/scopes.py:satisfies) has to mean "everything" for legacy rows,
+    # so the column itself should never produce NULLs going forward.
+    scopes: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), nullable=False, server_default="{read,write,admin}", default=list
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="api_keys")
 

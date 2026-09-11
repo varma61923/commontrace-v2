@@ -2,8 +2,17 @@
 `python -m hub.manage <command>`.
 
     create-org <name>               -> prints the new org's id
-    issue-key <org_id> [days]       -> prints the raw key ONCE (see warning below);
-                                        optional expiry in days (default: never expires)
+    issue-key <org_id> [days] [scopes]
+                                    -> prints the raw key ONCE (see warning below);
+                                        optional expiry in days (default: never expires);
+                                        optional comma-separated scopes from
+                                        read,write,admin (default: all three, matching
+                                        what a key could do before scopes existed).
+                                        A production agent wants `read,write`; a
+                                        dashboard wants `read`; `admin` is what gates
+                                        deleting a trace or the whole organization.
+                                        Scopes do not imply each other -- see
+                                        hub/scopes.py.
     rotate-key <key_id>             -> revokes <key_id>, issues + prints a new raw key for the same org
     revoke-key <key_id>             -> revokes a key immediately
     list-orgs                       -> id, name, created_at, active_keys
@@ -184,21 +193,46 @@ async def create_org(name: str, session_factory=None) -> None:
         print(f"org_id: {org.id}")
 
 
-async def issue_key(org_id: str, expires_days: str | None = None, session_factory=None) -> None:
+async def issue_key(
+    org_id: str, expires_days: str | None = None, scope_list: str | None = None,
+    session_factory=None,
+) -> None:
+    """`issue-key <org_id> [days] [scopes]`.
+
+    `scopes` is a comma-separated subset of read,write,admin (hub/scopes.py).
+    Omitted, the key gets all three -- what a key could do before scopes
+    existed, so the documented onboarding one-liner is unchanged. A
+    production agent wants `read,write`; a dashboard wants `read`; only an
+    operator's own key needs `admin`, which is what gates deleting a trace
+    and deleting the organization.
+
+    Scopes do NOT imply each other: `admin` alone cannot read. That is what
+    makes "this key cannot escalate" answerable by reading one row.
+    """
     days = int(expires_days) if expires_days is not None else None
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        issued = await auth.issue_api_key(session, org_id, expires_days=days)
+        issued = await auth.issue_api_key(
+            session, org_id, expires_days=days, scopes=scope_list
+        )
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="issue_key",
             org_id=org_id, target_type="api_key", target_id=issued.key_id,
-            summary=f"prefix={issued.key_prefix} expires_days={days if days is not None else 'never'}",
+            summary=(
+                f"prefix={issued.key_prefix} "
+                f"expires_days={days if days is not None else 'never'} "
+                f"scopes={','.join(issued.scopes)}"
+            ),
         )
     print(f"key_id: {issued.key_id}")
     if days is None:
         print("expires: never  (pass a day count, e.g. `issue-key <org_id> 90`, for a client-facing key)")
     else:
         print(f"expires: in {days} day(s)")
+    print(f"scopes: {','.join(issued.scopes)}")
+    if scope_list is None:
+        print("  (every scope, the pre-scopes default. For a least-privilege workload")
+        print("   token pass a subset: `issue-key <org_id> 90 read,write`)")
     print(f"api_key (shown once, store it now): {issued.raw_key}")
 
 
@@ -1554,7 +1588,7 @@ async def value(org_id: str, value_per_occasion: str | None = None, session_fact
 
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
-    "issue-key": (issue_key, 1, 2),
+    "issue-key": (issue_key, 1, 3),
     "rotate-key": (rotate_key, 1, 1),
     "revoke-key": (revoke_key, 1, 1),
     "list-orgs": (list_orgs, 0, 0),

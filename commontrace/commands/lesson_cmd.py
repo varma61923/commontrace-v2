@@ -6,7 +6,15 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, lesson_io, memory_guard, paths, templates, validate
+from commontrace import (
+    approval,
+    frontmatter,
+    lesson_io,
+    memory_guard,
+    paths,
+    templates,
+    validate,
+)
 from commontrace.commands import _validators
 from commontrace.commands._format import cell, read_or_warn
 
@@ -285,6 +293,27 @@ def run_approve(args: argparse.Namespace) -> int:
                 "  intended content.",
                 file=sys.stderr,
             )
+            return 1
+
+        # Separation of duties, if the store asks for it
+        # (memory/approval-policy.yaml). No policy file means today's
+        # behaviour exactly: anyone may approve, including the author.
+        # Checked BEFORE the content scan below only because a "you may not
+        # approve this at all" answer makes the finding list moot; both
+        # refuse before any state changes.
+        #
+        # Deliberately NOT overridable by --force: --force exists for an
+        # author who has looked at their own lesson and judged the warning
+        # a false positive, which is precisely the judgement a
+        # separation-of-duties policy says this person may not make.
+        try:
+            policy = approval.load_policy(root)
+            approval.check(
+                policy, slug=args.slug, approver=_actor(),
+                authors=approval.authors_of(root, args.slug),
+            )
+        except (approval.ApprovalDenied, approval.PolicyError) as exc:
+            print(f"[commontrace] refusing to approve {args.slug}: {exc}", file=sys.stderr)
             return 1
 
         # OWASP ASI06 (Memory & Context Poisoning): an active lesson is

@@ -46,10 +46,28 @@ So `approve_lesson` exists, and:
   - it enforces the same scaffolding refusal `commontrace lesson approve`
     does, so an agent cannot activate a lesson that is still "TODO:" -- the
     defect that used to let template text become a fleet-wide instruction;
+  - it runs the same content-safety scan (commontrace/memory_guard.py), so a
+    credential or a prompt-injection payload cannot reach `active`;
   - it records WHO approved it in the lesson body, so an agent-approved
     lesson is distinguishable from a human-approved one after the fact;
   - and `serve(allow_approval=False)` removes the tool entirely, for a
     deployment that requires a person. Absent, not merely refused.
+
+BUT "SECOND JUDGEMENT" WAS OPTIONAL, AND NOW THE STORE DECIDES
+--------------------------------------------------------------
+Everything above is about WHAT is being activated. None of it stopped the
+same actor drafting a lesson and approving it a second later, so the
+independence the Validator role exists to supply was available rather than
+required -- in exactly the case where it matters most, an agent curating its
+own output unattended at machine speed. Recording an agent-approved lesson
+as agent-approved makes that auditable; it does not make it reviewed.
+
+commontrace/approval.py makes that a policy the store states
+(`memory/approval-policy.yaml`): `mode: two-person` requires that the
+approver is not among the lesson's recorded authors, and
+`require_human: true` refuses an `mcp:` actor's approval outright. With no
+policy file the behaviour above is unchanged, so an existing store sees
+nothing new until someone opts in.
 """
 
 from __future__ import annotations
@@ -61,6 +79,7 @@ import os
 from typing import Any
 
 from commontrace import (
+    approval,
     cache_gate,
     evidence_io,
     experiment,
@@ -822,6 +841,21 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if errors:
                         return _err(f"refusing to activate {slug!r}: it does not satisfy the "
                                     "lesson schema.", schema_errors=errors)
+                    # Separation of duties, where the store asks for it
+                    # (memory/approval-policy.yaml). Absent, this is a
+                    # no-op and an agent may still approve its own draft --
+                    # the documented default. Set `mode: two-person` or
+                    # `require_human: true` and this is the gate that stops
+                    # the agent curating its own output unattended.
+                    try:
+                        policy = approval.load_policy(root)
+                        approval.check(
+                            policy, slug=slug, approver=_agent_actor(approved_by),
+                            authors=approval.authors_of(root, slug),
+                        )
+                    except (approval.ApprovalDenied, approval.PolicyError) as exc:
+                        return _err(f"refusing to activate {slug!r}: {exc}")
+
                     # OWASP ASI06 (Memory & Context Poisoning): an active
                     # lesson is injected into every later retrieval verbatim
                     # (this tool's own docstring), so a credential or a

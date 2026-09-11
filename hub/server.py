@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -30,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, commons, crud, observability, plans
+from hub import auth, commons, crud, observability, plans, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -168,11 +169,17 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
+        # What this particular credential may do, as distinct from which org
+        # it speaks for (hub/scopes.py). Set here, beside the org, because
+        # this is the only place that has seen the key row; every tool then
+        # reads it through auth.require_scope with nothing to pass around.
+        scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
             return await call_next(request)
         finally:
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
+            auth.current_scopes.reset(scope_token)
 
 
 class LoadShedMiddleware:
@@ -319,6 +326,20 @@ def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
 
 
 def _error_response(exc: Exception) -> dict:
+    # Before the generic PermissionError branch below, and deliberately a
+    # different label. "unauthorized" invites a client to re-authenticate,
+    # and for a scope denial that is a lie: the credential is valid, it is
+    # this action it may not take, and retrying with the same key will fail
+    # identically forever. The two extra fields let a caller render "this
+    # token needs the write scope" instead of a generic failure, without
+    # parsing the prose.
+    if isinstance(exc, auth.ScopeDenied):
+        return {
+            "error": "forbidden",
+            "detail": str(exc),
+            "required_scope": exc.required,
+            "granted_scopes": list(exc.granted) if exc.granted is not None else None,
+        }
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
@@ -425,7 +446,47 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         ),
     )
 
-    @mcp.tool()
+    # Which scope each tool needs, recorded as the tool is registered.
+    # hub/tests/test_api_key_scopes.py asserts this covers every registered
+    # tool, so a new tool cannot be added without a scope decision: the
+    # failure mode being designed out is a tool that silently defaults to
+    # "any authenticated key may call this", which is exactly the state the
+    # whole surface was in before scopes existed.
+    tool_scopes: dict[str, str] = {}
+
+    def scoped_tool(scope: str):
+        """Register an MCP tool that requires `scope` (hub/scopes.py).
+
+        One enforcement point rather than a check inside each of the twenty
+        handlers: a check an author must remember to write is a check that
+        is eventually missing from exactly the one tool where it mattered.
+        Written at the registration site so the required capability reads
+        directly above the function it guards.
+
+        `functools.wraps` matters structurally here, not cosmetically: the
+        MCP SDK derives each tool's name, description and input schema by
+        introspecting the callable it is handed, so the wrapper must carry
+        the wrapped function's identity or every tool would arrive on the
+        wire as an undocumented `guarded(*args, **kwargs)`.
+        """
+        if scope not in scopes.ALL_SCOPES:
+            raise ValueError(f"unknown scope for tool registration: {scope!r}")
+
+        def decorator(fn):
+            @functools.wraps(fn)
+            async def guarded(*args, **kwargs):
+                try:
+                    auth.require_scope(scope)
+                except Exception as exc:  # noqa: BLE001 - rendered, not raised
+                    return _error_response(exc)
+                return await fn(*args, **kwargs)
+
+            tool_scopes[fn.__name__] = scope
+            return mcp.tool()(guarded)
+
+        return decorator
+
+    @scoped_tool(scopes.SCOPE_READ)
     async def search_traces(
         query: str = "",
         tags: list[str] | None = None,
@@ -506,7 +567,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def contribute_trace(
         title: str,
         context_text: str,
@@ -580,7 +641,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def get_trace(id: str) -> dict:
         """Fetch a single trace by id. Not found (including a trace id that
         belongs to another org) reports not_found, never a permission error."""
@@ -594,7 +655,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def vote_trace(id: str, vote: str, feedback_tag: str = "", feedback_text: str = "") -> dict:
         """Cast (or update) this org's vote ('up'/'down') on a trace: your
         own, or any other org's trace currently shared to the commons."""
@@ -611,7 +672,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def amend_trace(
         id: str,
         title: str | None = None,
@@ -663,7 +724,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def list_tags() -> dict:
         """List every distinct tag used across this org's non-quarantined traces."""
         try:
@@ -674,7 +735,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def fleet_outcomes(agent_type: str = "") -> dict:
         """Has your fleet's agent performance changed since your baseline
         window? Compares the outcomes recorded on your own traces
@@ -723,7 +784,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def working_set(budget_chars: int = crud.DEFAULT_WORKING_SET_CHARS) -> dict:
         """Your fleet's proven memory, small enough to pin to a system prompt.
 
@@ -770,7 +831,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def value_delivered(
         value_per_occasion: float = 0.0, rate_tiers: list[dict] | None = None
     ) -> dict:
@@ -835,7 +896,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def holdout_assign(
         trace_ids: list, occasion_id: str, pinned: list[str] | None = None
     ) -> dict:
@@ -877,7 +938,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def record_occasion_outcome(occasion_id: str, succeeded: bool) -> dict:
         """Report how an occasion went, closing the loop on every holdout
         decision made for it.
@@ -904,7 +965,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # call here would let one compromised API key wipe an org's entire
     # history irreversibly with no window for anyone to notice.
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def delete_trace(id: str) -> dict:
         """Permanently delete one of your own traces, and every trace in
         its amendment chain (so an amended-and-superseded copy of the same
@@ -921,7 +982,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def request_account_deletion() -> dict:
         """Start permanently deleting YOUR ENTIRE ORGANIZATION -- every
         trace, vote, api key, and Knowledge Base submission. Deletes
@@ -940,7 +1001,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def cancel_account_deletion() -> dict:
         """Cancel a pending request_account_deletion request. Needs no
         token -- any valid API key for this org may call it, since
@@ -953,7 +1014,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def confirm_account_deletion(confirmation_token: str) -> dict:
         """The second call: permanently deletes this organization and
         everything scoped to it. Irreversible. Fails with
@@ -1004,7 +1065,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # hub/models.py:KnowledgeBaseSubmission.
     if config.commons_enabled:
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def commons_overlap(
             failures: list[dict] | None = None,
             threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
@@ -1034,7 +1095,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def commons_search(
             query_signature: list[int] | None = None,
             limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
@@ -1072,7 +1133,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_WRITE)
         async def submit_kb_entry(
             title: str,
             context_text: str,
@@ -1111,7 +1172,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def list_my_kb_submissions(limit: int = 50) -> dict:
             """Your org's own Knowledge Base submissions and their review
             status ('pending', 'approved', or 'rejected'). Never shows
@@ -1126,7 +1187,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def account_usage() -> dict:
         """What your plan entitles you to, and what you have used this period.
 
@@ -1141,6 +1202,12 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
+    # Published on the server object so a test can assert every registered
+    # tool declared a scope (hub/tests/test_api_key_scopes.py). Attached
+    # rather than returned separately so no caller of build_mcp_server has
+    # to change shape, and so the mapping is discoverable from the object
+    # that actually owns the tools.
+    mcp.commontrace_tool_scopes = dict(tool_scopes)
     return mcp
 
 

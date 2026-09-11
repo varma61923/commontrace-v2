@@ -622,6 +622,11 @@ across a revocation, re-revoke those key ids immediately.
 - [ ] Postgres not publicly reachable; Hub reaches it over a private network.
 - [ ] API keys issued with an expiry (`issue-key <org_id> <days>`) rather
       than never expiring.
+- [ ] API keys issued with the **narrowest scope** that does the job
+      (`issue-key <org_id> 90 read,write` for a production agent, `read`
+      for a dashboard). Omitting scopes grants `read,write,admin`, which
+      means that credential can also delete the organization. See
+      `hub/scopes.py`.
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] `HUB_ADMIN_TOKEN` either unset, or set to a real secret with `/admin`
@@ -686,7 +691,7 @@ across a revocation, re-revoke those key ids immediately.
 | Limitation | Where |
 |---|---|
 | Rate limiting is per-process | §6, `hub/abuse.py` |
-| Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
+| Auth is API-key-only; no OAuth/JWT, no human users, no SSO/SCIM/RBAC (keys do carry `read`/`write`/`admin` scopes) | `hub/README.md`, `hub/scopes.py` |
 | No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
 | No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |

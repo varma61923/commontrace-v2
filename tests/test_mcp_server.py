@@ -614,6 +614,54 @@ def test_approve_refuses_a_lesson_carrying_a_prompt_injection_payload(server):
     assert call(server, "get_lesson", slug=slug)["lesson"]["status"] == "review"
 
 
+def _set_policy(store, text: str) -> None:
+    from commontrace import approval, paths
+
+    os.makedirs(paths.memory_dir(store), exist_ok=True)
+    with open(approval.policy_path(store), "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def test_approve_refuses_an_agent_approving_its_own_draft_under_two_person(
+    server, store
+):
+    """The case the Validator role exists for, and the one this surface left
+    open: an agent drafting and approving unattended, at machine speed. Only
+    once the store opts in -- with no policy file this is allowed, which
+    `test_approve_records_who_approved_it` above pins."""
+    _capture_pattern(server)
+    slug = call(server, "propose_lessons")["candidates"][0]["slug"]
+    _fill_in(server, slug)  # drafted by mcp:agent, via draft_lesson
+    _set_policy(store, "mode: two-person\n")
+
+    out = call(server, "approve_lesson", slug=slug, approved_by="agent")
+    assert not out["ok"]
+    assert "separation of duties" in out["error"]
+    assert call(server, "get_lesson", slug=slug)["lesson"]["status"] == "review"
+
+
+def test_a_different_reviewer_may_approve_under_two_person(server, store):
+    """The policy must leave a way through, or the only way to ship a lesson
+    is to turn the policy off."""
+    _capture_pattern(server)
+    slug = call(server, "propose_lessons")["candidates"][0]["slug"]
+    _fill_in(server, slug)
+    _set_policy(store, "mode: two-person\n")
+
+    assert call(server, "approve_lesson", slug=slug, approved_by="reviewer-b")["ok"]
+
+
+def test_approve_refuses_any_agent_when_a_human_is_required(server, store):
+    _capture_pattern(server)
+    slug = call(server, "propose_lessons")["candidates"][0]["slug"]
+    _fill_in(server, slug)
+    _set_policy(store, "require_human: true\n")
+
+    out = call(server, "approve_lesson", slug=slug, approved_by="reviewer-b")
+    assert not out["ok"]
+    assert "requires a human approval" in out["error"]
+
+
 def test_approve_does_not_refuse_on_pii_alone(server):
     """PII never blocks approval by itself -- see commontrace/memory_guard.py.
     A support lesson legitimately references a customer's email address."""

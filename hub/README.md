@@ -644,8 +644,42 @@ traffic beyond a pilot:
   docstring for why a small Starlette middleware was simpler and more
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
-- **Per-key scopes.** Every key currently has full read/write access to its
-  org's traces. Read-only keys, or per-tool scoping, aren't implemented.
+- **Human users, SSO and RBAC.** There is one workload identity per org
+  (an API key) and no notion of a *person*. SAML/OIDC sign-in, SCIM
+  provisioning, and named roles (Viewer/Analyst/Curator/Validator/…) are
+  not implemented. The scopes below are the workload-token half of that
+  story, not a substitute for it.
+
+### Per-key scopes (implemented)
+
+An API key carries a scope list — `read`, `write`, `admin`
+(`hub/scopes.py`) — so a credential minted for a CI job is not also able to
+delete the organization. Every MCP tool declares the scope it needs at its
+registration site, and `hub/tests/test_api_key_scopes.py` asserts that no
+tool can be registered without that decision: the failure mode being
+designed out is a tool silently inheriting "any authenticated key may call
+this", which is what the entire surface did before scopes existed.
+
+    read    search, get, tags, Knowledge Base, fleet outcomes, value
+            report, working set
+    write   contribute, amend, vote, KB submission, holdout assignment,
+            occasion outcomes
+    admin   delete_trace, and the account deletion request/cancel/confirm
+            trio
+
+**Scopes do not imply each other.** `admin` does not confer `read`. The
+grant list says exactly what a key may do, which is what makes "can this
+key escalate?" answerable by reading one row rather than by simulating a
+hierarchy. A key meant to do everything says `read,write,admin`, which is
+what `issue-key` grants when no scopes are given — so the documented
+onboarding one-liner, and every key issued before this existed, are
+unchanged.
+
+A scope denial returns `{"error": "forbidden", "required_scope": …,
+"granted_scopes": …}`, deliberately not `unauthorized`: the credential is
+valid, and telling a client to re-authenticate when retrying with the same
+key will fail identically forever turns a configuration error into a retry
+loop.
 
 ### Abuse controls (implemented, with a known scaling limit)
 

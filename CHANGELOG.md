@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A store can require that the approver of a lesson is not its author.**
+  Activating a lesson is the one action with fleet-wide blast radius -- an
+  `active` lesson is injected into every later retrieval verbatim -- and
+  the gate enforced everything about WHAT was being activated (no
+  scaffolding, valid schema, no secrets or injection payloads) while
+  leaving WHO entirely open: the same actor could draft a lesson and
+  approve it a second later, so the independent second judgement the
+  Validator role exists to supply was available rather than required,
+  in exactly the case where it matters most -- an agent curating its own
+  output unattended at machine speed. `commontrace/approval.py` makes that
+  a policy the store states in `memory/approval-policy.yaml`:
+  `mode: two-person` refuses an approver who appears among the lesson's
+  recorded authors (read from the revision journal every content change
+  already writes), and `require_human: true` refuses an `mcp:` actor's
+  approval outright. Enforced on both approval paths -- the CLI's
+  `lesson approve` and the MCP `approve_lesson` tool -- and `--force` does
+  not override it, because that flag exists for an author judging a content
+  warning a false positive, which is precisely the judgement this policy
+  says that person may not make. With no policy file the behaviour is
+  exactly as before. A malformed policy raises rather than falling back to
+  the permissive default, since a security setting that silently disables
+  itself is the one failure mode it must not have.
+
+- **API keys carry scopes, so a credential minted for one job cannot do
+  every job.** There was one identity per org and one privilege level: hold
+  a key and you could search the corpus, contribute to it, delete a trace
+  outright, and schedule the organization's own deletion. Least privilege
+  is not a posture you can adopt with a credential that has no notion of
+  less. `hub/scopes.py` defines three -- `read`, `write`, `admin` -- mapped
+  to the three jobs a credential actually holds in a fleet (a dashboard
+  reads; a production agent reads and writes; only an operator's key needs
+  the destructive tools). They deliberately do NOT imply each other, which
+  is what makes "can this key escalate?" answerable by reading one row
+  instead of simulating a hierarchy. Every MCP tool declares its scope at
+  the registration site via `scoped_tool`, and a test asserts no tool can
+  be registered without that decision -- the failure mode designed out is a
+  tool silently inheriting "any authenticated key may call this", which is
+  what the whole surface did before. A denial returns
+  `{"error": "forbidden", "required_scope": …, "granted_scopes": …}` rather
+  than `unauthorized`, because the credential is valid and inviting a
+  client to re-authenticate would turn a configuration error into an
+  infinite retry loop. `issue-key <org_id> [days] [scopes]` takes the grant;
+  omitted, it grants all three, so every existing key and the documented
+  onboarding one-liner behave exactly as before (the column's server
+  default backfills existing rows the same way).
+
 - **The Hub now refuses to start when row-level security is installed but
   cannot bite, and the shipped stack serves as a role that cannot bypass
   it.** Postgres skips every RLS policy for a superuser or a `BYPASSRLS`

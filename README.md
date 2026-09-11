@@ -393,15 +393,36 @@ that launched it, which already had them. That is the opposite of the Hub,
 which is multi-tenant and network-reachable and therefore authenticated on
 every call.
 
-**An agent can approve its own lesson, but the gate is real.**
-`approve_lesson` refuses a lesson that still contains scaffolding (an active
-lesson is injected into every later retrieval *verbatim*, so a rule still
-reading `TODO:` teaches the fleet nothing and displaces a real one), and it
-records **who** approved it, so an agent-approved lesson stays distinguishable
-from a human-approved one. Where a person must be in the loop,
-`commontrace serve --no-approval` removes the tool entirely — absent from the
-listing, not present and refusing, so the agent never plans around a call it
-cannot make.
+**An agent can approve its own lesson by default, and the store can forbid
+it.** `approve_lesson` refuses a lesson that still contains scaffolding (an
+active lesson is injected into every later retrieval *verbatim*, so a rule
+still reading `TODO:` teaches the fleet nothing and displaces a real one),
+refuses one carrying a secret or a prompt-injection payload
+(`commontrace/memory_guard.py`), and records **who** approved it, so an
+agent-approved lesson stays distinguishable from a human-approved one.
+
+Those all check *what* is being activated. For *who*, write
+`memory/approval-policy.yaml`:
+
+```yaml
+mode: two-person      # the approver must not be among the lesson's recorded authors
+require_human: true   # an `mcp:` actor's approval does not satisfy the gate at all
+```
+
+With no such file the behaviour is unchanged — anyone may approve, including
+the author — so an existing store sees nothing new until it opts in.
+Authorship comes from the revision journal every content change already
+writes, and `--force` does not override it: that flag exists for an author
+who has judged a content warning a false positive, which is exactly the
+judgement a separation-of-duties policy says this person may not make. Where
+a person must be in the loop entirely, `commontrace serve --no-approval`
+removes the tool — absent from the listing, not present and refusing, so the
+agent never plans around a call it cannot make.
+
+None of this authenticates anybody: the local tier has no identity system,
+so an actor string is an attribution, not a proof. What the policy changes
+is the default path — the ordinary way to approve your own lesson stops
+silently working, which is what a control is for.
 
 Nothing here reimplements ranking, holdout assignment, or the approval guard —
 it calls the same functions `commontrace query` and `commontrace lesson

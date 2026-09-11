@@ -64,6 +64,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hub import scopes as scopes_module
 from hub.models import ApiKey, Organization
 
 _KEY_PREFIX = "ct_live_"
@@ -122,20 +123,42 @@ class IssuedKey:
     org_id: str
     raw_key: str  # only ever available at issuance time; caller must display/store it now
     key_prefix: str = ""  # non-secret; safe to log / use as an audit actor
+    # What the issued key may do (hub/scopes.py). Returned so the caller can
+    # print it: an operator who asked for a narrow key needs to see what they
+    # actually got, and one who asked for nothing needs to see that the
+    # default is everything.
+    scopes: tuple[str, ...] = ()
 
 
 def generate_raw_key() -> str:
     return _KEY_PREFIX + secrets.token_urlsafe(32)
 
 
-async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | None = None) -> IssuedKey:
+async def issue_api_key(
+    session: AsyncSession,
+    org_id: str,
+    expires_days: int | None = None,
+    scopes: str | list | tuple | None = None,
+) -> IssuedKey:
     """`expires_days=None` (the default) issues a non-expiring key, matching
     the behavior before expiry existed. A positive value sets `expires_at`,
     after which verify_api_key rejects the key with no revocation job
-    needing to run."""
+    needing to run.
+
+    `scopes=None` grants every scope -- what a key could do before scopes
+    existed, so the documented one-liner onboarding is unchanged. Pass a
+    subset ("read", ["read", "write"]) for a least-privilege workload token;
+    hub/scopes.py raises on an unknown scope rather than silently dropping
+    it, because a typo that quietly narrows or widens a credential is a
+    privilege change nobody reviews.
+    """
     org = await session.get(Organization, org_id)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
+
+    # Validated before any expensive work and before the row exists: a
+    # ScopeError here must not leave a half-issued key behind.
+    granted_scopes = scopes_module.parse(scopes)
 
     expires_at = None
     if expires_days is not None:
@@ -158,10 +181,14 @@ async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | 
     api_key = ApiKey(
         org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash,
         key_hmac=_key_hmac(raw_key), expires_at=expires_at,
+        scopes=list(granted_scopes),
     )
     session.add(api_key)
     await session.flush()
-    return IssuedKey(key_id=api_key.id, org_id=org_id, raw_key=raw_key, key_prefix=api_key.key_prefix)
+    return IssuedKey(
+        key_id=api_key.id, org_id=org_id, raw_key=raw_key,
+        key_prefix=api_key.key_prefix, scopes=granted_scopes,
+    )
 
 
 async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
@@ -190,10 +217,26 @@ async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
     )
 
 
+def _scopes_of(raw: object) -> tuple[str, ...] | None:
+    """Normalize the `scopes` column into what AuthenticatedKey carries.
+
+    NULL means a key that predates the column -- full capability, see
+    hub/scopes.py. Anything else, including an empty array, is taken
+    literally: a deliberately narrowed key.
+    """
+    if raw is None:
+        return None
+    return tuple(raw)
+
+
 @dataclass(frozen=True)
 class AuthenticatedKey:
     org_id: str
     key_prefix: str  # non-secret; used to attribute audit-log entries
+    # What this key may do (hub/scopes.py). None means a key issued before
+    # the column existed, which held every capability at issuance -- see
+    # scopes.satisfies for why that is distinct from an empty tuple.
+    scopes: tuple[str, ...] | None = None
 
 
 async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKey | None:
@@ -236,6 +279,7 @@ async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) ->
             select(
                 ApiKey.id, ApiKey.org_id, ApiKey.key_prefix, ApiKey.key_hmac,
                 ApiKey.revoked_at, ApiKey.expires_at, ApiKey.last_used_at,
+                ApiKey.scopes,
             ).where(ApiKey.key_hmac == _key_hmac(raw_key))
         )
     ).first()
@@ -257,7 +301,9 @@ async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) ->
     # requests against each other's row lock for no operational benefit.
     if row.last_used_at is None or (now - row.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
         await session.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used_at=now))
-    return AuthenticatedKey(org_id=row.org_id, key_prefix=row.key_prefix)
+    return AuthenticatedKey(
+        org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes)
+    )
 
 
 async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datetime) -> AuthenticatedKey | None:
@@ -347,7 +393,10 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
         # across DIFFERENT rows.
         if candidate.key_hmac is None:
             candidate.key_hmac = _key_hmac(raw_key)
-        return AuthenticatedKey(org_id=candidate.org_id, key_prefix=candidate.key_prefix)
+        return AuthenticatedKey(
+            org_id=candidate.org_id, key_prefix=candidate.key_prefix,
+            scopes=_scopes_of(candidate.scopes),
+        )
     return None
 
 
@@ -369,6 +418,59 @@ current_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("cur
 # authenticated key's non-secret prefix so mutating tool calls can attribute
 # their audit-log rows (hub/audit.py) without re-reading the key.
 current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_actor", default=None)
+
+# Set alongside the two above by the same middleware: what the authenticated
+# key is allowed to do (hub/scopes.py). None means either "no authenticated
+# request in context" (operator CLI, benchmarks) or "a key issued before
+# scopes existed" -- both of which `require_scope` treats as unrestricted,
+# and for the same reason it always has: those paths were never gated by a
+# key's capabilities in the first place.
+current_scopes: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar(
+    "current_scopes", default=None
+)
+
+
+class ScopeDenied(PermissionError):
+    """The key authenticated, and is not allowed to do this.
+
+    A PermissionError subclass so any handler that only knows about that
+    base class still refuses correctly, but hub/server.py's
+    `_error_response` gives it its own label ("forbidden", not
+    "unauthorized"): the credential is valid, and telling a caller to
+    re-authenticate when retrying with the same key will fail identically
+    forever is a lie that turns a configuration error into a retry loop.
+
+    `required` and `granted` are carried as attributes so the wire response
+    can be acted on without parsing the message.
+    """
+
+    def __init__(self, message: str, required: str, granted: tuple[str, ...] | None):
+        super().__init__(message)
+        self.required = required
+        self.granted = granted
+
+
+def require_scope(required: str) -> None:
+    """Raise `ScopeDenied` unless the key in context holds `required`.
+
+    Called from one place per tool (hub/server.py's `_scoped_tool`), so the
+    enforcement point is the registration site an author cannot forget to
+    write -- a tool registered with no scope does not compile past
+    `_scoped_tool`, and hub/tests asserts every registered tool declares one.
+    """
+    from hub import scopes as scopes_module
+
+    granted = current_scopes.get()
+    if scopes_module.satisfies(granted, required):
+        return
+    raise ScopeDenied(
+        f"this API key does not have the {required!r} scope "
+        f"(it holds: {scopes_module.describe(granted)}). Issue a key that does with "
+        f"`python -m hub.manage issue-key <org_id> <days> {required}` -- "
+        "re-authenticating with the same key will not help.",
+        required=required,
+        granted=granted,
+    )
 
 
 def get_current_org_id() -> str:
