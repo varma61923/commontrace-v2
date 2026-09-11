@@ -58,6 +58,12 @@ commontrace/**
 # sample can support them -- and the container would not even start,
 # because crud.py imports it at module level.
 !commontrace/integrity.py
+# Kaplan-Meier and the log-rank test, which integrity.py imports at module
+# level to tell an occasion nobody has reported YET from one nobody ever
+# will. Without it the container starts and dies on the import, and with the
+# import stubbed the attrition audit would go back to reading a fast-
+# concluding treated arm as missing data.
+!commontrace/survival.py
 # Content identity for a trace, stamped onto every holdout assignment
 # (hub/crud.py:holdout_assign) so an amended trace cannot silently split
 # an experiment's arms across two treatments. Imported at module level,

@@ -2647,6 +2647,13 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 HoldoutObservation.succeeded,
                 HoldoutObservation.salt,
                 HoldoutObservation.created_at,
+                # Paired with created_at above, this is follow-up time: how
+                # long each occasion was watched before its outcome arrived.
+                # It is what lets the attrition audit tell an occasion nobody
+                # has reported YET from one nobody ever will, instead of
+                # counting a fast-concluding treated arm as missing data
+                # (commontrace/survival.py).
+                HoldoutObservation.resolved_at,
                 HoldoutObservation.trace_revision,
             ).where(
                 HoldoutObservation.org_id == org_id,
@@ -2675,7 +2682,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             )
         )
     ).all()  # plain Row tuples (named attribute access below), not `.scalars()`
-    # -- there is no single-entity column to scalar-ize; this selects seven.
+    # -- there is no single-entity column to scalar-ize; this selects eight.
 
     assignments = [
         integrity.Assignment(
@@ -2686,6 +2693,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             salt=r.salt,
             succeeded=r.succeeded,
             at=r.created_at,
+            resolved_at=r.resolved_at,
             revision=r.trace_revision,
         )
         for r in rows

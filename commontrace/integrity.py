@@ -68,7 +68,7 @@ import datetime
 import statistics
 from dataclasses import dataclass, field
 
-from commontrace import experiment
+from commontrace import experiment, survival
 
 # A p-value below this on an arm-comparison check means the imbalance is
 # unlikely to be chance. Deliberately LOOSER than the 0.05 the effect
@@ -107,6 +107,24 @@ ARM_BALANCE_ALPHA = 0.001
 # bias the estimate, it just shrinks it, but at this level the run is mostly
 # unobserved and the CI stops describing what a reader thinks it describes.
 ATTRITION_WEAKENS_AT = 0.30
+
+# The share of eventually-reported occasions used to define "has had a fair
+# chance to report". An occasion younger than the time by which this much of
+# the run's OWN reported outcomes had arrived is not attrition, it is pending:
+# it has not yet reached the age at which its absence would mean anything.
+#
+# Derived from the run's own reporting curve rather than fixed in wall-clock
+# time, because the honest horizon is a property of the work. A fleet closing
+# support tickets in ninety seconds and one escalating incidents over four days
+# would each be mis-served by any constant, and a constant is exactly the kind
+# of unmeasured policy number this package exists to avoid.
+MATURITY_QUANTILE = 0.90
+
+# How far apart the two arms' reporting SCHEDULES have to be before the run is
+# called too early to read. Deliberately looser than VALIDITY_ALPHA: a speed
+# difference is not itself a defect -- a lesson that helps should close work
+# sooner -- so this only fires to say "wait", never to say "biased".
+CENSORING_ALPHA = 0.05
 
 # What the experiment randomizes, as a word for the reports.
 #
@@ -148,6 +166,14 @@ class Assignment:
     salt: str = ""
     succeeded: bool | None = None
     at: datetime.datetime | None = None
+    # WHEN the outcome came back, against `at` above being when the arm was
+    # decided. The gap between them is follow-up time, and it is the only
+    # thing that can tell an occasion nobody has reported YET apart from one
+    # nobody will EVER report (commontrace/survival.py). None on a row that is
+    # still waiting -- and also on any row written before this was recorded,
+    # where the checks fall back to their untimed behaviour rather than
+    # guessing a duration.
+    resolved_at: datetime.datetime | None = None
     # Content identity of the lesson AS IT WAS on this occasion
     # (commontrace/revision.py). None means unknown -- an assignment logged
     # before revisions were recorded, or a lesson that could not be read --
@@ -277,7 +303,179 @@ def normalize(rows: list[Assignment]) -> tuple[list[Assignment], int]:
 # --- the checks ----------------------------------------------------------
 
 
-def check_differential_attrition(rows: list[Assignment]) -> Finding:
+def _follow_up(
+    rows: list[Assignment], now: datetime.datetime | None
+) -> list[tuple[Assignment, survival.Observation]] | None:
+    """Pair each row with how long it was watched, or None if unanswerable.
+
+    Returns None -- meaning "fall back to the untimed behaviour" -- whenever
+    the log cannot support a timed reading:
+
+      * no row carries `at`, so nothing can be placed on a clock at all; or
+      * some row HAS an outcome but no `resolved_at`, so the event is known to
+        have happened at an unknown time.
+
+    The second rule is deliberately strict. A resolved row with no timestamp is
+    interval-censored: placing it at `now` would stretch its follow-up to the
+    full age of the run and drag the reporting curve right, and placing it at
+    `at` would compress it to zero and drag the curve left. Either guess moves
+    the horizon that decides which occasions count as attrition. Refusing the
+    timed path on a partly-timed log keeps the old answer, which is merely
+    coarse, instead of inventing a new one that is precise and wrong.
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    if not any(r.at is not None for r in rows):
+        return None
+    paired: list[tuple[Assignment, survival.Observation]] = []
+    for row in rows:
+        if row.at is None:
+            return None
+        reported = row.succeeded is not None
+        if reported and row.resolved_at is None:
+            return None
+        end = row.resolved_at if reported else now
+        # Clamped at zero: `now` is the reader's clock and the timestamps are
+        # the database's, so a little skew between them is ordinary and must
+        # not surface as a negative time-to-event.
+        duration = max(0.0, (end - row.at).total_seconds())
+        paired.append((row, survival.Observation(duration=duration, event=reported)))
+    return paired
+
+
+def _mature_horizon(paired: list[tuple[Assignment, survival.Observation]]) -> float | None:
+    """How old an occasion must be before its silence means anything.
+
+    The time by which MATURITY_QUANTILE of outcomes had arrived -- computed per
+    arm, and the SLOWER arm's answer wins.
+
+    Taking the max rather than pooling is the whole difficulty of this check in
+    one line. A pooled horizon is dominated by whichever arm reports faster, so
+    a run where the treated arm concludes in minutes and the control takes
+    hours would judge the control's occasions against the treated arm's clock
+    and call every one of them missing -- reintroducing, one level down, the
+    exact false positive the maturity rule exists to remove. Each arm is
+    therefore given the follow-up its own reporting behaviour says it needs.
+
+    An arm whose curve never reaches the quantile contributes nothing instead
+    of raising the horizon to infinity. That case is the signature worth
+    keeping: an arm that is merely SLOW still reports eventually and so still
+    has a quantile, while an arm that is genuinely LOSING outcomes never gets
+    there. Letting it set the horizon would let a broken arm excuse its own
+    missingness forever.
+
+    `None` when no arm reaches the quantile, and the caller falls back to the
+    untimed comparison -- which, on a run where almost nothing is ever
+    reported, is exactly the blunt answer that is called for.
+    """
+    horizons: list[float] = []
+    for injected in (True, False):
+        arm = [obs for row, obs in paired if row.injected is injected]
+        if not arm:
+            continue
+        reached = survival.time_to_reported_fraction(
+            survival.kaplan_meier(arm), MATURITY_QUANTILE
+        )
+        if reached is not None:
+            horizons.append(reached)
+    return max(horizons) if horizons else None
+
+
+def check_censoring_hazard(
+    rows: list[Assignment], now: datetime.datetime | None = None
+) -> Finding:
+    """Are the two arms reporting on the same schedule -- and is it too early?
+
+    Distinct from attrition, and the distinction is the point. Attrition asks
+    whether one arm ends up permanently less observed than the other, which
+    biases the estimate. This asks whether one arm is merely reporting SOONER,
+    which does not -- everything still arrives, just not yet.
+
+    That is not a defect; it is arguably the treatment working. A lesson that
+    helps closes work faster, so its arm's outcomes land first. The hazard only
+    matters for WHEN the effect can be read: while a materially large pending
+    population remains and the arms are draining it at different rates, the
+    sample the estimate is computed over is not yet equally observed, and the
+    number moves as the laggards land. So this reports WEAKENS -- "wait" -- and
+    never INVALIDATES. Calling a working lesson biased because it was fast is
+    the exact failure this check exists to stop.
+    """
+    paired = _follow_up(rows, now)
+    if paired is None:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            "Reporting schedule not checkable.",
+            "This log does not carry an assignment time and a resolution time for "
+            "every row, so how long each occasion was watched is unknown. The "
+            "attrition check still reads the totals; only the timing does not.",
+            {},
+        )
+    inj = [obs for row, obs in paired if row.injected]
+    wit = [obs for row, obs in paired if not row.injected]
+    pending = sum(1 for _, obs in paired if not obs.event)
+    z, p = survival.log_rank_test(inj, wit)
+    numbers = {
+        "injected": len(inj), "withheld": len(wit),
+        "pending": pending, "z": z, "p": p,
+    }
+    if not inj or not wit:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            "Reporting schedule not comparable yet.",
+            "One arm has no assignments, so there are no two schedules to compare.",
+            numbers,
+        )
+
+    inj_curve = survival.kaplan_meier(inj)
+    wit_curve = survival.kaplan_meier(wit)
+    # Median reporting time per arm, where each arm reaches one half reported.
+    # Absent when an arm never gets there, which the text handles rather than
+    # printing "None seconds".
+    med_inj = survival.time_to_reported_fraction(inj_curve, 0.5)
+    med_wit = survival.time_to_reported_fraction(wit_curve, 0.5)
+    numbers |= {"median_seconds_injected": med_inj, "median_seconds_withheld": med_wit}
+
+    if p >= CENSORING_ALPHA:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            f"Both arms report on the same schedule (log-rank p={p:.3g}).",
+            "Outcomes arrive at the same rate in each arm, so reading the effect "
+            "now is not reading it mid-drain.",
+            numbers,
+        )
+
+    faster, slower = ("injected", "withheld") if z > 0 else ("withheld", "injected")
+    pending_share = pending / len(paired) if paired else 0.0
+    if pending_share < 1.0 - MATURITY_QUANTILE:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            f"The {faster} arm reported faster than the {slower} arm "
+            f"(log-rank p={p:.3g}), but the run has since caught up.",
+            f"{_pct(pending_share)} of occasions are still waiting, so the speed "
+            "difference no longer decides which occasions the estimate can see. "
+            "Worth knowing on its own: an arm that concludes work sooner is what "
+            "a lesson that helps looks like before the outcomes are counted.",
+            numbers,
+        )
+    return Finding(
+        "censoring_hazard", SEVERITY_WEAKENS,
+        f"The {faster} arm is reporting faster than the {slower} arm "
+        f"(log-rank p={p:.3g}) and {_pct(pending_share)} of occasions are still "
+        "waiting.",
+        f"This is a statement about timing, NOT about bias: the {slower} arm's "
+        "occasions are pending, not lost, and the attrition check below only "
+        "counts an occasion against an arm once it is old enough to have "
+        "reported. But the effect read right now is computed over a sample the "
+        "two arms have drained to different depths, and it will move as the "
+        "laggards land. Re-read it once the pending share falls, or widen the "
+        "window the outcomes are collected over.",
+        numbers,
+    )
+
+
+def check_differential_attrition(
+    rows: list[Assignment], now: datetime.datetime | None = None
+) -> Finding:
     """Are the two arms equally likely to have an outcome recorded?
 
     THE load-bearing check. Dropping unresolved occasions is unbiased only
@@ -292,14 +490,47 @@ def check_differential_attrition(rows: list[Assignment]) -> Finding:
     ones -- which flatters the control and UNDERSTATES the lesson. When the
     injected arm loses more, the effect is overstated. Either way the number
     is not the causal effect.
+
+    An occasion counts here only once it is old enough for its silence to mean
+    something: either it has already reported, or it has been waiting at least
+    as long as `_mature_horizon` -- the time by which most of this run's own
+    outcomes had arrived. Anything younger is pending, not missing.
+
+    Without that rule this check had a failure mode that punished the product
+    for working. Outcomes are reported some time after the arm is assigned, and
+    a lesson that helps concludes its occasions SOONER; so at any moment before
+    the run has run its course, the injected arm has more outcomes on the books
+    purely because it got there first. The terminal comparison read that head
+    start as differential attrition and returned INVALIDATES, suppressing the
+    effect estimate exactly when the lesson was working, and the better the
+    lesson the faster it was disqualified. The speed difference is still
+    reported -- by `check_censoring_hazard`, which calls it what it is.
+
+    On a log without timestamps the maturity rule cannot run and every row is
+    judged, which is the behaviour this check has always had.
     """
-    inj = [r for r in rows if r.injected]
-    wit = [r for r in rows if not r.injected]
+    judged = rows
+    immature = 0
+    horizon: float | None = None
+    paired = _follow_up(rows, now)
+    if paired is not None:
+        horizon = _mature_horizon(paired)
+        if horizon is not None:
+            # Reported occasions always count -- they are evidence however
+            # young. Silent ones count only once they are past the horizon.
+            mature = [row for row, obs in paired if obs.event or obs.duration >= horizon]
+            immature = len(rows) - len(mature)
+            judged = mature
+
+    inj = [r for r in judged if r.injected]
+    wit = [r for r in judged if not r.injected]
     s_inj, n_inj = sum(r.succeeded is not None for r in inj), len(inj)
     s_wit, n_wit = sum(r.succeeded is not None for r in wit), len(wit)
     numbers = {
         "injected_resolved": s_inj, "injected_total": n_inj,
         "withheld_resolved": s_wit, "withheld_total": n_wit,
+        "pending_too_young": immature,
+        "maturity_horizon_seconds": horizon,
     }
     if not n_inj or not n_wit:
         return Finding(
@@ -884,6 +1115,7 @@ def audit(
     rows: list[Assignment],
     min_arm: int = experiment.DEFAULT_MIN_ARM,
     unit: str = UNIT_LESSON,
+    now: datetime.datetime | None = None,
 ) -> IntegrityReport:
     """Every check, plus the projection, over one experiment's assignments.
 
@@ -904,7 +1136,13 @@ def audit(
     scorer_drift = check_scorer_drift(rows)
     unique, duplicates = normalize(rows)
     findings = [
-        check_differential_attrition(unique),
+        check_differential_attrition(unique, now=now),
+        # Immediately after attrition, and deliberately: the two are read
+        # together. Attrition says whether an arm is permanently less observed;
+        # this says whether it is merely behind. `now` is threaded from the
+        # caller so a test can read the log at a fixed instant instead of
+        # against a wall clock that moves while it runs.
+        check_censoring_hazard(unique, now=now),
         check_arm_balance(unique),
         drift,
         scorer_drift,
