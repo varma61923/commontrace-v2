@@ -612,8 +612,22 @@ def ledger_root(entries: list[LedgerEntry]) -> str:
     return entries[-1].entry_hash if entries else _LEDGER_GENESIS
 
 
-def sign_ledger(entries: list[LedgerEntry], key: bytes, *, org_id: str, issued_at: str) -> str:
-    """HMAC-SHA256 over (domain, org_id, issued_at, root), hex-encoded.
+def sign_ledger(
+    entries: list[LedgerEntry], key: bytes, *, org_id: str, issued_at: str,
+    evidence_digest: str = "", prereg_fingerprint: str = "",
+) -> str:
+    """HMAC-SHA256 over (domain, org_id, issued_at, root, evidence, prereg),
+    hex-encoded.
+
+    `evidence_digest` and `prereg_fingerprint` are what make the invoice
+    ANCHORED rather than merely tamper-evident. The chain proves the printed
+    lines were not edited; these bind the invoice to the raw assignment rows
+    it was computed from (commontrace/raw_export.py) and to the design that
+    was registered before the run (commontrace/prereg.py). Without them, an
+    issuer could hand over a perfectly signed invoice and a data export that
+    has nothing to do with it, and both would check out on their own. Empty
+    strings keep a signature over a ledger with no such artifacts distinct
+    from one that had them -- they are part of the signed payload either way.
 
     `key` is the whole point: it must be a secret the issuer holds
     independently of anything printed on the invoice, kept outside this
@@ -630,13 +644,14 @@ def sign_ledger(entries: list[LedgerEntry], key: bytes, *, org_id: str, issued_a
     into a different triple that happens to hash the same.
     """
     payload = _SIGNATURE_DOMAIN + _FIELD_SEP.encode("utf-8") + _FIELD_SEP.join(
-        (org_id, issued_at, ledger_root(entries))
+        (org_id, issued_at, ledger_root(entries), evidence_digest, prereg_fingerprint)
     ).encode("utf-8")
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
 def verify_ledger_signature(
-    entries: list[LedgerEntry], signature: str, key: bytes, *, org_id: str, issued_at: str
+    entries: list[LedgerEntry], signature: str, key: bytes, *, org_id: str,
+    issued_at: str, evidence_digest: str = "", prereg_fingerprint: str = "",
 ) -> bool:
     """Whether `signature` is what `sign_ledger` produces for this exact
     (org, timestamp, chain) -- i.e. whether whoever holds `key` actually
@@ -648,7 +663,10 @@ def verify_ledger_signature(
     oracle, the same reasoning hub/auth.py's key comparison already applies
     to API keys.
     """
-    expected = sign_ledger(entries, key, org_id=org_id, issued_at=issued_at)
+    expected = sign_ledger(
+        entries, key, org_id=org_id, issued_at=issued_at,
+        evidence_digest=evidence_digest, prereg_fingerprint=prereg_fingerprint,
+    )
     return hmac.compare_digest(expected, signature)
 
 

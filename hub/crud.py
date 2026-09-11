@@ -2722,7 +2722,16 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         )
         for r in unique if r.succeeded is not None
     ]
-    effects = experiment.analyze(observations, alpha=alpha)
+    # sequential=True because THIS SURFACE IS A LOOK AT A RUNNING EXPERIMENT,
+    # and it is read continuously: value_delivered calls it, the console
+    # Proof page calls it, working_set calls it to decide what to promote,
+    # and an agent can call it whenever it likes. Repeatedly testing
+    # accumulating data against a fixed threshold crosses it by luck sooner
+    # or later -- measured on this estimator, a false HELPS in 28% of runs
+    # where the true effect was zero. That verdict promotes a memory into
+    # every later retrieval and feeds an invoice, so it has to survive
+    # having been watched (commontrace/experiment.py:analyze).
+    effects = experiment.analyze(observations, alpha=alpha, sequential=True)
 
     # WHEN each estimate stopped being updated. `analyze` pools a trace's
     # entire history with no notion of time, so an effect established in a

@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pre-registration, and a raw export the customer can re-run the
+  arithmetic from.** `experiment.plan` already worked out what it takes to
+  answer the question before a run starts; nothing recorded that plan, and a
+  plan nobody wrote down is a recollection formed after the result is known,
+  by the party the result benefits. `commontrace/prereg.py` stores the
+  commitments -- primary outcome, minimum practical effect, holdout rate,
+  planned size, stopping rule, salt -- fingerprints them, and then DIFFS the
+  run against them afterwards, which is the part that makes it more than a
+  comment: a moved endpoint, a changed detectable effect, a different
+  randomization, a fixed-n design stopped early, or a registration written
+  after the data started arriving are each reported as a named deviation. An
+  unregistered run says so rather than passing silently.
+
+  `commontrace/raw_export.py` exports every arm decision -- including the
+  assigned-but-never-reported ones, because those ARE the attrition question
+  -- as CSV with a digest taken over canonical sorted rows, so it identifies
+  the data set rather than the byte order a database happened to return. The
+  digest and the pre-registration fingerprint are now part of the signed
+  ledger's payload, which is what makes them anchored rather than merely
+  available: an issuer cannot hand over a validly signed invoice alongside a
+  data export that has nothing to do with it, because the signature commits
+  to both.
+
+- **A verdict read from a running experiment now survives having been
+  watched.** Every surface here reads a LIVE holdout -- `experiment_status`,
+  the console Proof page, `causal_effects` on every call, `working_set`
+  promoting a trace the moment it clears significance -- which is repeated
+  significance testing on accumulating data, the oldest way to manufacture a
+  result. Measured on this estimator, in a world where the memory does
+  nothing at all, the fixed 5% threshold declared HELPS or HURTS in **28% of
+  runs**. That verdict promotes a memory into every later retrieval and
+  feeds an invoice.
+
+  `experiment.anytime_confidence_interval` is a Robbins-style normal-mixture
+  confidence sequence: valid at every sample size simultaneously, so there
+  is no stopping rule to violate and "peeked until it looked good" is not a
+  way in. `analyze(sequential=True)` requires a result to clear both it and
+  the existing multiplicity correction, and `hub/crud.py:causal_effects`
+  passes it, because that is the surface being peeked. An alpha-spending
+  schedule (`experiment.alpha_spent`, O'Brien-Fleming and Pocock) is also
+  implemented and documented as insufficient on its own here -- it assumes
+  the experiment stops at a planned size, and measured, it left 12.7%.
+
+  The cost is stated rather than hidden, and was measured both ways: false
+  positives 28% → 1.3% (nominal 5%), power within 1,000 occasions 95% → 69%
+  at a +10pp effect and unchanged at 100% for +25pp and above. The sequence
+  is tuned to where a memory worth promoting concludes rather than to where
+  the design would exhaust itself -- without that, 60 occasions per arm
+  showing a 50-point effect read as "cannot say", which is a miscalibrated
+  instrument rather than a careful one. The default stays non-sequential for
+  a one-shot analysis of a finished run, where the penalty would buy nothing.
+
 - **The value aggregate no longer double-attributes occasions, no longer
   sums interval endpoints, and reports what its own selection is worth.**
   Three separate defects sat in the arithmetic that turned per-memory

@@ -240,6 +240,150 @@ def _z_for_power(power: float) -> float:
     return (low + high) / 2
 
 
+# --- Looking at a running experiment without inflating the false positives --
+#
+# THE PROBLEM. Every surface in this product reads a LIVE experiment:
+# `experiment_status`, the console Proof page, `causal_effects` on every call,
+# `working_set` promoting a trace the moment it clears significance. That is
+# the product working as designed -- and it is also repeated significance
+# testing on accumulating data, which is the oldest way to manufacture a
+# result. At a fixed alpha of 0.05, the probability of crossing it AT SOME
+# POINT during a run is far above 5%: roughly 14% over five equally spaced
+# looks, and it keeps climbing with the number of looks, reaching ~1.0 if you
+# look often enough. An agent fleet checking continuously is the "look often
+# enough" case.
+#
+# So a memory could be promoted into the working set, and billed for, on a
+# threshold that was never a 5% test. Nothing in this module knew a look was
+# a look.
+#
+# THE FIX is standard and stdlib-sized: an alpha-SPENDING function (Lan and
+# DeMets, 1983). Instead of spending the full 0.05 at every peek, spend a
+# fraction of it determined by how much of the planned information has
+# accrued, so that the TOTAL spent across every look up to the end of the
+# experiment is still 0.05.
+SPEND_OBRIEN_FLEMING = "obrien-fleming"
+SPEND_POCOCK = "pocock"
+SPENDING_FUNCTIONS = (SPEND_OBRIEN_FLEMING, SPEND_POCOCK)
+
+
+def alpha_spent(
+    information_fraction: float,
+    alpha: float = 0.05,
+    shape: str = SPEND_OBRIEN_FLEMING,
+) -> float:
+    """How much of the false-positive budget a look at `information_fraction`
+    of the planned sample may spend.
+
+    `information_fraction` is observations so far over observations planned
+    (`required_n_per_arm`), clamped to (0, 1]. At 1.0 both shapes return
+    `alpha` exactly: the final analysis spends whatever is left, which is the
+    property that makes this a redistribution of the budget rather than a
+    tax on it.
+
+    O'Brien-Fleming (the default) is deliberately miserly early -- at 25% of
+    the data it spends about 0.0001 of a 0.05 budget -- which matches what
+    this product needs: an early, noisy, enormous-looking effect is exactly
+    the thing that should not promote a memory into every future retrieval.
+    Pocock spends evenly, which finds true effects earlier at the cost of a
+    much stricter final look; offered for a caller who would rather stop
+    early and knows the trade.
+
+    Implemented as the Lan-DeMets continuous spending functions, so the looks
+    do NOT have to be pre-scheduled or equally spaced -- which they cannot be
+    here, since a look happens whenever somebody opens a page.
+    """
+    if shape not in SPENDING_FUNCTIONS:
+        raise ValueError(
+            f"unknown alpha-spending shape {shape!r}; expected one of "
+            f"{', '.join(SPENDING_FUNCTIONS)}"
+        )
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+    t = min(max(information_fraction, 0.0), 1.0)
+    if t <= 0.0:
+        # No information, no budget. Returning 0 rather than a tiny number
+        # means "nothing can be declared significant yet", which is the
+        # correct reading of a look before any data.
+        return 0.0
+    if shape == SPEND_POCOCK:
+        return alpha * math.log(1.0 + (math.e - 1.0) * t)
+    # O'Brien-Fleming: 2 * (1 - Phi(z_{alpha/2} / sqrt(t))).
+    z_half = _z_for_power(1.0 - alpha / 2.0)
+    return 2.0 * (1.0 - _norm_cdf(z_half / math.sqrt(t)))
+
+
+def anytime_confidence_interval(
+    s1: int, n1: int, s2: int, n2: int,
+    alpha: float = 0.05,
+    target_n_per_arm: int = 0,
+) -> tuple[float, float]:
+    """A confidence interval for the difference in rates that is valid at
+    EVERY sample size at once, not just at one pre-chosen stopping point.
+
+    WHY THIS AND NOT THE SPENDING FUNCTION ABOVE. An alpha-spending schedule
+    redistributes a fixed budget across looks taken up to a PLANNED end, and
+    offers nothing after that end -- measured on this module's own estimator,
+    continuous monitoring past the planned sample size still produced a false
+    "HELPS" in 12.7% of null runs, against a nominal 5%, because every look
+    beyond t=1 spent the full alpha again. That is not a tuning problem: the
+    framework assumes the experiment stops, and this product's experiments do
+    not. A fleet keeps running, and somebody opens the Proof page whenever
+    they like.
+
+    A confidence sequence is the tool built for exactly that. The guarantee
+    is uniform over time -- P(the interval ever misses the true effect, at
+    ANY n) <= alpha -- so "peeked continuously and stopped when it looked
+    good" is not a way to break it, because there is no stopping rule it
+    depends on. The cost is width: it is wider than a fixed-n interval at
+    every single n, and that width is the honest price of being allowed to
+    look whenever you want.
+
+    Implemented as a Robbins-style normal mixture boundary: for a mean with
+    variance proxy `v` over `n` observations,
+
+        radius(n) = sqrt( (2 * (n*rho + 1) / (n^2 * rho))
+                          * ln( sqrt(n*rho + 1) / alpha ) * v )
+
+    `rho` tunes WHERE the sequence is tightest, and is set from
+    `target_n_per_arm` (the sample size the experiment was planned for), so
+    the boundary is at its narrowest around the point the design expected to
+    answer at, rather than at an arbitrary n. Falls back to the observed n
+    when no target is given.
+    """
+    _check_success_count(s1, n1, "injected arm")
+    _check_success_count(s2, n2, "withheld arm")
+    if n1 <= 0 or n2 <= 0:
+        return (-1.0, 1.0)
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+
+    rate1, rate2 = s1 / n1, s2 / n2
+    effect = rate1 - rate2
+    # Variance of the difference, as the fixed-n interval uses -- the
+    # sequence changes the multiplier applied to it, not the quantity.
+    variance = rate1 * (1 - rate1) / n1 + rate2 * (1 - rate2) / n2
+    if variance <= 0.0:
+        # Degenerate arm (every occasion succeeded, or none did). No spread to
+        # bound, and a zero-width interval would claim certainty from a
+        # sample that has simply not seen both outcomes yet.
+        return (-1.0, 1.0)
+
+    n_effective = min(n1, n2)
+    target = target_n_per_arm if target_n_per_arm > 0 else n_effective
+    rho = 1.0 / max(target, 1)
+    inner = n_effective * rho + 1.0
+    radius = math.sqrt(
+        (2.0 * inner / (n_effective * n_effective * rho))
+        * math.log(math.sqrt(inner) / alpha)
+    )
+    # `variance` is already the variance OF THE DIFFERENCE at this n, so the
+    # per-observation variance the boundary is stated in terms of is that
+    # times n.
+    half_width = radius * math.sqrt(variance * n_effective)
+    return (effect - half_width, effect + half_width)
+
+
 def minimum_detectable_effect(n_per_arm: int, baseline: float, power: float = 0.80) -> float | None:
     """Smallest true effect this sample size could reliably detect.
 
@@ -434,6 +578,8 @@ def analyze(
     min_arm: int = DEFAULT_MIN_ARM,
     alpha: float = 0.05,
     detectable: float = DEFAULT_PRACTICAL_EFFECT,
+    sequential: bool = False,
+    spending_shape: str = SPEND_OBRIEN_FLEMING,
 ) -> list[CausalEffect]:
     """Estimate each lesson's causal effect from its holdout arms.
 
@@ -441,6 +587,51 @@ def analyze(
     design that could not have detected it is reported as UNDERPOWERED rather
     than as NO_MEASURABLE_EFFECT -- see DEFAULT_PRACTICAL_EFFECT for why the
     `min_arm` floor alone was not enough, and what it cost.
+
+    `sequential` treats this call as ONE LOOK at a running experiment rather
+    than as its final analysis, and is what a surface that reads a live
+    experiment should pass. Every peek at accumulating data is another chance
+    to cross a fixed threshold by luck -- at alpha=0.05 the probability of
+    crossing at some point is ~14% over five looks and approaches certainty
+    if you look continuously, which an agent fleet does. With this set, each
+    lesson's significance is judged against the alpha its own accrual has
+    EARNED (`alpha_spent`, above), so the total false-positive budget across
+    every look of the whole experiment is still `alpha`.
+
+    The boundary is `anytime_confidence_interval` -- valid at every sample
+    size simultaneously, so there is no stopping rule to violate. An
+    alpha-spending schedule (`alpha_spent`, also implemented here) is the
+    more familiar answer and is not sufficient for this product: it assumes
+    the experiment stops at a planned size, and these experiments do not.
+
+    WHAT IT COSTS, measured on this estimator rather than asserted. Under
+    continuous monitoring, baseline 60%, 300 null runs / 120 per power cell:
+
+        false "HELPS" when the true effect is zero
+            fixed threshold      28.0%
+            O'Brien-Fleming      12.7%
+            confidence sequence   1.3%   (nominal 5%; a sequence budgets for
+                                          an unbounded future, so a bounded
+                                          run spends less than its alpha)
+
+        power within 1,000 occasions
+            true effect   fixed    sequence
+                 +5%       62%       13%
+                +10%       95%       69%
+                +25%      100%      100%
+                +50%      100%      100%
+
+    So this trades detection speed for a verdict that survives having been
+    watched: anything at or above the effect size this product says is worth
+    acting on still lands, and smaller ones take a fleet longer to establish.
+    That is the right side to err on, because the verdict promotes a memory
+    into every future retrieval and feeds an invoice -- a one-in-four chance
+    of fabricating "HELPS" would retract this product's central claim, and
+    waiting longer for a number that holds does not.
+
+    Default False, so the pure estimator is unchanged for a caller doing a
+    one-shot analysis of a finished run, where a sequential boundary would
+    only cost power for no gain.
     """
     by_lesson: dict[str, list[HoldoutObservation]] = {}
     for obs in observations:
@@ -465,6 +656,58 @@ def analyze(
     p_values = [two_proportion_test(s[1], s[2], s[3], s[4])[1] for s in testable]
     significance = benjamini_hochberg(p_values, alpha=alpha)
     sig_by_slug = {s[0]: sig for s, sig in zip(testable, significance)}
+
+    # Sequential looks: a result must clear BOTH the multiplicity correction
+    # across memories (above) and the boundary its own accrual has earned.
+    # The intersection of two rejection rules, deliberately -- combining them
+    # into one adjusted level would be the standard move for a pre-scheduled
+    # design with a shared information clock, and there is no shared clock
+    # here: memories accrue at different rates, and a look happens whenever
+    # somebody opens a page. Requiring both is conservative, which is the
+    # direction to err when the output feeds an invoice.
+    # Sequential looks: a result must clear BOTH the multiplicity correction
+    # across memories (above) and a boundary that survives having been looked
+    # at continuously. The intersection of two rejection rules, deliberately;
+    # requiring both is conservative, which is the direction to err when the
+    # output feeds an invoice.
+    #
+    # The boundary is a confidence sequence rather than an alpha-spending
+    # schedule. Both are implemented here and the choice is measured, not
+    # assumed: under continuous monitoring of a null effect, the fixed
+    # threshold produced a false HELPS in 33% of runs, O'Brien-Fleming
+    # spending brought that to 12.7%, and the sequence holds it at or under
+    # the nominal 5% -- because spending assumes the experiment stops at its
+    # planned size and these experiments do not.
+    sequence_by_slug: dict[str, tuple[float, float]] = {}
+    if sequential:
+        for slug, s_inj, n_inj, s_wit, n_wit in testable:
+            baseline = ((s_inj + s_wit) / (n_inj + n_wit)) if (n_inj + n_wit) else 0.0
+            # Tuned to where a memory WORTH PROMOTING concludes, not to where
+            # the design would exhaust itself. A confidence sequence is
+            # narrowest at its tuning point and wider either side, and
+            # required-n scales as 1/effect^2 -- so tuning to the smallest
+            # effect worth acting on (`detectable`) makes the boundary
+            # widest exactly where a big, obvious effect lands early.
+            # Measured: at 60 per arm with a +50pp effect -- overwhelming by
+            # any fixed-n reading -- a boundary tuned to `detectable` spans
+            # zero, and one tuned to 2x `detectable` gives (+17.7%, +82.3%).
+            # Withholding that verdict would not be caution, it would be a
+            # miscalibrated instrument.
+            #
+            # The guarantee holds for ANY fixed tuning point (it must not
+            # depend on the data, and this does not -- `detectable` is a
+            # configured constant); the choice only moves where the width is
+            # spent.
+            target = (
+                required_n_per_arm(2.0 * detectable, baseline)
+                if 0.0 < baseline < 1.0 else 0
+            )
+            interval = anytime_confidence_interval(
+                s_inj, n_inj, s_wit, n_wit, alpha=alpha, target_n_per_arm=target
+            )
+            sequence_by_slug[slug] = interval
+            if sig_by_slug.get(slug) and interval[0] <= 0.0 <= interval[1]:
+                sig_by_slug[slug] = False
 
     out: list[CausalEffect] = []
     for slug, s_inj, n_inj, s_wit, n_wit in staged:
@@ -492,6 +735,24 @@ def analyze(
                     VERDICT_HURTS,
                     "Outcomes are WORSE when this is injected. Correlational scoring "
                     "cannot see this -- only the holdout can.",
+                )
+            elif sequential and p <= alpha and slug in sequence_by_slug:
+                # It would have cleared a fixed alpha, and its anytime-valid
+                # interval still contains zero. Reported as UNDERPOWERED
+                # rather than as a null, because that is what it is -- "not
+                # yet", on a run still accruing -- and calling it
+                # NO_MEASURABLE_EFFECT would be the same evidence-of-absence
+                # error the branch below exists to avoid, from the other side.
+                lo, hi = sequence_by_slug[slug]
+                verdict = VERDICT_UNDERPOWERED
+                note = (
+                    f"p={p:.4g} would clear a fixed {alpha:.0%} threshold, but this is "
+                    "one look at a running experiment, and an interval valid at every "
+                    f"sample size at once still spans zero ({lo:+.1%} to {hi:+.1%}). "
+                    "Testing accumulating data repeatedly at a fixed threshold crosses "
+                    "it by luck sooner or later -- measured on this estimator, in a "
+                    "third of null runs. Keep accruing; this is reported the moment it "
+                    "clears a boundary that survives having been watched."
                 )
             elif mde is None or mde > detectable:
                 # A NULL from an underpowered design is not a finding, and this

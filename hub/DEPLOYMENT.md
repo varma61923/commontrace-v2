@@ -696,6 +696,8 @@ across a revocation, re-revoke those key ids immediately.
 | No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |
 | `fleet_outcomes` is observational (a before/after window), not a randomized experiment — it cannot separate this product's effect from anything else that changed | `hub/outcomes.py`, `commontrace/experiment.py` |
+| Causal verdicts are read from a *running* experiment, so they use an anytime-valid boundary — trustworthy under continuous peeking, but slower to establish a small effect than a fixed threshold would be (measured: 95%→69% power at a +10pp effect within 1,000 occasions, against a false-positive rate of 28%→1.3%) | `commontrace/experiment.py:analyze` |
+| Per-trace value contributions cannot be summed when traces share occasions, which is the normal case here — the policy-level comparison is reported instead | `commontrace/value.py` |
 | A holdout's assignments depend on the org's `holdout_salt`; restarting an experiment starts a new one and earlier observations are no longer pooled | `hub/models.py:Organization.holdout_salt` |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
