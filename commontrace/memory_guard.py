@@ -169,9 +169,34 @@ _INJECTION_PHRASE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
 # spacers and joiners used to hide text from a human reviewer while leaving
 # it intact for the model reading the raw string, and bidirectional-override
 # controls used the same way text-spoofing attacks use them elsewhere.
-_HIDDEN_CHARS_RE = re.compile(
-    "[​‌‍⁠﻿‪‫‬‭‮⁦⁧⁨⁩]"
+#
+# LISTED AS NUMERIC CODEPOINTS, NOT AS LITERAL CHARACTERS, and that is not a
+# style preference. A source file holding these characters literally is
+# unreviewable in exactly the way this check exists to catch: they are
+# invisible in a diff, so no reviewer could see which codepoints the class
+# actually held, or notice one being added or quietly dropped. It is also
+# the finding bandit's B613 (trojansource, CWE-838) raises against any
+# source file carrying bidirectional controls -- and suppressing that on the
+# one module whose whole job is to find them would be precisely backwards.
+# The compiled pattern is identical to the literal form; only the source
+# spelling changes.
+_HIDDEN_CODEPOINTS = (
+    0x200B,  # ZERO WIDTH SPACE
+    0x200C,  # ZERO WIDTH NON-JOINER
+    0x200D,  # ZERO WIDTH JOINER
+    0x2060,  # WORD JOINER
+    0xFEFF,  # ZERO WIDTH NO-BREAK SPACE (byte-order mark)
+    0x202A,  # LEFT-TO-RIGHT EMBEDDING
+    0x202B,  # RIGHT-TO-LEFT EMBEDDING
+    0x202C,  # POP DIRECTIONAL FORMATTING
+    0x202D,  # LEFT-TO-RIGHT OVERRIDE
+    0x202E,  # RIGHT-TO-LEFT OVERRIDE
+    0x2066,  # LEFT-TO-RIGHT ISOLATE
+    0x2067,  # RIGHT-TO-LEFT ISOLATE
+    0x2068,  # FIRST STRONG ISOLATE
+    0x2069,  # POP DIRECTIONAL ISOLATE
 )
+_HIDDEN_CHARS_RE = re.compile("[" + "".join(chr(cp) for cp in _HIDDEN_CODEPOINTS) + "]")
 
 
 @dataclass(frozen=True)
@@ -203,13 +228,13 @@ def _redact(text: str, start: int, end: int) -> str:
     reporting on."""
     matched = text[start:end]
     if len(matched) <= 8:
-        body = matched[:2] + "…" if len(matched) > 2 else "…"
+        body = matched[:2] + "..." if len(matched) > 2 else "..."
     else:
-        body = f"{matched[:4]}…{matched[-2:]}"
+        body = f"{matched[:4]}...{matched[-2:]}"
     lo = max(0, start - 12)
     hi = min(len(text), end + 12)
-    prefix = ("…" if lo > 0 else "") + text[lo:start]
-    suffix = text[end:hi] + ("…" if hi < len(text) else "")
+    prefix = ("..." if lo > 0 else "") + text[lo:start]
+    suffix = text[end:hi] + ("..." if hi < len(text) else "")
     return f"{prefix}{body}{suffix}".replace("\n", " ")
 
 

@@ -140,7 +140,7 @@ class TestPromptInjection:
         assert any(f.label == "smuggled instruction comment" for f in findings)
 
     def test_hidden_zero_width_characters_are_found(self):
-        findings = mg.scan_text("Looks normal​but hides a zero-width char")
+        findings = mg.scan_text("Looks normal" + chr(0x200B) + "but hides a zero-width char")
         assert any(f.label == "hidden/bidi-override Unicode character" for f in findings)
 
     def test_ordinary_troubleshooting_prose_does_not_trigger(self):
