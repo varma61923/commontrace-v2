@@ -72,12 +72,21 @@
                                        with. Run before start-experiment: at a 10% holdout
                                        only one occasion in ten lands in the control arm,
                                        so a run answers ~10x slower than it looks
-    start-experiment <org_id> [rate]
+    start-experiment <org_id> [rate] [outcome] [notes]
                                    -> begin a randomized holdout: withhold [rate] of
                                        eligible memory injections (default 0.2) so the
                                        fleet generates its own control arm. The only
-                                       design here that supports a CAUSAL claim
+                                       design here that supports a CAUSAL claim.
+                                       Pre-registers what the run commits to
+                                       measuring ([outcome], default "resolved") so a
+                                       later report can be checked against it
     stop-experiment <org_id>       -> stop withholding. Observations are kept
+    export-assignments <org_id> [file]
+                                   -> every arm decision, as CSV, for a customer's own
+                                       analyst to re-run the comparison from. Includes
+                                       the assigned-but-never-reported rows, which are
+                                       the attrition question. Prints the digest the
+                                       value ledger's signature commits to
     experiment <org_id>            -> what the holdout established, per trace: effect,
                                        95% CI, p-value, and an explicit UNDERPOWERED
                                        verdict so "cannot answer yet" never reads as
@@ -129,7 +138,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from commontrace import experiment
+from commontrace import experiment, prereg, raw_export
 from hub import audit, auth, commons, crud, outcomes, plans
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
@@ -705,7 +714,11 @@ async def plan_experiment(
     return design.verdict != "infeasible"
 
 
-async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), session_factory=None) -> bool:
+async def start_experiment(
+    org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE),
+    outcome: str = "resolved", notes: str = "",
+    session_factory=None,
+) -> bool:
     """Begin a randomized holdout for one org: withhold `rate` of eligible
     memory injections so the fleet generates its own control arm.
 
@@ -750,17 +763,47 @@ async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), s
         previous = org.holdout_salt
         org.holdout_rate = value
         org.holdout_salt = uuid.uuid4().hex[:16]
+
+        # Registered HERE, at the start, because that is the only moment a
+        # registration means anything: written afterwards it records what
+        # the results turned out to be, not what the run set out to find.
+        # Tied to the new salt, since a new salt is a new experiment and
+        # must not inherit the last one's credibility
+        # (commontrace/prereg.py).
+        searches_now, baseline_now = await _observed_volume_and_baseline(session, org_id)
+        planned = experiment.plan(
+            effect=experiment.DEFAULT_PRACTICAL_EFFECT,
+            baseline=baseline_now if baseline_now is not None else 0.5,
+            rate=value, occasions_budget=searches_now or None,
+        )
+        registration = prereg.register(
+            primary_outcome=outcome,
+            minimum_practical_effect=experiment.DEFAULT_PRACTICAL_EFFECT,
+            holdout_rate=value,
+            planned_occasions=max(1, planned.occasions_needed),
+            stopping_rule=prereg.STOP_SEQUENTIAL,
+            salt=org.holdout_salt,
+            notes=notes,
+        )
+        org.holdout_prereg = registration.to_dict()
         await session.flush()
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="start_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
-            summary=f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'}",
+            summary=(
+                f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'} "
+                f"prereg={registration.fingerprint()[:16]} outcome={outcome}"
+            ),
         )
         salt = org.holdout_salt
 
     print(f"experiment started for {org_id}")
     print(f"  holdout rate: {value:.0%} of eligible injections will be withheld")
     print(f"  salt:         {salt}")
+    print(f"  primary outcome: {registration.primary_outcome}")
+    print(f"  pre-registered:  {registration.fingerprint()[:16]}... "
+          f"({registration.planned_occasions:,} occasions planned, "
+          f"{registration.stopping_rule} stopping)")
     if previous:
         print(f"  NOTE: this replaces experiment {previous}. Its observations are kept but")
         print("        are no longer pooled -- they came from a different randomization.")
@@ -789,6 +832,52 @@ async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), s
     print("  The fleet's agents must call holdout_assign(...) before injecting, and")
     print("  record_occasion_outcome(...) afterwards, or nothing is measured.")
     print(f"  `python -m hub.manage experiment {org_id}` reads the result.")
+    return True
+
+
+async def export_assignments(
+    org_id: str, path: str | None = None, session_factory=None
+) -> bool:
+    """Every arm decision for this org's current experiment, as CSV.
+
+    The artifact a customer's own analyst re-runs the comparison from. Every
+    number this product bills on is computed by this product; the signed
+    ledger proves the issuer's arithmetic was not altered afterwards, and
+    this is the only thing that lets anyone disagree with the arithmetic
+    itself.
+
+    Includes the rows the estimate DROPS -- occasions assigned an arm and
+    never reported. Those are the attrition question, and an export without
+    them hands over a record with the evidence already removed.
+
+    Prints the digest (`commontrace/raw_export.py`), which is what the value
+    ledger's signature commits to: it is how a customer checks that the
+    export they are holding is the one the invoice was computed from.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        assignments = await crud.holdout_assignments(session, org_id)
+
+    result = raw_export.export(assignments)
+    if path:
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(result.csv_text)
+        print(f"wrote {path}")
+    else:
+        print(result.csv_text, end="")
+
+    print(f"# {result.summary}", file=sys.stderr)
+    print(f"# digest: {result.digest}", file=sys.stderr)
+    print(
+        "# Verify with commontrace.raw_export.verify(csv_text, digest), or "
+        "reimplement it:\n"
+        "#   sha256 over the canonical rows, sorted, joined -- see raw_export.digest_of.",
+        file=sys.stderr,
+    )
     return True
 
 
@@ -1609,8 +1698,9 @@ _COMMANDS = {
     "value": (value, 1, 2),
     "outcomes": (fleet_outcomes, 0, 1),
     "plan-experiment": (plan_experiment, 1, 3),
-    "start-experiment": (start_experiment, 1, 2),
+    "start-experiment": (start_experiment, 1, 4),
     "stop-experiment": (stop_experiment, 1, 1),
+    "export-assignments": (export_assignments, 1, 2),
     "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),

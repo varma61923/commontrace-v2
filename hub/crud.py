@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import distill, experiment, integrity, revision, value
+from commontrace import distill, experiment, integrity, prereg, raw_export, revision, value
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -2607,24 +2607,15 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
     }
 
 
-async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
-    """Per-trace causal effect estimates from the running experiment.
+async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
+    """Every arm decision in this org's CURRENT experiment, as
+    `integrity.Assignment` rows -- including the ones with no outcome yet.
 
-    Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
-    two-proportion tests, Benjamini-Hochberg across the lessons that met the
-    per-arm floor, a minimum detectable effect on every inconclusive one, and
-    an explicit UNDERPOWERED verdict so "cannot answer yet" never reads as
-    "no effect".
-
-    That last guarantee is stronger than it used to be, and it is why a Hub
-    customer may see more UNDERPOWERED rows than before. Clearing the
-    per-arm floor is a condition for running the test, not evidence the test
-    could see anything: at 10 observations per arm the minimum detectable
-    effect is over 60 percentage points. A null from a design that could not
-    have detected an effect worth acting on is now reported as UNDERPOWERED
-    rather than as NO_MEASURABLE_EFFECT, which is what it is
-    (commontrace/experiment.py:DEFAULT_PRACTICAL_EFFECT). The projections
-    beside it say how far each trace is from an answer.
+    Extracted so there is exactly one definition. Three things read it now
+    (the causal estimate, the validity audit, and the raw export a customer
+    re-runs the arithmetic from), and a second copy of this query is a second
+    chance for the numbers on an invoice and the rows handed over to justify
+    it to describe different data.
     """
     org = await session.get(Organization, org_id)
     # A Core column-select, not `select(HoldoutObservation)`: the latter
@@ -2699,6 +2690,30 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         )
         for r in rows
     ]
+    return assignments
+
+
+async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
+    """Per-trace causal effect estimates from the running experiment.
+
+    Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
+    two-proportion tests, Benjamini-Hochberg across the lessons that met the
+    per-arm floor, a minimum detectable effect on every inconclusive one, and
+    an explicit UNDERPOWERED verdict so "cannot answer yet" never reads as
+    "no effect".
+
+    That last guarantee is stronger than it used to be, and it is why a Hub
+    customer may see more UNDERPOWERED rows than before. Clearing the
+    per-arm floor is a condition for running the test, not evidence the test
+    could see anything: at 10 observations per arm the minimum detectable
+    effect is over 60 percentage points. A null from a design that could not
+    have detected an effect worth acting on is now reported as UNDERPOWERED
+    rather than as NO_MEASURABLE_EFFECT, which is what it is
+    (commontrace/experiment.py:DEFAULT_PRACTICAL_EFFECT). The projections
+    beside it say how far each trace is from an answer.
+    """
+    assignments = await holdout_assignments(session, org_id)
+    org = await session.get(Organization, org_id)
     # unit="trace": the Hub randomizes traces, not lessons. Without this the
     # customer console tells a Hub customer that a `lesson` was edited, which
     # is the other tier's vocabulary and sends them looking for an object they
@@ -2713,6 +2728,34 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
     # (holdout_assign takes a list), so the per-trace effects below cannot be
     # added -- this is the aggregate that can be.
     _policy = value.policy_effect(assignments)
+    # Identifies the data set every figure below was computed from, so the
+    # export a customer re-runs the arithmetic from can be checked against
+    # the invoice that cites it.
+    _evidence_digest = raw_export.digest_of(assignments)
+    # And the commitments this run made before it could see the answer. The
+    # first observation's timestamp is what makes "registered after the data
+    # started arriving" detectable at all.
+    _registered = None
+    if org is not None and org.holdout_prereg:
+        try:
+            _registered = prereg.Preregistration.from_dict(org.holdout_prereg)
+        except prereg.PreregError:
+            # A stored registration that cannot be read is reported as
+            # unregistered rather than crashing the report it qualifies: the
+            # figures are still computable, and "we cannot show you what this
+            # promised" is the honest rendering of a corrupt record.
+            _registered = None
+    _first_observation = min(
+        (a.at for a in assignments if a.at is not None), default=None
+    )
+    _prereg_check = prereg.check(
+        _registered,
+        actual_salt=(org.holdout_salt if org else ""),
+        actual_holdout_rate=(org.holdout_rate if org else None),
+        actual_detectable=experiment.DEFAULT_PRACTICAL_EFFECT,
+        actual_occasions=len({a.occasion_id for a in assignments}),
+        first_observation_at=_first_observation,
+    )
 
     unique, _ = integrity.normalize(assignments)
     observations = [
@@ -2771,6 +2814,28 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         # `effects` without reading this can quote a number that a named,
         # identified mechanism is biasing.
         "integrity": _integrity_wire(report),
+        # What this run committed to measuring before it could see the
+        # answer, and every way the run differs from it. An unregistered
+        # experiment says so here rather than passing silently -- the
+        # absence is the finding (commontrace/prereg.py).
+        "preregistration": {
+            "registered": _prereg_check.registered,
+            "clean": _prereg_check.clean,
+            "fingerprint": _prereg_check.fingerprint,
+            "note": _prereg_check.note,
+            "deviations": [
+                {"field": d.field, "promised": d.promised, "actual": d.actual,
+                 "detail": d.detail}
+                for d in _prereg_check.deviations
+            ],
+            "registered_design": (org.holdout_prereg or None) if org else None,
+        },
+        # Identifies the exact assignment rows every figure here was computed
+        # from. `hub.manage export-assignments` writes those rows out, and
+        # the value ledger's signature commits to this digest -- so a
+        # customer can prove the export they hold is the one the invoice
+        # came from (commontrace/raw_export.py).
+        "evidence_digest": _evidence_digest,
         # Which traces were injected on the same occasions as which others.
         # Computed here because this is where the raw assignments already
         # are -- `value_delivered` needs it to know whether the per-trace
@@ -2973,9 +3038,17 @@ async def value_delivered(
     # lines this period" is itself a fact worth being able to authenticate,
     # not just a nonzero invoice.
     issued_at = datetime.now(timezone.utc).isoformat()
+    # The signature covers the evidence digest and the pre-registration
+    # fingerprint as well as the chain, so an invoice cannot be paired with
+    # an assignment export or a registered design it was not computed under.
+    evidence_digest = str(causal.get("evidence_digest") or "")
+    prereg_fingerprint = str(
+        ((causal.get("preregistration") or {}).get("fingerprint")) or ""
+    )
     if signing_key:
         signature = value.sign_ledger(
-            ledger, signing_key.encode("utf-8"), org_id=org_id, issued_at=issued_at
+            ledger, signing_key.encode("utf-8"), org_id=org_id, issued_at=issued_at,
+            evidence_digest=evidence_digest, prereg_fingerprint=prereg_fingerprint,
         )
         signature_reason = ""
     else:
@@ -3020,6 +3093,14 @@ async def value_delivered(
         # carried through from causal_effects so both surfaces report the
         # same comparison over the same occasions.
         "policy_effect": causal.get("policy_effect"),
+        # What this invoice is anchored to. `evidence_digest` identifies the
+        # assignment rows it was computed from (export them with
+        # `hub.manage export-assignments`); `preregistration` is what the run
+        # promised to measure before it could see the answer. Both are inside
+        # the signed payload, so a signature that verifies proves the three
+        # belong together.
+        "evidence_digest": evidence_digest,
+        "preregistration": causal.get("preregistration"),
         "value_per_occasion": value_per_occasion,
         # Echoed back as INPUTS. The tiers and the mix are contractual; only
         # `occasions_improved` above was measured, and keeping the two

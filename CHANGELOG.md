@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data export that has nothing to do with it, because the signature commits
   to both.
 
+  Wired through the Hub, not left as library code: `hub.manage
+  start-experiment <org> [rate] [outcome] [notes]` registers the design at
+  the moment the salt is minted (a new salt is a new experiment and does not
+  inherit the last one's credibility), `causal_effects` and `value_delivered`
+  carry the registration check and the evidence digest, and `hub.manage
+  export-assignments <org> [file]` writes the rows out. `crud.holdout_
+  assignments` is now the single definition of that query, because a second
+  copy is a second chance for the invoice and the rows justifying it to
+  describe different data.
+
 - **A verdict read from a running experiment now survives having been
   watched.** Every surface here reads a LIVE holdout -- `experiment_status`,
   the console Proof page, `causal_effects` on every call, `working_set`

@@ -130,6 +130,19 @@ class Organization(Base):
     # like ordinary noise rather than like a broken experiment.
     holdout_salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
+    # What this experiment committed to measuring, written when it started
+    # and never edited afterwards (commontrace/prereg.py). NULL means the
+    # experiment was not pre-registered, which is reported as such rather
+    # than passing silently: the outcome measured, the effect size treated
+    # as meaningful, and the point the run stopped at were then all settled
+    # with the results already visible.
+    #
+    # Stored beside the salt because it is ABOUT the salt: a new salt is a
+    # new experiment and needs its own registration rather than inheriting
+    # the credibility of the last one's. `start_experiment` writes both
+    # together for exactly that reason.
+    holdout_prereg: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
     #
     # A two-call design, deliberately: `request_account_deletion` alone

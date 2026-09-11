@@ -619,6 +619,74 @@ class TestOperatorCommands:
         assert first != second
         assert "replaces experiment" in capsys.readouterr().out
 
+    async def test_starting_pre_registers_what_the_run_will_measure(
+        self, session_factory, capsys
+    ):
+        """Registered at the only moment it means anything. Written later it
+        records what the results turned out to be, not what the run set out
+        to find."""
+        from commontrace import prereg
+
+        async with session_scope(session_factory) as session:
+            o = Organization(name="fleet")
+            session.add(o)
+            await session.flush()
+            org_id = o.id
+
+        assert await manage.start_experiment(
+            org_id, "0.25", "resolved", "Q1 pilot", session_factory=session_factory
+        )
+        assert "pre-registered" in capsys.readouterr().out
+
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            registered = prereg.Preregistration.from_dict(org.holdout_prereg)
+
+        assert registered.primary_outcome == "resolved"
+        assert registered.holdout_rate == 0.25
+        assert registered.notes == "Q1 pilot"
+        # Bound to THIS randomization: a new salt is a new experiment and
+        # must not inherit the last one's credibility.
+        assert registered.salt == org.holdout_salt
+
+    async def test_a_registered_run_reports_no_deviations(self, session_factory):
+        async with session_scope(session_factory) as session:
+            o = Organization(name="fleet")
+            session.add(o)
+            await session.flush()
+            org_id = o.id
+
+        await manage.start_experiment(org_id, "0.25", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org_id)
+
+        block = causal["preregistration"]
+        assert block["registered"] is True
+        assert block["clean"] is True, block["deviations"]
+        assert block["fingerprint"]
+
+    async def test_restarting_re_registers_against_the_new_salt(self, session_factory):
+        """The deviation that matters most: a report checked against a
+        registration written for a DIFFERENT randomization is checked against
+        nothing."""
+        async with session_scope(session_factory) as session:
+            o = Organization(name="fleet")
+            session.add(o)
+            await session.flush()
+            org_id = o.id
+
+        await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            first = dict((await session.get(Organization, org_id)).holdout_prereg)
+        await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            second = dict(org.holdout_prereg)
+
+        assert first["salt"] != second["salt"]
+        assert second["salt"] == org.holdout_salt
+        assert first["fingerprint"] != second["fingerprint"]
+
     async def test_a_rate_outside_zero_to_one_is_refused(self, session_factory, org, capsys):
         """0 withholds nothing (no control arm); 1 withholds everything (no
         treatment arm). Neither is an experiment."""
@@ -1566,16 +1634,59 @@ class TestTieredValuationAndTheAuditLedger:
             )
             for e in worth["ledger"]
         ]
+        anchors = {
+            "evidence_digest": worth["evidence_digest"],
+            "prereg_fingerprint": worth["preregistration"]["fingerprint"],
+        }
         assert value.verify_ledger_signature(
             entries, worth["signature"], key.encode("utf-8"),
-            org_id=org, issued_at=worth["issued_at"],
+            org_id=org, issued_at=worth["issued_at"], **anchors,
         )
         # The wrong key -- or the right key against a signature minted for a
         # different org -- must not verify.
         assert not value.verify_ledger_signature(
             entries, worth["signature"], b"wrong-key",
-            org_id=org, issued_at=worth["issued_at"],
+            org_id=org, issued_at=worth["issued_at"], **anchors,
         )
+        # And the anchoring itself: the signature covers WHICH assignment
+        # rows the invoice was computed from, so it cannot be presented
+        # alongside a different export.
+        assert not value.verify_ledger_signature(
+            entries, worth["signature"], key.encode("utf-8"),
+            org_id=org, issued_at=worth["issued_at"],
+            evidence_digest="a-different-data-set",
+            prereg_fingerprint=anchors["prereg_fingerprint"],
+        )
+
+    async def test_the_report_carries_the_evidence_it_was_computed_from(
+        self, session_factory, org
+    ):
+        """Every number this product bills on is computed by this product.
+        The digest is what lets a customer check that the assignment export
+        they re-ran the arithmetic from is the one the invoice came from."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, rate_tiers=self._TIERS)
+            exported = await crud.holdout_assignments(session, org)
+
+        from commontrace import raw_export
+
+        assert worth["evidence_digest"] == raw_export.digest_of(exported)
+        result = raw_export.export(exported)
+        assert raw_export.verify(result.csv_text, worth["evidence_digest"])
+
+    async def test_an_unregistered_experiment_says_so_rather_than_passing(
+        self, session_factory, org
+    ):
+        """Silence would read as approval. These fixtures start an experiment
+        directly rather than through `hub.manage start-experiment`, so there
+        is no registration -- and the absence is itself the finding."""
+        await self._established(session_factory, org)
+        async with session_scope(session_factory) as session:
+            causal = await crud.causal_effects(session, org)
+        prereg_block = causal["preregistration"]
+        assert prereg_block["registered"] is False
+        assert "not pre-registered" in prereg_block["note"]
 
     async def test_no_rate_means_a_count_and_no_ledger(self, session_factory, org):
         """Unchanged behaviour for every existing caller: ask for no price and

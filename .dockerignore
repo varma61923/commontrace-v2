@@ -84,6 +84,17 @@ commontrace/**
 # stdlib (re, dataclasses). Imported at module level, so without it the
 # container starts and dies.
 !commontrace/memory_guard.py
+# What an experiment committed to measuring before it could see the answer,
+# and the diff of the run against it (hub/crud.py:causal_effects, and
+# hub/manage.py:start_experiment, which writes the registration). Imported
+# at module level, so without it the container starts and dies. Pure stdlib
+# (datetime, hashlib, json, dataclasses).
+!commontrace/prereg.py
+# The assignment rows a customer re-runs the arithmetic from, and the digest
+# the value ledger's signature commits to (hub/crud.py, hub/manage.py:
+# export_assignments). Imported at module level. Pure stdlib (csv, hashlib,
+# io, dataclasses).
+!commontrace/raw_export.py
 # Near-duplicate clustering (hub/crud.py:_cluster_representatives, used by
 # holdout_for_results) -- the same reason as retrieval.py/_lexical.py
 # above: a customer's own `commontrace distill` and the Hub's holdout

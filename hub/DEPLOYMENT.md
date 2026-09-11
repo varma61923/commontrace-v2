@@ -176,6 +176,33 @@ times slower** than its occasion count suggests.
 at that org's observed volume. It still starts — your decision stands — but
 it is said at the only moment the rate can be changed for free.
 
+### Pre-registration, and handing over the rows
+
+`start-experiment <org_id> [rate] [outcome] [notes]` **pre-registers** the
+run: the primary outcome, the smallest effect worth acting on, the holdout
+rate, the planned size, and the stopping rule, fingerprinted and stored
+against the salt it was minted with. `causal_effects` and `value_delivered`
+then diff the run against it and report every difference — a moved endpoint,
+a changed detectable effect, a different randomization, a registration
+written after the data started arriving. An experiment with no registration
+is reported as unregistered rather than passing silently: settling what a
+run measured once the results are visible is not a test of a hypothesis, and
+the absence is itself the finding.
+
+```bash
+python -m hub.manage start-experiment <org_id> 0.2 resolved "Q1 support pilot"
+python -m hub.manage export-assignments <org_id> assignments.csv
+```
+
+`export-assignments` writes **every arm decision** — including the occasions
+that were assigned an arm and never reported, because those are the
+attrition question and an export without them hands over a record with the
+evidence already removed. It prints a digest over the canonical sorted rows,
+and that digest is inside what `HUB_LEDGER_SIGNING_KEY` signs. So a customer
+holding an invoice, an export and a signature can establish that all three
+describe the same experiment — which is the difference between "our system
+says you owe us this" and a number they can re-derive and disagree with.
+
 ### The customer console
 
 Set `HUB_CONSOLE_SECRET` and the Hub serves a console at `/app` for your
