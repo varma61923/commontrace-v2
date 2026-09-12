@@ -869,3 +869,86 @@ class UsageCounter(Base):
         # silently on a schema rebuild.
         UniqueConstraint("org_id", "period", "metric", name="uq_usage_org_period_metric"),
     )
+
+
+class RetentionPolicy(Base):
+    """How long one org keeps one (object type, status), in days.
+
+    Per (org, type, status) rather than per org: "keep quarantined traces
+    for two years and ordinary ones for ninety days" is the shape real
+    policies take, and a single per-org number cannot express it -- an
+    operator forced to pick one would pick the longer, which is how
+    indefinite retention survives having a policy.
+
+    `max_age_days` is validated against a per-type floor in hub/retention.py
+    at write time, not here: the floor is a product decision with a reason
+    attached, and a CHECK constraint could only refuse the row, not say why.
+    """
+
+    __tablename__ = "retention_policies"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    #: One of hub/retention.py's KINDS.
+    object_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: A status within that type, or "any".
+    status: Mapped[str] = mapped_column(String(32), default="any", nullable=False)
+    max_age_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        # One policy per (org, type, status). Two rows disagreeing about the
+        # same objects would make the retention period depend on iteration
+        # order -- a difference nobody would see until data went early.
+        UniqueConstraint(
+            "org_id", "object_type", "status", name="uq_retention_org_type_status"
+        ),
+    )
+
+
+class LegalHold(Base):
+    """A freeze that outranks every retention policy.
+
+    Scope widens as fields are left empty: no `object_type` holds everything
+    the org has; a type with no `target_id` holds all rows of that type.
+
+    NOT a boolean on the held rows. A hold is an event with a reason, an
+    author and (eventually) a release -- and the rows it protects include
+    ones that do not exist yet when it is placed, which a per-row flag
+    cannot express. It also has to survive the release: "this was frozen
+    from March to July, by whom and why" is the question a hold is
+    ultimately asked, so releasing sets `released_at` rather than deleting
+    the row.
+    """
+
+    __tablename__ = "legal_holds"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    #: "" means every object type the org has.
+    object_type: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    #: "" means every row of `object_type`.
+    target_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    placed_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+    __table_args__ = (
+        # Every purge plan asks the same question -- "what is frozen for this
+        # org right now" -- so the partial index is on exactly that.
+        Index(
+            "ix_legal_holds_active",
+            "org_id", "object_type",
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )

@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Retention policies, legal holds, and a purge you read before it runs.**
+  The Hub could delete one trace or one whole organization, both by hand and
+  both immediately. Nothing expired on its own, so the answer to "what
+  happens to a trace nobody touches for three years" was "nothing, ever" —
+  which is not a retention policy but the absence of one, and it is the
+  shape that turns an ordinary breach into a breach of everything the
+  product has ever seen.
+
+  `hub/retention.py` adds per-org policies by **object type and status**
+  (`trace`, `vote`, `holdout_observation`, `kb_submission`, `audit_log`),
+  because "keep quarantined traces two years and ordinary ones ninety days"
+  is the shape a real policy takes and an operator forced to pick one number
+  per org picks the longer one. Driven by `set-retention`,
+  `clear-retention`, `retention-plan`, `retention-apply`, `legal-hold`,
+  `release-hold` and `holds` in `hub/manage.py`.
+
+  **A plan deletes nothing, and applying one requires its digest.** The
+  digest is over the exact row ids, so approving it approves one specific
+  set of rows; if the store moved in between, the apply is refused and the
+  new digest printed. A purge is the one operation whose mistakes cannot be
+  inspected afterwards — the evidence is what it deleted — so the approval
+  has to name the consequences rather than the action. That also makes a
+  scheduled purge safe to automate, which is why `retention-apply` is
+  deliberately not behind an interactive prompt.
+
+  **A legal hold outranks every policy, visibly.** Held rows are counted and
+  named in the plan rather than quietly skipped: an operator reading "purge
+  complete" must not believe data is gone that is frozen. Releasing sets
+  `released_at` rather than deleting the row, so "frozen March to July, by
+  whom and why" stays answerable.
+
+  **A running experiment blocks deletion of its own arms.** While an org's
+  randomized holdout is running, its observations are not purgeable by any
+  policy. Deleting some of them mid-run is differential attrition, not data
+  hygiene — it biases the causal estimate invisibly, because the analysis
+  just sees a smaller, apparently clean dataset. Once stopped they become
+  purgeable, with a warning that the value ledger's signature commits to an
+  export digest that cannot be recomputed from deleted rows.
+
+  **Floors are refused, not clamped.** The audit log's is the longest (365
+  days) because it is what proves the purges happened; a policy deleting it
+  soon after would let data and the record of its deletion both disappear in
+  two individually legitimate steps. An operator who asked for 7 days and
+  silently got 365 would believe the store honours a number it does not.
+
+  Both new tables carry `org_id` and get the same row-level security the
+  other org-scoped tables got in `d5c8b3a91e77`, with a test that now fails
+  on *any* future org-scoped table that skips it.
+
 - **Dosage, always-on lessons, and retrieval receipts.** Retrieval answered
   "which lessons match, best first" and stopped there, which left two
   questions that actually decide what an agent receives unanswered.

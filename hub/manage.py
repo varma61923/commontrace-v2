@@ -101,6 +101,45 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
+    set-retention <org_id> <object_type> <days> [status]
+                                   -> how long this org keeps one kind of object.
+                                       object_type: trace | vote |
+                                       holdout_observation | kb_submission |
+                                       audit_log. Optional status narrows it
+                                       further (trace: active/quarantined/retracted;
+                                       holdout_observation: reported/unreported;
+                                       kb_submission: pending/approved/rejected),
+                                       so "keep quarantined traces two years and
+                                       ordinary ones ninety days" is expressible.
+                                       A request below the type's floor is REFUSED,
+                                       not clamped -- see hub/retention.py
+    clear-retention <org_id> <object_type> [status]
+                                   -> remove a policy; that object type stops expiring
+    retention-plan <org_id>        -> what the policies WOULD delete, per type and
+                                       status, what a legal hold has frozen, and what
+                                       is blocked outright. Reads only, deletes
+                                       nothing, and prints the digest that
+                                       retention-apply requires
+    retention-apply <org_id> <digest>
+                                   -> delete exactly what the plan with that digest
+                                       described. The digest is the approval: it names
+                                       one specific set of rows, and if anything moved
+                                       since the plan was printed this refuses and
+                                       shows the new digest rather than deleting a set
+                                       nobody read. Safe to schedule (plan, then apply
+                                       its digest) -- irreversible
+    legal-hold <org_id> <reason> [object_type] [target_id]
+                                   -> freeze data against every retention policy until
+                                       released. No object_type holds everything the
+                                       org has. A reason is required: a hold nobody can
+                                       explain later is one nobody dares release, and
+                                       unreleased holds quietly become the indefinite
+                                       retention this exists to end
+    release-hold <hold_id> [reason]
+                                   -> lift a hold. The row is kept, so "frozen March to
+                                       July, by whom and why" stays answerable
+    holds <org_id>                 -> this org's retention policies and the holds in
+                                       force against them
     purge-trace <trace_id> [--yes] -> permanently deletes the trace AND every trace in
                                        its amendment chain (+ their votes and any relation
                                        edges referencing them). Irreversible. Prompts for
@@ -139,7 +178,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, prereg, raw_export
-from hub import audit, auth, commons, crud, outcomes, plans
+from hub import audit, auth, commons, crud, outcomes, plans, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -1675,6 +1714,203 @@ async def value(org_id: str, value_per_occasion: str | None = None, session_fact
     return True
 
 
+# --- retention, legal holds and scheduled purge ------------------------------
+
+async def set_retention(
+    org_id: str, object_type: str, days: str, status: str = retention.STATUS_ANY,
+    session_factory=None,
+) -> bool:
+    """Configure how long one org keeps one kind of object."""
+    session_factory = session_factory or _default_session_factory()
+    try:
+        max_age_days = int(days)
+    except ValueError:
+        print(f"error: days must be a whole number, got {days!r}", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            await retention.set_policy(
+                session, org_id, object_type, max_age_days, status=status
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.set_policy",
+            org_id=org_id, target_type="retention_policy",
+            target_id=f"{object_type}/{status}",
+            summary=f"keep {max_age_days}d",
+        )
+    print(f"{object_type} [{status}] for {org_id}: keep {max_age_days} days.")
+    print("  Nothing is deleted until you run `retention-plan` and then "
+          "`retention-apply` with the plan's digest.")
+    return True
+
+
+async def clear_retention(
+    org_id: str, object_type: str, status: str = retention.STATUS_ANY,
+    session_factory=None,
+) -> bool:
+    """Remove a policy, so that object type stops expiring."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            removed = await retention.remove_policy(
+                session, org_id, object_type, status=status
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        if not removed:
+            print(f"No {object_type} [{status}] policy for {org_id}.", file=sys.stderr)
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.clear_policy",
+            org_id=org_id, target_type="retention_policy",
+            target_id=f"{object_type}/{status}", summary="removed",
+        )
+    print(f"{object_type} [{status}] for {org_id}: policy removed; it no longer expires.")
+    return True
+
+
+async def retention_plan(org_id: str, session_factory=None) -> bool:
+    """What the org's policies WOULD delete. Reads only; deletes nothing."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        plan = await retention.plan(session, org_id)
+        held = await retention.counts(session, org_id)
+    print(plan.render())
+    print()
+    print("Currently held: " + ", ".join(f"{n:,} {t}" for t, n in sorted(held.items())))
+    return True
+
+
+async def retention_apply(org_id: str, digest: str, session_factory=None) -> bool:
+    """Delete exactly what the plan with this digest described.
+
+    The digest is required and is not a formality: it is what makes this an
+    approval of one specific set of rows rather than of the phrase "apply
+    retention". If anything moved since the plan was printed, this refuses
+    and prints the new digest.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        fresh = await retention.plan(session, org_id)
+        # The operator pastes the short form the plan printed; compare on
+        # whatever prefix they gave rather than making them copy 64 hex
+        # characters accurately under time pressure.
+        if not fresh.digest.startswith(digest):
+            print(
+                f"error: the store changed since that plan was computed, so "
+                f"nothing was deleted.\n"
+                f"  you approved: {digest}\n"
+                f"  current plan: {fresh.digest[:16]}\n"
+                f"Re-run `retention-plan {org_id}` and read it before applying.",
+                file=sys.stderr,
+            )
+            return False
+        applied = await retention.apply(session, org_id, fresh.digest)
+    print(applied.render())
+    print()
+    print(f"APPLIED. {applied.n_doomed} rows deleted.")
+    return True
+
+
+async def place_legal_hold(
+    org_id: str, reason: str, object_type: str = "", target_id: str = "",
+    session_factory=None,
+) -> bool:
+    """Freeze data against every retention policy, until released."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            hold = await retention.place_hold(
+                session, org_id, reason=reason,
+                placed_by=audit.ACTOR_OPERATOR_CLI,
+                object_type=object_type, target_id=target_id,
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        await session.flush()
+        hold_id = hold.id
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.place_hold",
+            org_id=org_id, target_type="legal_hold", target_id=hold_id,
+            summary=f"{object_type or 'everything'}: {reason[:200]}",
+        )
+    scope = object_type or "everything this org has"
+    if target_id:
+        scope = f"{object_type} {target_id}"
+    print(f"legal hold {hold_id} placed on {scope}.")
+    print("  It outranks every retention policy until released. Retention plans "
+          "will report the frozen rows rather than silently skipping them.")
+    return True
+
+
+async def release_legal_hold(hold_id: str, reason: str = "", session_factory=None) -> bool:
+    """Lift a hold. The row is kept, so the freeze stays auditable."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            hold = await retention.release_hold(session, hold_id, reason=reason)
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        org_id = hold.org_id
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.release_hold",
+            org_id=org_id, target_type="legal_hold", target_id=hold_id,
+            summary=reason[:200] or "released",
+        )
+    print(f"legal hold {hold_id} released. The rows it froze are subject to "
+          "retention again from the next plan.")
+    return True
+
+
+async def list_legal_holds(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        holds = await retention.active_holds(session, org_id)
+        policies = await retention.policies_for(session, org_id)
+    if policies:
+        print("Retention policies:")
+        for p in policies:
+            print(f"  {p.object_type} [{p.status}]: keep {p.max_age_days}d"
+                  + (f"  -- {p.note}" if p.note else ""))
+    else:
+        print("No retention policy: nothing expires on its own.")
+    print()
+    if not holds:
+        print("No legal holds in force.")
+        return True
+    print("Legal holds in force:")
+    for h in holds:
+        scope = h.object_type or "everything"
+        if h.target_id:
+            scope = f"{h.object_type}/{h.target_id}"
+        print(f"  {h.id}  {scope}  placed {h.placed_at:%Y-%m-%d} by {h.placed_by}")
+        print(f"      {h.reason}")
+    return True
+
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
     "issue-key": (issue_key, 1, 3),
@@ -1706,6 +1942,13 @@ _COMMANDS = {
     "release-quarantine": (release_quarantine, 1, 1),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
+    "set-retention": (set_retention, 3, 4),
+    "clear-retention": (clear_retention, 2, 3),
+    "retention-plan": (retention_plan, 1, 1),
+    "retention-apply": (retention_apply, 2, 2),
+    "legal-hold": (place_legal_hold, 2, 4),
+    "release-hold": (release_legal_hold, 1, 2),
+    "holds": (list_legal_holds, 1, 1),
     "purge-trace": (purge_trace, 1, 2),
     "purge-org": (purge_org, 1, 2),
 }
@@ -1718,6 +1961,13 @@ _COMMANDS = {
 # extra Enter in a terminal session doesn't silently delete a customer's
 # data; --yes bypasses it for scripted/automated use, which must ask for
 # this explicitly rather than get it by default.
+#
+# `retention-apply` is deliberately NOT here despite deleting rows. Its
+# confirmation is the plan digest, which is strictly stronger than a y/n
+# prompt: it names the exact set of rows the operator read, and refuses if
+# anything moved since. An interactive prompt on top of that would add no
+# safety and would make the scheduled purge -- the whole point of having a
+# retention policy rather than a delete button -- impossible to automate.
 _DESTRUCTIVE_COMMANDS: dict[str, str] = {
     "purge-trace": "permanently delete this trace and its full amendment chain",
     "purge-org": "permanently delete this organization and everything scoped to it "

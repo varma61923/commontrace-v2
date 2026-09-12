@@ -68,12 +68,63 @@ never a customer's own submission either unless an operator republishes it).
   `memory/`. `status: archived` on a lesson (see `protocol/PROTOCOL.md` §4)
   is a soft, in-band marker the tooling can filter on — it does not delete
   or move the underlying file.
-- **Hub tier (`hub/`):** indefinitely as well — the same "no automatic
-  expiry" is true here. Nothing in `hub/` runs a retention/purge job; a row
-  in `traces`/`votes`/`api_keys` persists until explicitly deleted. What
-  "indefinitely" *should* mean for a real deployment holding paying
-  customers' data (30 days after contract end? 1 year? never, until asked?)
-  is a business decision this document does not make.
+- **Hub tier (`hub/`):** indefinitely *by default*, and configurably not.
+  Out of the box nothing expires — a row in `traces`/`votes`/`api_keys`
+  persists until explicitly deleted — because what "indefinitely" *should*
+  mean for a given deployment (30 days after contract end? 1 year? never,
+  until asked?) is a business decision this document does not make. What the
+  code now provides is the mechanism to make it, per organization:
+
+  | Command | What it does |
+  |---|---|
+  | `set-retention <org> <type> <days> [status]` | Expire one kind of object after an age |
+  | `clear-retention <org> <type> [status]` | Stop expiring it |
+  | `retention-plan <org>` | Print exactly what would be deleted. **Deletes nothing** |
+  | `retention-apply <org> <digest>` | Delete exactly what that plan described |
+  | `legal-hold <org> <reason> [type] [id]` | Freeze data against every policy |
+  | `release-hold <hold_id> [reason]` | Lift a freeze; the record of it is kept |
+  | `holds <org>` | This org's policies and the holds against them |
+
+  Retention is set per **(object type, status)** — `trace`, `vote`,
+  `holdout_observation`, `kb_submission`, `audit_log`, each with its own
+  statuses — because "keep quarantined traces for two years and ordinary
+  ones for ninety days" is the shape a real policy takes, and an operator
+  forced to pick one number per org picks the longer one.
+
+  Four properties are worth stating plainly, because they are what makes
+  this a retention *policy* rather than a scheduled delete:
+
+  1. **A plan deletes nothing, and applying one requires its digest.** The
+     digest is computed over the exact row ids, so approving it approves one
+     specific set of rows. If anything moved in between, the apply is
+     refused and the new digest printed. A purge is the one operation whose
+     mistakes cannot be inspected afterwards — the evidence is what it
+     deleted — so the approval has to name the consequences, not the action.
+  2. **A legal hold outranks every policy, visibly.** Held rows are counted
+     and named in the plan rather than quietly skipped: an operator reading
+     "purge complete" must not believe data is gone that is frozen.
+     Releasing a hold sets `released_at` rather than deleting the row, so
+     "frozen from March to July, by whom and why" stays answerable.
+  3. **A running experiment blocks deletion of its own arms.** While an
+     org's randomized holdout is running, its `holdout_observation` rows are
+     not purgeable by any policy. Deleting some of them mid-run is
+     differential attrition, not data hygiene — it biases the causal
+     estimate invisibly, because the analysis simply sees a smaller,
+     apparently clean dataset. Once the experiment stops they become
+     purgeable, with a warning that the value ledger's signature commits to
+     a digest that cannot be recomputed from deleted rows (take
+     `export-assignments` first).
+  4. **Each type has a floor, and a request below it is refused rather than
+     clamped.** The audit log's is the longest (365 days) because the audit
+     log is what proves the purges happened: a policy that deleted it soon
+     after would let data and the record of its deletion both disappear in
+     two individually legitimate steps. An operator who asked for 7 days and
+     silently got 365 would believe the store honours a number it does not,
+     and find out from an auditor.
+
+  Every purge writes an audit row **even when it deletes nothing** — "the
+  purge ran and deleted nothing" and "the purge never ran" are different
+  facts, and only one of them means the schedule is broken.
 
 ## 3. How an org requests deletion
 

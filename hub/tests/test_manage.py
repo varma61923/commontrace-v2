@@ -965,3 +965,263 @@ class TestStartExperimentWarnsAboutAnUnanswerableRate:
         capsys.readouterr()
         assert await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
         assert "WARNING" not in capsys.readouterr().out
+
+
+# --- retention, legal holds and scheduled purge ------------------------------
+
+@pytest_asyncio.fixture
+async def aged_org(session_factory):
+    """One org with two traces old enough for any sane policy, and one new."""
+    from datetime import datetime, timedelta, timezone
+
+    from hub.models import Trace
+
+    now = datetime.now(timezone.utc)
+    async with session_scope(session_factory) as session:
+        org = Organization(name="retention-fleet")
+        session.add(org)
+        await session.flush()
+        for i, age in enumerate((400, 400, 1)):
+            session.add(Trace(
+                org_id=org.id, title=f"t{i}", context_text="c", solution_text="s",
+                agent_type="support", created_at=now - timedelta(days=age),
+            ))
+        return org.id
+
+
+def _digest_from(out: str) -> str:
+    """The short plan digest, as an operator would copy it off the screen."""
+    for line in out.splitlines():
+        if line.startswith("plan "):
+            return line.split()[1]
+    raise AssertionError(f"no plan digest in output:\n{out}")
+
+
+class TestRetentionCLI:
+    async def test_setting_a_policy_says_nothing_is_deleted_yet(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert ok
+        out = capsys.readouterr().out
+        assert "keep 90 days" in out
+        # The single most important thing to say at this moment: configuring
+        # a policy is not the same act as applying it.
+        assert "Nothing is deleted until" in out
+
+    async def test_a_sub_floor_policy_is_refused_with_the_reason(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "audit_log", "7", session_factory=session_factory)
+        assert not ok
+        assert "365" in capsys.readouterr().err
+
+    async def test_a_non_numeric_age_is_an_operator_mistake_not_a_traceback(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "trace", "ninety", session_factory=session_factory)
+        assert not ok
+        assert "whole number" in capsys.readouterr().err
+
+    async def test_plan_prints_what_would_go_and_deletes_nothing(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.retention_plan(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "2 to delete" in out
+        assert "Nothing has been deleted" in out
+
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 3
+
+    async def test_apply_with_the_printed_digest_deletes(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        digest = _digest_from(capsys.readouterr().out)
+
+        assert await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        assert "APPLIED. 2 rows deleted." in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 1
+
+    async def test_a_stale_digest_is_refused_and_shows_the_new_one(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        stale = _digest_from(capsys.readouterr().out)
+
+        # The world moves between reading the plan and approving it: another
+        # old trace arrives, so the approved set is no longer the real one.
+        from datetime import datetime, timedelta, timezone
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=aged_org, title="late arrival", context_text="c",
+                solution_text="s", agent_type="support",
+                created_at=datetime.now(timezone.utc) - timedelta(days=500),
+            ))
+        capsys.readouterr()
+
+        assert not await manage.retention_apply(
+            aged_org, stale, session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "nothing was deleted" in err
+        assert "you approved" in err and "current plan" in err
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 4
+
+    async def test_the_digest_commits_to_rows_not_to_the_policy_text(
+        self, session_factory, aged_org, capsys
+    ):
+        """Tightening 90d to 30d dooms the same two 400-day-old traces, so
+        the approval is still accurate and the apply proceeds. The digest
+        deliberately commits to the CONSEQUENCES an operator read, not to
+        the configuration that produced them -- a change that does not move
+        a single row has not invalidated their approval, and refusing it
+        would train operators to re-approve reflexively."""
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        digest = _digest_from(capsys.readouterr().out)
+
+        await manage.set_retention(
+            aged_org, "trace", "30", session_factory=session_factory)
+        capsys.readouterr()
+
+        assert await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        capsys.readouterr()
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 1
+
+    async def test_a_legal_hold_survives_an_apply(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert await manage.place_legal_hold(
+            aged_org, "Ohio subpoena 2026-44", session_factory=session_factory)
+        capsys.readouterr()
+
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        digest = _digest_from(out)
+        assert "Ohio subpoena 2026-44" in out
+
+        await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        capsys.readouterr()
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 3
+
+    async def test_a_hold_without_a_reason_is_refused(
+        self, session_factory, aged_org, capsys
+    ):
+        assert not await manage.place_legal_hold(
+            aged_org, "  ", session_factory=session_factory)
+        assert "reason" in capsys.readouterr().err
+
+    async def test_holds_lists_policies_and_freezes(
+        self, session_factory, aged_org, capsys
+    ):
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        await manage.place_legal_hold(
+            aged_org, "investigation", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_legal_holds(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "trace [any]: keep 90d" in out
+        assert "investigation" in out
+
+    async def test_holds_says_plainly_when_nothing_expires(
+        self, session_factory, aged_org, capsys
+    ):
+        assert await manage.list_legal_holds(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "nothing expires on its own" in out
+        assert "No legal holds in force" in out
+
+    async def test_clearing_a_policy_stops_expiry(
+        self, session_factory, aged_org, capsys
+    ):
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert await manage.clear_retention(
+            aged_org, "trace", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        assert "indefinitely" in capsys.readouterr().out
+
+    async def test_every_retention_command_rejects_an_unknown_org(
+        self, session_factory, capsys
+    ):
+        missing = "00000000-0000-0000-0000-000000000000"
+        assert not await manage.set_retention(
+            missing, "trace", "90", session_factory=session_factory)
+        assert not await manage.retention_plan(missing, session_factory=session_factory)
+        assert not await manage.place_legal_hold(
+            missing, "r", session_factory=session_factory)
+
+
+class TestRetentionCommandTable:
+    """The dispatch table and the module docstring are what an operator
+    actually reads; a command that exists but is unreachable or undocumented
+    is not shipped."""
+
+    async def test_every_retention_command_is_dispatchable(self):
+        for name in ("set-retention", "clear-retention", "retention-plan",
+                     "retention-apply", "legal-hold", "release-hold", "holds"):
+            assert name in manage._COMMANDS, name
+
+    async def test_every_retention_command_is_documented(self):
+        for name in ("set-retention", "clear-retention", "retention-plan",
+                     "retention-apply", "legal-hold", "release-hold", "holds"):
+            assert name in manage.__doc__, name
+
+    async def test_apply_is_not_gated_on_an_interactive_prompt(self):
+        """Its confirmation is the plan digest, which names the exact rows
+        and refuses if anything moved. A prompt on top would add no safety
+        and would make the scheduled purge impossible to automate -- which
+        is the whole point of a retention policy rather than a delete
+        button."""
+        assert "retention-apply" not in manage._DESTRUCTIVE_COMMANDS
