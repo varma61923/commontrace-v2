@@ -1742,3 +1742,43 @@ class TestAlertCommandTable:
                      "check-alerts", "generate-report"):
             assert name in manage._COMMANDS, name
             assert name in manage.__doc__, name
+
+
+class TestSearchContentCLI:
+    async def test_finds_a_match_and_says_it_deletes_nothing(
+        self, session_factory, two_orgs, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="jane.smith@example.com",
+                solution_text="s", agent_type="support",
+            ))
+        assert await manage.search_content(
+            two_orgs["org_a"], "jane.smith@example.com", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "jane.smith@example.com" in out
+        assert "deletes nothing" in out
+
+    async def test_no_match_says_so_plainly(self, session_factory, two_orgs, capsys):
+        assert await manage.search_content(
+            two_orgs["org_a"], "no-such-identifier", session_factory=session_factory)
+        assert "no traces" in capsys.readouterr().out
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.search_content(
+            "00000000-0000-0000-0000-000000000000", "x", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_an_invalid_mode_is_an_operator_mistake(self, session_factory, two_orgs, capsys):
+        assert not await manage.search_content(
+            two_orgs["org_a"], "x", "fuzzy", session_factory=session_factory)
+        assert "literal" in capsys.readouterr().err
+
+    async def test_an_invalid_regex_is_refused_cleanly(self, session_factory, two_orgs, capsys):
+        assert not await manage.search_content(
+            two_orgs["org_a"], "(unbalanced(", "regex", session_factory=session_factory)
+        assert "not a valid regular expression" in capsys.readouterr().err
+
+    async def test_search_content_is_dispatchable_and_documented(self):
+        assert "search-content" in manage._COMMANDS
+        assert "search-content" in manage.__doc__

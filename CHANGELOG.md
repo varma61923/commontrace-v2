@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Locating traces for a subject-erasure request (`search_trace_content`,
+  `hub.manage search-content`).** Audit §2.2: "a customer who needs
+  subject-level erasure over trace content must locate the traces
+  themselves; there is no field this system could search on to do it for
+  them." This is that tool: a literal (default) or POSIX-regex exact-match
+  scan of title/context/solution text, including quarantined traces
+  (`search_traces` deliberately excludes both substring matching and
+  quarantined traces — the wrong choices here, right ones there). Only one
+  regex engine is ever consulted — Postgres's own, end to end, never a
+  second pass through Python's `re`, whose different grammar would either
+  reject patterns Postgres accepts or accept ones it rejects; an invalid
+  pattern surfaces as Postgres's own error, converted to a clean refusal
+  rather than a 500. Finds candidates only — `delete_trace`/`purge-trace`
+  still does the deleting — and is explicit that a match proves presence
+  while a non-match is not proof of absence, since this is not, and does
+  not claim to be, the automated "subject has no data here" certification
+  this schema cannot support without a structured subject-id column.
+  Tests: `hub/tests/test_search_content.py` (15) plus CLI coverage in
+  `hub/tests/test_manage.py` (6).
+
 - **A TypeScript client SDK (`sdk/typescript`, `@commontrace/hub-client`)** —
   audit §6.4's first named non-Python client. Any MCP-capable client
   already reaches the whole Hub tool surface without an SDK; this is a

@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, literal, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -1418,6 +1418,139 @@ async def _amend_idempotent_replay_or_conflict(
     # retrying client sees a different response shape than the original
     # call got.
     return await _hydrate_one(session, existing)
+
+
+#: search_trace_content's own limit, separate from search_traces' --
+#: this is a compliance-lookup tool, not a hot retrieval path, and its
+#: query has no index to bound with (see the function's own docstring).
+MAX_CONTENT_SEARCH_LIMIT = 100
+_CONTENT_SNIPPET_RADIUS = 60
+#: Postgres SQLSTATE for "invalid_regular_expression" -- the one error
+#: search_trace_content re-raises as a clean ValueError; anything else
+#: is a real failure and must not be misreported as a bad pattern.
+_SQLSTATE_INVALID_REGEX = "2201B"
+
+
+def _snippet_at(text: str, start: int, end: int) -> str:
+    """~2*_CONTENT_SNIPPET_RADIUS characters of `text` around [start, end)."""
+    lo = max(0, start - _CONTENT_SNIPPET_RADIUS)
+    hi = min(len(text), end + _CONTENT_SNIPPET_RADIUS)
+    prefix = "…" if lo > 0 else ""
+    suffix = "…" if hi < len(text) else ""
+    return prefix + text[lo:hi] + suffix
+
+
+async def search_trace_content(
+    session: AsyncSession, org_id: str, pattern: str, *, regex: bool = False,
+    limit: int = MAX_CONTENT_SEARCH_LIMIT,
+) -> list[dict]:
+    """Locate traces whose title/context_text/solution_text contain
+    `pattern` -- literally by default, or as a POSIX regex (`regex=True`).
+
+    WHY THIS EXISTS, AND WHY IT IS NOT search_traces
+    -------------------------------------------------
+    Audit 2.2 ("subject deletion and export... not done"): "a customer who
+    needs subject-level erasure over trace content must locate the traces
+    themselves; there is no field this system could search on to do it for
+    them." This is the tool that locates them, for a customer's own org --
+    hand it a name, an email address, a ticket number, whatever the
+    erasure request names -- and then `delete_trace`/`purge-trace` removes
+    what it finds.
+
+    `search_traces` deliberately moved OFF substring matching onto
+    `search_vector`'s stemmed, tokenized full-text index (see that
+    function's own docstring, point 3) precisely because stemming is the
+    right behavior for "find prior experience relevant to this task."
+    Stemming is the WRONG behavior here: a subject's exact identifier must
+    match exactly, not survive being reduced to a stemmed lexeme, or a
+    trace naming "j.smith@example.com" could be missed because the tsvector
+    tokenizer split or discarded exactly the substring that matters. This
+    function therefore runs a literal ILIKE/regex scan (no index -- a
+    leading wildcard defeats one, same as search_traces used to run before
+    it added search_vector) with no relevance ranking at all: every match
+    is returned, oldest first, up to `limit`.
+
+    NOT A COMPLETENESS GUARANTEE. A match proves the text is present. A
+    non-match is not proof of absence: free text can misspell, abbreviate,
+    paraphrase, or split an identifier across two matches this cannot
+    reassemble. Treat this as one instrument in a manual review, never as
+    an automated "subject has no data here" certification -- that claim is
+    exactly the one AUDIT_RESPONSE.md 2.2 says this schema cannot support.
+
+    Deliberately a SCAN, not indexed: this is a rare, targeted compliance
+    action, not a per-occasion retrieval call, and `HUB_DB_STATEMENT_TIMEOUT_MS`
+    already bounds any single query's worst case the same way it bounds
+    every other query in this module.
+
+    ONE ENGINE VALIDATES THE PATTERN, NOT TWO. `regex=True` uses Postgres's
+    own POSIX regex engine (the `~*` operator) end to end -- for both the
+    WHERE clause and the matched-field detection below -- rather than also
+    checking the pattern against Python's `re` module first. The two are
+    different grammars (lookaheads and non-capturing groups are Python-only;
+    POSIX bracket-expression and backreference details differ), so
+    pre-validating with `re.compile` would reject a pattern Postgres accepts
+    just as often as it would accept one Postgres rejects. Postgres itself
+    is the one judge of validity: an invalid pattern surfaces as Postgres's
+    own `invalid_regular_expression` error (SQLSTATE 2201B), caught below
+    and re-raised as a clean `ValueError` rather than an opaque 500.
+    """
+    limit = _clamp_int(limit, 1, MAX_CONTENT_SEARCH_LIMIT, MAX_CONTENT_SEARCH_LIMIT)
+    reject_unstorable_text(pattern, "pattern")
+    if regex:
+        title_hit = Trace.title.op("~*")(pattern)
+        context_hit = Trace.context_text.op("~*")(pattern)
+        solution_hit = Trace.solution_text.op("~*")(pattern)
+    else:
+        like = f"%{pattern}%"
+        title_hit = Trace.title.ilike(like)
+        context_hit = Trace.context_text.ilike(like)
+        solution_hit = Trace.solution_text.ilike(like)
+    stmt = (
+        select(
+            Trace.id, Trace.title, Trace.context_text, Trace.solution_text,
+            Trace.created_at, Trace.quarantined,
+            title_hit.label("title_hit"), context_hit.label("context_hit"),
+            solution_hit.label("solution_hit"),
+        )
+        .where(Trace.org_id == org_id, or_(title_hit, context_hit, solution_hit))
+        .order_by(Trace.created_at)
+        .limit(limit)
+    )
+    try:
+        rows = (await session.execute(stmt)).all()
+    except DBAPIError as exc:
+        if regex and getattr(exc.orig, "sqlstate", None) == _SQLSTATE_INVALID_REGEX:
+            raise ValueError(f"pattern is not a valid regular expression: {exc.orig}") from None
+        raise
+
+    results = []
+    for row in rows:
+        if row.title_hit:
+            field, text = "title", row.title
+        elif row.context_hit:
+            field, text = "context_text", row.context_text
+        else:
+            field, text = "solution_text", row.solution_text
+        if regex:
+            # The exact match SPAN is Postgres's own regex engine's to
+            # know, not re-derived with Python's `re` (see the module
+            # docstring above) -- so the snippet previews from the start
+            # of the matched field rather than centering on a position
+            # this function does not independently compute.
+            snippet = _snippet_at(text, 0, min(len(text), 2 * _CONTENT_SNIPPET_RADIUS))
+        else:
+            idx = text.lower().find(pattern.lower())
+            start = idx if idx >= 0 else 0
+            snippet = _snippet_at(text, start, start + len(pattern))
+        results.append({
+            "id": row.id,
+            "title": row.title,
+            "created_at": row.created_at.isoformat(),
+            "quarantined": row.quarantined,
+            "matched_field": field,
+            "snippet": snippet,
+        })
+    return results
 
 
 def _is_uuid(value: str) -> bool:

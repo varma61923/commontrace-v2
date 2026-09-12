@@ -243,6 +243,10 @@ CORE_TOOLS = [
     # HUB_COMMONS_ENABLED, which only toggles cross-org sharing.
     "add_comment", "list_comments", "assign_trace", "unassign_trace",
     "list_my_notifications", "mark_notification_read",
+    # locating traces for a subject-erasure request (hub/crud.py:
+    # search_trace_content) -- org-scoped and unmetered like the rest of
+    # this list; unaffected by HUB_COMMONS_ENABLED.
+    "search_trace_content",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

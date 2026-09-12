@@ -47,7 +47,7 @@ individually.
 | # | Finding | Status | Evidence / what remains |
 |---|---|---|---|
 | 2.1 | Indefinite retention; no configurable retention or legal hold | **Done** | `hub/retention.py`: per-org policies by **object type and status**; a plan that deletes nothing and an apply that requires the plan's digest; legal holds that outrank every policy and are counted rather than silently skipped; per-type floors refused rather than clamped. CLI: `set-retention`, `clear-retention`, `retention-plan`, `retention-apply`, `legal-hold`, `release-hold`, `holds`. Tests: `hub/tests/test_retention.py` (34) plus CLI coverage in `hub/tests/test_manage.py`. Documented in [`DATA_RETENTION.md`](DATA_RETENTION.md) §2. |
-| 2.2 | Subject deletion and export | **Partial** | Whole-account deletion exists (self-service and `purge-org`), and `export-assignments` exports an org's experiment data. **Not done:** per-*person* deletion and export, because this system has no person-level identity — every row is scoped to an organization, and a trace's text is whatever the customer's agent wrote into it. A customer who needs subject-level erasure over trace *content* must locate the traces themselves; there is no field this system could search on to do it for them. Saying otherwise would be a data-protection claim this schema cannot support. |
+| 2.2 | Subject deletion and export | **Partial** | Whole-account deletion exists (self-service and `purge-org`), and `export-assignments` exports an org's experiment data. `search_trace_content` (MCP tool) / `hub.manage search-content` now *locates* traces for a subject-erasure request — a literal or POSIX-regex scan of title/context/solution text, including quarantined traces, with no relevance ranking. This closes "there is no field this system could search on to do it for them": there was no structured field to search on, so this searches the free text directly instead. **Not done, and cannot honestly be claimed done:** automated, provably-complete per-*person* deletion. A match proves text is present; a non-match is not proof of absence — free text can misspell, abbreviate, or split an identifier this cannot reassemble. `search-content` finds candidates for a human to review and then `delete_trace`; it is not, and does not claim to be, an automated "subject has no data here" certification. That claim would need a structured subject-id column this schema does not have. Tests: `hub/tests/test_search_content.py` (15) plus CLI coverage in `hub/tests/test_manage.py` (6). |
 | 2.3 | Unknown data residency | **Requires business action** | Residency is a property of where an operator runs Postgres. This repository cannot assert a region. What it *can* say, and does in `DATA_RETENTION.md`, is exactly which bytes exist and where the code puts them. A residency commitment needs a hosting decision and a contract. |
 | 2.4 | No DPA or subprocessor list | **Requires business action** | Legal documents. There is one processor the code actually implies — Stripe, for self-serve billing (`hub/billing.py`), which holds card data entirely; the Hub stores only customer and subscription ids. That fact is documented, but a DPA is not a file in a repository. |
 
@@ -140,9 +140,13 @@ blocks access on the person's very next call. SAML, SCIM, and a login UI
 remain undone on 1.2. With a person to attribute a comment to or assign
 work to, 8.1's collaboration surface (comments, assignment, a
 notification inbox, built in `hub/collab.py`) is now done. This still
-does not close 2.2: subject-level deletion is about a customer's *own*
-end users named inside trace content, not about who can log into this
-Hub — that remains a separate, unaddressed gap.
+does not close 2.2 by itself: subject-level deletion is about a
+customer's *own* end users named inside trace content, not about who can
+log into this Hub. 2.2 has since gained its own partial closure
+separately — `search_trace_content` locates candidates by exact
+identifier for a human to review and delete, which is as far as this
+schema can honestly go without a structured subject-id column it does
+not have.
 
 **Four items cannot be closed from a repository at all**: a legal
 counterparty (4.4), an attestation (7.1), an independent test (7.2), and a

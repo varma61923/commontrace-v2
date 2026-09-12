@@ -1072,6 +1072,34 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # call here would let one compromised API key wipe an org's entire
     # history irreversibly with no window for anyone to notice.
 
+    @scoped_tool(scopes.SCOPE_READ)
+    async def search_trace_content(pattern: str, regex: bool = False, limit: int = 100) -> dict:
+        """Locate traces (INCLUDING quarantined ones) whose title, context,
+        or solution text literally contain `pattern` -- a name, an email
+        address, a ticket number, whatever a subject-erasure request names.
+
+        Distinct from `search_traces`: that tool ranks by full-text
+        relevance and can miss or mangle an exact identifier through
+        stemming. This one does a literal (or, with `regex=True`, POSIX
+        regular expression) scan with no ranking -- every match, oldest
+        first.
+
+        NOT a completeness guarantee: a match proves the text is present;
+        a non-match is not proof of absence (free text can misspell,
+        abbreviate, or split an identifier this cannot reassemble). Use
+        this to FIND candidates for manual review, then `delete_trace`
+        the ones that actually need to go.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                results = await crud.search_trace_content(
+                    session, org_id, pattern, regex=regex, limit=limit,
+                )
+            return {"results": results}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
     @scoped_tool(scopes.SCOPE_ADMIN)
     async def delete_trace(id: str) -> dict:
         """Permanently delete one of your own traces, and every trace in

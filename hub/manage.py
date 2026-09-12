@@ -123,6 +123,17 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
+    search-content <org_id> <pattern> [literal|regex]
+                                   -> locate traces (including quarantined ones) whose
+                                       title/context/solution text literally contain
+                                       <pattern> -- a name, an email, a ticket number.
+                                       For a support-ticket-driven erasure request; a
+                                       customer's own signed-in team has the equivalent
+                                       search_trace_content MCP tool directly. Finds
+                                       candidates only -- purge-trace still does the
+                                       deleting. Not a completeness guarantee: a match
+                                       proves the text is present, a non-match is not
+                                       proof of absence
     webhook-add <org_id> <https_url> [events]
                                    -> tell this org's own systems what happens here.
                                        [events] is a comma-separated subset of
@@ -1627,6 +1638,43 @@ async def release_quarantine(trace_id: str, session_factory=None) -> bool:
     return True
 
 
+async def search_content(
+    org_id: str, pattern: str, mode: str = "literal", session_factory=None,
+) -> bool:
+    """Operator-assisted counterpart to the `search_trace_content` MCP
+    tool -- for a support-ticket-driven erasure request where the
+    requester is not the org's own signed-in team. See
+    `crud.search_trace_content`'s docstring for what this can and cannot
+    prove."""
+    if mode not in ("literal", "regex"):
+        print(f"error: mode must be 'literal' or 'regex', got {mode!r}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            results = await crud.search_trace_content(
+                session, org_id, pattern, regex=(mode == "regex"),
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    if not results:
+        print(f"no traces in {org_id} match {pattern!r}.")
+        return True
+    for r in results:
+        state = " [quarantined]" if r["quarantined"] else ""
+        print(f"{r['id']}  created={r['created_at']}{state}")
+        print(f"    {r['title']!r}  (matched {r['matched_field']})")
+        print(f"    {r['snippet']}")
+    print(f"\n{len(results)} match(es). This locates candidates -- it deletes nothing. "
+          "Review each, then `purge-trace <id>` the ones that need to go.")
+    return True
+
+
 async def purge_trace(trace_id: str, session_factory=None) -> bool:
     """Permanently deletes one trace AND every trace in its amendment chain
     (see crud.amendment_chain -- shared with the self-service delete_trace
@@ -2454,6 +2502,7 @@ _COMMANDS = {
     "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
+    "search-content": (search_content, 2, 3),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
     "webhook-add": (webhook_add, 2, 3),

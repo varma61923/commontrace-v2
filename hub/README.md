@@ -938,6 +938,45 @@ than the feature is worth. Each rule's own `cooldown_minutes` (default
 60) is what keeps a metric that stays past its threshold from firing on
 every single cron tick.
 
+## Locating content for a subject-erasure request (`search_trace_content`)
+
+Audit §2.2: "a customer who needs subject-level erasure over trace
+content must locate the traces themselves; there is no field this
+system could search on to do it for them." This is that tool — for a
+customer's own org (`search_trace_content`, an MCP tool) or an operator
+acting on a support ticket (`python -m hub.manage search-content
+<org_id> <pattern> [literal|regex]`).
+
+```bash
+python -m hub.manage search-content <org_id> "jane.smith@example.com"
+python -m hub.manage search-content <org_id> '\d{5}' regex
+```
+
+- **Literal by default, POSIX regex opt-in.** `search_traces`
+  deliberately moved off substring matching onto `search_vector`'s
+  stemmed full-text index — the right call for relevance search, and the
+  wrong one here: a subject's exact identifier must match exactly, not
+  survive being reduced to a stemmed lexeme. This is a plain scan (no
+  index, no ranking), which is the correct trade for a rare, targeted
+  compliance action rather than a per-occasion retrieval call.
+- **Only one regex engine is ever consulted.** `regex=True` uses
+  Postgres's own POSIX engine end to end, for both matching and
+  detecting which field matched — never a second pass through Python's
+  `re`, whose grammar is different enough (lookaheads, POSIX bracket
+  expressions) that pre-validating with it would reject patterns
+  Postgres accepts, or accept ones it rejects. An invalid pattern
+  surfaces as Postgres's own error, converted to a clean refusal.
+- **Finds candidates, including quarantined traces; deletes nothing.**
+  Review each match, then `delete_trace`/`purge-trace` the ones that
+  actually need to go.
+- **Not a completeness guarantee.** A match proves the text is present;
+  a non-match is not proof of absence — free text can misspell,
+  abbreviate, or split an identifier this cannot reassemble. This closes
+  the "locate the traces" half of 2.2; whole-account deletion/export
+  (`purge-org`/`export-assignments`) already existed, and per-person
+  erasure still has no structured subject-id column to search on
+  instead — see `AUDIT_RESPONSE.md` §2.2 for what remains open.
+
 ## Operator CLI (`hub/manage.py`)
 
 There is no web admin panel — this CLI *is* the admin/monitoring surface,

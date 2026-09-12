@@ -39,6 +39,8 @@ _HUB_TOOLS = [
     # assignment, and a per-person notification inbox
     "add_comment", "list_comments", "assign_trace", "unassign_trace",
     "list_my_notifications", "mark_notification_read",
+    # locating traces for a subject-erasure request
+    "search_trace_content",
 ]
 
 _GENERIC_POINTER_SKILL = """---

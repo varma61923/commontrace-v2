@@ -87,6 +87,7 @@ class TestCommonsEnabledByDefault:
             "working_set",
             "add_comment", "list_comments", "assign_trace", "unassign_trace",
             "list_my_notifications", "mark_notification_read",
+            "search_trace_content",
         }
 
 
@@ -116,6 +117,7 @@ class TestCommonsDisabled:
             "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
             "add_comment", "list_comments", "assign_trace", "unassign_trace",
             "list_my_notifications", "mark_notification_read",
+            "search_trace_content",
         ):
             assert tool in names, tool
 
