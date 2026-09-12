@@ -26,6 +26,9 @@ asyncpg==0.31.0            # async Postgres driver
 alembic==1.19.2
 argon2-cffi==25.1.0        # API key hashing
 jsonschema==4.26.0         # protocol/schemas/*.json validation
+PyJWT==2.13.0              # OIDC bearer-token verification (hub/sso.py) -- was
+                           # only ever a transitive dependency before; now
+                           # imported directly, so it is pinned directly too
 # commons_overlap compares every submitted failure signature against the
 # commons corpus. Measured on this codebase, numpy vectorizes that ~24x:
 # the worst-case bounded query is 1.6s with it and ~46s without. hub/commons.py

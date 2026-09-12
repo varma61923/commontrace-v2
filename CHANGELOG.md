@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Human user identity, RBAC, and OIDC SSO for the Hub.** An API key
+  authenticates a workload (a CI job, an agent fleet); until now there was
+  no way to authenticate a *person*, or to tell two people who share an
+  org's key apart. A `User` row (`hub/models.py`) now names a person, with
+  a role — Viewer, Analyst, Curator, Validator, Deployer, Security Admin,
+  Billing Admin, Owner — checked as a second, purely additive gate
+  alongside the existing API-key scopes (`hub/rbac.py`; every real MCP
+  tool maps to exactly one required capability, verified against the
+  live tool registry so an unmapped new tool fails closed rather than
+  silently inheriting access). A person signs in with an OIDC bearer JWT
+  (`hub/sso.py`): only asymmetric algorithms (RS/ES families) are ever
+  accepted, closing the classic attack of HMAC-signing a forged token
+  with the issuer's own public key; JWKS keys resolve strictly by the
+  token's `kid`, with no fallback to "the only key available." There is
+  no auto-provisioning — `hub.manage link-sso` is always an explicit
+  operator action — and `hub.manage disable-user` blocks a person's
+  access on their very next call, not at their token's next natural
+  expiry. New CLI: `create-user | list-users | set-user-role |
+  disable-user | enable-user | link-sso | unlink-sso`. Configured via
+  `HUB_OIDC_ISSUER`/`HUB_OIDC_AUDIENCE`/`HUB_OIDC_JWKS`/
+  `HUB_OIDC_JWKS_URI`; leaving issuer/audience unset disables SSO
+  entirely and the Hub behaves exactly as before. SAML, SCIM
+  auto-provisioning, and a login UI remain out of scope.
+
 - **Evidence decay: a measured effect stops being billed when nobody has
   re-measured it.** This product's argument is that a memory earns its place
   by measured effect. Nothing in that sentence had a date in it, and every

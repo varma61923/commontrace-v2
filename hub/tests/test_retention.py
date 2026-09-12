@@ -497,10 +497,14 @@ class TestSchemaSafety:
         from hub.alembic.versions.e9b4c07d15a8_webhook_event_export import (
             _NEW_TABLES as _WEBHOOK_TABLES,
         )
+        from hub.alembic.versions.c2f8a4d16e93_human_users_and_roles import (
+            _NEW_TABLES as _USER_TABLES,
+        )
         from hub.models import Base
 
         protected = {
-            *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES, "traces",
+            *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
+            *_USER_TABLES, "traces",
         }
         # Documented exemptions, with the reason each one cannot be scoped.
         # See d5c8b3a91e77's docstring.

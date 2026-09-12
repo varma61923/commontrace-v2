@@ -644,11 +644,67 @@ traffic beyond a pilot:
   docstring for why a small Starlette middleware was simpler and more
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
-- **Human users, SSO and RBAC.** There is one workload identity per org
-  (an API key) and no notion of a *person*. SAML/OIDC sign-in, SCIM
-  provisioning, and named roles (Viewer/Analyst/Curator/Validator/…) are
-  not implemented. The scopes below are the workload-token half of that
-  story, not a substitute for it.
+- **SAML, SCIM, and a login UI.** OIDC bearer-JWT verification and named
+  roles are implemented (below) — SAML sign-in, SCIM auto-provisioning,
+  and any browser-based login flow are not. `hub.manage link-sso` is the
+  only way a person gets an account today; there is no self-service
+  sign-up.
+- **Break-glass procedure.** If every `ROLE_SECURITY_ADMIN`/`ROLE_OWNER`
+  account is disabled or its IdP is unreachable, recovering access is an
+  operator `hub.manage create-user`/`set-user-role` run directly against
+  the database, not a documented in-product procedure.
+
+### Human users, roles, and OIDC SSO (implemented)
+
+A `User` row (`hub/models.py`) is a *person*, distinct from an org's
+workload API key — email, a named role, and (optionally) one linked OIDC
+identity (`issuer` + `external_subject`). None of this replaces API keys:
+a request authenticates with either an API key (the pre-existing,
+unchanged path) or a person's bearer JWT, never both, and
+`ApiKeyAuthMiddleware` (`hub/server.py`) tells the two apart by shape
+before doing any cryptographic work — three non-empty dot-separated
+base64url segments reads as a JWT, anything else is tried as an API key.
+
+- **Roles are explicit capability sets, not a hierarchy** (`hub/rbac.py`),
+  matching the "scopes do not imply each other" philosophy above: Viewer,
+  Analyst, Curator, Validator, Deployer, Security Admin, Billing Admin,
+  Owner. Every real MCP tool maps to exactly one required capability
+  (`TOOL_CAPABILITY`), checked by `hub/tests/test_rbac.py` against the
+  *live* tool registry so a newly added tool without a mapping fails
+  closed rather than silently inheriting access.
+- **Capability is a second, additive gate — never a wider one.** A
+  request still needs the API key's own scope (read/write/admin) to reach
+  a tool at all; the per-person capability check only ever narrows what a
+  role may do further, and is skipped entirely for API-key-only requests
+  (there is no person to check).
+- **OIDC verification (`hub/sso.py`) is deliberately narrow.** Only
+  asymmetric algorithms are accepted (RS/ES families) — `HS256` and
+  `none` are refused outright regardless of what the token's own header
+  claims, closing the classic "sign an HS256 token with the issuer's
+  public RSA key as the HMAC secret" confusion attack. JWKS keys are
+  resolved strictly by the token's `kid`; a token with no `kid`, or a
+  `kid` the JWKS document doesn't contain, is refused rather than falling
+  back to "the only key available."
+- **No auto-provisioning.** A verified token proves the IdP vouches for
+  that subject, not that the subject should have a CommonTrace account.
+  `hub.manage link-sso <user_id> <issuer> <subject>` is always an explicit
+  operator action; there is no just-in-time account creation from a
+  token alone.
+- **Deprovisioning is immediate, not token-expiry-bounded.**
+  `hub.manage disable-user` sets `disabled_at`, and `verify_user_token`
+  checks it on *every* authenticated call — not once at token issuance,
+  not cached — so a disabled person's very next request is refused even
+  if their JWT has ten more minutes to live.
+- Configured via `HUB_OIDC_ISSUER`, `HUB_OIDC_AUDIENCE`, and either
+  `HUB_OIDC_JWKS` (a static JWKS document, for an IdP that doesn't rotate
+  keys or for tests) or `HUB_OIDC_JWKS_URI` (fetched and cached for one
+  hour). Leaving `HUB_OIDC_ISSUER`/`HUB_OIDC_AUDIENCE` unset disables SSO
+  entirely — every token-shaped credential is then refused before it
+  reaches the database, and the Hub behaves exactly as it did before this
+  existed.
+- CLI: `hub.manage create-user | list-users | set-user-role | disable-user
+  | enable-user | link-sso | unlink-sso` — see `hub/manage.py`'s module
+  docstring for full usage.
 
 ### Per-key scopes (implemented)
 

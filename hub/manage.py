@@ -16,6 +16,28 @@
     rotate-key <key_id>             -> revokes <key_id>, issues + prints a new raw key for the same org
     revoke-key <key_id>             -> revokes a key immediately
     list-orgs                       -> id, name, created_at, active_keys
+    create-user <org_id> <email> <role> [display_name]
+                                    -> a PERSON, distinct from the org's shared API
+                                        key. role is one of viewer, analyst, curator,
+                                        validator, deployer, security_admin,
+                                        billing_admin, owner (hub/rbac.py). No SSO is
+                                        linked yet -- this user cannot sign in until
+                                        `link-sso`
+    list-users <org_id>            -> every user, their role, SSO link state, last login
+    set-user-role <user_id> <role> -> change what a person may do. Takes effect on
+                                        their NEXT request; there is no session to
+                                        invalidate
+    disable-user <user_id>         -> deprovision. Blocks access on the very next
+                                        authenticated call, not merely at the token's
+                                        natural expiry
+    enable-user <user_id>          -> reverse of disable-user
+    link-sso <user_id> <issuer> <external_subject>
+                                    -> link this user to one verified OIDC identity.
+                                        ALWAYS explicit -- there is no automatic
+                                        just-in-time provisioning from a verified token
+                                        alone (hub/sso.py)
+    unlink-sso <user_id>           -> remove the SSO link; the user row and role are
+                                        kept, only the ability to sign in is removed
     audit-log [org_id]              -> 100 most recent audited actions
 
     stats                          -> aggregate counts: orgs, active keys, traces
@@ -195,11 +217,11 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, prereg, raw_export
-from hub import audit, auth, commons, crud, events, outcomes, plans, retention
+from hub import audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -211,6 +233,7 @@ from hub.models import (
     Trace,
     TraceRelation,
     UsageCounter,
+    User,
     Vote,
     WebhookEndpoint,
 )
@@ -366,6 +389,218 @@ async def list_orgs(session_factory=None) -> None:
         for org in orgs:
             n_keys = keys_by_org.get(org.id, 0)
             print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={n_keys}")
+
+
+async def create_user(
+    org_id: str, email: str, role: str, display_name: str = "",
+    session_factory=None,
+) -> bool:
+    """`create-user <org_id> <email> <role> [display_name]`.
+
+    A PERSON, distinct from the org's shared workload API key
+    (hub/models.py:User). No SSO is linked by this alone -- the row
+    authenticates no one until `link-sso` attaches an OIDC identity to it,
+    or it stays purely a record you assign no login to.
+    """
+    try:
+        rbac.check_role(role)
+    except rbac.RoleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        user = User(
+            org_id=org_id, email=email, role=role, display_name=display_name,
+            created_by=audit.ACTOR_OPERATOR_CLI,
+        )
+        session.add(user)
+        try:
+            await session.flush()
+        except IntegrityError:
+            # Roll back BEFORE returning: session_scope commits on a normal
+            # exit, and committing a session whose flush already failed
+            # raises a second, uglier error that would escape this function
+            # entirely instead of the clean `return False` below.
+            await session.rollback()
+            print(
+                f"error: {org_id} already has a user with email {email!r}",
+                file=sys.stderr,
+            )
+            return False
+        user_id = user.id
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="create_user",
+            org_id=org_id, target_type="user", target_id=user_id,
+            summary=f"email={email} role={role}",
+        )
+    print(f"user_id: {user_id}")
+    print(f"  {email}  role={role}  org={org_id}")
+    print("  No SSO identity is linked yet -- this user cannot sign in until "
+          "you run `link-sso`.")
+    return True
+
+
+async def list_users(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        users = (
+            await session.execute(
+                select(User).where(User.org_id == org_id).order_by(User.created_at)
+            )
+        ).scalars().all()
+    if not users:
+        print(f"No users for {org_id}. (An org's API key still works independently "
+              "of any of this -- users are an additional, per-person identity.)")
+        return True
+    for u in users:
+        state = "disabled" if u.disabled_at is not None else "active"
+        linked = f"{u.issuer} / {u.external_subject}" if u.external_subject else "no SSO linked"
+        last = u.last_login_at.isoformat() if u.last_login_at else "never"
+        print(f"{u.id}  {u.email}  role={u.role}  {state}")
+        print(f"    {linked}  last_login={last}")
+    return True
+
+
+async def set_user_role(user_id: str, role: str, session_factory=None) -> bool:
+    """Change what a person may do. Takes effect on their NEXT request --
+    there is no session to invalidate, since every call re-reads the role
+    from this row (hub/auth.py:verify_user_token)."""
+    try:
+        rbac.check_role(role)
+    except rbac.RoleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        previous = user.role
+        user.role = role
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="set_user_role",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"{previous} -> {role}",
+        )
+    print(f"{user_id}: role changed {previous} -> {role}")
+    return True
+
+
+async def disable_user(user_id: str, session_factory=None) -> bool:
+    """Deprovision. Blocks access on this user's VERY NEXT authenticated
+    call, not merely at their token's next natural expiry
+    (hub/auth.py:verify_user_token checks `disabled_at` on every call) --
+    this is the literal exit criterion an audit of this Hub asked for."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if user.disabled_at is not None:
+            print(f"{user_id} is already disabled (since {user.disabled_at.isoformat()}).",
+                  file=sys.stderr)
+            return False
+        user.disabled_at = datetime.now(timezone.utc)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="disable_user",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+        )
+    print(f"{user_id} disabled. Access is blocked immediately, independent of any "
+          "token this person is still holding.")
+    return True
+
+
+async def enable_user(user_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if user.disabled_at is None:
+            print(f"{user_id} is not disabled.", file=sys.stderr)
+            return False
+        user.disabled_at = None
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="enable_user",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+        )
+    print(f"{user_id} re-enabled.")
+    return True
+
+
+async def link_sso(
+    user_id: str, issuer: str, external_subject: str, session_factory=None,
+) -> bool:
+    """Link a `User` row to one OIDC identity.
+
+    ALWAYS explicit, never automatic. A subject a trusted IdP will happily
+    verify is proof the IdP vouches for that person, not proof they should
+    have an account here -- see hub/sso.py's module docstring for the
+    reasoning this command exists to enforce. There is no just-in-time
+    provisioning path that bypasses it.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        user.issuer = issuer
+        user.external_subject = external_subject
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            print(
+                f"error: {issuer!r}/{external_subject!r} is already linked to a "
+                "different user -- an IdP subject belongs to exactly one account",
+                file=sys.stderr,
+            )
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="link_sso",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"issuer={issuer}",
+        )
+    print(f"{user_id} linked to {issuer} / {external_subject}.")
+    print("  This user can now authenticate with a bearer JWT verified against "
+        "that issuer.")
+    return True
+
+
+async def unlink_sso(user_id: str, session_factory=None) -> bool:
+    """Reverse of `link-sso`. The row and its role are kept -- only the
+    ability to sign in with that identity is removed."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if not user.external_subject:
+            print(f"{user_id} has no SSO identity linked.", file=sys.stderr)
+            return False
+        previous = f"{user.issuer}/{user.external_subject}"
+        user.issuer = ""
+        user.external_subject = ""
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="unlink_sso",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"was {previous}",
+        )
+    print(f"{user_id} unlinked. They can no longer authenticate until relinked.")
+    return True
 
 
 async def stats(session_factory=None) -> None:
@@ -2079,6 +2314,13 @@ _COMMANDS = {
     "rotate-key": (rotate_key, 1, 1),
     "revoke-key": (revoke_key, 1, 1),
     "list-orgs": (list_orgs, 0, 0),
+    "create-user": (create_user, 3, 4),
+    "list-users": (list_users, 1, 1),
+    "set-user-role": (set_user_role, 2, 2),
+    "disable-user": (disable_user, 1, 1),
+    "enable-user": (enable_user, 1, 1),
+    "link-sso": (link_sso, 3, 3),
+    "unlink-sso": (unlink_sso, 1, 1),
     "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),

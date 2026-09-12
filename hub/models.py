@@ -1028,3 +1028,78 @@ class WebhookDelivery(Base):
             postgresql_where=text("status = 'pending'"),
         ),
     )
+
+
+class User(Base):
+    """A person, distinct from the workload credential (ApiKey) an org's
+    agents authenticate with.
+
+    WHY THIS EXISTS
+    ---------------
+    Every request into this Hub, before this table, resolved to an
+    ORGANIZATION -- one shared API key, no notion of who on that org's team
+    was actually acting. That is a workload-identity model, and it is the
+    right one for an agent's own credential; it is the wrong one for the
+    humans who curate lessons, approve them, decide what deploys, and would
+    need to be individually deprovisioned when they leave. hub/auth.py's own
+    module docstring names this as an explicit, not-yet-built follow-up.
+
+    `role` is one of hub/rbac.py's named roles (Viewer, Analyst, Curator,
+    Validator, Deployer, Security Admin, Billing Admin, Owner) and decides
+    what this person may do, checked per MCP tool call
+    (hub/rbac.py:require_capability) IN ADDITION TO the org's own API-key
+    scope -- see hub/rbac.py's module docstring for why both gates run.
+
+    DEPROVISIONING IS `disabled_at`, NEVER A DELETE. The row is kept because
+    it is exactly what an auditor asks about later: who had access, with what
+    role, and when it was revoked. `disabled_at is not None` is checked on
+    EVERY authenticated call (hub/auth.py:verify_user_token), not only at
+    token issuance -- a JWT that was valid when minted must stop authorizing
+    anything the moment this column is set, independent of the token's own
+    expiry, which is what makes deprovisioning actually block access rather
+    than merely record an intention to.
+
+    `external_subject`/`issuer` link this row to an OIDC identity
+    (hub/sso.py) once one is verified. NOT auto-populated: a subject claim
+    arriving in a valid JWT is proof the issuer vouches for a person, not
+    proof that person should have an account here, so linking one is always
+    an explicit operator action (`hub.manage link-sso`), never automatic
+    just-in-time provisioning. SCIM-style automated provisioning is exactly
+    the piece that absence leaves open -- see hub/README.md "Auth
+    follow-ups" for what this table does and does not close.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Set once this row is linked to a verified OIDC identity
+    # (hub.manage link-sso). Both empty until then: a user created for a
+    # deployment with no SSO configured never needs either.
+    issuer: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    external_subject: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    # NULL means active. Set, never cleared by re-enabling to a prior value --
+    # `enable-user` clears it to NULL outright, and the audit log entry for
+    # each transition is the record of when and by whom.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+        # Partial: two rows may both carry ("", "") -- no SSO linked yet --
+        # without colliding. Only an ACTUAL linked identity has to be unique.
+        Index(
+            "ix_users_issuer_subject", "issuer", "external_subject", unique=True,
+            postgresql_where=text("external_subject != ''"),
+        ),
+    )

@@ -96,6 +96,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         auth_rate_limiter: RateLimiter,
         read_rate_limiter: RateLimiter,
         trusted_proxy_hops: int = 0,
+        identity_provider=None,
     ):
         super().__init__(app)
         self._session_factory = session_factory
@@ -106,6 +107,35 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # "trust only request.client.host", identical to this middleware's
         # behavior before this parameter existed.
         self._trusted_proxy_hops = trusted_proxy_hops
+        # None when this deployment has not configured SSO at all
+        # (HubConfig.identity_provider()) -- in which case a JWT-shaped
+        # bearer token is refused with the same message an invalid API key
+        # gets, rather than this middleware attempting verification against
+        # a provider that does not exist.
+        self._identity_provider = identity_provider
+        # Built ONCE, held for the middleware's lifetime -- see
+        # hub/sso.py:JWKSCache's own docstring for why a per-request cache
+        # would defeat its entire purpose. Only constructed when a provider
+        # is configured, so a deployment with no SSO pays nothing for it.
+        self._jwks_cache = None
+        if identity_provider is not None and identity_provider.jwks_uri:
+            from hub.sso import JWKSCache
+
+            self._jwks_cache = JWKSCache(self._fetch_jwks)
+
+    @staticmethod
+    def _fetch_jwks(uri: str) -> dict:
+        # A short, blocking-safe HTTP fetch -- httpx is already a direct
+        # dependency (hub/requirements.txt) for other outbound calls
+        # (webhook delivery), so this adds no new one. Timeout deliberately
+        # tight: this only ever runs on a JWKS TTL miss, never per request,
+        # so a slow or unreachable IdP fails one verification rather than
+        # hanging the request that happened to trigger the refetch.
+        import httpx
+
+        response = httpx.get(uri, timeout=5.0)
+        response.raise_for_status()
+        return response.json()
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -128,10 +158,62 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "missing or malformed Authorization: Bearer <api-key> header"}, status_code=401
             )
-        raw_key = header[len("bearer ") :].strip()
+        raw_token = header[len("bearer ") :].strip()
+
+        # Distinguished by SHAPE (three non-empty dot-separated segments),
+        # not by attempting one parse and catching its exception -- an API
+        # key (`ct_live_...`) never has that shape, so this is a clean
+        # either/or rather than a fallback chain. A JWT-shaped token is
+        # tried ONLY as a person; it is never also hashed and looked up as
+        # an API key, which would be wasted Argon2/HMAC work on bytes that
+        # cannot possibly match.
+        from hub.sso import looks_like_jwt
+
+        if looks_like_jwt(raw_token) and self._identity_provider is not None:
+            person = None
+            async with self._session_factory() as session:
+                person = await auth.verify_user_token(
+                    session, raw_token, self._identity_provider,
+                    jwks_cache=self._jwks_cache,
+                )
+                await session.commit()  # persists last_login_at touch
+            if person is None:
+                # One message for "not verifiable", "no linked user", and
+                # "deprovisioned" alike -- for the same reason
+                # verify_api_key collapses invalid/revoked/expired: telling
+                # a caller which one they hit is a probe they should not
+                # get for free.
+                return JSONResponse(
+                    {"error": "invalid, expired, or unlinked identity token"}, status_code=401
+                )
+            self._auth_rate_limiter.refund(client_key)
+            if request.method != "DELETE":
+                allowed, retry_after = await self._read_rate_limiter.check(person.org_id)
+                if not allowed:
+                    return _rate_limited_response("too many requests", retry_after)
+
+            from hub import rbac
+
+            org_token = auth.current_org_id.set(person.org_id)
+            # Non-secret, and distinguishable from an API key's "api-key:
+            # <prefix>" actor string at a glance in an audit-log row.
+            actor_token = auth.current_actor.set(f"user:{person.id}")
+            # Derived from the role (hub/rbac.py:ROLE_SCOPES) so the
+            # existing scope-based enforcement point stays meaningful for a
+            # person too; auth.require_capability is the ADDITIONAL,
+            # finer-grained gate this identity actually goes through.
+            scope_token = auth.current_scopes.set(rbac.scopes_of(person.role))
+            user_token = auth.current_user.set(person)
+            try:
+                return await call_next(request)
+            finally:
+                auth.current_org_id.reset(org_token)
+                auth.current_actor.reset(actor_token)
+                auth.current_scopes.reset(scope_token)
+                auth.current_user.reset(user_token)
 
         async with self._session_factory() as session:
-            authenticated = await auth.verify_api_key(session, raw_key)
+            authenticated = await auth.verify_api_key(session, raw_token)
             await session.commit()  # persists last_used_at touch
 
         if authenticated is None:
@@ -340,6 +422,16 @@ def _error_response(exc: Exception) -> dict:
             "required_scope": exc.required,
             "granted_scopes": list(exc.granted) if exc.granted is not None else None,
         }
+    if isinstance(exc, auth.CapabilityDenied):
+        # Distinct from ScopeDenied for the same reason it exists: the
+        # credential is valid, and the remedy is re-roling a PERSON
+        # (hub.manage set-user-role), not reissuing a key.
+        return {
+            "error": "forbidden",
+            "detail": str(exc),
+            "required_capability": exc.required,
+            "role": exc.role,
+        }
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
@@ -477,6 +569,13 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             async def guarded(*args, **kwargs):
                 try:
                     auth.require_scope(scope)
+                    # A no-op when the caller is a bare API key (no
+                    # verified person in context) -- see
+                    # auth.require_capability's own docstring. When a
+                    # person IS in context this is the gate that actually
+                    # distinguishes them; the scope check above is the
+                    # coarser one their role also derives (hub/rbac.py).
+                    auth.require_capability(fn.__name__)
                 except Exception as exc:  # noqa: BLE001 - rendered, not raised
                     return _error_response(exc)
                 return await fn(*args, **kwargs)
@@ -1294,6 +1393,11 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         auth_rate_limiter=make_auth_rate_limiter(config),
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
+        # None when HUB_OIDC_ISSUER/HUB_OIDC_AUDIENCE are unset -- see
+        # HubConfig.identity_provider(). Built once, here, so a malformed
+        # HUB_OIDC_JWKS fails this deployment at startup rather than on
+        # whichever request happens to send the first JWT.
+        identity_provider=config.identity_provider(),
     )
     # Startup, not per-request: one diagnostic query, and the answer cannot
     # change without an operator changing the role or the migrations. See

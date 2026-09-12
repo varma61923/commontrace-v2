@@ -65,7 +65,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub import scopes as scopes_module
-from hub.models import ApiKey, Organization
+from hub.models import ApiKey, Organization, User
 
 _KEY_PREFIX = "ct_live_"
 _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking useful entropy
@@ -478,6 +478,125 @@ def get_current_org_id() -> str:
     if org_id is None:
         raise PermissionError("no authenticated organization in request context")
     return org_id
+
+
+# --- human identity (hub/models.py:User, hub/sso.py) -----------------------
+#
+# Everything above authenticates a WORKLOAD credential -- one shared key per
+# org, no notion of who is holding it. This section authenticates a PERSON,
+# by verifying an OIDC bearer token (hub/sso.py) names an OIDC subject that
+# is linked to a `User` row here and not deprovisioned.
+#
+# Set ALONGSIDE current_org_id/current_actor/current_scopes by the same
+# middleware (hub/server.py), never instead of them: a person's role still
+# derives a scope (hub/rbac.py:ROLE_SCOPES) so `require_scope`'s existing
+# enforcement point stays meaningful for this path too, and the finer-grained
+# capability check below is an ADDITIONAL gate, not a replacement for it.
+current_user: contextvars.ContextVar[AuthenticatedUser | None] = contextvars.ContextVar(
+    "current_user", default=None
+)
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    id: str
+    org_id: str
+    role: str
+    email: str
+
+
+async def verify_user_token(
+    session: AsyncSession, raw_token: str, provider, *, jwks_cache=None,
+) -> AuthenticatedUser | None:
+    """Verify `raw_token` as an OIDC bearer JWT and resolve it to a `User`.
+
+    Returns None on ANY failure -- an unverifiable token, an unlinked
+    subject, or a deprovisioned user -- deliberately indistinguishable at
+    this layer for the same reason `verify_api_key` collapses invalid,
+    revoked, and expired into one outcome: telling an attacker which one
+    they hit is a probe they should not get for free.
+
+    NO AUTO-PROVISIONING. A subject verified by the IdP is proof the IdP
+    vouches for a person, not proof that person should have an account
+    here -- linking one is always `hub.manage link-sso`, an explicit
+    operator action. A verified subject with no matching row authenticates
+    no one.
+
+    `disabled_at` is checked HERE, on every call, not only when the row was
+    linked -- a token that was valid when minted must stop authorizing
+    anything the moment this column is set, independent of the token's own
+    remaining lifetime. That is what makes deprovisioning actually block
+    access rather than merely record an intention to.
+    """
+    from hub import sso as sso_module
+
+    try:
+        # asyncio.to_thread for the same reason issue_api_key/verify_api_key
+        # move Argon2 off the loop: this is CPU-bound signature verification
+        # and, on a JWKS cache miss, a blocking HTTP fetch (JWKSCache's own
+        # `fetch` callable) -- either would otherwise stall every other
+        # request this process is handling.
+        claims = await asyncio.to_thread(
+            sso_module.verify_bearer_token, raw_token, provider,
+            jwks_cache=jwks_cache,
+        )
+    except sso_module.IdentityError:
+        return None
+
+    row = (
+        await session.execute(
+            select(User).where(
+                User.issuer == claims.issuer,
+                User.external_subject == claims.subject,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None or row.disabled_at is not None:
+        return None
+
+    row.last_login_at = datetime.now(timezone.utc)
+    return AuthenticatedUser(id=row.id, org_id=row.org_id, role=row.role, email=row.email)
+
+
+class CapabilityDenied(PermissionError):
+    """A verified person authenticated, and their role does not grant the
+    capability the tool they called requires.
+
+    Distinct from `ScopeDenied` even though both are "the credential is
+    valid and this action is refused": this one names a ROLE, not a scope,
+    because the remedy is different (re-role the person, hub.manage
+    set-user-role) and a caller rendering the error should say so.
+    """
+
+    def __init__(self, message: str, required: str, role: str):
+        super().__init__(message)
+        self.required = required
+        self.role = role
+
+
+def require_capability(tool_name: str) -> None:
+    """Raise `CapabilityDenied` unless the person in context (if any) may
+    call `tool_name`.
+
+    A NO-OP when no verified person is in context -- an API-key-only
+    request is governed by `require_scope` alone, exactly as before this
+    module existed. This is the layer that only ever ADDS a restriction; it
+    never grants one `require_scope` would have refused.
+    """
+    from hub import rbac as rbac_module
+
+    person = current_user.get()
+    if person is None:
+        return
+    required = rbac_module.capability_for_tool(tool_name)
+    if not rbac_module.has_capability(person.role, required):
+        raise CapabilityDenied(
+            f"the signed-in user does not hold the {required!r} capability "
+            f"(role: {person.role!r}). Ask an Owner to change this user's role "
+            "with `python -m hub.manage set-user-role`.",
+            required=required,
+            role=person.role,
+        )
 
 
 def get_current_actor() -> str:

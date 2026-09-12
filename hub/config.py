@@ -300,6 +300,29 @@ class HubConfig:
     # out-of-band for exactly that purpose.
     ledger_signing_key: str = ""
 
+    # --- Human identity: OIDC bearer-token verification (hub/sso.py) ---
+    # One trusted issuer per deployment. Unset (the default) means SSO is
+    # not configured at all: `identity_provider()` returns None, the
+    # middleware never attempts JWT verification, and every request is
+    # governed exactly as it was before hub/models.py:User existed. This is
+    # SSO ENFORCEMENT for whichever users an operator links to it
+    # (`hub.manage link-sso`) -- not a login UI, not SCIM, not SAML, and
+    # never a substitute for scoped API keys; see hub/README.md "Auth
+    # follow-ups" for the boundary stated in full.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    # A static JWKS document as JSON, for an air-gapped deployment or one
+    # that rotates keys by redeploying config. Mutually exclusive in
+    # practice with oidc_jwks_uri below (the static document wins if both
+    # are set, since it was explicitly supplied); validated at
+    # `identity_provider()` call time, not here, so a malformed value fails
+    # loudly the first time it would matter rather than at import time.
+    oidc_jwks: str = ""
+    # Fetched and cached with a TTL (hub/sso.py:JWKSCache) rather than
+    # trusted once at startup, so a signing-key rotation at the IdP is
+    # picked up without a restart.
+    oidc_jwks_uri: str = ""
+
     # --- Tenant isolation: row-level security ---
     # Postgres skips EVERY row-level-security policy for a superuser or a
     # role holding BYPASSRLS -- silently, with no error and no log line. So
@@ -416,6 +439,42 @@ class HubConfig:
                 f"HUB_RATE_LIMIT_BACKEND must be 'memory' or 'postgres', got {self.rate_limit_backend!r}"
             )
 
+    def identity_provider(self):
+        """The trusted OIDC issuer this deployment verifies bearer tokens
+        against, or None when SSO is not configured at all.
+
+        Built once and reused (hub/server.py holds the result rather than
+        calling this per request) -- not for the cost of building it, which
+        is trivial, but so a single malformed `HUB_OIDC_JWKS` value fails
+        at startup, loud and once, rather than on whichever request happens
+        to trigger the first JWT verification attempt.
+        """
+        import json
+
+        from hub.sso import IdentityProvider
+
+        if not self.oidc_issuer or not self.oidc_audience:
+            return None
+        jwks = None
+        if self.oidc_jwks:
+            try:
+                jwks = json.loads(self.oidc_jwks)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"HUB_OIDC_JWKS is not valid JSON: {exc}"
+                ) from None
+        if jwks is None and not self.oidc_jwks_uri:
+            raise RuntimeError(
+                "HUB_OIDC_ISSUER and HUB_OIDC_AUDIENCE are set, so SSO is "
+                "configured, but neither HUB_OIDC_JWKS nor HUB_OIDC_JWKS_URI "
+                "names where to find the signing keys -- refusing to start "
+                "in a state where no token could ever verify."
+            )
+        return IdentityProvider(
+            issuer=self.oidc_issuer, audience=self.oidc_audience,
+            jwks=jwks, jwks_uri=self.oidc_jwks_uri,
+        )
+
     def validate_transport_safety(self) -> None:
         """Refuse to construct a config that would serve plaintext HTTP on a
         publicly reachable interface. Called from hub/main.py at startup --
@@ -477,6 +536,10 @@ class HubConfig:
             stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),
             stripe_price_scale=os.environ.get("HUB_STRIPE_PRICE_SCALE", ""),
             ledger_signing_key=os.environ.get("HUB_LEDGER_SIGNING_KEY", ""),
+            oidc_issuer=os.environ.get("HUB_OIDC_ISSUER", ""),
+            oidc_audience=os.environ.get("HUB_OIDC_AUDIENCE", ""),
+            oidc_jwks=os.environ.get("HUB_OIDC_JWKS", ""),
+            oidc_jwks_uri=os.environ.get("HUB_OIDC_JWKS_URI", ""),
             commons_enabled=_env_bool("HUB_COMMONS_ENABLED", True),
             db_pool_size=_env_int_in_range("HUB_DB_POOL_SIZE", 10, 1, 1000),
             db_max_overflow=_env_int_in_range("HUB_DB_MAX_OVERFLOW", 5, 0, 1000),

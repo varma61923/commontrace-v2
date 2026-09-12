@@ -36,7 +36,7 @@ individually.
 | # | Finding | Status | Evidence / what remains |
 |---|---|---|---|
 | 1.1 | The evaluation deployment displays an RLS story it does not enforce | **Done** | `hub/alembic/versions/d5c8b3a91e77_row_level_security.py` adds forced RLS; `hub/postgres-init/10-runtime-role.sql` creates a NOSUPERUSER/NOBYPASSRLS runtime role; `hub/db.py:check_row_level_security` fails startup closed when RLS is expected but bypassable (`HUB_REQUIRE_RLS`). Tests: `hub/tests/test_row_level_security.py` (16), `hub/tests/test_deployment_roles.py` (7). The RLS test *skips rather than passes* when it cannot subject itself to the policy — a test that cannot be bound by the policy has not verified it. |
-| 1.2 | A full-org API key is the only Hub identity | **Partial** | Least-privilege **workload** tokens exist: `hub/scopes.py` defines `read`/`write`/`admin`, which do not imply each other; all 20 MCP tools are scope-gated in `hub/server.py`. Tests: `hub/tests/test_api_key_scopes.py` (22). **Not done:** OIDC/SAML, SSO enforcement, break-glass, SCIM, and human user accounts. There is no human user model in this system at all, which is why 2.2 (subject-level deletion) and 8.1 (collaboration) are also open: both are downstream of this one gap. |
+| 1.2 | A full-org API key is the only Hub identity | **Partial** | Least-privilege **workload** tokens exist: `hub/scopes.py` defines `read`/`write`/`admin`, which do not imply each other; all 20 MCP tools are scope-gated in `hub/server.py`. Tests: `hub/tests/test_api_key_scopes.py` (22). **Human identity is now also implemented**: a `User` row (`hub/models.py`) is a person, distinct from the org's API key, with a named role (Viewer/Analyst/Curator/Validator/Deployer/Security Admin/Billing Admin/Owner) checked as a second, additive gate on every tool call (`hub/rbac.py`), and OIDC bearer-JWT verification (`hub/sso.py`) authenticates that person — asymmetric algorithms only, strict JWKS `kid` resolution, no auto-provisioning (an operator must run `hub.manage link-sso`), and deprovisioning (`disable-user`) blocks access on the very next call rather than waiting for token expiry. CLI: `hub.manage create-user \| list-users \| set-user-role \| disable-user \| enable-user \| link-sso \| unlink-sso`. Tests: `hub/tests/test_rbac.py` (16), `hub/tests/test_sso.py` (29), `hub/tests/test_user_identity.py` (21). **Not done:** SAML, SCIM auto-provisioning, and any browser-based login UI — `link-sso` is the only way a person gets an account, and there is no self-service sign-up or documented break-glass procedure. |
 | 1.3 | Memory admission is not protected against ASI06 | **Done** | `commontrace/memory_guard.py` scans every capture/import/amend/distill/approval boundary for secrets, PII, injection markers and hidden Unicode (bidi/zero-width control characters). Tests: `tests/test_memory_guard.py` (30), `tests/test_lesson_content_safety.py` (5). |
 | 1.4 | Approval policy is contradictory (an author can approve their own change) | **Done** | `commontrace/approval.py` reads `memory/approval-policy.yaml` and enforces `single`/`two-person` modes against the revision journal's recorded authors, raising `ApprovalDenied`. An author cannot satisfy a required human approval on their own change. Tests: `tests/test_approval_policy.py` (17). |
 | 1.5 | No scoped workload tokens | **Done** | Same as 1.2's first half. `issue-key <org> [days] [scopes]`. |
@@ -109,7 +109,7 @@ blocked on code, and none of it is partially satisfied by code that exists.
 
 | # | Finding | Status | Evidence / what remains |
 |---|---|---|---|
-| 8.1 | No reviewer queue, comments, assignments, notification inbox, ownership | **Not done** | `hub/manage.py` has an operator review queue for Knowledge Base submissions (`kb-review`, `list-submissions`, `approve-submission`, `reject-submission`), but that is an operator CLI, not a collaboration surface for a customer's own team. |
+| 8.1 | No reviewer queue, comments, assignments, notification inbox, ownership | **Not done** | `hub/manage.py` has an operator review queue for Knowledge Base submissions (`kb-review`, `list-submissions`, `approve-submission`, `reject-submission`), but that is an operator CLI, not a collaboration surface for a customer's own team. 1.2's human user accounts and roles give a customer's team named, individually-revocable logins to build such a surface on, but comments, assignments, and a notification inbox are still not implemented. |
 | 8.2 | No span/waterfall timeline, session replay, token-by-span view, saved views | **Not applicable** | These are observability-product features. CommonTrace is not an observability product and should not become one — §7.4 of the audit itself argues the opposite, that trace capture belongs behind a replaceable adapter. Integrating with the systems that do this well (6.1, 6.2) is the intended answer. |
 | 8.3 | No alerting, scheduled reports, BI export | **Partial** | The webhook event export (6.3) is the mechanism alerting would be built on, and `export-assignments` is a BI-shaped export. Neither a scheduler nor an alert-rule surface exists. |
 | 8.4 | Two incompatible trust models and an undisclosed-search-shaped egress | **Done** *(documentation)* | The boundary is stated explicitly: there is no org-to-org sharing anywhere in the system, and the Knowledge Base is a separately opted-in, operator-curated layer — see `README.md` "The CommonTrace Knowledge Base" and `hub/README.md` "Tenant isolation vs. the CommonTrace Knowledge Base". Marked Done as a *disclosure*, which is what the finding asked for; the architecture it discloses was already the implemented one. |
@@ -132,11 +132,16 @@ and retention with legal holds all exist and are tested. None of that is
 SOC 2, a pen test report, or an SLA, and this register does not let the
 first list be read as progress on the second.
 
-**The largest genuinely open item is identity** (1.2): a full-org API key
-with scopes is a workload credential, not a person. SSO, SCIM and human
-roles are real work that has not been done, and several rows elsewhere
-(8.1's collaboration surface, 2.2's subject-level deletion) are downstream
-of that one gap.
+**Identity (1.2) moved from open to partial**: a `User` row is now a
+person, distinct from the org's workload API key, with a named role
+(RBAC, checked as a second gate alongside the existing scopes) and OIDC
+bearer-JWT sign-in — no auto-provisioning, and deprovisioning blocks
+access on the person's very next call. SAML, SCIM, and a login UI remain
+undone. This does not close 8.1 (there is still no comment/assignment/
+notification collaboration surface, only named accounts to build one on
+top of) or 2.2 (subject-level deletion is about a customer's *own* end
+users named inside trace content, not about who can log into this Hub —
+those remain separate, unaddressed gaps).
 
 **Four items cannot be closed from a repository at all**: a legal
 counterparty (4.4), an attestation (7.1), an independent test (7.2), and a

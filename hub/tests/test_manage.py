@@ -8,11 +8,11 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import auth, crud, manage
+from hub import auth, crud, manage, rbac
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
-from hub.models import Organization, Trace, TraceRelation
+from hub.models import Organization, Trace, TraceRelation, User
 
 pytestmark = pytest.mark.asyncio
 
@@ -1392,5 +1392,253 @@ class TestWebhookCommandTable:
     async def test_every_webhook_command_is_dispatchable_and_documented(self):
         for name in ("webhook-add", "webhook-list", "webhook-rotate",
                      "webhook-disable", "webhook-deliver"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name
+
+
+class TestUserCLI:
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="user-cli-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_creating_a_user_prints_the_id_and_says_sso_is_not_linked(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_ANALYST, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "ana@example.com" in out
+        assert "cannot sign in" in out
+
+    async def test_an_unknown_role_is_refused(self, session_factory, org_id, capsys):
+        assert not await manage.create_user(
+            org_id, "ana@example.com", "supreme-leader", session_factory=session_factory)
+        assert "supreme-leader" in capsys.readouterr().err
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.create_user(
+            "00000000-0000-0000-0000-000000000000", "ana@example.com",
+            rbac.ROLE_ANALYST, session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_a_second_user_with_the_same_email_in_the_same_org_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "dup@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        capsys.readouterr()
+        assert not await manage.create_user(
+            org_id, "dup@example.com", rbac.ROLE_ANALYST, session_factory=session_factory)
+        assert "already has a user" in capsys.readouterr().err
+
+    async def test_the_same_email_is_fine_in_a_different_org(
+        self, session_factory, org_id, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            other_org = Organization(name="other-org")
+            session.add(other_org)
+            await session.flush()
+            other_org_id = other_org.id
+        assert await manage.create_user(
+            org_id, "shared@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        assert await manage.create_user(
+            other_org_id, "shared@example.com", rbac.ROLE_VIEWER,
+            session_factory=session_factory)
+
+    async def test_listing_an_empty_org_says_so_plainly(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.list_users(org_id, session_factory=session_factory)
+        assert "No users for" in capsys.readouterr().out
+
+    async def test_listing_shows_role_state_and_sso_link_status(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_CURATOR, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_users(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "ana@example.com" in out
+        assert f"role={rbac.ROLE_CURATOR}" in out
+        assert "active" in out
+        assert "no SSO linked" in out
+
+    async def test_an_unknown_org_is_refused_when_listing(self, session_factory, capsys):
+        assert not await manage.list_users(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_setting_the_role_takes_effect_immediately(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_DEPLOYER, session_factory=session_factory)
+        assert "viewer -> deployer" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.role == rbac.ROLE_DEPLOYER
+
+    async def test_setting_an_unknown_role_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.set_user_role(
+            user_id, "supreme-leader", session_factory=session_factory)
+        assert "supreme-leader" in capsys.readouterr().err
+
+    async def test_setting_the_role_of_an_unknown_user_is_refused(
+        self, session_factory, capsys
+    ):
+        assert not await manage.set_user_role(
+            "00000000-0000-0000-0000-000000000000", rbac.ROLE_VIEWER,
+            session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_disabling_blocks_access_and_is_idempotent_refused_on_repeat(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.disable_user(user_id, session_factory=session_factory)
+        assert "disabled" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.disabled_at is not None
+        assert not await manage.disable_user(user_id, session_factory=session_factory)
+        assert "already disabled" in capsys.readouterr().err
+
+    async def test_disabling_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.disable_user(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_enabling_clears_the_disabled_flag(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        assert "re-enabled" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.disabled_at is None
+
+    async def test_enabling_a_user_that_is_not_disabled_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.enable_user(user_id, session_factory=session_factory)
+        assert "not disabled" in capsys.readouterr().err
+
+    async def test_enabling_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.enable_user(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_linking_sso_lets_the_user_authenticate(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.link_sso(
+            user_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        assert "idp.example.com" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.issuer == "https://idp.example.com"
+            assert row.external_subject == "sub-123"
+
+    async def test_the_same_issuer_and_subject_cannot_be_linked_to_two_users(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        first_id = out.splitlines()[0].split()[1]
+        await manage.create_user(
+            org_id, "bea@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        second_id = out.splitlines()[0].split()[1]
+
+        assert await manage.link_sso(
+            first_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        capsys.readouterr()
+        assert not await manage.link_sso(
+            second_id, "https://idp.example.com", "sub-123",
+            session_factory=session_factory)
+        assert "already linked" in capsys.readouterr().err
+
+    async def test_linking_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.link_sso(
+            "00000000-0000-0000-0000-000000000000", "https://idp.example.com",
+            "sub-123", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_unlinking_removes_the_identity_but_keeps_the_row(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.link_sso(
+            user_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.unlink_sso(user_id, session_factory=session_factory)
+        assert "unlinked" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.external_subject == ""
+            assert row.role == rbac.ROLE_VIEWER
+
+    async def test_unlinking_a_user_with_nothing_linked_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.unlink_sso(user_id, session_factory=session_factory)
+        assert "no SSO identity" in capsys.readouterr().err
+
+    async def test_unlinking_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.unlink_sso(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+
+class TestUserCommandTable:
+    async def test_every_user_command_is_dispatchable_and_documented(self):
+        for name in ("create-user", "list-users", "set-user-role", "disable-user",
+                     "enable-user", "link-sso", "unlink-sso"):
             assert name in manage._COMMANDS, name
             assert name in manage.__doc__, name
