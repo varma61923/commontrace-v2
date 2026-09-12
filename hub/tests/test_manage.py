@@ -1225,3 +1225,172 @@ class TestRetentionCommandTable:
         is the whole point of a retention policy rather than a delete
         button."""
         assert "retention-apply" not in manage._DESTRUCTIVE_COMMANDS
+
+
+# --- webhook event export ----------------------------------------------------
+
+class TestWebhookCLI:
+    URL = "https://example.invalid/hooks/commontrace"
+
+    @pytest_asyncio.fixture
+    async def hooked(self, session_factory, monkeypatch, capsys):
+        """One org with one endpoint, and the secret the CLI printed."""
+        from hub import manage as manage_mod
+
+        monkeypatch.setattr(manage_mod, "_config_signing_key", lambda: "test-key")
+        async with session_scope(session_factory) as session:
+            org = Organization(name="hooked")
+            session.add(org)
+            await session.flush()
+            org_id = org.id
+        assert await manage.webhook_add(
+            org_id, self.URL, session_factory=session_factory)
+        out = capsys.readouterr().out
+        secret = next(
+            line.split(": ", 1)[1].strip()
+            for line in out.splitlines() if "signing secret" in line
+        )
+        endpoint_id = out.splitlines()[0].split()[1]
+        return {"org": org_id, "id": endpoint_id, "secret": secret, "out": out}
+
+    async def test_adding_prints_the_secret_once_and_says_it_is_not_stored(
+        self, hooked
+    ):
+        assert len(hooked["secret"]) == 64  # sha256 hex
+        # The operator has to be told they cannot read it back, at the one
+        # moment they could still copy it.
+        assert "shown ONCE" in hooked["out"]
+        assert "not stored" in hooked["out"]
+
+    async def test_the_secret_really_cannot_be_read_back(
+        self, session_factory, hooked
+    ):
+        """Not just "we do not print it again" -- it is not in the row."""
+        from hub.models import WebhookEndpoint
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, hooked["id"])
+            stored = " ".join(
+                str(getattr(row, c.name)) for c in row.__table__.columns
+            )
+        assert hooked["secret"] not in stored
+
+    async def test_plaintext_http_is_refused(self, session_factory, hooked, capsys):
+        assert not await manage.webhook_add(
+            hooked["org"], "http://example.invalid/h", session_factory=session_factory)
+        assert "https" in capsys.readouterr().err
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.webhook_add(
+            "00000000-0000-0000-0000-000000000000", self.URL,
+            session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_the_audit_row_records_the_url_and_never_the_secret(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import AuditLogEntry
+
+        async with session_scope(session_factory) as session:
+            entry = (await session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == "webhook.add")
+            )).scalar_one()
+        assert self.URL in entry.summary
+        assert hooked["secret"] not in entry.summary
+
+    async def test_listing_shows_the_endpoint_and_the_queue(
+        self, session_factory, hooked, capsys
+    ):
+        capsys.readouterr()
+        assert await manage.webhook_list(hooked["org"], session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert self.URL in out
+        assert "enabled" in out
+        assert "pending" in out
+
+    async def test_listing_an_org_with_nothing_says_so_plainly(
+        self, session_factory, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="quiet")
+            session.add(org)
+            await session.flush()
+            org_id = org.id
+        assert await manage.webhook_list(org_id, session_factory=session_factory)
+        assert "Nothing is told anything" in capsys.readouterr().out
+
+    async def test_rotating_prints_a_different_secret(
+        self, session_factory, hooked, capsys
+    ):
+        capsys.readouterr()
+        assert await manage.webhook_rotate(
+            hooked["id"], session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert hooked["secret"] not in out
+        assert "stops verifying immediately" in out
+
+    async def test_disabling_stops_future_queueing(
+        self, session_factory, hooked, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub import events
+        from hub.models import WebhookDelivery
+
+        assert await manage.webhook_disable(
+            hooked["id"], session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            await events.emit(
+                session, hooked["org"], "trace.created", {"trace_id": "t1"})
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(WebhookDelivery)) == 0
+
+    async def test_a_non_numeric_limit_is_an_operator_mistake(
+        self, session_factory, capsys
+    ):
+        assert not await manage.webhook_deliver(
+            "lots", session_factory=session_factory)
+        assert "whole number" in capsys.readouterr().err
+
+    async def test_starting_an_experiment_announces_it(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import WebhookDelivery
+
+        await manage.start_experiment(hooked["org"], "0.5", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.event_type == "experiment.started")
+            )).scalars())
+        assert len(rows) == 1
+        assert rows[0].payload["rate"] == 0.5
+
+    async def test_stopping_an_experiment_announces_it(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import WebhookDelivery
+
+        await manage.start_experiment(hooked["org"], "0.5", session_factory=session_factory)
+        await manage.stop_experiment(hooked["org"], session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.event_type == "experiment.stopped")
+            )).scalars())
+        assert len(rows) == 1
+
+
+class TestWebhookCommandTable:
+    async def test_every_webhook_command_is_dispatchable_and_documented(self):
+        for name in ("webhook-add", "webhook-list", "webhook-rotate",
+                     "webhook-disable", "webhook-deliver"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name

@@ -952,3 +952,79 @@ class LegalHold(Base):
             postgresql_where=text("released_at IS NULL"),
         ),
     )
+
+
+class WebhookEndpoint(Base):
+    """Where one org wants to be told what happened here.
+
+    NO SECRET COLUMN, deliberately. A webhook secret has to be USED on every
+    delivery, so it cannot live as a hash the way an API key does -- which
+    normally means a recoverable secret sitting in a column waiting for a
+    database dump to find it. It is instead derived per endpoint from the
+    deployment's own signing key plus `id` and `key_version`
+    (hub/events.py:derive_secret), so this table holds a version integer and
+    nothing else, and rotation bumps the integer.
+
+    `events` is the subscribed subset; an endpoint that wants everything
+    stores every name rather than an empty "all" sentinel, so adding a new
+    event type never silently starts delivering to endpoints that predate
+    it.
+    """
+
+    __tablename__ = "webhook_endpoints"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    events: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), default=list, nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Bumped to rotate the derived signing secret without storing one.
+    key_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class WebhookDelivery(Base):
+    """One queued attempt to tell someone one thing.
+
+    A durable row rather than a fire-and-forget call, because the moments
+    worth a webhook (a quarantine, an experiment verdict) are exactly the
+    ones a receiver cannot afford to miss because their load balancer was
+    restarting. Delivery is AT-LEAST-ONCE and the envelope carries a stable
+    `event_id` so receivers can deduplicate -- promising exactly-once here
+    would be a promise this cannot keep.
+
+    `payload` holds only the fields its event type declares
+    (hub/events.py:check_payload): ids, counts and verdicts, never trace
+    content. A webhook is egress to a third party, and this column is the
+    one place where "just this once" would become permanent.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    endpoint_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # The drain query, exactly: what is pending and due, oldest first.
+        Index(
+            "ix_webhook_deliveries_due", "status", "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )

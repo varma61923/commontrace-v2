@@ -80,11 +80,43 @@ commontrace import export.jsonl --agent-type support \
 commontrace import export.csv --agent-type support --dry-run   # preview first
 ```
 
+**Coming from LangSmith, Langfuse, Braintrust or OpenTelemetry?** Pass
+`--source` and skip the field mapping entirely — those systems export
+*nested* rows (the text lives at `inputs.input`, or inside an OTel attribute
+list) that no `--context-field` can reach:
+
+```bash
+commontrace import runs.jsonl  --source langsmith  --agent-type support
+commontrace import traces.jsonl --source langfuse  --agent-type support
+commontrace import spans.jsonl  --source braintrust --agent-type support
+commontrace import spans.jsonl  --source otel      --agent-type support
+```
+
+Each adapter also picks up the outcome the source system *already knows*:
+LangSmith's `error`, Langfuse's `scores`, Braintrust's `expected` vs
+`output`, an OTel span's status. Those labelled failures are exactly what
+distillation clusters on, so a bulk import arrives with its outcomes intact
+rather than as undifferentiated text.
+
+Two things these adapters deliberately do **not** do. They never invent: a
+row missing its solution is skipped with a reason, never filled with a
+plausible placeholder, because one fabricated field repeated ten thousand
+times becomes a corpus this product then measures and bills against. And
+they never read as success from silence: an OTel `UNSET` status, a
+LangSmith run with no `error` field, a Langfuse trace with no recognised
+score — all of these import with *no* outcome rather than as a win, because
+scoring an uninstrumented fleet as 100% resolved is the most expensive wrong
+answer available here.
+
+They read a **file you already have**. No API key, no hostname, no network
+call — which means a security reviewer can diff exactly what crosses the
+boundary before it does, and it works in an air-gapped environment.
+
 Field names are configurable (`--title-field`/`--context-field`/
-`--solution-field`/`--tags-field`/`--id-field`) since a real export's column
-names are whatever the source system calls them. Rows missing a required
-field are skipped and reported, not silently dropped or a hard failure of
-the whole batch. `resolved`/`escalated`/`repeated_error`/
+`--solution-field`/`--tags-field`/`--id-field`) for a `generic` flat export,
+since a real export's column names are whatever the source system calls
+them. Rows missing a required field are skipped and reported, not silently
+dropped or a hard failure of the whole batch. `resolved`/`escalated`/`repeated_error`/
 `frustration_signal`/`tokens_used`/`llm_calls` columns, if present, populate
 `Trace.outcome` (§ [Outcome Metrics](#outcome-metrics)) automatically.
 

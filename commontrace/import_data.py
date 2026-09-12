@@ -21,6 +21,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
+from commontrace import adapters
+
 # See commontrace/failure_import.py's identical guard: the stdlib default
 # (128 KiB) is a defense against a pathological file, not a limit a real
 # CRM/support-system export is expected to respect, and this module's own
@@ -50,6 +52,11 @@ class FieldMapping:
     solution: str = "solution"
     tags: str = "tags"
     id: str = "id"
+    #: Which vendor export shape the rows are in (commontrace/adapters.py).
+    #: The adapter flattens a nested row into the names above BEFORE they are
+    #: looked up, so every adapter shares this module's streaming, skip
+    #: reasons and schema validation rather than bringing its own.
+    source: str = adapters.GENERIC
 
 
 @dataclass
@@ -142,6 +149,11 @@ def _pick(row: dict[str, Any], name: str, alias: str | None = None) -> str:
 
 
 def _row_to_trace(line_no: int, row: dict[str, Any], mapping: FieldMapping) -> ImportedRow | SkippedRow:
+    if mapping.source != adapters.GENERIC:
+        # Flatten first, then proceed exactly as a flat row would. An
+        # adapter that wrote its own trace would be a second importer with
+        # its own bugs and its own idea of what a valid trace is.
+        row = adapters.normalize(row, mapping.source)
     title = _pick(row, mapping.title)
     context_text = _pick(row, mapping.context, _PROTOCOL_ALIASES.get(mapping.context))
     solution_text = _pick(row, mapping.solution, _PROTOCOL_ALIASES.get(mapping.solution))

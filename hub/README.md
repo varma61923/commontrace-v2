@@ -767,6 +767,51 @@ Still unproven, so worth saying: **the compose stack is not exercised by
 CI** (only the image is), and neither has been run against a
 production-like environment. Do a rehearsal deploy first.
 
+## Event export (webhooks)
+
+Everything this Hub knew was readable only by polling it. A fleet that
+wanted to open a ticket when a memory was quarantined, or gate a deploy on
+an experiment reaching a verdict, had to cron `hub/manage.py` and diff the
+output against last time.
+
+```bash
+python -m hub.manage webhook-add <org_id> https://you.example/hooks/commontrace
+# prints the signing secret ONCE
+python -m hub.manage webhook-deliver          # drain the queue; run on a schedule
+python -m hub.manage webhook-list <org_id>    # endpoints, pending, and what gave up
+```
+
+**Events carry no trace content.** A webhook is egress to a third party, set
+up once and then forgotten, so it is the one place where a leak would be
+permanent and unobserved. Every event type declares its exact fields
+(`hub/events.py`) and `emit` refuses a payload with any other key — a
+*whitelist*, because a denylist fails the moment someone adds a field nobody
+thought to ban. Events carry ids, counts and verdicts; a receiver that needs
+the text comes back and asks for it, authenticated, over the tenant-scoped
+API.
+
+**The signing secret is never stored.** Unlike an API key, which the Hub
+only ever *verifies* (and so can keep as an argon2 hash), a webhook secret
+must be *used* to compute an HMAC on every delivery. It is derived per
+endpoint from `HUB_LEDGER_SIGNING_KEY` plus the endpoint id and its key
+version, so `webhook_endpoints` holds a version integer and nothing else: a
+full database dump reveals which URLs an org uses and yields no ability to
+forge a single event. `webhook-rotate` bumps the version.
+
+**Verifying a delivery.** The `X-CommonTrace-Signature` header is
+`t=<unix>,v1=<hex>`, where the HMAC-SHA256 covers `"{timestamp}.{body}"` —
+the timestamp is inside the signed material, so altering it breaks the
+signature and a captured delivery cannot be replayed forever. Reject
+anything more than 300 seconds from your own clock.
+`hub/events.py:verify_signature` is the reference implementation, and is
+what this project's own tests use.
+
+**Delivery is at-least-once.** Deliveries are durable rows retried with
+backoff and given up on after 8 attempts — visibly, in `webhook-list`,
+because a queue that gives up quietly is a queue that lies about delivery.
+Every envelope carries a stable `event_id`: **deduplicate on it**. Promising
+exactly-once here would be a promise this cannot keep.
+
 ## Operator CLI (`hub/manage.py`)
 
 There is no web admin panel — this CLI *is* the admin/monitoring surface,

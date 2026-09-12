@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Import adapters for LangSmith, Langfuse, Braintrust and OpenTelemetry.**
+  `commontrace import` could read JSONL and CSV with `--title-field` and
+  friends, which works for a spreadsheet and works for none of the four
+  systems a customer is most likely to be coming from: those export *nested*
+  rows, where the text lives at `inputs.input` or inside an OTel attribute
+  list and no `--context-field` reaches it. A customer with two years of
+  LangSmith history had to write a transform script before this product
+  could read one of their traces, and the cost of that script is the cost of
+  not adopting.
+
+  `--source langsmith|langfuse|braintrust|otel` (`commontrace/adapters.py`)
+  flattens the vendor's shape into the one `import_data` already
+  understands, so every adapter shares the existing streaming, skip reasons
+  and schema validation rather than bringing its own write path. Each also
+  picks up the outcome the source system *already knows* — LangSmith's
+  `error`, Langfuse's `scores`, Braintrust's `expected` vs `output`, an OTel
+  span's status — which is exactly the label distillation clusters on.
+
+  Two deliberate non-behaviours. They never invent: a row missing its
+  solution is skipped with a reason rather than filled with a placeholder.
+  And silence is never success: an OTel `UNSET` status, a LangSmith run with
+  no `error` key, a Langfuse trace with no recognised score all import with
+  *no* outcome, because scoring an uninstrumented fleet as 100% resolved is
+  the most expensive wrong answer available here. They read a file you
+  already have — no API key, no hostname, no network call.
+
+- **Webhook event export from the Hub.** Everything the Hub knew was
+  readable only by polling it, so reacting to a quarantine or an experiment
+  verdict meant a cron job diffing `hub/manage.py` output against last time.
+  `hub/events.py` adds a versioned event set, a durable delivery queue and
+  `webhook-add`/`webhook-list`/`webhook-rotate`/`webhook-disable`/
+  `webhook-deliver`.
+
+  **Events carry no trace content.** Every event type declares its exact
+  fields and `emit` refuses a payload with any other key — a whitelist,
+  because a denylist fails the moment somebody adds a field nobody thought
+  to ban, and a webhook is egress to a third party that is configured once
+  and then forgotten.
+
+  **The signing secret is never stored.** Unlike an API key, which is only
+  verified and so can be a hash, a webhook secret must be used on every
+  delivery. It is derived per endpoint from the deployment's signing key
+  plus the endpoint id and key version, so a full dump of
+  `webhook_endpoints` yields no ability to forge one event; rotation bumps
+  an integer.
+
+  The signature covers `"{timestamp}.{body}"`, so a captured delivery cannot
+  be replayed once the tolerance passes. Delivery is at-least-once with a
+  stable `event_id` for deduplication, backoff, and a bounded give-up that
+  shows up in `webhook-list` — a queue that gives up quietly is a queue that
+  lies about delivery.
+
 - **Retention policies, legal holds, and a purge you read before it runs.**
   The Hub could delete one trace or one whole organization, both by hand and
   both immediately. Nothing expired on its own, so the answer to "what

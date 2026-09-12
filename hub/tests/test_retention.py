@@ -492,11 +492,16 @@ class TestSchemaSafety:
         against a list."""
         from hub.alembic.versions.d5c8b3a91e77_row_level_security import _SCOPED_TABLES
         from hub.alembic.versions.d7f2a63b9c41_retention_policies_and_legal_holds import (
-            _NEW_TABLES,
+            _NEW_TABLES as _RETENTION_TABLES,
+        )
+        from hub.alembic.versions.e9b4c07d15a8_webhook_event_export import (
+            _NEW_TABLES as _WEBHOOK_TABLES,
         )
         from hub.models import Base
 
-        protected = {*_SCOPED_TABLES, *_NEW_TABLES, "traces"}
+        protected = {
+            *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES, "traces",
+        }
         # Documented exemptions, with the reason each one cannot be scoped.
         # See d5c8b3a91e77's docstring.
         exempt = {

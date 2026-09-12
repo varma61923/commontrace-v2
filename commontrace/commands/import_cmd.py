@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 
-from commontrace import frontmatter, import_data, paths, templates, validate
+from commontrace import adapters, frontmatter, import_data, paths, templates, validate
 from commontrace.commands import _validators
 from commontrace.commands.capture_cmd import _id_suffix
 
@@ -22,6 +22,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("file", help="Path to a .jsonl or .csv export.")
     p.add_argument("--format", choices=["jsonl", "csv"], default=None, help="Default: infer from the file extension.")
+    p.add_argument(
+        "--source", choices=list(adapters.SOURCES), default=adapters.GENERIC,
+        help=(
+            "Which system produced this export. Anything but `generic` reads "
+            "the vendor's own nested shape, so --title-field and friends are "
+            "not needed (and are ignored): "
+            + "; ".join(f"{a.name} = {a.describe}" for a in adapters.ADAPTERS.values()
+                        if a.name != adapters.GENERIC)
+            + ". These read a FILE you already have -- no API key, no network "
+            "call, nothing leaves your machine."
+        ),
+    )
     p.add_argument(
         "--agent-type", type=_validators.agent_type, required=True,
         help="Kind of fleet these traces came from, as a lowercase slug. Any "
@@ -93,6 +105,7 @@ def run(args: argparse.Namespace) -> int:
         solution=args.solution_field,
         tags=args.tags_field,
         id=args.id_field,
+        source=getattr(args, "source", adapters.GENERIC),
     )
     fmt = _infer_format(args.file, args.format)
 

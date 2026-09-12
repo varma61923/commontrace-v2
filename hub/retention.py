@@ -58,13 +58,14 @@ be told, not left believing the store honoured a number it did not.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, func, select
 
-from hub import audit
+from hub import audit, events
 from hub.models import (
     AuditLogEntry,
     HoldoutObservation,
@@ -366,6 +367,15 @@ async def place_hold(
         reason=reason.strip(), placed_by=placed_by,
     )
     session.add(hold)
+    await session.flush()
+    # The reason is NOT sent: it is free text about a legal matter, and the
+    # event's job is to say a freeze exists, not to describe why to a third
+    # party's ticket system.
+    with contextlib.suppress(events.EventError):
+        await events.emit(session, org_id, "legal_hold.placed", {
+            "hold_id": hold.id, "object_type": object_type,
+            "target_id": target_id,
+        })
     return hold
 
 
@@ -381,6 +391,10 @@ async def release_hold(session, hold_id: str, *, reason: str = "") -> LegalHold:
         )
     hold.released_at = _now()
     hold.release_reason = reason
+    with contextlib.suppress(events.EventError):
+        await events.emit(session, hold.org_id, "legal_hold.released", {
+            "hold_id": hold.id,
+        })
     return hold
 
 
@@ -623,6 +637,16 @@ async def apply(
         deleted[bucket.object_type] = (
             deleted.get(bucket.object_type, 0) + (result.rowcount or 0)
         )
+
+    # Announced to whoever asked to be told (hub/events.py). Only counts and
+    # the plan digest cross the wire -- what was deleted is exactly the
+    # information a webhook must not carry.
+    with contextlib.suppress(events.EventError):
+        await events.emit(session, org_id, "retention.purged", {
+            "plan": fresh.digest,
+            "n_deleted": sum(deleted.values()),
+            "n_held": fresh.n_held,
+        })
 
     # Logged even when nothing matched. "The purge ran and deleted nothing"
     # and "the purge never ran" are different facts, and only one of them

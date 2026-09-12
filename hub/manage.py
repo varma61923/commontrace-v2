@@ -101,6 +101,26 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
+    webhook-add <org_id> <https_url> [events]
+                                   -> tell this org's own systems what happens here.
+                                       [events] is a comma-separated subset of
+                                       the event types (default: all). Prints the
+                                       signing secret ONCE -- it is derived from this
+                                       deployment's signing key, never stored, so it
+                                       cannot be read back out of the database (or out
+                                       of a dump of it). Events carry ids, counts and
+                                       verdicts and NEVER trace content: a receiver
+                                       that needs the text asks for it over the
+                                       tenant-scoped API
+    webhook-list <org_id>          -> this org's endpoints, how many deliveries are
+                                       pending, and the ones that gave up
+    webhook-rotate <endpoint_id>   -> new signing secret; the old one stops verifying
+                                       immediately
+    webhook-disable <endpoint_id>  -> stop delivering to it
+    webhook-deliver [limit]        -> drain the queue once. Safe to run on a schedule;
+                                       delivery is AT-LEAST-ONCE and every envelope
+                                       carries a stable event_id, so receivers must
+                                       deduplicate on it
     set-retention <org_id> <object_type> <days> [status]
                                    -> how long this org keeps one kind of object.
                                        object_type: trace | vote |
@@ -168,6 +188,7 @@ session_factory instead of monkeypatching module globals.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import uuid
 from collections import Counter
@@ -178,7 +199,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, prereg, raw_export
-from hub import audit, auth, commons, crud, outcomes, plans, retention
+from hub import audit, auth, commons, crud, events, outcomes, plans, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -191,6 +212,7 @@ from hub.models import (
     TraceRelation,
     UsageCounter,
     Vote,
+    WebhookEndpoint,
 )
 
 
@@ -826,6 +848,10 @@ async def start_experiment(
         )
         org.holdout_prereg = registration.to_dict()
         await session.flush()
+        with contextlib.suppress(events.EventError):
+            await events.emit(session, org_id, "experiment.started", {
+                "rate": value, "salt": org.holdout_salt, "outcome": outcome,
+            })
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="start_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -937,6 +963,9 @@ async def stop_experiment(org_id: str, session_factory=None) -> bool:
             return False
         org.holdout_rate = 0.0
         await session.flush()
+        with contextlib.suppress(events.EventError):
+            await events.emit(session, org_id, "experiment.stopped",
+                              {"salt": org.holdout_salt})
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="stop_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -1911,6 +1940,128 @@ async def list_legal_holds(org_id: str, session_factory=None) -> bool:
 
 
 
+# --- webhook event export ----------------------------------------------------
+
+def _config_signing_key() -> str:
+    return HubConfig.from_env().ledger_signing_key
+
+
+async def webhook_add(
+    org_id: str, url: str, event_names: str = "", session_factory=None,
+) -> bool:
+    """Register a URL to be told what happens, and print its secret once."""
+    session_factory = session_factory or _default_session_factory()
+    subscribed = [e.strip() for e in event_names.split(",") if e.strip()] or None
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            endpoint, secret = await events.add_endpoint(
+                session, org_id, url, events=subscribed,
+                signing_key=_config_signing_key(),
+            )
+        except events.EventError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        endpoint_id, subscribed_to = endpoint.id, list(endpoint.events)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.add",
+            org_id=org_id, target_type="webhook_endpoint", target_id=endpoint_id,
+            # The URL, not the secret. Never the secret.
+            summary=f"{url} ({len(subscribed_to)} event types)",
+        )
+    print(f"endpoint {endpoint_id} -> {url}")
+    print(f"  events: {', '.join(subscribed_to)}")
+    print(f"  signing secret: {secret}")
+    print("  This secret is shown ONCE and is not stored -- it is derived from")
+    print("  this deployment's signing key. Re-derive it with `webhook-rotate`,")
+    print("  which also invalidates the one above.")
+    return True
+
+
+async def webhook_list(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        endpoints = await events.endpoints_for(session, org_id)
+        pending = await events.pending_count(session, org_id)
+        failed = await events.failed_deliveries(session, org_id, limit=10)
+    if not endpoints:
+        print(f"No webhook endpoints for {org_id}. Nothing is told anything.")
+        return True
+    for e in endpoints:
+        state = "enabled" if e.enabled else "DISABLED"
+        print(f"{e.id}  {state}  {e.url}")
+        print(f"    events: {', '.join(e.events)}  (key v{e.key_version})")
+    print()
+    print(f"{pending} delivery/deliveries pending.")
+    if failed:
+        # The dead-letter view: a queue that gives up silently is a queue
+        # that lies about delivery.
+        print(f"{len(failed)} gave up (most recent first):")
+        for d in failed:
+            print(f"  {d.created_at:%Y-%m-%d %H:%M}  {d.event_type}  {d.last_error}")
+    return True
+
+
+async def webhook_rotate(endpoint_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            secret = await events.rotate_secret(
+                session, endpoint_id, signing_key=_config_signing_key())
+        except events.EventError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        endpoint = await session.get(WebhookEndpoint, endpoint_id)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.rotate",
+            org_id=endpoint.org_id, target_type="webhook_endpoint",
+            target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
+        )
+    print(f"endpoint {endpoint_id} new signing secret: {secret}")
+    print("  The previous secret stops verifying immediately.")
+    return True
+
+
+async def webhook_disable(endpoint_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        endpoint = await session.get(WebhookEndpoint, endpoint_id)
+        if endpoint is None:
+            print(f"error: no such endpoint: {endpoint_id}", file=sys.stderr)
+            return False
+        endpoint.enabled = False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.disable",
+            org_id=endpoint.org_id, target_type="webhook_endpoint",
+            target_id=endpoint_id, summary=endpoint.url,
+        )
+    print(f"endpoint {endpoint_id} disabled. Queued deliveries to it will be "
+          "marked failed rather than retried forever.")
+    return True
+
+
+async def webhook_deliver(limit: str = "100", session_factory=None) -> bool:
+    """Drain the queue once. Safe to run on a schedule."""
+    session_factory = session_factory or _default_session_factory()
+    try:
+        batch = int(limit)
+    except ValueError:
+        print(f"error: limit must be a whole number, got {limit!r}", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        result = await events.deliver_pending(
+            session, events.http_transport(),
+            signing_key=_config_signing_key(), limit=batch,
+        )
+    print(f"attempted {result.attempted}: {result.delivered} delivered, "
+          f"{result.retrying} will retry, {result.gave_up} gave up.")
+    return True
+
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
     "issue-key": (issue_key, 1, 3),
@@ -1942,6 +2093,11 @@ _COMMANDS = {
     "release-quarantine": (release_quarantine, 1, 1),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
+    "webhook-add": (webhook_add, 2, 3),
+    "webhook-list": (webhook_list, 1, 1),
+    "webhook-rotate": (webhook_rotate, 1, 1),
+    "webhook-disable": (webhook_disable, 1, 1),
+    "webhook-deliver": (webhook_deliver, 0, 1),
     "set-retention": (set_retention, 3, 4),
     "clear-retention": (clear_retention, 2, 3),
     "retention-plan": (retention_plan, 1, 1),
