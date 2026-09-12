@@ -475,3 +475,30 @@ class TestFullStackJwtAuthentication:
 
             after = await client.get("/mcp", headers={"authorization": f"Bearer {token}"})
         assert after.status_code == 401
+
+
+class TestGetCurrentActor:
+    """hub/server.py's JWT-authenticated path sets `current_actor` to the
+    already-fully-formed `f"user:{id}"` (line ~200), unlike the API-key
+    path, which sets the bare key prefix and relies on get_current_actor
+    to wrap it. get_current_actor must tell these apart -- wrapping the
+    person's string a second time produced `"api-key:user:<id>"` in every
+    audit row an authenticated person's action wrote, misattributing a
+    person's action to a workload credential that was never involved."""
+
+    async def test_a_person_actor_is_not_double_wrapped(self):
+        token = auth.current_actor.set("user:abc-123")
+        try:
+            assert auth.get_current_actor() == "user:abc-123"
+        finally:
+            auth.current_actor.reset(token)
+
+    async def test_an_api_key_prefix_is_still_wrapped(self):
+        token = auth.current_actor.set("ct_live_test")
+        try:
+            assert auth.get_current_actor() == "api-key:ct_live_test"
+        finally:
+            auth.current_actor.reset(token)
+
+    async def test_no_actor_in_context_is_unknown(self):
+        assert auth.get_current_actor() == "unknown"

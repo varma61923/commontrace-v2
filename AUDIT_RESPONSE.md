@@ -109,7 +109,7 @@ blocked on code, and none of it is partially satisfied by code that exists.
 
 | # | Finding | Status | Evidence / what remains |
 |---|---|---|---|
-| 8.1 | No reviewer queue, comments, assignments, notification inbox, ownership | **Not done** | `hub/manage.py` has an operator review queue for Knowledge Base submissions (`kb-review`, `list-submissions`, `approve-submission`, `reject-submission`), but that is an operator CLI, not a collaboration surface for a customer's own team. 1.2's human user accounts and roles give a customer's team named, individually-revocable logins to build such a surface on, but comments, assignments, and a notification inbox are still not implemented. |
+| 8.1 | No reviewer queue, comments, assignments, notification inbox, ownership | **Done** | `hub/collab.py`, built on 1.2's human users. `add_comment`/`list_comments` let a customer's own team discuss one of their own traces; `assign_trace`/`unassign_trace` give it one owner at a time; `list_my_notifications`/`mark_notification_read` are a per-person inbox ("you were assigned a trace", "someone commented on one assigned to you") with no delivery beyond the table itself (no email/push/webhook). All six require a signed-in person, refused as `person_required` for an API-key-only caller, and are gated by the same scope+capability layers as every other tool (`CAP_CURATE` to write, `CAP_VIEW` to read). Distinct from `hub/manage.py`'s pre-existing Knowledge Base review queue, which remains an operator-only, cross-tenant surface. Tests: `hub/tests/test_collab.py` (28). **Not done:** any UI to render this — the surface is MCP tools only, same as the rest of the Hub. |
 | 8.2 | No span/waterfall timeline, session replay, token-by-span view, saved views | **Not applicable** | These are observability-product features. CommonTrace is not an observability product and should not become one — §7.4 of the audit itself argues the opposite, that trace capture belongs behind a replaceable adapter. Integrating with the systems that do this well (6.1, 6.2) is the intended answer. |
 | 8.3 | No alerting, scheduled reports, BI export | **Partial** | The webhook event export (6.3) is the mechanism alerting would be built on, and `export-assignments` is a BI-shaped export. Neither a scheduler nor an alert-rule surface exists. |
 | 8.4 | Two incompatible trust models and an undisclosed-search-shaped egress | **Done** *(documentation)* | The boundary is stated explicitly: there is no org-to-org sharing anywhere in the system, and the Knowledge Base is a separately opted-in, operator-curated layer — see `README.md` "The CommonTrace Knowledge Base" and `hub/README.md` "Tenant isolation vs. the CommonTrace Knowledge Base". Marked Done as a *disclosure*, which is what the finding asked for; the architecture it discloses was already the implemented one. |
@@ -132,16 +132,17 @@ and retention with legal holds all exist and are tested. None of that is
 SOC 2, a pen test report, or an SLA, and this register does not let the
 first list be read as progress on the second.
 
-**Identity (1.2) moved from open to partial**: a `User` row is now a
-person, distinct from the org's workload API key, with a named role
-(RBAC, checked as a second gate alongside the existing scopes) and OIDC
-bearer-JWT sign-in — no auto-provisioning, and deprovisioning blocks
-access on the person's very next call. SAML, SCIM, and a login UI remain
-undone. This does not close 8.1 (there is still no comment/assignment/
-notification collaboration surface, only named accounts to build one on
-top of) or 2.2 (subject-level deletion is about a customer's *own* end
-users named inside trace content, not about who can log into this Hub —
-those remain separate, unaddressed gaps).
+**Identity (1.2) moved from open to partial, and unblocked 8.1.** A `User`
+row is now a person, distinct from the org's workload API key, with a
+named role (RBAC, checked as a second gate alongside the existing scopes)
+and OIDC bearer-JWT sign-in — no auto-provisioning, and deprovisioning
+blocks access on the person's very next call. SAML, SCIM, and a login UI
+remain undone on 1.2. With a person to attribute a comment to or assign
+work to, 8.1's collaboration surface (comments, assignment, a
+notification inbox, built in `hub/collab.py`) is now done. This still
+does not close 2.2: subject-level deletion is about a customer's *own*
+end users named inside trace content, not about who can log into this
+Hub — that remains a separate, unaddressed gap.
 
 **Four items cannot be closed from a repository at all**: a legal
 counterparty (4.4), an attestation (7.1), an independent test (7.2), and a

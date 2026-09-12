@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Collaboration on traces: comments, assignment, and a notification
+  inbox (`hub/collab.py`).** `hub/manage.py`'s Knowledge Base review queue
+  is an operator surface across every tenant; this is the missing piece
+  for a customer's *own* team working on their own traces. `add_comment`/
+  `list_comments` let a team discuss a trace; `assign_trace`/
+  `unassign_trace` give it one owner at a time (re-assigning replaces
+  whoever held it); `list_my_notifications`/`mark_notification_read` are
+  a per-person inbox ("you were assigned a trace", "someone commented on
+  one assigned to you"), with no delivery beyond the table itself — no
+  email, no push, no webhook. All six tools require a signed-in person
+  (the human identity below) and are refused as `person_required` for an
+  API-key-only caller — there is no meaningful author for a shared
+  workload credential, and no per-person inbox for one either. Gated by
+  the same scope+capability layers as every other tool: `CAP_CURATE` to
+  write, `CAP_VIEW` to read. New tables (`comments`, `assignments`,
+  `notifications`) carry the same row-level security as every other
+  org-scoped table. Tests: `hub/tests/test_collab.py` (28).
+
 - **Human user identity, RBAC, and OIDC SSO for the Hub.** An API key
   authenticates a workload (a CI job, an agent fleet); until now there was
   no way to authenticate a *person*, or to tell two people who share an

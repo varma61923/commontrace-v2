@@ -1103,3 +1103,115 @@ class User(Base):
             postgresql_where=text("external_subject != ''"),
         ),
     )
+
+
+class Comment(Base):
+    """A remark a signed-in person (hub/auth.py:current_user) leaves on one
+    of their org's own traces, so a customer's own team has somewhere to
+    discuss a trace before or after it is curated -- audit §8.1 named this
+    absence explicitly.
+
+    `target_type`/`target_id` (not a ForeignKey to Trace) is deliberately
+    the same shape as `KnowledgeBaseSubmission.resulting_trace_id`: a later
+    purge-trace on a heavily-discussed trace must not be blocked by a
+    comment still referencing it, and keeping the column generic leaves the
+    door open to commenting on some other kind of row later without a
+    schema change. Only `target_type == "trace"` is validated and reachable
+    through the MCP tool surface today (hub/collab.py).
+
+    Requires a PERSON, not merely an authenticated API key: `author_user_id`
+    is who said this, and there is no meaningful author for a shared
+    workload credential. hub/auth.py:get_current_user raises for an
+    API-key-only request before this row is ever created.
+    """
+
+    __tablename__ = "comments"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    author_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    body: Mapped[str] = mapped_column(String(4000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        Index("ix_comments_target", "org_id", "target_type", "target_id"),
+    )
+
+
+class Assignment(Base):
+    """Who currently owns following up on one target (a trace, today).
+
+    ONE assignee at a time -- `uq_assignments_target` enforces it -- because
+    this answers "whose job is this right now", not "who has ever touched
+    it"; that history already lives in AuditLogEntry (action
+    `assignment.set`), which is append-only where this row is deliberately
+    mutable state. Re-assigning updates this row rather than adding a
+    second one.
+    """
+
+    __tablename__ = "assignments"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    assignee_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    assigned_by_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "target_type", "target_id", name="uq_assignments_target",
+        ),
+    )
+
+
+class Notification(Base):
+    """One line in a person's inbox (hub/collab.py:list_my_notifications):
+    "you were assigned X" or "Y commented on Z you're assigned to". Created
+    server-side by the action that causes it (add_comment, assign) --
+    there is no separate "send a notification" tool, so an inbox entry
+    always corresponds to something that actually happened.
+
+    No delivery beyond this table: no email, no push, no webhook. A person
+    (or whatever a customer builds against this) polls
+    `list_my_notifications`. This mirrors the project's existing stance
+    that signup (hub/signup.py) has no outbound email integration either --
+    added here rather than assumed, since a notification a customer never
+    sees is worse than no notification claimed at all.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    summary: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_notifications_user_unread", "org_id", "user_id", "read_at"),
+    )

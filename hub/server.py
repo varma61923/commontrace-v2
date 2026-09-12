@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, commons, crud, observability, plans, scopes
+from hub import auth, collab, commons, crud, observability, plans, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -432,6 +432,12 @@ def _error_response(exc: Exception) -> dict:
             "required_capability": exc.required,
             "role": exc.role,
         }
+    if isinstance(exc, auth.PersonRequiredError):
+        # Distinct from ScopeDenied/CapabilityDenied: the API key itself is
+        # perfectly valid, there is just no PERSON in context for a tool
+        # that only means something for one (whose inbox, who authored a
+        # comment, who is being assigned work).
+        return {"error": "person_required", "detail": str(exc)}
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
@@ -482,6 +488,8 @@ def _error_response(exc: Exception) -> dict:
         # actually confirm the subscription is cancelled first, so a client
         # should retry rather than treat this as a bug in the request.
         return {"error": "deletion_blocked", "detail": str(exc)}
+    if isinstance(exc, collab.CollabNotFound):
+        return {"error": "not_found", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
@@ -1285,6 +1293,96 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                     return {"submissions": await crud.list_my_kb_submissions(session, org_id, limit=limit)}
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def add_comment(trace_id: str, body: str) -> dict:
+        """Leave a remark on one of your org's own traces, visible to your
+        whole team. Requires a signed-in PERSON (an OIDC bearer token
+        linked via `hub.manage link-sso`), not just an API key -- there is
+        no meaningful author for a shared workload credential. If the
+        trace is currently assigned to someone else, they get a
+        notification (`list_my_notifications`)."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                return await collab.add_comment(session, org_id, person, trace_id, body)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def list_comments(trace_id: str) -> dict:
+        """Every comment left on one of your org's own traces, oldest first."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return {"comments": await collab.list_comments(session, org_id, trace_id)}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def assign_trace(trace_id: str, user_id: str) -> dict:
+        """Make `user_id` (one of your org's own `hub.manage list-users`
+        rows) the one person responsible for following up on this trace.
+        Re-assigning replaces whoever held it before -- one owner at a
+        time. Requires a signed-in PERSON."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                return await collab.assign(session, org_id, person, trace_id, user_id)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def unassign_trace(trace_id: str) -> dict:
+        """Clear whoever this trace is currently assigned to, if anyone.
+        Requires a signed-in PERSON."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                cleared = await collab.unassign(session, org_id, person, trace_id)
+            return {"cleared": cleared}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def list_my_notifications(unread_only: bool = False) -> dict:
+        """Your own inbox: 'you were assigned a trace' / 'someone commented
+        on a trace assigned to you'. Requires a signed-in PERSON -- there
+        is no per-person inbox for a shared API key. Mark one read with
+        `mark_notification_read`."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                notifications = await collab.list_my_notifications(
+                    session, org_id, person, unread_only=unread_only,
+                )
+            return {"notifications": notifications}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def mark_notification_read(notification_id: str) -> dict:
+        """Mark one of YOUR OWN inbox entries read. Never affects, or even
+        confirms the existence of, another person's notification.
+
+        Scoped `read`, not `write`: this only ever bookkeeps YOUR OWN
+        inbox and adds nothing to the org's corpus (hub/scopes.py's
+        `write` is reserved for that), so a read-only key held by a
+        signed-in Viewer can still clear their own notifications."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                found = await collab.mark_notification_read(session, org_id, person, notification_id)
+            if not found:
+                return {"error": "not_found", "detail": f"no notification with id {notification_id}"}
+            return {"id": notification_id, "read": True}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
 
     @scoped_tool(scopes.SCOPE_READ)
     async def account_usage() -> dict:

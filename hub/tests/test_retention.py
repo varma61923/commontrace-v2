@@ -490,6 +490,12 @@ class TestSchemaSafety:
         d5c8b3a91e77 was written to close. This fails on the NEXT one too,
         which is the point of asserting it against the models rather than
         against a list."""
+        from hub.alembic.versions.a7c3e91f4b28_collaboration_comments_assignments import (
+            _NEW_TABLES as _COLLAB_TABLES,
+        )
+        from hub.alembic.versions.c2f8a4d16e93_human_users_and_roles import (
+            _NEW_TABLES as _USER_TABLES,
+        )
         from hub.alembic.versions.d5c8b3a91e77_row_level_security import _SCOPED_TABLES
         from hub.alembic.versions.d7f2a63b9c41_retention_policies_and_legal_holds import (
             _NEW_TABLES as _RETENTION_TABLES,
@@ -497,14 +503,11 @@ class TestSchemaSafety:
         from hub.alembic.versions.e9b4c07d15a8_webhook_event_export import (
             _NEW_TABLES as _WEBHOOK_TABLES,
         )
-        from hub.alembic.versions.c2f8a4d16e93_human_users_and_roles import (
-            _NEW_TABLES as _USER_TABLES,
-        )
         from hub.models import Base
 
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
-            *_USER_TABLES, "traces",
+            *_USER_TABLES, *_COLLAB_TABLES, "traces",
         }
         # Documented exemptions, with the reason each one cannot be scoped.
         # See d5c8b3a91e77's docstring.

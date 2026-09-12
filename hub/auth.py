@@ -602,5 +602,34 @@ def require_capability(tool_name: str) -> None:
 def get_current_actor() -> str:
     from hub.audit import actor_for_api_key
 
-    prefix = current_actor.get()
-    return actor_for_api_key(prefix) if prefix else "unknown"
+    raw = current_actor.get()
+    if not raw:
+        return "unknown"
+    # The person path (hub/server.py's middleware) stores the actor string
+    # already fully formed ("user:<id>"); only an API key's bare prefix
+    # still needs actor_for_api_key's "api-key:" wrapper. Without this
+    # check a person's actor was double-wrapped into "api-key:user:<id>",
+    # which reads as a workload credential in the audit log when it is not
+    # one.
+    if raw.startswith("user:"):
+        return raw
+    return actor_for_api_key(raw)
+
+
+class PersonRequiredError(PermissionError):
+    """Raised for a tool that only means something for a specific PERSON --
+    a comment's author, an assignment's assignee, whose inbox a
+    notification belongs to -- when called by an API-key-only request with
+    no signed-in user in context. There is no meaningful value to fall
+    back to: a shared workload credential cannot author a remark or be
+    the one someone assigns work to."""
+
+
+def get_current_user() -> AuthenticatedUser:
+    person = current_user.get()
+    if person is None:
+        raise PersonRequiredError(
+            "this action requires a signed-in person (an OIDC bearer token "
+            "linked via `hub.manage link-sso`), not just an org's API key."
+        )
+    return person

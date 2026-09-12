@@ -177,6 +177,12 @@ TOOL_CAPABILITY: dict[str, str] = {
     "request_account_deletion": CAP_SECURITY,
     "cancel_account_deletion": CAP_SECURITY,
     "confirm_account_deletion": CAP_SECURITY,
+    "add_comment": CAP_CURATE,
+    "list_comments": CAP_VIEW,
+    "assign_trace": CAP_CURATE,
+    "unassign_trace": CAP_CURATE,
+    "list_my_notifications": CAP_VIEW,
+    "mark_notification_read": CAP_VIEW,
 }
 
 

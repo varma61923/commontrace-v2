@@ -706,6 +706,39 @@ base64url segments reads as a JWT, anything else is tried as an API key.
   | enable-user | link-sso | unlink-sso` — see `hub/manage.py`'s module
   docstring for full usage.
 
+### Collaboration: comments, assignment, notifications (implemented)
+
+`hub/collab.py`, built on the human users above. `hub/manage.py`'s
+Knowledge Base review queue (`kb-review`, `approve-submission`,
+`reject-submission`) is an *operator* surface across every tenant; this
+is the missing piece for a customer's *own* team working on their own
+traces — audit §8.1's "no reviewer queue, comments, assignments,
+notification inbox, ownership."
+
+- **`add_comment`/`list_comments`** — leave and read remarks on one of
+  your org's own traces.
+- **`assign_trace`/`unassign_trace`** — one person owns following up on a
+  trace at a time; re-assigning replaces whoever held it before.
+- **`list_my_notifications`/`mark_notification_read`** — a person's own
+  inbox: "you were assigned a trace", "someone commented on a trace
+  assigned to you." No delivery beyond this table — no email, no push,
+  no webhook (this mirrors `hub/signup.py`'s existing stance of having no
+  outbound email integration at all); a client polls its own inbox.
+- **All six require a signed-in PERSON**, not just an API key — there is
+  no meaningful author for a shared workload credential, and no
+  per-person inbox for one either. Called with an API key alone, each
+  returns `{"error": "person_required"}`, distinct from a scope or
+  capability denial: the credential itself is perfectly valid.
+- **Gated by the same two authorization layers as everything else**:
+  `add_comment`/`assign_trace`/`unassign_trace` need `CAP_CURATE` (and
+  the API key's own `write` scope); `list_comments`/
+  `list_my_notifications`/`mark_notification_read` need only `CAP_VIEW`
+  (and `read` scope) — a Viewer can read the discussion and clear their
+  own inbox, but not add to it.
+- **A notification never reveals its target across people.** Marking
+  someone else's notification read (by guessing its id) reports
+  not-found rather than confirming the id exists.
+
 ### Per-key scopes (implemented)
 
 An API key carries a scope list — `read`, `write`, `admin`
