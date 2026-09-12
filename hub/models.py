@@ -1119,6 +1119,75 @@ class User(Base):
     )
 
 
+class ScimGroup(Base):
+    """A group an IdP pushes via SCIM (`/scim/v2/Groups`, hub/scim.py) --
+    pure membership metadata, deliberately granting nothing.
+
+    hub/rbac.py gives one `User` exactly one `role`; there is no additive,
+    many-to-many permission surface anywhere in this Hub for a group to
+    plug into. A real SCIM Groups API needs real many-to-many membership,
+    so this row and `ScimGroupMembership` exist to hold that faithfully --
+    an IdP's group roster stays in sync here -- without inventing a second
+    authorization system alongside `role`. Nothing in `hub/rbac.py` or
+    `hub/server.py`'s tool gating ever reads either table.
+    """
+
+    __tablename__ = "scim_groups"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # SCIM's own externalId: the IdP's own identifier for this group, kept
+    # verbatim and never interpreted -- same stance as User.external_subject.
+    external_id: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now, nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "display_name", name="uq_scim_groups_org_display_name"),
+    )
+
+
+class ScimGroupMembership(Base):
+    """One (group, user) membership row -- the many-to-many `ScimGroup`
+    needs and `User.role` alone cannot express. Membership here confers no
+    capability by itself; see `ScimGroup`'s own docstring.
+
+    `org_id` is denormalized from `ScimGroup.org_id` rather than looked up
+    through `group_id` -- same reasoning as `Comment`/`Assignment` above:
+    row-level security needs a column on THIS row to scope against, not a
+    join, and a membership never outlives the group or user it points to
+    (both cascade) so there is nothing for the copy to drift out of sync
+    with.
+    """
+
+    __tablename__ = "scim_group_memberships"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    group_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("scim_groups.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_scim_group_memberships"),
+    )
+
+
 class Comment(Base):
     """A remark a signed-in person (hub/auth.py:current_user) leaves on one
     of their org's own traces, so a customer's own team has somewhere to

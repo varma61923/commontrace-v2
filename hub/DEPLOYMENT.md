@@ -697,14 +697,24 @@ break-glass recovery leaves the same trail an ordinary one would — there
 is no "off the books" path here, only a faster one that does not depend on
 the thing that just broke.
 
-**This is a documented procedure, not a built one.** There is no
-dedicated break-glass tooling (no time-boxed emergency token, no
-automatic alert when it is used, no requirement for a second person to
-witness it) beyond what `hub.manage` and `audit-log` already give you.
-For a deployment that needs stronger guarantees than "whoever can reach
-`HUB_DATABASE_URL` can do this," that is the next thing to build, and it
-is listed as not done in `AUDIT_RESPONSE.md` §1.2 rather than implied by
-this section existing.
+**An automatic alert fires when it is used.** Steps 2a/2b above
+(`enable-user`, `create-user`) queue a `user.privileged_role_granted`
+webhook event (`hub/events.py`) the instant they leave anyone holding
+`ROLE_SECURITY_ADMIN`/`ROLE_OWNER`, delivered through whatever endpoint an
+org has already subscribed (`webhook-add`). It fires identically for
+routine admin onboarding and for this exact recovery flow — nothing in the
+data model distinguishes the two — so subscribing to it is what gives an
+org the "someone just got Owner" signal this procedure alone cannot: the
+procedure produces an audit-log row after the fact, the event pushes to
+whoever is watching in real time.
+
+**Still a documented procedure, not fully built tooling.** There is no
+time-boxed emergency token and no requirement for a second person to
+witness the recovery, beyond what `hub.manage`, `audit-log`, and the alert
+above already give you. For a deployment that needs stronger guarantees
+than "whoever can reach `HUB_DATABASE_URL` can do this," that is the next
+thing to build, and it is listed as not done in `AUDIT_RESPONSE.md` §1.2
+rather than implied by this section existing.
 
 ## 10. Security checklist before a client's data lands
 

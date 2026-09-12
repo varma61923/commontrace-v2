@@ -645,26 +645,33 @@ traffic beyond a pilot:
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
 - **SAML and a browser-based login UI are deliberately not built** — not
-  merely deferred. Both need something that does not exist anywhere in
-  this Hub yet: a PERSON-scoped browser session. `hub/console.py`'s
-  `SESSION_COOKIE` today carries `{org, key_prefix}` — an ORG-level
-  session equivalent to full API-key capability, checked by every
-  existing console route with no notion of a role at all. Retrofitting a
-  role-scoped person session (what a browser-redirect OIDC login or a
-  SAML assertion would need to issue) means re-deciding, route by route,
-  which existing mutating actions a lower-privileged person-session
-  should and should not reach — get one route wrong and a Viewer-level
-  browser login reaches an Owner-level action. That is a session-model
-  redesign across every route in this file, not an additive endpoint, and
-  doing it as a fast follow-on to something else is how a privilege-
-  escalation bug gets shipped, not how one gets caught. SAML compounds
-  this with its own separate, historically hazardous surface (XML
-  signature-wrapping forgery, the class of bug behind more real SSO
-  bypasses than any other SAML mistake) that is only safe to take on via
-  a mature, dedicated, heavily-audited library and focused review — never
-  hand-rolled alongside something else. Both stay named here, precisely,
-  rather than attempted at a size and speed that would make them worse
-  than not having them.
+  merely deferred, and re-examined for a smaller cut (a read-only-only
+  person session, restricted to routes with no side effects) rather than
+  dropped again unchanged. That restriction doesn't reach where the real
+  risk is: both need a browser OAuth2/OIDC Authorization Code (or SAML
+  assertion) handshake that does not exist anywhere in this Hub today —
+  `hub/sso.py` only verifies a bearer JWT a caller already holds; there is
+  no `redirect_uri`, `state`/nonce, PKCE, or token-exchange client here at
+  all. That handshake's own well-known failure modes — an open redirect
+  via an unvalidated `redirect_uri`, a forgeable `state` letting one
+  browser's login complete as another's, a session issued for the wrong
+  person after a mixed-up code exchange — live in the LOGIN step itself,
+  before any role or read-only flag is ever checked, so restricting what
+  the resulting session can reach does not make a flawed handshake safe.
+  This is new, security-critical surface with no existing, already-
+  audited scaffold to extend (unlike this Hub's webhook pipeline or
+  `hub/scim.py`'s CRUD pattern, both reused rather than reinvented
+  elsewhere in this file) — building it as a fast follow-on to something
+  else is how a login-bypass or session-fixation bug gets shipped, not
+  how one gets caught. SAML compounds this with its own separate,
+  historically hazardous surface (XML signature-wrapping forgery, the
+  class of bug behind more real SSO bypasses than any other SAML mistake)
+  that is only safe to take on via a mature, dedicated, heavily-audited
+  library (e.g. `python3-saml`) and focused review — never hand-rolled
+  alongside something else. Both stay named here, precisely, and the
+  honest next increment is a dedicated Authorization Code + PKCE module,
+  built and reviewed on its own before any console route changes at all
+  — not a rushed version shipped in the same pass as other work.
 - **SCIM auto-provisioning is now implemented** (`hub/scim.py`,
   `/scim/v2/Users`, audit § below): an IdP can create and, critically,
   immediately deactivate `User` rows itself instead of an operator running
@@ -674,9 +681,13 @@ traffic beyond a pilot:
   OIDC identity linked until `hub.manage link-sso` does that separately,
   same as any other account; see hub/scim.py's own module docstring for
   why conflating the two would reintroduce the auto-provisioning-grants-
-  access risk this design otherwise avoids. Also not covered: SCIM Groups
-  (this Hub has roles, not groups) and the full RFC 7644 filter/PATCH
-  grammar (a deliberately narrow, named subset — see that docstring).
+  access risk this design otherwise avoids. **SCIM Groups
+  (`/scim/v2/Groups`) are now also implemented** as pure membership
+  metadata (`ScimGroup`/`ScimGroupMembership`, `hub/models.py`) —
+  deliberately granting nothing: this Hub still gives one `User` exactly
+  one `role`, and nothing in `hub/rbac.py` or the MCP tool gating ever
+  reads either table. Not covered: the full RFC 7644 filter/PATCH grammar
+  (a deliberately narrow, named subset — see that docstring).
 - **A purpose-built break-glass mechanism.** Recovering access when every
   `ROLE_SECURITY_ADMIN`/`ROLE_OWNER` account is disabled or its IdP is
   unreachable IS now a documented procedure (`hub/DEPLOYMENT.md` §9a) —
@@ -777,7 +788,18 @@ curl -H "Authorization: Bearer $KEY" https://<hub>/scim/v2/Users
   integration sends); `PATCH` applies only `active` (and, leniently,
   `displayName`) replace operations, leaving anything else in the same
   request untouched rather than guessed at or rejecting the whole call.
-  SCIM Groups are not implemented — this Hub has roles, not groups.
+- **`/scim/v2/Groups` tracks membership; it grants nothing.** A real
+  Groups API needs many-to-many membership, which this Hub's
+  one-role-per-user model has no room for (`hub/rbac.py`) — so
+  `ScimGroup`/`ScimGroupMembership` hold an IdP's group roster faithfully
+  (create/get/list/PUT/PATCH/DELETE, `displayName eq "<value>"` filtering,
+  `members` add/remove including the single-member
+  `members[value eq "<id>"]` filtered-path shape Okta and others actually
+  send) without plugging into authorization anywhere: adding or removing
+  someone from a group changes nothing about what they can do. `DELETE`
+  really deletes the group row (unlike a `User`, a group confers no
+  access, so there is no deprovisioning history a real delete could
+  falsify) but never touches its members' own `User` rows.
 
 ### Collaboration: comments, assignment, notifications (implemented)
 

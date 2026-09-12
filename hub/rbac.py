@@ -73,6 +73,14 @@ ROLES = (
     ROLE_SECURITY_ADMIN, ROLE_BILLING_ADMIN, ROLE_OWNER,
 )
 
+#: The two roles a break-glass recovery (hub/DEPLOYMENT.md Sec9a) actually
+#: grants or re-enables -- used by hub/manage.py to fire
+#: `user.privileged_role_granted` whenever a person ends up holding one,
+#: whether that was routine onboarding or an actual recovery. There is no
+#: column anywhere that distinguishes the two, so this alerts on both
+#: rather than neither.
+PRIVILEGED_ROLES = (ROLE_SECURITY_ADMIN, ROLE_OWNER)
+
 # --- capabilities --------------------------------------------------------------
 
 #: Read traces, tags, working set, reports -- anything a Viewer may see.

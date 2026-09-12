@@ -308,7 +308,7 @@ class TestDelivery:
         async with session_scope(session_factory) as session:
             for i in range(n):
                 await events.emit(
-                    session, org, "trace.created", {"trace_id": f"t{i}"})
+                    session, org, "trace.created", {"trace_id": f"t{i}"}, now=NOW)
 
     async def test_a_delivery_is_signed_with_the_endpoints_secret(
         self, session_factory, endpoint

@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import auth, crud, manage, rbac
+from hub import audit, auth, crud, manage, rbac
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
@@ -1642,6 +1642,137 @@ class TestUserCommandTable:
                      "enable-user", "link-sso", "unlink-sso"):
             assert name in manage._COMMANDS, name
             assert name in manage.__doc__, name
+
+
+class TestPrivilegedRoleGrantAlert:
+    """A webhook subscriber gets `user.privileged_role_granted` the moment
+    anyone ends up holding Security Admin or Owner -- whether that is
+    routine onboarding, a promotion, or a break-glass re-enablement of a
+    disabled account (hub/DEPLOYMENT.md Sec9a). Nothing distinguishes those
+    cases technically, so this fires on all of them rather than none."""
+
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="privileged-role-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    @pytest_asyncio.fixture
+    async def endpoint(self, session_factory, org_id):
+        from hub import events
+        async with session_scope(session_factory) as session:
+            ep, secret = await events.add_endpoint(
+                session, org_id, "https://example.invalid/hooks/commontrace",
+                signing_key="test-signing-key")
+            await session.flush()
+            return {"id": ep.id, "secret": secret}
+
+    async def _deliveries(self, session_factory, event_type):
+        from hub.models import WebhookDelivery
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(
+                select(WebhookDelivery).where(WebhookDelivery.event_type == event_type)
+            )).scalars().all()
+            return rows
+
+    async def test_creating_a_user_as_security_admin_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+        assert rows[0].payload["actor"] == audit.ACTOR_OPERATOR_CLI
+
+    async def test_creating_a_user_as_owner_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "owner@example.com", rbac.ROLE_OWNER,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["role"] == rbac.ROLE_OWNER
+
+    async def test_creating_a_non_privileged_user_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
+
+    async def test_promoting_a_user_into_a_privileged_role_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_SECURITY_ADMIN, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["user_id"] == user_id
+        assert rows[0].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+
+    async def test_demoting_out_of_a_privileged_role_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_VIEWER, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        # Only the original creation fired -- the demotion itself must not.
+        assert len(rows) == 1
+
+    async def test_reenabling_a_disabled_security_admin_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        # Once for the initial create, once for the break-glass re-enable.
+        assert len(rows) == 2
+        assert rows[1].payload["user_id"] == user_id
+        assert rows[1].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+
+    async def test_reenabling_a_non_privileged_user_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
+
+    async def test_with_no_subscribed_endpoint_nothing_is_queued(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
 
 
 class TestAlertCLI:

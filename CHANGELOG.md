@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SCIM Groups (`/scim/v2/Groups`, `hub/models.py:ScimGroup`/
+  `ScimGroupMembership`).** Audit §1.2 named "SCIM Groups" as a declined
+  gap: a real Groups API needs many-to-many membership, which this Hub's
+  one-role-per-user model (`hub/rbac.py`) has no room for. This closes
+  the data-model half honestly instead of inventing a second
+  authorization system: a group is a label plus a membership list an IdP
+  keeps in sync, and adding or removing someone from one changes nothing
+  about what they can do — nothing in `hub/rbac.py` or the MCP tool
+  gating ever reads either table. Full create/get/list/PUT/PATCH/DELETE,
+  `displayName eq` filtering, and `members` add/remove including the
+  single-member `members[value eq "<id>"]` filtered-path shape real IdPs
+  (Okta among them) send. `DELETE` really deletes the group row (unlike
+  a `User`, a group confers no access, so there is no deprovisioning
+  history a delete could falsify) without touching members' own `User`
+  rows. New tables + RLS (migration `c9a1e73d5f02`, verified upgrade/
+  `alembic check`/downgrade round-trip against real Postgres). Tests:
+  `hub/tests/test_scim.py::TestGroupsAreMembershipOnly`/
+  `TestGroupsRoutesEndToEnd` (23).
+
+- **Automatic webhook alert on a privileged role grant
+  (`user.privileged_role_granted`, `hub/events.py`).** Audit §1.2 named
+  "an automatic alert on use" as a missing piece of break-glass recovery.
+  `hub.manage create-user`/`set-user-role`/`enable-user` now fire this
+  event through the existing webhook pipeline the moment anyone ends up
+  holding `ROLE_SECURITY_ADMIN` or `ROLE_OWNER`. It fires identically for
+  routine onboarding and an actual break-glass recovery — nothing in the
+  data model distinguishes the two, since both go through the same
+  audited `hub.manage` path — so an org gets an eyes-on signal either way.
+  Tests: `hub/tests/test_manage.py::TestPrivilegedRoleGrantAlert` (8).
+
 - **Structured subject tagging for exact-match erasure (`Trace.subject_ids`,
   `tag_trace_subjects`/`find_traces_by_subject`/`purge_traces_by_subject`).**
   Audit §2.2's remaining line: `search_trace_content` could locate

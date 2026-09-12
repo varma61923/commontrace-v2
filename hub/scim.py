@@ -69,6 +69,19 @@ non-tenant document to anyone -- no `User` row, no org data, nothing a
 `scim`-scoped key gates elsewhere. Some IdP setup flows probe these before
 a token is even entered, and there is nothing here for an unauthenticated
 caller to learn beyond "this server implements SCIM 2.0 for Users".
+
+GROUPS (`/scim/v2/Groups`) ARE MEMBERSHIP METADATA, NOT PERMISSIONS
+---------------------------------------------------------------------
+Audit 1.2 named "SCIM Groups" as a declined gap: a real Groups API needs
+many-to-many membership, and `hub/rbac.py` gives one `User` exactly one
+`role` -- no additive permission surface anywhere in this Hub for a group
+to plug into. `hub/models.py:ScimGroup`/`ScimGroupMembership` close the
+data-model half honestly, tracking an IdP's group roster faithfully,
+WITHOUT inventing a second authorization system alongside `role`:
+`hub/rbac.py` and `hub/server.py`'s tool gating never read either table.
+A group here is a label plus a membership list an IdP can keep in sync --
+adding or removing someone from a group changes nothing about what they
+can do.
 """
 
 from __future__ import annotations
@@ -78,7 +91,7 @@ import math
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
@@ -88,11 +101,12 @@ from hub import audit, auth, rbac, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.crud import _is_uuid
 from hub.db import session_scope
-from hub.models import Organization, User
+from hub.models import Organization, ScimGroup, ScimGroupMembership, User
 
 logger = logging.getLogger("commontrace.hub")
 
 SCIM_USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
+SCIM_GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
 SCIM_LIST_RESPONSE_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 SCIM_ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error"
 SCIM_CONTENT_TYPE = "application/scim+json"
@@ -105,6 +119,8 @@ DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 200
 
 _FILTER_RE = re.compile(r'^\s*userName\s+eq\s+"(.*)"\s*$', re.IGNORECASE)
+_GROUP_FILTER_RE = re.compile(r'^\s*displayName\s+eq\s+"(.*)"\s*$', re.IGNORECASE)
+_MEMBER_FILTER_RE = re.compile(r'^\s*members\[value\s+eq\s+"(.*)"\]\s*$', re.IGNORECASE)
 
 
 class ScimError(Exception):
@@ -308,6 +324,259 @@ async def deactivate_user(session: AsyncSession, org_id: str, user_id: str, *, a
     return user
 
 
+async def _member_ids(session: AsyncSession, group_id: str) -> list[str]:
+    rows = (
+        await session.execute(
+            select(ScimGroupMembership.user_id)
+            .where(ScimGroupMembership.group_id == group_id)
+            .order_by(ScimGroupMembership.created_at)
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def group_to_scim(session: AsyncSession, group: ScimGroup) -> dict:
+    member_ids = await _member_ids(session, group.id)
+    members = []
+    if member_ids:
+        users = (
+            await session.execute(select(User).where(User.id.in_(member_ids)))
+        ).scalars().all()
+        by_id = {u.id: u for u in users}
+        for user_id in member_ids:
+            user = by_id.get(user_id)
+            members.append({"value": user_id, "display": user.email if user else ""})
+    return {
+        "schemas": [SCIM_GROUP_SCHEMA],
+        "id": group.id,
+        "displayName": group.display_name,
+        "members": members,
+        "meta": {"resourceType": "Group", "created": group.created_at.isoformat()},
+    }
+
+
+async def _existing_org_user_ids(session: AsyncSession, org_id: str, candidate_ids: set[str]) -> set[str]:
+    """Which of `candidate_ids` are real, well-formed `User` ids in THIS
+    org. A member reference to a nonexistent or cross-org id is silently
+    dropped rather than failing the whole request -- the same "leave the
+    unsupported part alone rather than guess" stance `patch_user` already
+    takes, and the common real cause is an IdP's own group roster having
+    drifted from this Hub's, which a provisioning call cannot fix by
+    refusing outright."""
+    uuid_candidates = {uid for uid in candidate_ids if _is_uuid(uid)}
+    if not uuid_candidates:
+        return set()
+    rows = (
+        await session.execute(
+            select(User.id).where(User.id.in_(uuid_candidates), User.org_id == org_id)
+        )
+    ).scalars().all()
+    return set(rows)
+
+
+async def _set_members(session: AsyncSession, org_id: str, group_id: str, user_ids: set[str]) -> None:
+    valid_ids = await _existing_org_user_ids(session, org_id, user_ids)
+    current = set(await _member_ids(session, group_id))
+    to_remove = current - valid_ids
+    if to_remove:
+        await session.execute(
+            delete(ScimGroupMembership).where(
+                ScimGroupMembership.group_id == group_id,
+                ScimGroupMembership.user_id.in_(to_remove),
+            )
+        )
+    for user_id in valid_ids - current:
+        session.add(ScimGroupMembership(org_id=org_id, group_id=group_id, user_id=user_id))
+
+
+async def _add_members(session: AsyncSession, org_id: str, group_id: str, user_ids: set[str]) -> None:
+    valid_ids = await _existing_org_user_ids(session, org_id, user_ids)
+    current = set(await _member_ids(session, group_id))
+    for user_id in valid_ids - current:
+        session.add(ScimGroupMembership(org_id=org_id, group_id=group_id, user_id=user_id))
+
+
+async def _remove_members(session: AsyncSession, group_id: str, user_ids: set[str]) -> None:
+    if not user_ids:
+        return
+    await session.execute(
+        delete(ScimGroupMembership).where(
+            ScimGroupMembership.group_id == group_id, ScimGroupMembership.user_id.in_(user_ids),
+        )
+    )
+
+
+def _member_values(raw) -> set[str]:
+    """`members` is a list of `{"value": "<user_id>", ...}` objects per
+    RFC 7643 -- anything else (a bare string, a malformed entry) is
+    dropped rather than guessed at."""
+    if not isinstance(raw, list):
+        return set()
+    out = set()
+    for entry in raw:
+        if isinstance(entry, dict) and entry.get("value"):
+            out.add(str(entry["value"]))
+    return out
+
+
+async def create_group(session: AsyncSession, org_id: str, body: dict, *, actor: str) -> ScimGroup:
+    display_name = str(body.get("displayName") or "").strip()
+    if not display_name:
+        raise ScimError("displayName is required", scim_type="invalidValue")
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise ScimError(f"no such organization: {org_id}", status=404)
+    group = ScimGroup(
+        org_id=org_id, display_name=display_name,
+        external_id=str(body.get("externalId") or ""),
+    )
+    session.add(group)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise ScimError(
+            f"{org_id} already has a group named {display_name!r}",
+            status=409, scim_type="uniqueness",
+        ) from None
+    member_ids = _member_values(body.get("members"))
+    if member_ids:
+        await _add_members(session, org_id, group.id, member_ids)
+    await audit.record(
+        session, actor=actor, action="scim.create_group", org_id=org_id,
+        target_type="scim_group", target_id=group.id,
+        summary=f"displayName={display_name}",
+    )
+    return group
+
+
+async def get_group(session: AsyncSession, org_id: str, group_id: str) -> ScimGroup | None:
+    if not _is_uuid(group_id):
+        return None
+    group = await session.get(ScimGroup, group_id)
+    if group is None or group.org_id != org_id:
+        return None
+    return group
+
+
+async def list_groups(
+    session: AsyncSession, org_id: str, *, display_name: str | None = None,
+    start_index: int = 1, count: int = DEFAULT_PAGE_SIZE,
+) -> tuple[int, list[ScimGroup]]:
+    start_index = max(1, start_index)
+    count = max(0, min(count, MAX_PAGE_SIZE))
+    query = select(ScimGroup).where(ScimGroup.org_id == org_id)
+    if display_name is not None:
+        query = query.where(ScimGroup.display_name == display_name)
+    total = await session.scalar(select(func.count()).select_from(query.subquery()))
+    rows = (
+        await session.execute(
+            query.order_by(ScimGroup.created_at).offset(start_index - 1).limit(count)
+        )
+    ).scalars().all()
+    return int(total or 0), list(rows)
+
+
+async def replace_group(
+    session: AsyncSession, org_id: str, group_id: str, body: dict, *, actor: str,
+) -> ScimGroup | None:
+    """PUT: full replace. `members`, when present, becomes the group's
+    ENTIRE membership -- anyone not listed is removed, matching PUT's own
+    replace semantics rather than PATCH's incremental add/remove."""
+    group = await get_group(session, org_id, group_id)
+    if group is None:
+        return None
+    if "displayName" in body:
+        new_name = str(body.get("displayName") or "").strip()
+        if new_name:
+            group.display_name = new_name
+    if "members" in body:
+        await _set_members(session, org_id, group_id, _member_values(body.get("members")))
+    group.updated_at = datetime.now(timezone.utc)
+    await audit.record(
+        session, actor=actor, action="scim.replace_group", org_id=org_id,
+        target_type="scim_group", target_id=group_id,
+    )
+    return group
+
+
+async def patch_group(session: AsyncSession, org_id: str, group_id: str, body: dict, *, actor: str) -> ScimGroup | None:
+    """PATCH (RFC 7644 §3.5.2), narrowly: `displayName` replace, and
+    `members` add/remove -- including the single-member
+    `members[value eq "<id>"]` filtered-path remove shape real IdPs (Okta
+    among them) actually send. Anything else in the operations array is
+    left untouched rather than guessed at, same stance as `patch_user`."""
+    group = await get_group(session, org_id, group_id)
+    if group is None:
+        return None
+    operations = body.get("Operations") or body.get("operations") or []
+    if not isinstance(operations, list):
+        operations = []
+    changed = False
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        verb = str(op.get("op") or "").strip().lower()
+        path = str(op.get("path") or "").strip()
+        value = op.get("value")
+
+        if verb in ("replace", "add") and path.lower() == "displayname":
+            new_name = str(value or "").strip()
+            if new_name and new_name != group.display_name:
+                group.display_name = new_name
+                changed = True
+            continue
+
+        member_filter = _MEMBER_FILTER_RE.match(path)
+        if verb == "remove" and member_filter:
+            await _remove_members(session, group_id, {member_filter.group(1)})
+            changed = True
+            continue
+
+        if path.lower() == "members":
+            if verb == "add":
+                ids = _member_values(value)
+                if ids:
+                    await _add_members(session, org_id, group_id, ids)
+                    changed = True
+            elif verb == "remove":
+                if value is None:
+                    # {"op": "remove", "path": "members"} with no value:
+                    # RFC 7644's own "remove the whole attribute" shape.
+                    current = set(await _member_ids(session, group_id))
+                    if current:
+                        await _remove_members(session, group_id, current)
+                        changed = True
+                else:
+                    ids = _member_values(value)
+                    if ids:
+                        await _remove_members(session, group_id, ids)
+                        changed = True
+    if changed:
+        group.updated_at = datetime.now(timezone.utc)
+        await audit.record(
+            session, actor=actor, action="scim.patch_group", org_id=org_id,
+            target_type="scim_group", target_id=group_id,
+        )
+    return group
+
+
+async def delete_group(session: AsyncSession, org_id: str, group_id: str, *, actor: str) -> bool:
+    """A real delete, unlike `deactivate_user` -- a group confers no
+    access, so unlike a `User` row there is no deprovisioning history that
+    removing it could falsify. `ScimGroupMembership` rows cascade with it."""
+    group = await get_group(session, org_id, group_id)
+    if group is None:
+        return False
+    await audit.record(
+        session, actor=actor, action="scim.delete_group", org_id=org_id,
+        target_type="scim_group", target_id=group_id,
+        summary=f"displayName={group.display_name}",
+    )
+    await session.delete(group)
+    return True
+
+
 # --------------------------------------------------------------------------
 # HTTP layer
 # --------------------------------------------------------------------------
@@ -328,29 +597,53 @@ _SERVICE_PROVIDER_CONFIG = {
 
 _RESOURCE_TYPES = {
     "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-    "totalResults": 1,
-    "Resources": [{
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-        "id": "User",
-        "name": "User",
-        "endpoint": "/Users",
-        "schema": SCIM_USER_SCHEMA,
-    }],
+    "totalResults": 2,
+    "Resources": [
+        {
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+            "id": "User",
+            "name": "User",
+            "endpoint": "/Users",
+            "schema": SCIM_USER_SCHEMA,
+        },
+        {
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+            "id": "Group",
+            "name": "Group",
+            "endpoint": "/Groups",
+            "schema": SCIM_GROUP_SCHEMA,
+        },
+    ],
 }
 
 _SCHEMAS = {
     "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-    "totalResults": 1,
-    "Resources": [{
-        "id": SCIM_USER_SCHEMA,
-        "name": "User",
-        "description": "hub/models.py User -- a person, not a workload API key",
-        "attributes": [
-            {"name": "userName", "type": "string", "required": True, "uniqueness": "server"},
-            {"name": "displayName", "type": "string", "required": False},
-            {"name": "active", "type": "boolean", "required": False},
-        ],
-    }],
+    "totalResults": 2,
+    "Resources": [
+        {
+            "id": SCIM_USER_SCHEMA,
+            "name": "User",
+            "description": "hub/models.py User -- a person, not a workload API key",
+            "attributes": [
+                {"name": "userName", "type": "string", "required": True, "uniqueness": "server"},
+                {"name": "displayName", "type": "string", "required": False},
+                {"name": "active", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "id": SCIM_GROUP_SCHEMA,
+            "name": "Group",
+            "description": (
+                "hub/models.py ScimGroup -- membership metadata only. "
+                "Membership confers no capability; hub/rbac.py's role is "
+                "the only thing this Hub checks."
+            ),
+            "attributes": [
+                {"name": "displayName", "type": "string", "required": True, "uniqueness": "server"},
+                {"name": "members", "type": "complex", "multiValued": True, "required": False},
+            ],
+        },
+    ],
 }
 
 
@@ -522,8 +815,101 @@ def add_scim_routes(
             scim_user = user_to_scim(user)
         return _response(scim_user)
 
+    async def groups_collection(request: Request) -> JSONResponse:
+        result = await _authenticate(request, session_factory, auth_rate_limiter, trusted_proxy_hops)
+        if isinstance(result, JSONResponse):
+            return result
+        org_id, actor = result
+
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                return _scim_error_response("request body is not valid JSON")
+            if not isinstance(body, dict):
+                return _scim_error_response("request body must be a JSON object")
+            async with session_scope(session_factory) as session:
+                try:
+                    group = await create_group(session, org_id, body, actor=actor)
+                except ScimError as exc:
+                    return _response(exc.to_body(), exc.status)
+                scim_group = await group_to_scim(session, group)
+            return _response(scim_group, 201)
+
+        # GET: list, with SCIM's own startIndex/count pagination and
+        # exactly the one filter shape supported.
+        query = request.query_params
+        display_name = None
+        raw_filter = query.get("filter")
+        if raw_filter:
+            match = _GROUP_FILTER_RE.match(raw_filter)
+            if match is None:
+                return _scim_error_response(
+                    f'unsupported filter (only `displayName eq "<value>"` is supported): {raw_filter!r}',
+                    scim_type="invalidFilter",
+                )
+            display_name = match.group(1)
+        try:
+            start_index = int(query.get("startIndex", "1"))
+            count = int(query.get("count", str(DEFAULT_PAGE_SIZE)))
+        except ValueError:
+            return _scim_error_response("startIndex and count must be integers")
+        async with session_scope(session_factory) as session:
+            total, rows = await list_groups(
+                session, org_id, display_name=display_name, start_index=start_index, count=count,
+            )
+            resources = [await group_to_scim(session, g) for g in rows]
+        return _response({
+            "schemas": [SCIM_LIST_RESPONSE_SCHEMA],
+            "totalResults": total,
+            "startIndex": max(1, start_index),
+            "itemsPerPage": len(resources),
+            "Resources": resources,
+        })
+
+    async def group_item(request: Request) -> JSONResponse:
+        result = await _authenticate(request, session_factory, auth_rate_limiter, trusted_proxy_hops)
+        if isinstance(result, JSONResponse):
+            return result
+        org_id, actor = result
+        group_id = request.path_params["group_id"]
+
+        if request.method == "GET":
+            async with session_scope(session_factory) as session:
+                group = await get_group(session, org_id, group_id)
+                if group is None:
+                    return _scim_error_response(f"no such group: {group_id}", status=404)
+                scim_group = await group_to_scim(session, group)
+            return _response(scim_group)
+
+        if request.method == "DELETE":
+            async with session_scope(session_factory) as session:
+                deleted = await delete_group(session, org_id, group_id, actor=actor)
+            if not deleted:
+                return _scim_error_response(f"no such group: {group_id}", status=404)
+            return JSONResponse(None, status_code=204)
+
+        try:
+            body = await request.json()
+        except ValueError:
+            return _scim_error_response("request body is not valid JSON")
+        if not isinstance(body, dict):
+            return _scim_error_response("request body must be a JSON object")
+
+        async with session_scope(session_factory) as session:
+            if request.method == "PUT":
+                group = await replace_group(session, org_id, group_id, body, actor=actor)
+            else:  # PATCH
+                group = await patch_group(session, org_id, group_id, body, actor=actor)
+            if group is None:
+                return _scim_error_response(f"no such group: {group_id}", status=404)
+            scim_group = await group_to_scim(session, group)
+        return _response(scim_group)
+
     app.add_route("/scim/v2/ServiceProviderConfig", service_provider_config, methods=["GET"])
     app.add_route("/scim/v2/ResourceTypes", resource_types, methods=["GET"])
     app.add_route("/scim/v2/Schemas", schemas, methods=["GET"])
     app.add_route("/scim/v2/Users", users_collection, methods=["GET", "POST"])
     app.add_route("/scim/v2/Users/{user_id}", user_item, methods=["GET", "PUT", "PATCH", "DELETE"])
+    app.add_route("/scim/v2/Groups", groups_collection, methods=["GET", "POST"])
+    app.add_route("/scim/v2/Groups/{group_id}", group_item, methods=["GET", "PUT", "PATCH", "DELETE"])

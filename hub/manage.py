@@ -484,6 +484,10 @@ async def create_user(
             org_id=org_id, target_type="user", target_id=user_id,
             summary=f"email={email} role={role}",
         )
+        if role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": role, "actor": audit.ACTOR_OPERATOR_CLI,
+            })
     print(f"user_id: {user_id}")
     print(f"  {email}  role={role}  org={org_id}")
     print("  No SSO identity is linked yet -- this user cannot sign in until "
@@ -538,6 +542,10 @@ async def set_user_role(user_id: str, role: str, session_factory=None) -> bool:
             org_id=user.org_id, target_type="user", target_id=user_id,
             summary=f"{previous} -> {role}",
         )
+        if role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, user.org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": role, "actor": audit.ACTOR_OPERATOR_CLI,
+            })
     print(f"{user_id}: role changed {previous} -> {role}")
     return True
 
@@ -582,6 +590,10 @@ async def enable_user(user_id: str, session_factory=None) -> bool:
             session, actor=audit.ACTOR_OPERATOR_CLI, action="enable_user",
             org_id=user.org_id, target_type="user", target_id=user_id,
         )
+        if user.role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, user.org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": user.role, "actor": audit.ACTOR_OPERATOR_CLI,
+            })
     print(f"{user_id} re-enabled.")
     return True
 

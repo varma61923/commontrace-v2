@@ -159,6 +159,16 @@ EVENT_TYPES: dict[str, EventType] = {
             ("period", "plan", "traces_total", "commons_queries_used",
              "commons_queries_allowance"),
         ),
+        # Fires identically for routine onboarding and for a break-glass
+        # recovery (hub/DEPLOYMENT.md Sec9a) -- there is no technical way to
+        # tell those apart, since both go through the same audited
+        # hub.manage path. An org that wants an eyes-on signal the moment
+        # anyone starts holding its most sensitive role gets one either way.
+        EventType(
+            "user.privileged_role_granted",
+            "A person now holds Security Admin or Owner",
+            ("user_id", "role", "actor"),
+        ),
     )
 }
 
