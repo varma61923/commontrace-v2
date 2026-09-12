@@ -35,6 +35,10 @@ _HUB_TOOLS = [
     "cancel_account_deletion",
     # the optional Knowledge Base (absent when HUB_COMMONS_ENABLED=false)
     "commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions",
+    # collaboration on a trace for a customer's own team: comments,
+    # assignment, and a per-person notification inbox
+    "add_comment", "list_comments", "assign_trace", "unassign_trace",
+    "list_my_notifications", "mark_notification_read",
 ]
 
 _GENERIC_POINTER_SKILL = """---

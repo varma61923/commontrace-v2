@@ -237,6 +237,12 @@ CORE_TOOLS = [
     # session as a pinnable block instead of paid for on every query.
     # Org-scoped and unmetered like the rest of this list.
     "working_set",
+    # collaboration on a trace (hub/collab.py) -- comments, assignment,
+    # and a notification inbox for a customer's own team. Org-scoped and
+    # unmetered like the rest of this list; unaffected by
+    # HUB_COMMONS_ENABLED, which only toggles cross-org sharing.
+    "add_comment", "list_comments", "assign_trace", "unassign_trace",
+    "list_my_notifications", "mark_notification_read",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

@@ -152,7 +152,7 @@ ROLE_SCOPES: dict[str, tuple[str, ...]] = {
     ROLE_OWNER: (scopes.SCOPE_READ, scopes.SCOPE_WRITE, scopes.SCOPE_ADMIN),
 }
 
-#: Which capability each of the Hub's 20 org-scoped MCP tools needs. One
+#: Which capability each of the Hub's 26 org-scoped MCP tools needs. One
 #: entry per tool, exactly like hub/scopes.py's own tool_scopes: the failure
 #: mode being designed out is a new tool silently reachable by anyone with a
 #: verified identity because nobody assigned it a capability.
