@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SCIM 2.0 user provisioning (`hub/scim.py`, `/scim/v2/Users`).** Audit
+  §1.2 named "SCIM auto-provisioning" as still open. An IdP can now create
+  and, critically, immediately deactivate `User` rows itself, through a
+  dedicated `scim`-scoped API key (`hub.manage issue-key <org_id> [days]
+  scim`) rather than a wider read/write/admin credential. Manages the row
+  only — a SCIM-created account still has no OIDC identity linked and
+  cannot authenticate until a separate `hub.manage link-sso`, by design
+  (see the module's own docstring for why conflating provisioning with
+  login would undo `hub/sso.py`'s "no auto-provisioning" stance). `DELETE`
+  deactivates, never removes, matching every other deprovisioning path in
+  this Hub. `filter`/`PATCH` cover a narrow, named subset (`userName eq`,
+  `active` replace) rather than the full RFC 7644 grammar. Shipped
+  alongside a fix to `hub/scopes.py`: a scope added after a key's
+  issuance (like `scim`) is no longer implied by a legacy (pre-`scopes`-
+  column) key, which previously held every scope that existed at
+  verification time rather than at issuance time — a real, if narrow,
+  privilege-creep bug this change closes for every already-issued
+  production key. Tests: `hub/tests/test_scim.py` (27), plus new
+  scope-boundary tests in `hub/tests/test_api_key_scopes.py`.
+
 - **An opt-in in-process scheduler for alert checks (`hub/scheduler.py`,
   `HUB_ALERT_SCHEDULER_ENABLED`).** Audit §8.3 named "no in-process
   scheduler" as the remaining gap once alerting and reports existed:

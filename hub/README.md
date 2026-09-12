@@ -644,11 +644,22 @@ traffic beyond a pilot:
   docstring for why a small Starlette middleware was simpler and more
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
-- **SAML, SCIM, and a login UI.** OIDC bearer-JWT verification and named
-  roles are implemented (below) — SAML sign-in, SCIM auto-provisioning,
-  and any browser-based login flow are not. `hub.manage link-sso` is the
-  only way a person gets an account today; there is no self-service
-  sign-up.
+- **SAML and a login UI.** OIDC bearer-JWT verification and named roles
+  are implemented (below) — SAML sign-in and any browser-based login flow
+  are not. `hub.manage link-sso` is the only way a person gets an OIDC
+  identity linked today; there is no self-service sign-up.
+- **SCIM auto-provisioning is now implemented** (`hub/scim.py`,
+  `/scim/v2/Users`, audit § below): an IdP can create and, critically,
+  immediately deactivate `User` rows itself instead of an operator running
+  `create-user`/`disable-user` by hand for every hire and every
+  termination. It manages the ROW's existence and `active` state ONLY —
+  it does not itself grant a login. A SCIM-created account still has no
+  OIDC identity linked until `hub.manage link-sso` does that separately,
+  same as any other account; see hub/scim.py's own module docstring for
+  why conflating the two would reintroduce the auto-provisioning-grants-
+  access risk this design otherwise avoids. Also not covered: SCIM Groups
+  (this Hub has roles, not groups) and the full RFC 7644 filter/PATCH
+  grammar (a deliberately narrow, named subset — see that docstring).
 - **A purpose-built break-glass mechanism.** Recovering access when every
   `ROLE_SECURITY_ADMIN`/`ROLE_OWNER` account is disabled or its IdP is
   unreachable IS now a documented procedure (`hub/DEPLOYMENT.md` §9a) —
@@ -708,6 +719,48 @@ base64url segments reads as a JWT, anything else is tried as an API key.
 - CLI: `hub.manage create-user | list-users | set-user-role | disable-user
   | enable-user | link-sso | unlink-sso` — see `hub/manage.py`'s module
   docstring for full usage.
+
+### SCIM 2.0 user provisioning (`hub/scim.py`, implemented)
+
+`/scim/v2/Users` lets an IdP (Okta, Azure AD, ...) create and deactivate
+`User` rows itself, instead of an operator running `create-user`/
+`disable-user` by hand for every hire and every termination — audit
+§1.2's "no SCIM auto-provisioning" line.
+
+```bash
+python -m hub.manage issue-key <org_id> [days] scim   # a dedicated, scim-only key
+curl -H "Authorization: Bearer $KEY" https://<hub>/scim/v2/Users
+```
+
+- **A wholly separate credential class**, not a wider read/write/admin
+  key: `scopes.SCOPE_SCIM` gates this endpoint and nothing an MCP tool
+  ever checks (`hub/tests/test_api_key_scopes.py` asserts no tool is ever
+  scim-scoped, and no scim-scoped key ever satisfies read/write/admin). A
+  legacy key (issued before the `scopes` column existed, which otherwise
+  holds every original capability) does **not** get this one either —
+  `scim` joined the vocabulary after those keys were minted, and the
+  whole point of `hub/scopes.py`'s `_LEGACY_IMPLIED_SCOPES` split is that
+  growing the vocabulary must never retroactively widen an already-issued
+  production key.
+- **Manages the row; does not grant a login.** A SCIM-created account has
+  no OIDC identity linked and cannot authenticate until a separate
+  `hub.manage link-sso` does that — see `hub/scim.py`'s own module
+  docstring for why conflating SCIM provisioning with SSO authentication
+  would reintroduce exactly the auto-provisioning risk OIDC linking
+  above declines.
+- **Starts as `viewer`**, never a higher role: an IdP vouching someone
+  should have SOME account is not the same as saying what they may do
+  with it.
+- **`DELETE` deactivates; it never removes the row** — the same
+  `disabled_at`-never-a-delete contract every other deprovisioning path
+  in this Hub follows, so the audit trail an auditor asks about later
+  survives.
+- **A narrow, named subset, not the full RFC 7644 grammar**: `filter`
+  supports exactly `userName eq "<value>"` (the one shape every real
+  integration sends); `PATCH` applies only `active` (and, leniently,
+  `displayName`) replace operations, leaving anything else in the same
+  request untouched rather than guessed at or rejecting the whole call.
+  SCIM Groups are not implemented — this Hub has roles, not groups.
 
 ### Collaboration: comments, assignment, notifications (implemented)
 

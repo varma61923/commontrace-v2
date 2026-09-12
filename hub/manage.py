@@ -322,12 +322,16 @@ async def issue_key(
 ) -> None:
     """`issue-key <org_id> [days] [scopes]`.
 
-    `scopes` is a comma-separated subset of read,write,admin (hub/scopes.py).
-    Omitted, the key gets all three -- what a key could do before scopes
-    existed, so the documented onboarding one-liner is unchanged. A
-    production agent wants `read,write`; a dashboard wants `read`; only an
-    operator's own key needs `admin`, which is what gates deleting a trace
-    and deleting the organization.
+    `scopes` is a comma-separated subset of read,write,admin,scim
+    (hub/scopes.py). Omitted, the key gets read+write+admin -- what a key
+    could do before scopes existed, so the documented onboarding one-liner
+    is unchanged. A production agent wants `read,write`; a dashboard wants
+    `read`; only an operator's own key needs `admin`, which is what gates
+    deleting a trace and deleting the organization. `scim` is never
+    included by default even with no `scopes` argument at all -- it grants
+    nothing over trace data and everything over this org's `User` rows
+    (hub/scim.py), so an IdP integration always asks for it explicitly:
+    `issue-key <org_id> [days] scim`.
 
     Scopes do NOT imply each other: `admin` alone cannot read. That is what
     makes "this key cannot escalate" answerable by reading one row.

@@ -76,10 +76,19 @@ class TestTheScopeVocabulary:
         assert scopes.parse("write,read,write") == ("read", "write")
         assert scopes.parse(["admin", "read"]) == ("read", "admin")
 
-    def test_parse_defaults_to_every_scope(self):
+    def test_parse_defaults_to_every_original_scope(self):
         """The pre-scopes behaviour, preserved: `issue-key <org>` with no
-        scope argument must keep minting the key it always did."""
-        assert scopes.parse(None) == scopes.ALL_SCOPES
+        scope argument must keep minting the key it always did --
+        read+write+admin. NOT scopes.ALL_SCOPES: `scim` joined that set
+        later and is materially more sensitive (hub/scopes.py's own
+        SCOPE_SCIM docstring), so omitting `--scopes` must never silently
+        include it."""
+        assert scopes.parse(None) == scopes.DEFAULT_SCOPES
+        assert scopes.SCOPE_SCIM not in scopes.parse(None)
+
+    def test_scim_can_be_issued_but_only_explicitly(self):
+        assert scopes.parse("scim") == (scopes.SCOPE_SCIM,)
+        assert scopes.parse("read,scim") == (scopes.SCOPE_READ, scopes.SCOPE_SCIM)
 
     def test_an_unknown_scope_is_refused_not_dropped(self):
         """A typo that silently narrows a credential is a privilege change
@@ -98,13 +107,21 @@ class TestTheScopeVocabulary:
         assert not scopes.satisfies(("write",), scopes.SCOPE_READ)
         assert not scopes.satisfies(("read",), scopes.SCOPE_WRITE)
 
-    def test_a_legacy_key_with_no_scope_list_holds_everything(self):
+    def test_a_legacy_key_with_no_scope_list_holds_every_original_scope(self):
         """NULL means "issued before the column existed", which is a key
-        that could do all of this. An EMPTY list is a deliberate narrowing
-        and must not be confused with it."""
-        for scope in scopes.ALL_SCOPES:
+        that could do all of read/write/admin. An EMPTY list is a
+        deliberate narrowing and must not be confused with it."""
+        for scope in (scopes.SCOPE_READ, scopes.SCOPE_WRITE, scopes.SCOPE_ADMIN):
             assert scopes.satisfies(None, scope)
             assert not scopes.satisfies((), scope)
+
+    def test_a_legacy_key_does_not_gain_a_scope_added_after_it_was_issued(self):
+        """The whole point of `_LEGACY_IMPLIED_SCOPES` being fixed
+        independent of ALL_SCOPES: adding `scim` to the vocabulary later
+        must not retroactively hand every already-issued full-access
+        production key a brand new, more sensitive capability it was never
+        asked to hold."""
+        assert not scopes.satisfies(None, scopes.SCOPE_SCIM)
 
 
 @pytest.mark.asyncio
@@ -124,6 +141,13 @@ class TestEveryToolDeclaresAScope:
 
     async def test_every_declared_scope_is_a_real_scope(self, mcp):
         assert set(mcp.commontrace_tool_scopes.values()) <= set(scopes.ALL_SCOPES)
+
+    async def test_no_mcp_tool_is_scim_scoped(self, mcp):
+        """`scim` gates hub/scim.py's own HTTP endpoint only -- it must
+        never satisfy an MCP tool's scope requirement, since a SCIM-only
+        key is meant to manage User rows and nothing about an org's trace
+        corpus at all."""
+        assert scopes.SCOPE_SCIM not in set(mcp.commontrace_tool_scopes.values())
 
     async def test_the_destructive_tools_are_admin_scoped(self, mcp):
         """Named explicitly rather than derived, so that moving one of these
@@ -221,10 +245,13 @@ class TestAWideKeyStillWorks:
 
 @pytest.mark.asyncio
 class TestIssuanceRecordsTheGrant:
-    async def test_a_key_is_issued_with_every_scope_by_default(self, session_factory, org):
+    async def test_a_key_is_issued_with_every_original_scope_by_default(self, session_factory, org):
+        """NOT scopes.ALL_SCOPES -- see scopes.DEFAULT_SCOPES's own
+        docstring: `scim` must always be an explicit ask."""
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org)
-        assert issued.scopes == scopes.ALL_SCOPES
+        assert issued.scopes == scopes.DEFAULT_SCOPES
+        assert scopes.SCOPE_SCIM not in issued.scopes
 
     async def test_a_narrow_key_is_stored_and_verified_narrow(self, session_factory, org):
         """End to end through the real verification path, not just the

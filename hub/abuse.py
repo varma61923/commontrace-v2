@@ -917,3 +917,12 @@ def make_auth_rate_limiter(config: HubConfig) -> RateLimiterBackend:
     handles them for ~1ms), but the legacy Argon2 fallback for unmigrated
     keys is still exactly as expensive as before, so this stays in place."""
     return _make_limiter(config, config.auth_attempts_per_minute, config.auth_attempts_burst, "auth")
+
+
+def make_scim_auth_rate_limiter(config: HubConfig) -> RateLimiterBackend:
+    """The same defense as `make_auth_rate_limiter`, for hub/scim.py's own
+    endpoint -- a distinct `limiter_name` ("scim_auth") so a client hitting
+    both surfaces (or an attacker aiming at one) does not draw down the
+    other's budget under HUB_RATE_LIMIT_BACKEND=postgres, where buckets are
+    shared by name across replicas."""
+    return _make_limiter(config, config.auth_attempts_per_minute, config.auth_attempts_burst, "scim_auth")

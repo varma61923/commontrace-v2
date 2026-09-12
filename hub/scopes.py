@@ -54,13 +54,35 @@ from __future__ import annotations
 SCOPE_READ = "read"
 SCOPE_WRITE = "write"
 SCOPE_ADMIN = "admin"
+#: Not a finer slice of the three above -- a wholly separate capability
+#: class. read/write/admin gate MCP tool calls over an org's trace corpus;
+#: `scim` gates hub/scim.py's own HTTP endpoint, which never touches trace
+#: data at all and only creates/deactivates `User` rows (see that module's
+#: own docstring for why "manages accounts" and "manages the corpus" are
+#: deliberately never the same credential).
+SCOPE_SCIM = "scim"
 
 #: Every scope this Hub understands, in the order they are displayed.
-ALL_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+ALL_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN, SCOPE_SCIM)
+
+#: What a key issued before the `scopes` column existed could do -- fixed
+#: at exactly these three, forever, independent of whatever ALL_SCOPES
+#: grows to later. `satisfies` uses this, not ALL_SCOPES, for the "legacy
+#: key" (granted=None) case: a scope added after the fact (like `scim`,
+#: a materially more sensitive capability than any of the original three)
+#: must never be retroactively granted to every already-issued full-access
+#: key just because it joined ALL_SCOPES. Growing ALL_SCOPES having
+#: silently widened every legacy key in production is exactly the "quiet
+#: widening" this module's own docstring calls worse than a quiet
+#: narrowing.
+_LEGACY_IMPLIED_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
 
 #: What `hub.manage issue-key` grants when the operator does not say --
-#: everything, matching what a key could do before scopes existed.
-DEFAULT_SCOPES: tuple[str, ...] = ALL_SCOPES
+#: everything a key could do before scopes existed. Deliberately NOT
+#: ALL_SCOPES: `scim` is sensitive enough (see SCOPE_SCIM above) that
+#: issuing it must always be an explicit ask (`issue-key <org> [days]
+#: read,write,admin,scim`), never a side effect of omitting `--scopes`.
+DEFAULT_SCOPES: tuple[str, ...] = _LEGACY_IMPLIED_SCOPES
 
 
 class ScopeError(ValueError):
@@ -102,19 +124,26 @@ def satisfies(granted: object, required: str) -> bool:
     `required`.
 
     A missing/None grant list means a key that predates the column, which
-    held every capability when it was issued -- see BACKWARD COMPATIBILITY
-    above. An EMPTY list is not the same thing and is not treated the same:
-    it means somebody deliberately narrowed this key to nothing.
+    held every capability that existed AT ISSUANCE TIME -- see BACKWARD
+    COMPATIBILITY above and `_LEGACY_IMPLIED_SCOPES`'s own docstring for why
+    that is `_LEGACY_IMPLIED_SCOPES`, not today's `ALL_SCOPES`: a scope
+    added later (like `scim`) must never be retroactively granted to a key
+    that could not have asked for it. An EMPTY list is not the same thing
+    as None and is not treated the same: it means somebody deliberately
+    narrowed this key to nothing.
     """
     if granted is None:
-        return True
+        return required in _LEGACY_IMPLIED_SCOPES
     return required in set(granted)
 
 
 def describe(granted: object) -> str:
     """Short human-readable rendering for CLI output and audit lines."""
     if granted is None:
-        return "all (legacy key, issued before scopes existed)"
+        return (
+            f"{','.join(_LEGACY_IMPLIED_SCOPES)} (legacy key, issued before "
+            "scopes existed)"
+        )
     scopes = tuple(granted)
     if not scopes:
         return "none"

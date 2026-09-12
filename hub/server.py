@@ -39,6 +39,7 @@ from hub.abuse import (
     make_auth_rate_limiter,
     make_rate_limiter,
     make_read_rate_limiter,
+    make_scim_auth_rate_limiter,
     resolve_client_key,
 )
 from hub.admin import add_admin_routes
@@ -48,6 +49,7 @@ from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
+from hub.scim import add_scim_routes
 from hub.signup import add_signup_routes
 
 logger = logging.getLogger("commontrace.hub")
@@ -1503,6 +1505,16 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     # verify a delivery actually came from Stripe.
     if config.stripe_webhook_secret:
         add_billing_webhook_route(inner_app, session_factory, stripe=stripe_settings)
+
+    # An IdP calls this, authenticated per-org via a dedicated `scim`-scoped
+    # ApiKey (hub/scopes.py), not a shared deployment-wide secret -- so
+    # unlike /admin, /app and /signup this is always mounted; see
+    # hub/scim.py's own docstring for why that is safe.
+    add_scim_routes(
+        inner_app, session_factory,
+        auth_rate_limiter=make_scim_auth_rate_limiter(config),
+        trusted_proxy_hops=config.trusted_proxy_hops,
+    )
 
     add_health_routes(
         inner_app,
