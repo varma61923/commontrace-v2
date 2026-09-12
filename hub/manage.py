@@ -143,6 +143,25 @@
                                        delivery is AT-LEAST-ONCE and every envelope
                                        carries a stable event_id, so receivers must
                                        deduplicate on it
+    create-alert-rule <org_id> <metric> <gt|lt> <threshold> [cooldown_minutes]
+                                   -> fire when <metric> crosses <threshold>. metric is
+                                       one of quarantine_rate, commons_queries_used_pct,
+                                       traces_used_pct (hub/alerts.py). Delivered as
+                                       alert.triggered through the org's existing
+                                       webhook endpoint(s) -- not a second delivery
+                                       mechanism. cooldown_minutes (default 60) is how
+                                       long a rule stays quiet after firing even if the
+                                       condition still holds
+    list-alert-rules <org_id>      -> this org's rules, state, and when each last fired
+    delete-alert-rule <rule_id>    -> remove a rule
+    check-alerts [org_id]          -> evaluate rules (all orgs, or one) and fire any
+                                       past their threshold and cooldown. Safe to run
+                                       on a schedule -- each rule's own cooldown
+                                       prevents re-firing on every tick
+    generate-report <org_id>       -> emit one usage summary (traces, commons queries
+                                       used/allowance) as report.generated, over the
+                                       same billing period account_usage reports by.
+                                       Safe to run on a schedule for a periodic push
     set-retention <org_id> <object_type> <days> [status]
                                    -> how long this org keeps one kind of object.
                                        object_type: trace | vote |
@@ -221,7 +240,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, prereg, raw_export
-from hub import audit, auth, commons, crud, events, outcomes, plans, rbac, retention
+from hub import alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -2307,6 +2326,97 @@ async def webhook_deliver(limit: str = "100", session_factory=None) -> bool:
     return True
 
 
+async def create_alert_rule(
+    org_id: str, metric: str, comparator: str, threshold: str,
+    cooldown_minutes: str = str(alerts.DEFAULT_COOLDOWN_MINUTES),
+    session_factory=None,
+) -> bool:
+    try:
+        threshold_val = float(threshold)
+        cooldown_val = int(cooldown_minutes)
+    except ValueError:
+        print(f"error: threshold must be a number and cooldown_minutes a whole "
+              f"number, got {threshold!r} / {cooldown_minutes!r}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            rule = await alerts.create_rule(
+                session, org_id, metric, comparator, threshold_val,
+                cooldown_minutes=cooldown_val, created_by=audit.ACTOR_OPERATOR_CLI,
+            )
+        except alerts.AlertError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        rule_id = rule.id
+    print(f"rule_id: {rule_id}")
+    print(f"  fires when {metric} {comparator} {threshold_val} "
+          f"(cooldown {cooldown_val}m), delivered as alert.triggered "
+          "to this org's webhook endpoint(s).")
+    return True
+
+
+async def list_alert_rules(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        rules = await alerts.list_rules(session, org_id)
+    if not rules:
+        print(f"No alert rules for {org_id}.")
+        return True
+    for r in rules:
+        state = "enabled" if r.enabled else "disabled"
+        last = r.last_triggered_at.isoformat() if r.last_triggered_at else "never"
+        print(f"{r.id}  {r.metric} {r.comparator} {r.threshold}  {state}  "
+              f"cooldown={r.cooldown_minutes}m  last_triggered={last}")
+    return True
+
+
+async def delete_alert_rule(rule_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        deleted = await alerts.delete_rule(session, rule_id)
+    if not deleted:
+        print(f"error: no such alert rule: {rule_id}", file=sys.stderr)
+        return False
+    print(f"{rule_id} deleted.")
+    return True
+
+
+async def check_alerts(org_id: str | None = None, session_factory=None) -> bool:
+    """Evaluate rules and fire due alerts. Safe to run on a schedule --
+    each rule's own cooldown prevents re-firing on every tick."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        fired = await alerts.check_rules(session, org_id)
+    if not fired:
+        print("No alert crossed its threshold.")
+        return True
+    for f in fired:
+        print(f"[FIRED] {f['rule_id']} ({f['org_id']}): {f['metric']} "
+              f"{f['comparator']} {f['threshold']} -- value={f['value']}")
+    print(f"{len(fired)} alert(s) fired, queued as alert.triggered.")
+    return True
+
+
+async def generate_report(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            report = await alerts.generate_report(session, org_id)
+        except alerts.AlertError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    print(f"report.generated for {org_id} ({report['period']}, plan={report['plan']}):")
+    print(f"  traces={report['traces_total']}  "
+          f"commons_queries={report['commons_queries_used']}/"
+          f"{report['commons_queries_allowance']}")
+    print("  Queued to this org's webhook endpoint(s).")
+    return True
+
 
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
@@ -2351,6 +2461,11 @@ _COMMANDS = {
     "webhook-rotate": (webhook_rotate, 1, 1),
     "webhook-disable": (webhook_disable, 1, 1),
     "webhook-deliver": (webhook_deliver, 0, 1),
+    "create-alert-rule": (create_alert_rule, 4, 5),
+    "list-alert-rules": (list_alert_rules, 1, 1),
+    "delete-alert-rule": (delete_alert_rule, 1, 1),
+    "check-alerts": (check_alerts, 0, 1),
+    "generate-report": (generate_report, 1, 1),
     "set-retention": (set_retention, 3, 4),
     "clear-retention": (clear_retention, 2, 3),
     "retention-plan": (retention_plan, 1, 1),

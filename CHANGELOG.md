@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Threshold alerts and scheduled reports (`hub/alerts.py`).** Webhooks
+  (6.3) already tell a receiver *when* something happened; this adds
+  *whether* a number an operator cares about has crossed a line, and a
+  periodic usage summary — both delivered through the same signed,
+  at-least-once webhook queue rather than a second delivery mechanism.
+  `create-alert-rule <org_id> <metric> <gt|lt> <threshold>` defines a
+  rule against a closed, named set of metrics (`quarantine_rate`,
+  `commons_queries_used_pct`, `traces_used_pct`) — an unknown metric is
+  refused at creation time, never silently skipped later. `check-alerts`
+  evaluates rules and fires `alert.triggered` for any that cross their
+  threshold, respecting a per-rule cooldown so a metric that stays past
+  its line doesn't refire on every check; a metric that cannot be
+  computed yet (no traces, an unlimited plan) never fires. `generate-report
+  <org_id>` emits one `report.generated` usage summary over the same
+  billing period `account_usage` reports by. No in-process scheduler:
+  both commands are meant for an operator's own cron, the same shape as
+  `webhook-deliver`'s existing redelivery sweep. Tests:
+  `hub/tests/test_alerts.py` (23) plus CLI coverage in
+  `hub/tests/test_manage.py` (13).
+
 - **Collaboration on traces: comments, assignment, and a notification
   inbox (`hub/collab.py`).** `hub/manage.py`'s Knowledge Base review queue
   is an operator surface across every tenant; this is the missing piece

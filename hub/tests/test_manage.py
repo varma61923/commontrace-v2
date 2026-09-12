@@ -1642,3 +1642,103 @@ class TestUserCommandTable:
                      "enable-user", "link-sso", "unlink-sso"):
             assert name in manage._COMMANDS, name
             assert name in manage.__doc__, name
+
+
+class TestAlertCLI:
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="alert-cli-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_creating_a_rule_prints_its_id(self, session_factory, org_id, capsys):
+        assert await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "quarantine_rate gt 10.0" in out
+
+    async def test_a_non_numeric_threshold_is_an_operator_mistake(
+        self, session_factory, org_id, capsys
+    ):
+        assert not await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "lots", session_factory=session_factory)
+        assert "number" in capsys.readouterr().err
+
+    async def test_an_unknown_metric_is_refused(self, session_factory, org_id, capsys):
+        assert not await manage.create_alert_rule(
+            org_id, "vibes", "gt", "10", session_factory=session_factory)
+        assert "unknown metric" in capsys.readouterr().err
+
+    async def test_listing_an_empty_org_says_so_plainly(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.list_alert_rules(org_id, session_factory=session_factory)
+        assert "No alert rules" in capsys.readouterr().out
+
+    async def test_an_unknown_org_is_refused_when_listing(self, session_factory, capsys):
+        assert not await manage.list_alert_rules(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_listing_shows_metric_and_state(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_alert_rules(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "quarantine_rate gt 10.0" in out
+        assert "enabled" in out
+
+    async def test_deleting_a_rule(self, session_factory, org_id, capsys):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        rule_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.delete_alert_rule(rule_id, session_factory=session_factory)
+        assert "deleted" in capsys.readouterr().out
+
+    async def test_deleting_an_unknown_rule_is_refused(self, session_factory, capsys):
+        assert not await manage.delete_alert_rule(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such alert rule" in capsys.readouterr().err
+
+    async def test_check_alerts_with_nothing_crossed_says_so(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.check_alerts(org_id, session_factory=session_factory)
+        assert "No alert crossed" in capsys.readouterr().out
+
+    async def test_check_alerts_across_every_org_when_none_given(
+        self, session_factory, capsys
+    ):
+        assert await manage.check_alerts(session_factory=session_factory)
+        assert "No alert crossed" in capsys.readouterr().out
+
+    async def test_generate_report_prints_a_summary(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.generate_report(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "report.generated" in out
+        assert "traces=0" in out
+
+    async def test_generate_report_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.generate_report(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+
+class TestAlertCommandTable:
+    async def test_every_alert_command_is_dispatchable_and_documented(self):
+        for name in ("create-alert-rule", "list-alert-rules", "delete-alert-rule",
+                     "check-alerts", "generate-report"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name

@@ -148,6 +148,17 @@ EVENT_TYPES: dict[str, EventType] = {
             "An org hit a plan entitlement (hub/plans.py)",
             ("metric", "limit", "used"),
         ),
+        EventType(
+            "alert.triggered",
+            "An alert rule's threshold was crossed (hub/alerts.py)",
+            ("rule_id", "metric", "comparator", "threshold", "value"),
+        ),
+        EventType(
+            "report.generated",
+            "A periodic usage summary was generated (hub/alerts.py)",
+            ("period", "plan", "traces_total", "commons_queries_used",
+             "commons_queries_allowance"),
+        ),
     )
 }
 

@@ -901,6 +901,40 @@ because a queue that gives up quietly is a queue that lies about delivery.
 Every envelope carries a stable `event_id`: **deduplicate on it**. Promising
 exactly-once here would be a promise this cannot keep.
 
+## Alerting and scheduled reports (`hub/alerts.py`)
+
+Webhooks (above) tell a receiver *when* something happened. This adds
+*whether* a number has crossed a line an operator cares about, and a
+periodic summary of what a number has been doing — both delivered through
+the **same** signed, at-least-once webhook queue rather than a second
+delivery mechanism. An alert or a report is a kind of event
+(`alert.triggered`, `report.generated`), so an org's already-configured
+endpoint and signature verification cover these for free.
+
+```bash
+python -m hub.manage create-alert-rule <org_id> quarantine_rate gt 10
+python -m hub.manage list-alert-rules <org_id>
+python -m hub.manage check-alerts             # all orgs; run on a schedule
+python -m hub.manage generate-report <org_id> # one usage summary, on demand or scheduled
+```
+
+**Metrics are a closed, named set** (`quarantine_rate`,
+`commons_queries_used_pct`, `traces_used_pct`), never a free-form
+expression a customer supplies — the same "deny by construction"
+discipline `hub/rbac.py` applies to an unmapped tool: an unknown metric is
+refused at rule-creation time, not silently skipped at evaluation time. A
+metric that cannot be computed right now (no traces yet, an unlimited
+plan) never fires — a rate over zero traces is not a signal.
+
+**No in-process scheduler.** `check-alerts` and `generate-report` are
+pure operator-CLI commands, meant to be invoked by *your own* cron, in
+the exact same shape as `webhook-deliver`'s existing redelivery sweep.
+This Hub's server is request-driven with no background loop, and adding
+one for this feature alone would be a bigger architectural commitment
+than the feature is worth. Each rule's own `cooldown_minutes` (default
+60) is what keeps a metric that stays past its threshold from firing on
+every single cron tick.
+
 ## Operator CLI (`hub/manage.py`)
 
 There is no web admin panel — this CLI *is* the admin/monitoring surface,

@@ -1215,3 +1215,45 @@ class Notification(Base):
     __table_args__ = (
         Index("ix_notifications_user_unread", "org_id", "user_id", "read_at"),
     )
+
+
+class AlertRule(Base):
+    """A threshold an org wants to know about without polling for it
+    (audit §8.3: "no alerting, scheduled reports, BI export").
+
+    Evaluated by `python -m hub.manage check-alerts`, an operator-cron
+    entry point in the same shape as `webhook-deliver`'s existing
+    redelivery sweep -- this Hub's request-driven server has no
+    background loop, and adding one for this alone would be a bigger
+    architectural commitment than the feature is worth.
+
+    Firing emits `alert.triggered` through the EXISTING webhook pipeline
+    (hub/events.py), not a second delivery mechanism: an alert is a kind
+    of event, so an org's already-configured endpoint and signature
+    verification cover it for free. See hub/alerts.py for the supported
+    metrics and how a value is computed.
+    """
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparator: Mapped[str] = mapped_column(String(8), nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    # How long a rule stays quiet after firing, even if the condition
+    # still holds -- without this, a metric that stays past its
+    # threshold for a week would emit one event per check-alerts run
+    # (every cron tick) rather than one event per crossing.
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+
+    __table_args__ = (
+        Index("ix_alert_rules_org_enabled", "org_id", "enabled"),
+    )

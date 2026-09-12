@@ -493,6 +493,9 @@ class TestSchemaSafety:
         from hub.alembic.versions.a7c3e91f4b28_collaboration_comments_assignments import (
             _NEW_TABLES as _COLLAB_TABLES,
         )
+        from hub.alembic.versions.b4d9e12a6f37_alert_rules import (
+            _NEW_TABLES as _ALERT_TABLES,
+        )
         from hub.alembic.versions.c2f8a4d16e93_human_users_and_roles import (
             _NEW_TABLES as _USER_TABLES,
         )
@@ -507,7 +510,7 @@ class TestSchemaSafety:
 
         protected = {
             *_SCOPED_TABLES, *_RETENTION_TABLES, *_WEBHOOK_TABLES,
-            *_USER_TABLES, *_COLLAB_TABLES, "traces",
+            *_USER_TABLES, *_COLLAB_TABLES, *_ALERT_TABLES, "traces",
         }
         # Documented exemptions, with the reason each one cannot be scoped.
         # See d5c8b3a91e77's docstring.
