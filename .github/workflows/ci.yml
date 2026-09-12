@@ -116,6 +116,33 @@ jobs:
             --sizes 100,400,1600,6400 --runs 3 \
             --max-total-ms 2000 --max-alpha 1.5
 
+  sdk-typescript:
+    # audit 6.4: "a TypeScript client is the first [non-Python SDK] worth
+    # building" (sdk/typescript). Built and tested against a real install
+    # of the official @modelcontextprotocol/sdk, the same way test-core
+    # above installs the Python package for real rather than trusting
+    # that its own source compiles.
+    name: sdk (typescript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install (from the committed lockfile)
+        run: npm ci
+
+      - name: Build and run the test suite
+        run: npm test
+
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
     # asyncpg, Alembic, argon2-cffi, a real Postgres) than the PyYAML-only CLI

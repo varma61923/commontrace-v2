@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A TypeScript client SDK (`sdk/typescript`, `@commontrace/hub-client`)** —
+  audit §6.4's first named non-Python client. Any MCP-capable client
+  already reaches the whole Hub tool surface without an SDK; this is a
+  thin, typed convenience layer over the official
+  `@modelcontextprotocol/sdk`, not a new capability. Typed methods exist
+  for the tools an integration reaches for first (`search_traces`,
+  `contribute_trace`, `get_trace`, `vote_trace`, `amend_trace`,
+  `list_tags`, `account_usage`); every other tool is reachable through a
+  generic `call(name, args)`. Retries a `rate_limited` tool-level
+  refusal by default (honoring the server's own `retry_after`) — the
+  same behavior `commontrace/hub_client.py`'s own module history says is
+  worth having, for the same documented reason (a bulk write otherwise
+  reads a limiter's "come back in two seconds" as a permanent failure).
+  Deliberately thinner than the Python client (no bulk-sync
+  reconciliation or adaptive pacing). Built and tested in CI
+  (`sdk-typescript` job) against a real install of the official MCP SDK.
+  8 tests, `HubClient.withCaller` as the no-network test seam.
+
 - **Threshold alerts and scheduled reports (`hub/alerts.py`).** Webhooks
   (6.3) already tell a receiver *when* something happened; this adds
   *whether* a number an operator cares about has crossed a line, and a

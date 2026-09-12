@@ -154,6 +154,14 @@ fixed a real bug: `commontrace.hub.mcp.json.example` was previously **not valid 
 unescaped tool list leaked quotes into a JSON string field) for both `cursor` and
 `generic-mcp`.
 
+**Non-Python clients.** Any MCP-capable client already reaches the whole
+Hub tool surface without an SDK (that's what `generic-mcp` above
+configures). [`sdk/typescript`](sdk/typescript/) is the first dedicated
+non-Python client — a thin, typed wrapper (`@commontrace/hub-client`)
+over the official MCP TypeScript SDK — for a project that would rather
+have typed request/response shapes than hand-write raw tool calls.
+Mobile/JVM/.NET clients remain unbuilt.
+
 ### 4 — Capture experience and curate lessons
 
 ```bash
