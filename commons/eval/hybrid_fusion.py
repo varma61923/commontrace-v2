@@ -114,23 +114,6 @@ def _query(p: dict) -> str:
     return f"{p['label']} {p.get('text', '')}"
 
 
-def reciprocal_rank_fusion(
-    rankings: list[tuple[list[str], float]], k: int, top_k: int
-) -> list[str]:
-    """RRF over (ranking, weight) pairs; ranks are 1-based.
-
-    Ties break on the document id so the output is deterministic -- the
-    same reason commontrace/retrieval.py sorts on an explicit key rather
-    than relying on set order.
-    """
-    scores: dict[str, float] = {}
-    for ranking, weight in rankings:
-        for rank, doc in enumerate(ranking, start=1):
-            scores[doc] = scores.get(doc, 0.0) + weight / (k + rank)
-    ordered = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [doc for doc, _ in ordered[:top_k]]
-
-
 def _require_attention():
     """The encoder, or None with the reason printed.
 
@@ -184,10 +167,15 @@ def _fused_recall_at_1(probes, lexical, semantic, config) -> tuple[float, int]:
     k, w_lex, w_sem = config
     hits = 0
     for i, p in enumerate(probes):
-        fused = reciprocal_rank_fusion(
-            [(lexical[i], w_lex), (semantic[i], w_sem)], k=k, top_k=1
+        # The SHIPPED implementation (commontrace/retrieval.py), not a copy.
+        # This benchmark exists to choose the k and the weights that the
+        # product then runs with, so a second implementation here could tune
+        # one formula and ship another.
+        fused = retrieval.reciprocal_rank_fusion(
+            {"lexical": lexical[i], "semantic": semantic[i]},
+            k=k, top_k=1, weights={"lexical": w_lex, "semantic": w_sem},
         )
-        if fused == [p["target"]]:
+        if [doc for doc, _ in fused] == [p["target"]]:
             hits += 1
     return (hits / len(probes) if probes else 0.0), hits
 

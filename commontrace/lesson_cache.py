@@ -83,17 +83,23 @@ CACHE_DIR = ".cache"
 # Bumped when the projection below changes shape, so an older cache is
 # discarded rather than misread. A cache whose format silently drifted would
 # be worse than none: it would answer confidently and wrongly.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 # Exactly the frontmatter keys the retrieval path reads:
 #   - `_lesson_text_weighted`: description, applies_when, tags, domain
 #   - `RankedLesson`:          name, description
 #   - the sort key:            importance, uses
 #   - `_iter_active_lessons`:  status, agent_type
+#   - `dosage.is_core`:        core
 # Adding a key here requires bumping FORMAT_VERSION.
 PROJECTED_FIELDS = (
     "name", "description", "applies_when", "tags",
     "domain", "importance", "uses", "status", "agent_type",
+    # Always-on lessons are selected from the PROJECTED set, never from a
+    # re-read of every file -- so a `core` missing here does not degrade
+    # gracefully: `is_core` reads False for every lesson in the store and the
+    # always-on set is silently empty, on a store that configured one.
+    "core",
 )
 
 

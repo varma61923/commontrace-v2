@@ -388,7 +388,7 @@ The agent then has the whole protocol as tools:
 
 | Tool | What the agent does with it |
 | --- | --- |
-| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. |
+| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. Also returns `budget` (how much of the context allowance this retrieval spent), `core` (always-on lessons, injected whether or not they matched), and `not_injected` — what did not fit, named rather than silently dropped. |
 | `capture(...)` | Record what happened, with the outcome fields (`resolved`, `tokens_used`, …). Same `occasion_id` joins it back to the retrieval. |
 | `propose_lessons()` | Cluster repeated failures into candidates. |
 | `draft_lesson(slug, rule, why, …)` | Write a candidate's content, over as many calls as it takes. |
@@ -686,6 +686,64 @@ The gate is deliberately two-sided (a ceiling on the worst field **and** the
 worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
 *spread* was 1.32×, so a spread-only gate would have called it acceptable.
 Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATUS.md) §9.
+
+---
+
+## How much memory, and what was actually there
+
+Ranking answers *which* lessons match. Two other questions decide what an
+agent actually receives, and both used to go unanswered.
+
+**How much.** `top_k` bounds the count and says nothing about the size — ten
+terse lessons and ten pages of prose are the same `top_k=10`, and the second
+one displaces the task itself out of the context window. Retrieval admits
+against a budget in characters as well as count:
+
+```json
+// memory/retrieval.json
+{ "max_lessons": 10, "max_chars": 8000 }
+```
+
+Every `retrieve` reports what it spent (`"budget": "4/10 lessons, 3,140/8,000
+chars (39%)"`) and names what did not fit under `not_injected`, with the
+reason. Nothing is silently truncated: an agent given nine of ten lessons and
+told it was given ten will act on the missing one's absence as though it were
+the fleet's position.
+
+**Which is unconditional.** Some rules are not "relevant to this task" — they
+are how the fleet operates. Mark one `core: true` in its frontmatter and it is
+admitted ahead of the matched set, every time:
+
+```yaml
+name: always-use-idempotency-keys
+core: true
+importance: 5
+```
+
+Before this, the only way to make a rule reliable was to make it match
+everything, which is the same thing as making retrieval worse. Core lessons
+are still budgeted — they compete only with each other, by importance —
+because a fleet that marks forty lessons core has not thereby earned forty
+lessons' worth of context, and the unconditional reading's failure mode is
+that the always-on set crowds out every matched lesson and retrieval appears
+to stop working, with no error.
+
+**What was actually there.** Each retrieval with an `occasion_id` writes a
+*receipt* (`memory/retrieval_receipts.jsonl`): the candidate set that was
+**visible** — every active lesson, pinned to its revision, with a digest over
+the set — the subset **admitted**, and, written later as its own line, which
+of those the agent says it **used**.
+
+The holdout log records eligibility and arm, which starts one step too late. A
+lesson that was never a candidate does not appear in it at all, so *"the
+memory did not help"* and *"the memory was never offered"* are
+indistinguishable afterwards — and they have opposite remedies. The
+injected-versus-used split is the other thing receipts make possible: every
+"lessons reused" figure before them was counting injections.
+
+Because receipts store revisions rather than names, a dispute six months later
+about what the agent had in front of it is answerable to the exact text, not
+to a slug whose contents have moved since.
 
 ---
 

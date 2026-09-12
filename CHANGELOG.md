@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dosage, always-on lessons, and retrieval receipts.** Retrieval answered
+  "which lessons match, best first" and stopped there, which left two
+  questions that actually decide what an agent receives unanswered.
+
+  **How much.** `top_k` bounds the COUNT and says nothing about the size: ten
+  terse lessons and ten pages of prose were the same `top_k=10`, and the
+  second displaces the task itself out of the context window.
+  `commontrace/dosage.py` admits against a budget in characters as well as
+  count (`max_lessons`/`max_chars` in `retrieval.json`), and `retrieve` now
+  returns a `budget` gauge and a `not_injected` list naming what did not fit
+  and why. Nothing is silently truncated -- an agent given nine of ten
+  lessons and told it was given ten acts on the missing one's absence as
+  though it were the fleet's position.
+
+  **Which is unconditional.** A lesson may set `core: true`, which admits it
+  ahead of the matched set whether or not it shares vocabulary with today's
+  request. Before this, the only way to make a rule reliable was to make it
+  match everything, which is the same thing as making retrieval worse. Core
+  lessons are still budgeted -- they compete only with each other, by
+  importance -- because a fleet that marks forty lessons core has not thereby
+  earned forty lessons of context, and the unconditional reading's failure
+  mode is that the always-on set crowds out every matched lesson and
+  retrieval appears to stop working with no error.
+
+  **What was actually there.** `commontrace/receipts.py` records, per
+  occasion, the candidate set that was VISIBLE (every active lesson, pinned
+  to its revision, with a digest over the set), the subset ADMITTED (with
+  rank, relevance and the budget that shaped it), and -- written later as its
+  own line -- which of those the agent says it USED. The holdout log records
+  eligibility and arm, which starts one step too late: a lesson that was
+  never a candidate does not appear in it at all, so "the memory did not
+  help" and "the memory was never offered" were indistinguishable
+  afterwards, and they have opposite remedies. The injected/used split is
+  the other one it makes possible; every reuse number before it was counting
+  injections.
+
 - **Immutable releases: what the fleet was running, as one named thing.**
   This product had two of the three identities a deployable change needs --
   a lesson (a mutable slug) and a revision (content identity for one
@@ -392,6 +428,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserve. Pinned by a test.
 
 ### Fixed
+
+- **A lesson the budget crowds out is no longer logged as treated.** Holdout
+  arms are now assigned AFTER the dose is computed and only over lessons
+  that will actually be administered. Assigning first would log a
+  crowded-out lesson as treated on an occasion it was never present for, and
+  an occasion counted as treated where no memory was injected pulls the
+  measured effect toward zero -- silently, and worse the tighter the budget
+  is. A withheld lesson's slot is deliberately not backfilled with the
+  next-ranked lesson: substituting one would make the control arm "a
+  different lesson" rather than "no lesson".
+
+- **`core` is carried in the lesson cache projection** (`FORMAT_VERSION` 2).
+  Always-on lessons are selected from the projected frontmatter, so a
+  missing `core` there did not degrade gracefully -- it read False for every
+  lesson in the store and the always-on set was silently empty.
+
+- **One Reciprocal Rank Fusion implementation, not two.**
+  `commons/eval/hybrid_fusion.py` had its own copy of the formula while
+  sweeping for the `k` and arm weights the product should run with, so it
+  could have tuned one implementation and shipped another. It now calls
+  `commontrace.retrieval.reciprocal_rank_fusion`, which gained the optional
+  per-arm `weights` that sweep needs.
 
 - **A pinned `working_set` trace could be drawn into its own control arm,
   silently biasing the effect it was promoted for.** `working_set`'s

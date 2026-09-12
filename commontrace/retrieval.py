@@ -381,3 +381,63 @@ def rank_lessons(
     # rejects a negative --top-k before it reaches here; this clamp is the
     # same guarantee for any other caller of this function directly.
     return [lesson for lesson, _, _ in scored[: max(0, top_k)]]
+
+
+# --- Combining two rankings that do not share a scale -----------------------
+#
+# The lexical scorer above returns a relevance in [0, 1]; the optional
+# semantic layer (memory/attention) returns a cosine similarity. Neither is
+# convertible into the other, and the obvious fixes are both wrong: adding
+# them compares quantities with different meanings, and normalizing each to
+# its own maximum makes a ranking's top result score 1.0 whether it was an
+# excellent match or the least bad of a bad set.
+#
+# Reciprocal Rank Fusion sidesteps the question by using only POSITION. A
+# document's contribution from each arm is 1/(k + rank), so an arm can only
+# say "I put this first, this second" -- which is the one thing every
+# retrieval arm can say comparably. Adding an arm never requires rescaling
+# any other.
+DEFAULT_RRF_K = 60
+
+
+def reciprocal_rank_fusion(
+    arms: dict[str, list[str]],
+    k: int = DEFAULT_RRF_K,
+    top_k: int | None = None,
+    weights: dict[str, float] | None = None,
+) -> list[tuple[str, float]]:
+    """Fuse several ranked id lists into one, by position alone.
+
+    `arms` maps an arm's name to its ranked ids, best first. Returns
+    (id, fused_score) pairs, best first, with ties broken by id so the
+    result is deterministic -- a retrieval order that varied between two
+    identical calls would put the same occasion in different arms of an
+    experiment on a retry.
+
+    `weights` scales an arm's contribution, defaulting to 1.0 for any arm it
+    does not name. It exists because the arms are not always equally good on
+    a given corpus and the benchmark in commons/eval/hybrid_fusion.py sweeps
+    for the mix that is -- the weights belong to a tuning result, not to the
+    formula, so they are a parameter here rather than a constant.
+
+    `k` damps the advantage of a top position: at k=60 (the value the
+    original RRF paper uses, and the one every implementation since has
+    copied) the difference between rank 1 and rank 2 is small enough that
+    agreement across arms outweighs a single arm's confidence, which is the
+    entire point of fusing.
+
+    An id that appears in one arm and not another is not penalised beyond
+    simply not scoring from the arm that missed it. That asymmetry is
+    deliberate: a lexical arm cannot be expected to find a paraphrase, and
+    treating its silence as a vote against would make adding an arm reduce
+    recall.
+    """
+    if k <= 0:
+        raise ValueError(f"RRF k must be positive, got {k}")
+    fused: dict[str, float] = {}
+    for arm, ranked in arms.items():
+        weight = 1.0 if weights is None else float(weights.get(arm, 1.0))
+        for position, item in enumerate(ranked, start=1):
+            fused[item] = fused.get(item, 0.0) + weight / (k + position)
+    ordered = sorted(fused.items(), key=lambda pair: (-pair[1], pair[0]))
+    return ordered if top_k is None else ordered[: max(0, top_k)]

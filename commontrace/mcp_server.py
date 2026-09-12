@@ -73,6 +73,7 @@ nothing new until someone opts in.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import glob
 import io
 import os
@@ -81,6 +82,7 @@ from typing import Any
 from commontrace import (
     approval,
     cache_gate,
+    dosage,
     evidence_io,
     experiment,
     frontmatter,
@@ -90,6 +92,7 @@ from commontrace import (
     mcp_tools,
     memory_guard,
     paths,
+    receipts,
     retrieval,
     retrieval_io,
     revision,
@@ -255,6 +258,115 @@ def _lesson_path(root: str, slug: str) -> str:
     if path is None:
         raise LocalStoreError(f"no lesson found for slug {slug!r}")
     return path
+
+
+def _apply_dosage(matched, active, config):
+    """Admit core lessons and enforce the budget, returning the wire items.
+
+    Core lessons are loaded from the whole active set rather than from the
+    ranked one, because the entire point of `core: true` is that the lesson
+    is present whether or not it matched today's vocabulary. A core lesson
+    that ALSO matched is not admitted twice -- it is already in `matched`,
+    and is marked core there so it keeps its priority.
+
+    Returns (admitted_items, core_items, dose) -- the dose is carried out so
+    the caller can report the gauge and what was left out.
+    """
+    ranked_slugs = {item.get("slug") for item in matched}
+    core_items: list[dict] = []
+    for path, fm in active:
+        if not dosage.is_core(fm):
+            continue
+        slug = str(fm.get("name", ""))
+        if slug in ranked_slugs:
+            continue
+        try:
+            fm_full, body = frontmatter.read(path)
+        except Exception:  # noqa: BLE001 - an unreadable lesson is not injected
+            continue
+        item = _lesson_wire(fm_full, body, include_body=True)
+        item["core"] = True
+        core_items.append(item)
+
+    # A core lesson that also matched keeps its core priority rather than
+    # competing for a ranked slot, which is the whole point of the flag.
+    core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
+    for item in matched:
+        if item.get("slug") in core_slugs:
+            item["core"] = True
+
+    considered = [*core_items, *matched]
+    by_slug = {item.get("slug", ""): item for item in considered}
+    candidates = [
+        dosage.Candidate(
+            slug=item.get("slug", ""),
+            # The real text, so the character budget is spent against what
+            # the agent will actually be handed rather than an estimate.
+            text=item.get("body") or "",
+            core=bool(item.get("core", False)),
+            importance=int(item.get("importance") or 0),
+            revision=str(item.get("revision", "")),
+        )
+        for item in considered
+    ]
+    dose = dosage.select(
+        candidates,
+        dosage.Budget(max_lessons=config.max_lessons, max_chars=config.max_chars),
+    )
+    admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
+    kept_core = [item for item in admitted if item.get("core")]
+    return admitted, kept_core, dose
+
+
+def _record_receipt(root, occasion_id, task, active, injected, held, dose, config):
+    """One receipt for this retrieval. See commontrace/receipts.py."""
+    from commontrace import release as release_mod
+
+    visible = []
+    for path, fm in active:
+        slug = str(fm.get("name", ""))
+        if not slug:
+            continue
+        visible.append(
+            receipts.Visible(slug=slug, revision=lesson_io.current_revision(path) or "")
+        )
+
+    relevance_by_slug = {
+        item.get("slug", ""): float(item.get("score", 0.0))
+        for item in (*injected, *held)
+    }
+    admitted = tuple(
+        receipts.Admitted(
+            slug=item.get("slug", ""),
+            revision=str(item.get("revision", "")),
+            rank=position,
+            relevance=relevance_by_slug.get(item.get("slug", ""), 0.0),
+            core=bool(item.get("core", False)),
+        )
+        for position, item in enumerate(injected, start=1)
+    )
+    # The withheld-for-the-experiment set and the didn't-fit-the-budget set
+    # are both "not injected" and are NOT the same fact: one is a control
+    # arm, the other is a capacity limit. Labelled distinctly so a later
+    # reader is not left to guess which.
+    withheld = tuple(
+        [(item.get("slug", ""), "control arm (holdout)") for item in held]
+        + [(d.slug, d.reason) for d in dose.dropped]
+    )
+    receipts.record(root, receipts.Receipt(
+        occasion_id=occasion_id,
+        at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        visible=tuple(visible),
+        admitted=admitted,
+        withheld=withheld,
+        query=task,
+        scorer=config.scorer,
+        floor=config.floor,
+        chars_used=dose.chars_used,
+        max_chars=dose.budget.max_chars,
+        max_lessons=dose.budget.max_lessons,
+        release_id=(release_mod.current_id(root) or ""),
+    ))
 
 
 def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dict:
@@ -439,7 +551,41 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
-        slugs = [r.slug for r in ranked]
+        matched_items = []
+        for r in ranked:
+            # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
+            # only, and the body is where the rule actually is -- returning a
+            # lesson without it would hand the agent a title and no
+            # instruction. Only the top-k are re-read, not the whole store.
+            try:
+                fm, body = frontmatter.read(r.path)
+            except Exception:  # noqa: BLE001
+                continue
+            item = _lesson_wire(fm, body, include_body=True)
+            item["score"] = round(r.score, 3)
+            item["matched"] = list(r.matched_terms or [])
+            item["_relevance"] = r.relevance
+            matched_items.append(item)
+
+        # ALWAYS-ON lessons, and the budget everything is admitted against
+        # (commontrace/dosage.py). `top_k` bounds the COUNT and says nothing
+        # about the size, so ten terse lessons and ten pages of prose were
+        # the same budget -- and a lesson that is the fleet's position
+        # rather than a match for today's task had no way to be reliably
+        # present except by matching everything, which is the same as making
+        # retrieval worse.
+        #
+        # BEFORE the arms are assigned, and that ordering is the whole point.
+        # A lesson the budget crowds out is never administered. Assigning it
+        # an arm first would log it as TREATED on an occasion it was never
+        # present for, and an occasion counted as treated where no memory was
+        # injected pulls the measured effect toward zero -- silently, and
+        # worse the tighter the budget is. Only lessons that will actually be
+        # handed over are eligible to be randomized.
+        admitted_items, core_items, dose = _apply_dosage(
+            matched_items, active, retrieval_config
+        )
+
         withheld: set[str] = set()
         # The STORE's settings, not this module's constants. Hardcoding them
         # here meant an agent-driven fleet could not change its holdout rate
@@ -448,10 +594,18 @@ def build_server(root: str, *, allow_approval: bool = True):
         # surface silently disagree with `commontrace query`, which pools two
         # randomizations into one comparison.
         config = holdout_io.load_config(root)
-        if occasion_id and slugs and config.running:
+        # Core lessons are excluded from randomization: they are unconditional
+        # by definition, so withholding one contradicts the flag. They are
+        # also constant across both arms, which is exactly why they cannot
+        # confound the comparison -- every occasion gets them.
+        eligible = [
+            item["slug"] for item in admitted_items
+            if item.get("slug") and not item.get("core")
+        ]
+        if occasion_id and eligible and config.running:
             try:
                 withheld = holdout_io.assign_and_log(
-                    root, slugs,
+                    root, eligible,
                     occasion_id=occasion_id,
                     rate=config.rate,
                     salt=config.salt,
@@ -473,16 +627,11 @@ def build_server(root: str, *, allow_approval: bool = True):
                 )
 
         injected, held = [], []
-        for r in ranked:
-            # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
-            # only, and the body is where the rule actually is -- returning a
-            # lesson without it would hand the agent a title and no
-            # instruction. Only the top-k are re-read, not the whole store.
-            try:
-                fm, body = frontmatter.read(r.path)
-            except Exception:  # noqa: BLE001
+        for item in admitted_items:
+            item.pop("_relevance", None)
+            if item.get("slug") not in withheld:
+                injected.append(item)
                 continue
-            is_withheld = r.slug in withheld
             # A withheld lesson is the control arm: the agent is told never
             # to act on it, so its BODY -- the actual instructional text --
             # has no legitimate use once it crosses the wire, only cost
@@ -491,23 +640,33 @@ def build_server(root: str, *, allow_approval: bool = True):
             # calls a customer rigorously proving this product's causal
             # claim makes most of) and a small, avoidable priming risk: an
             # agent that has read the rule anyway is not the same
-            # experiment as one that has not. fm is still read and passed
-            # to _lesson_wire either way, so `revision`/`unfilled` stay
-            # correct -- only the wire payload's `body` key is omitted.
-            # Metadata (slug, description, tags, score) still ships, so
-            # `withheld` stays informative about WHAT was suppressed, just
-            # not usable. Matches `commontrace query`'s own CLI behavior,
-            # which has never printed a withheld lesson's body either.
-            item = _lesson_wire(fm, body, include_body=not is_withheld)
-            item["score"] = round(r.score, 3)
-            item["matched"] = list(r.matched_terms or [])
-            (held if is_withheld else injected).append(item)
+            # experiment as one that has not. Everything except the body
+            # still ships, so `withheld` stays informative about WHAT was
+            # suppressed, just not usable. Matches `commontrace query`'s own
+            # CLI behavior, which has never printed a withheld lesson's body.
+            #
+            # The slot it vacates is NOT backfilled with the next-ranked
+            # lesson. Substituting one would make the control arm "a
+            # different lesson" rather than "no lesson", and the contrast
+            # this experiment reports would no longer be the one it claims.
+            item.pop("body", None)
+            held.append(item)
 
         result = {
             "lessons": injected,
             "n_active": len(active),
             "occasion_id": occasion_id or None,
+            "budget": dose.gauge(),
         }
+        if core_items:
+            result["core"] = [item["slug"] for item in core_items if item.get("slug")]
+        if dose.dropped:
+            # Named, never silent: an agent given nine of ten lessons and
+            # told it was given ten acts on the missing one's absence as
+            # though it were the fleet's position.
+            result["not_injected"] = [
+                {"slug": d.slug, "reason": d.reason} for d in dose.dropped
+            ]
         if occasion_id:
             result["withheld"] = held
             result["holdout_rate"] = config.rate if config.running else 0.0
@@ -526,6 +685,30 @@ def build_server(root: str, *, allow_approval: bool = True):
                 if active else
                 _no_active_lessons_note(root)
             )
+
+        # The receipt: what was VISIBLE, what was admitted, and why the rest
+        # was not (commontrace/receipts.py). The holdout log records
+        # eligibility and arm, which starts one step too late -- a lesson
+        # that was never a candidate does not appear in it at all, so "the
+        # memory did not help" and "the memory was never offered" are
+        # indistinguishable afterwards, and they have opposite remedies.
+        #
+        # Failure here must not fail the retrieval: unlike a holdout
+        # assignment (which CHANGES what the agent is given, so an unlogged
+        # one corrupts the experiment silently), a receipt only records what
+        # already happened. Losing one costs an audit trail entry; refusing
+        # to serve a lesson over it costs the fleet its memory.
+        if occasion_id:
+            try:
+                _record_receipt(
+                    root, occasion_id, task, active, injected, held, dose,
+                    retrieval_config,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["receipt_error"] = (
+                    f"the retrieval happened but was not recorded: "
+                    f"{type(exc).__name__}: {exc}"
+                )
         return _ok(**result)
 
     @mcp.tool()

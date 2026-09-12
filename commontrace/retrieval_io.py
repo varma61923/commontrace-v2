@@ -35,7 +35,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 
-from commontrace import paths, retrieval
+from commontrace import dosage, paths, retrieval
 
 CONFIG_NAME = "retrieval.json"
 
@@ -48,12 +48,28 @@ def config_path(root: str) -> str:
 class RetrievalConfig:
     scorer: str = retrieval.SCORER_IDF
     floor: float = retrieval.DEFAULT_FLOOR
+    # How much retrieved memory actually reaches the agent
+    # (commontrace/dosage.py). `floor` and `scorer` decide WHICH lessons are
+    # eligible; these decide how many of them fit. Kept here, with the rest
+    # of the retrieval settings, because a store whose budget differs is
+    # serving a different treatment -- the same reason scorer and floor are
+    # read from the store rather than passed per call.
+    max_lessons: int = dosage.DEFAULT_MAX_LESSONS
+    max_chars: int = dosage.DEFAULT_MAX_CHARS
     configured_at: str = ""
     note: str = ""
     # True when these settings were inferred for an existing store rather than
     # chosen by anyone, so callers can say so once instead of pretending the
     # store opted into them.
     pinned_for_running_experiment: bool = False
+
+
+def _int_or(value: object, default: int) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _float_or(value: object, default: float) -> float:
@@ -144,6 +160,13 @@ def load_config(root: str) -> RetrievalConfig:
                 return RetrievalConfig(
                     scorer=scorer,
                     floor=_float_or(raw.get("floor"), retrieval.DEFAULT_FLOOR),
+                    # Absent in a config written before budgets existed,
+                    # which is the overwhelmingly common case: such a store
+                    # gets the defaults rather than zero, because a budget
+                    # of nothing would silently stop injecting anything.
+                    max_lessons=_int_or(
+                        raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
+                    max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
                     configured_at=str(raw.get("configured_at") or ""),
                     note=str(raw.get("note") or ""),
                 )

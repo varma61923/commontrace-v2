@@ -863,3 +863,222 @@ def test_serve_without_the_sdk_says_so(store, monkeypatch):
     with pytest.raises(mcp_server.LocalStoreError) as excinfo:
         mcp_server.build_server(store)
     assert "commontrace[serve]" in str(excinfo.value)
+
+
+# --- dosage, core lessons and receipts -----------------------------------
+#
+# These go through the tool the way a client does, for a specific reason:
+# `dosage`, `receipts` and `release` are wired into `retrieve` behind a
+# try/except that turns a failure into a `receipt_error` field rather than an
+# error. A unit test of those modules passes whether or not the server calls
+# them, and the swallowed exception means a broken wiring looks like a working
+# retrieval. Everything below asserts against what actually reached disk.
+
+def _write_lesson(root: str, slug: str, *, body: str, core: bool = False,
+                  description: str = "", importance: int = 3) -> str:
+    """An active lesson, written straight to the store."""
+    from commontrace import frontmatter, lesson_io
+
+    # `lesson_*.md` is the enumeration `lesson_cache._lesson_paths` performs;
+    # a file named anything else is simply never seen.
+    path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fm = {
+        "name": slug,
+        "description": description or f"{slug} description",
+        "status": "active",
+        "importance": importance,
+        "tags": [],
+    }
+    if core:
+        fm["core"] = True
+    lesson_io.write_lesson(path, fm, body, root=root, actor="test", reason="fixture")
+    assert frontmatter.read(path)
+    return path
+
+
+def _set_budget(root: str, **kwargs) -> None:
+    from commontrace import retrieval_io
+
+    path = retrieval_io.config_path(root)
+    raw = json.loads(open(path).read()) if os.path.isfile(path) else {}
+    raw.update(kwargs)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(raw, fh)
+
+
+# Each lesson needs its OWN distinguishing term. The scorer is IDF-weighted,
+# so a word that appears in every lesson carries no information and scores
+# near zero -- a fixture of identically-described lessons matches nothing at
+# all, which looks exactly like a broken budget.
+_FAILURE_MODES = ("suppression", "bounce", "throttling", "greylisting", "spf")
+BUDGET_TASK = (
+    "password reset email never arrived: suppression bounce throttling "
+    "greylisting spf"
+)
+
+
+def _write_matching_lessons(root: str, n: int) -> list[str]:
+    slugs = []
+    for i in range(n):
+        mode = _FAILURE_MODES[i]
+        slug = f"reset-email-{mode}"
+        _write_lesson(
+            root, slug,
+            body=f"Check the password reset email {mode} state. " * 5,
+            description=f"Password reset email {mode} failures.",
+        )
+        slugs.append(slug)
+    return slugs
+
+
+def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, store):
+    """The wiring is real: a receipt reaches disk and nothing was swallowed."""
+    from commontrace import receipts
+
+    slug = _curate(server)
+    out = call(
+        server, "retrieve",
+        task="customer says the password reset email never arrived",
+        occasion_id="occ-receipt-1",
+    )
+    assert out["ok"], out
+    # The try/except around the receipt turns any wiring mistake into this
+    # field, so asserting its ABSENCE is what makes this test meaningful.
+    assert "receipt_error" not in out, out.get("receipt_error")
+
+    written = receipts.read_all(store)
+    assert [r.occasion_id for r in written] == ["occ-receipt-1"]
+    receipt = written[0]
+    assert slug in {a.slug for a in receipt.admitted}
+    # Pinned to the exact text, not just the name.
+    assert all(a.revision for a in receipt.admitted)
+    assert receipt.digest
+
+
+def test_the_receipt_records_what_was_never_a_candidate(server, store):
+    """The holdout log starts one step too late: a lesson that never matched
+    does not appear in it at all, so "the memory did not help" and "the
+    memory was never offered" are indistinguishable. The receipt's `visible`
+    set is what tells them apart."""
+    from commontrace import receipts
+
+    _curate(server)
+    _write_lesson(
+        store, "unrelated-refund-policy",
+        body="Refunds over $500 need a manager's approval.",
+        description="Refund approval threshold.",
+    )
+    out = call(
+        server, "retrieve",
+        task="customer says the password reset email never arrived",
+        occasion_id="occ-visible-1",
+    )
+    assert out["ok"], out
+    receipt = receipts.read_all(store)[0]
+    visible = {v.slug for v in receipt.visible}
+    admitted = {a.slug for a in receipt.admitted}
+    # It was in the store and it was not injected -- and the receipt can say
+    # so, which is the whole point of recording the candidate set.
+    assert "unrelated-refund-policy" in visible
+    assert "unrelated-refund-policy" not in admitted
+
+
+def test_a_core_lesson_is_injected_even_when_it_does_not_match(server, store):
+    """`core: true` means the fleet's position, not "relevant today". Before
+    this, the only way to make a rule reliable was to make it match
+    everything, which is the same as making retrieval worse."""
+    _curate(server)
+    _write_lesson(
+        store, "always-use-idempotency-keys",
+        body="Never retry a payment without an idempotency key.",
+        description="Payment retry safety.",
+        core=True, importance=5,
+    )
+    out = call(
+        server, "retrieve",
+        task="customer says the password reset email never arrived",
+        occasion_id="occ-core-1",
+    )
+    assert out["ok"], out
+    slugs = [lesson["slug"] for lesson in out["lessons"]]
+    assert "always-use-idempotency-keys" in slugs
+    assert out["core"] == ["always-use-idempotency-keys"]
+    # Core is admitted FIRST, so it cannot lose its slot to whatever happened
+    # to share vocabulary with today's request.
+    assert slugs[0] == "always-use-idempotency-keys"
+    # And it still ships the rule itself, not just a title.
+    core_item = next(x for x in out["lessons"] if x["slug"] == "always-use-idempotency-keys")
+    assert "idempotency key" in core_item["body"]
+
+
+def test_what_did_not_fit_is_named_rather_than_silently_dropped(server, store):
+    """An agent given nine of ten lessons and told it was given ten acts on
+    the missing one's absence as though it were the fleet's position."""
+    _curate(server)
+    _write_matching_lessons(store, 3)
+    _set_budget(store, max_lessons=2)
+    out = call(server, "retrieve", task=BUDGET_TASK)
+    assert out["ok"], out
+    assert len(out["lessons"]) <= 2
+    assert out["not_injected"], out
+    assert all(entry["reason"] for entry in out["not_injected"])
+    assert "2" in out["budget"]
+
+
+def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store):
+    """The ordering bug this is here to prevent: if arms were assigned before
+    the budget ran, a lesson crowded out would be logged as TREATED on an
+    occasion it was never present for. An occasion counted as treated where
+    no memory was injected pulls the measured effect toward zero -- silently,
+    and worse the tighter the budget is."""
+    from commontrace import holdout_io
+
+    _curate(server)
+    _write_matching_lessons(store, 4)
+    _set_budget(store, max_lessons=2)
+    assert cli(
+        "experiment", "--configure", "--rate", "0.5", "--dest", store
+    ).returncode == 0
+
+    out = call(
+        server, "retrieve",
+        task=BUDGET_TASK,
+        occasion_id="occ-crowded-1",
+    )
+    assert out["ok"], out
+    crowded_out = {entry["slug"] for entry in out.get("not_injected", [])}
+    assert crowded_out, "the budget should have crowded something out"
+
+    records, unreadable = holdout_io.read_log(store)
+    assert unreadable == 0
+    logged = {r.lesson for r in records if r.occasion_id == "occ-crowded-1"}
+    # Every lesson with an arm was one the agent would actually have been
+    # handed. Nothing the budget dropped is in the experiment at all.
+    assert not (logged & crowded_out), sorted(logged & crowded_out)
+    admitted = {x["slug"] for x in out["lessons"]} | {x["slug"] for x in out.get("withheld", [])}
+    assert logged <= admitted
+
+
+def test_use_reports_separate_injected_from_actually_used(server, store):
+    """Injected is not used. Without that distinction every reuse number this
+    product reports is an INJECTION number wearing a better name."""
+    from commontrace import receipts
+
+    slug = _curate(server)
+    call(
+        server, "retrieve",
+        task="customer says the password reset email never arrived",
+        occasion_id="occ-used-1",
+    )
+    before = receipts.coverage(store)
+    assert before.n_with_any_admitted == 1
+    assert before.n_with_any_used == 0
+    assert slug in before.never_used
+
+    receipts.record_use(store, "occ-used-1", [slug], succeeded=True)
+    after = receipts.coverage(store)
+    assert after.n_with_any_used == 1
+    assert after.used_rate == 1.0
+    assert slug not in after.never_used
