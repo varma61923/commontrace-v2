@@ -658,6 +658,24 @@ def build_server(root: str, *, allow_approval: bool = True):
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
         }
+        if retrieval_config.fusion != retrieval_io.FUSION_NONE:
+            # This surface is lexical by design (see the comment above the
+            # ranking call: the semantic arm is a subprocess that loads a
+            # sentence-transformer and reads an index nothing rebuilds
+            # automatically). Said out loud rather than ignored, because the
+            # store configured a DIFFERENT eligibility rule and the two
+            # surfaces must not silently disagree about which lessons are
+            # eligible -- that is two treatments pooled into one experiment.
+            # The assignment below records the lexical label, which is what
+            # actually ran, so integrity.check_scorer_drift sees the mix.
+            result["fusion_note"] = (
+                f"this store configures fusion={retrieval_config.fusion!r}, which "
+                "this surface does not run: the semantic arm needs a model load "
+                "per call and an index nothing rebuilds automatically. Lessons "
+                "here were ranked lexically, and the holdout assignment records "
+                f"{retrieval_config.scorer!r} accordingly. Run an experiment on "
+                "one surface at a time, or set fusion=none."
+            )
         if core_items:
             result["core"] = [item["slug"] for item in core_items if item.get("slug")]
         if dose.dropped:

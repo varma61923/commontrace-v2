@@ -247,6 +247,130 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     return 0
 
 
+
+def _semantic_slugs(args, root: str, missing_hint: str) -> tuple[int, list[str], str]:
+    """Run the semantic arm and return (rc, ranked slugs, raw stdout)."""
+    script_args = [args.task, "--top-k", str(args.top_k)]
+    if args.include_importance_floor is not None:
+        script_args.extend(
+            ["--include-importance-floor", str(args.include_importance_floor)])
+    if args.agent_type:
+        script_args.extend(["--agent-type", args.agent_type])
+    rc, stdout = run_script(
+        root, os.path.join("memory", "attention", "query.py"),
+        script_args, missing_hint, capture=True,
+    )
+    if rc != 0:
+        return rc, [], stdout
+    return 0, _slugs_from_semantic_output(stdout), stdout
+
+
+def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
+    """Both arms, fused by position (commontrace/retrieval.py).
+
+    WHY FUSE RATHER THAN CHOOSE. Until now this command picked ONE retriever:
+    semantic when the extra was installed and the index was fresh, lexical
+    otherwise. Whichever it picked, the other arm's signal was discarded
+    entirely -- so a store with the attention extra could not find a lesson
+    whose exact error string the user had pasted in, and a store without it
+    could not find one phrased differently from the task. They fail on
+    different queries, which is precisely the condition under which fusing
+    beats picking.
+
+    Fusion is by RANK, not score: the lexical arm returns an IDF relevance in
+    [0, 1] and the semantic arm a cosine similarity, and there is no honest
+    conversion between them. Position is the one thing both arms can state
+    comparably.
+
+    A lesson only one arm surfaced is not penalised for the other arm's
+    silence -- a lexical pass cannot be expected to find a paraphrase, and
+    treating its silence as a vote against would make adding an arm reduce
+    recall.
+    """
+    config = retrieval_io.load_config(root)
+    floor = config.floor if args.relevance_floor is None else args.relevance_floor
+
+    lessons, term_cache = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
+    lexical = retrieval.rank_lessons(
+        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        term_cache=term_cache,
+    )
+
+    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)
+    if rc != 0:
+        # The semantic arm failed outright. Serving the lexical half is
+        # strictly better than serving nothing, but the arm composition is
+        # then NOT what the config says -- and an assignment logged under the
+        # fused label would claim an arm that did not run. So fall back
+        # wholesale, which records the lexical label.
+        sys.stdout.write(stdout)
+        print(
+            "[commontrace] the semantic arm failed, so this query used lexical "
+            "retrieval alone. The holdout assignment records the lexical "
+            "configuration, not the fused one -- the two are different "
+            "treatments and must not be pooled.",
+            file=sys.stderr,
+        )
+        return _run_lexical(args, root)
+
+    fused = retrieval.reciprocal_rank_fusion(
+        {"lexical": [r.slug for r in lexical], "semantic": semantic},
+        k=config.rrf_k, top_k=args.top_k,
+    )
+    if not fused:
+        print(store_state.why_no_results(root, searched="query"))
+        return 0
+
+    by_slug = {r.slug: r for r in lexical}
+    described = {
+        str(fm.get("name", "")): (str(fm.get("description", "") or ""), path)
+        for path, fm in lessons
+    }
+
+    withheld: set[str] = set()
+    if args.experiment:
+        if not args.occasion_id:
+            print(
+                "[commontrace] --experiment requires --occasion-id: without it the holdout "
+                "assignment cannot be joined to an outcome, so nothing could be measured.",
+                file=sys.stderr,
+            )
+            return 1
+        withheld = _apply_holdout(
+            args, root, [slug for slug, _ in fused],
+            # The FUSED score, which is what actually decided the order --
+            # recording the lexical relevance would describe a ranking this
+            # query did not perform.
+            relevance={slug: score for slug, score in fused},
+            scorer=config.eligibility,
+            floor=floor,
+        )
+
+    for slug, score in fused:
+        if slug in withheld:
+            print(f"{slug:45s} [WITHHELD - holdout]")
+            continue
+        description, path = described.get(slug, ("", ""))
+        arms = []
+        if slug in by_slug:
+            arms.append("lexical")
+        if slug in semantic:
+            arms.append("semantic")
+        print(f"{slug:45s} rrf={score:5.3f}  {description}")
+        print(f"  arms: {'+'.join(arms) or 'none'}  ({path})")
+
+    if args.experiment:
+        print(
+            f"\n[commontrace] experiment: {len(fused) - len(withheld)} injected, "
+            f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
+            f"{args.occasion_id!r}. Record the outcome under that id, then run "
+            "`commontrace experiment`."
+        )
+    return 0
+
+
 def _index_is_unusable(root: str) -> str:
     """Why the semantic index cannot be trusted right now, or "" if it can.
 
@@ -329,6 +453,14 @@ def run(args: argparse.Namespace) -> int:
         "damaged install -- try `pip install --force-reinstall commontrace`. "
         "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view."
     )
+
+    # Both arms, fused -- but only when the store has opted in. Turning this
+    # on changes which lessons are eligible, which is the denominator of any
+    # running experiment, so it is a decision the store records rather than
+    # something a new release switches on underneath a pilot.
+    if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
+        return _run_hybrid(args, root, missing_hint)
+
     script_args = [args.task, "--top-k", str(args.top_k)]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])

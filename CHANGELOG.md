@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hybrid retrieval: both arms, fused, instead of picking one.**
+  `commontrace query` chose ONE retriever — semantic when the attention extra
+  was installed and the index was fresh, lexical otherwise — and discarded
+  the other arm's signal entirely. So a store with the extra could not find a
+  lesson whose exact error string the user had pasted in, and a store without
+  it could not find one phrased differently from the task. They fail on
+  different queries, which is precisely when fusing beats picking.
+
+  `commontrace retrieval --fusion rrf` runs both and fuses them with
+  Reciprocal Rank Fusion. By **rank, not score**: the lexical arm returns an
+  IDF relevance in [0,1] and the semantic arm a cosine similarity, and there
+  is no honest conversion between them. A lesson only one arm surfaced is not
+  penalised for the other's silence — a lexical pass cannot be expected to
+  find a paraphrase, and treating that as a vote against would make adding an
+  arm reduce recall. This also makes
+  `commontrace.retrieval.reciprocal_rank_fusion` reachable from the product
+  rather than only from the offline benchmark that tunes it.
+
+  **Turning fusion on changes which lessons are eligible**, and eligibility
+  is the denominator of every causal number this product sells. The arm
+  composition is therefore recorded *inside* the scorer label an assignment
+  carries (`rrf(idf-v2+semantic)`), so the existing
+  `integrity.check_scorer_drift` invalidates a run whose arms changed
+  mid-flight — no second column an older reader would ignore, and no second
+  check that could disagree with the first about the same fact. A store
+  pinned from its log restores both halves. A semantic arm that fails falls
+  back to lexical *and logs the lexical label*, because logging the fused one
+  would claim an arm that did not run.
+
+  The MCP `retrieve` surface stays lexical by design (the semantic arm needs
+  a model load per call and an index nothing rebuilds automatically) and now
+  says so in a `fusion_note` when the store configures fusion — the two
+  surfaces disagreeing silently about eligibility is two treatments pooled
+  into one experiment.
+
+- **`commontrace retrieval` can set the context budget** (`--max-lessons`,
+  `--max-chars`) and shows `fusion`, the budget, and the exact label
+  assignments will be logged under.
+
 - **`TRUST.md` and `AUDIT_RESPONSE.md`: the boundary, and the gaps at full
   weight.** `TRUST.md` answers the question that actually decides adoption —
   *which bytes leave the machine this runs on* — exhaustively, per path, and
@@ -558,6 +597,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserve. Pinned by a test.
 
 ### Fixed
+
+- **`commontrace retrieval` no longer erases settings it was not asked to
+  change.** `configure()` wrote only the fields it was given, so a store that
+  had set a context budget lost it the next time anyone touched the floor —
+  the budget silently reverted to the default, meaning an operator tightening
+  precision by one flag also tripled how much text their agents received,
+  with nothing printed. It now carries every setting through, and the same
+  applied to `note`.
 
 - **A lesson the budget crowds out is no longer logged as treated.** Holdout
   arms are now assigned AFTER the dose is computed and only over lessons

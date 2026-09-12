@@ -726,14 +726,37 @@ Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATU
 Ranking answers *which* lessons match. Two other questions decide what an
 agent actually receives, and both used to go unanswered.
 
+**Which retriever.** Until recently `commontrace query` picked *one*:
+semantic when the attention extra was installed and the index was fresh,
+lexical otherwise. Whichever it picked, the other arm's signal was thrown
+away — so a store with the extra could not find a lesson whose exact error
+string you had pasted in, and a store without it could not find one phrased
+differently from the task. They fail on different queries, which is exactly
+when fusing beats picking:
+
+```bash
+commontrace retrieval --fusion rrf
+```
+
+Fusion is by **rank, not score**: the lexical arm returns an IDF relevance in
+[0,1] and the semantic arm a cosine similarity, and there is no honest
+conversion between them. A lesson only one arm surfaced is not penalised for
+the other's silence.
+
+It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
+eligibility is the denominator of every causal number this product reports —
+so the arm composition is recorded inside the label each holdout assignment
+carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
+reported as a compromised run rather than absorbed silently.
+
 **How much.** `top_k` bounds the count and says nothing about the size — ten
 terse lessons and ten pages of prose are the same `top_k=10`, and the second
 one displaces the task itself out of the context window. Retrieval admits
 against a budget in characters as well as count:
 
-```json
-// memory/retrieval.json
-{ "max_lessons": 10, "max_chars": 8000 }
+```bash
+commontrace retrieval --max-lessons 10 --max-chars 8000
+commontrace retrieval          # show what this store is set to
 ```
 
 Every `retrieve` reports what it spent (`"budget": "4/10 lessons, 3,140/8,000

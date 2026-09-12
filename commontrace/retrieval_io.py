@@ -32,12 +32,55 @@ import datetime
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 
 from commontrace import dosage, paths, retrieval
 
 CONFIG_NAME = "retrieval.json"
+
+#: How the arms are combined. "none" is the historical either/or: semantic
+#: when the extra is installed and the index is fresh, lexical otherwise.
+FUSION_NONE = "none"
+#: Reciprocal Rank Fusion over both arms (commontrace/retrieval.py). Position
+#: only, because cosine and IDF relevance are not on a comparable scale.
+FUSION_RRF = "rrf"
+FUSIONS = (FUSION_NONE, FUSION_RRF)
+
+# WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
+# ---------------------------------------------------
+# The holdout log records `scorer` and `floor` as the evidence of what decided
+# ELIGIBILITY, and integrity.check_scorer_drift invalidates an experiment
+# whose scorer changed mid-run -- because "injected when retrieved" is not one
+# treatment if what counts as retrieved moved.
+#
+# Turning fusion on moves exactly that. A lesson no lexical pass would surface
+# becomes eligible because the semantic arm ranked it, and the denominator of
+# the experiment changes with it. Recording the composition INSIDE the scorer
+# label means the existing drift check catches it for free -- no second column
+# that an older reader would ignore, and no second check that could disagree
+# with the first about the same fact.
+_FUSION_LABEL = re.compile(r"^rrf\((?P<lexical>[^+()]+)\+semantic\)$")
+
+
+def eligibility_label(scorer: str, fusion: str) -> str:
+    """What to record as the `scorer` of an assignment made under these settings."""
+    if fusion == FUSION_RRF:
+        return f"rrf({scorer}+semantic)"
+    return scorer
+
+
+def parse_eligibility_label(label: str) -> tuple[str, str]:
+    """Inverse of `eligibility_label`: (lexical scorer, fusion mode).
+
+    A label this build does not recognise is read as a plain scorer with no
+    fusion, which is what every pre-fusion log line is.
+    """
+    match = _FUSION_LABEL.match(label or "")
+    if match:
+        return match.group("lexical"), FUSION_RRF
+    return label, FUSION_NONE
 
 
 def config_path(root: str) -> str:
@@ -56,6 +99,18 @@ class RetrievalConfig:
     # read from the store rather than passed per call.
     max_lessons: int = dosage.DEFAULT_MAX_LESSONS
     max_chars: int = dosage.DEFAULT_MAX_CHARS
+    #: Whether to fuse the lexical and semantic arms rather than pick one.
+    #: Defaults to the historical either/or, because switching a store that
+    #: is mid-experiment would change its eligibility denominator -- opting
+    #: in is a decision, not an upgrade side effect.
+    fusion: str = FUSION_NONE
+    #: RRF's rank-damping constant. Exposed because commons/eval sweeps it.
+    rrf_k: int = retrieval.DEFAULT_RRF_K
+
+    @property
+    def eligibility(self) -> str:
+        """The label an assignment made under these settings records."""
+        return eligibility_label(self.scorer, self.fusion)
     configured_at: str = ""
     note: str = ""
     # True when these settings were inferred for an existing store rather than
@@ -167,6 +222,15 @@ def load_config(root: str) -> RetrievalConfig:
                     max_lessons=_int_or(
                         raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
                     max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
+                    # An unrecognised value reads as "no fusion" rather than
+                    # raising: this file is read on every retrieval, and a
+                    # typo must not stop a fleet retrieving.
+                    fusion=(
+                        str(raw.get("fusion") or FUSION_NONE)
+                        if str(raw.get("fusion") or FUSION_NONE) in FUSIONS
+                        else FUSION_NONE
+                    ),
+                    rrf_k=max(1, _int_or(raw.get("rrf_k"), retrieval.DEFAULT_RRF_K)),
                     configured_at=str(raw.get("configured_at") or ""),
                     note=str(raw.get("note") or ""),
                 )
@@ -190,10 +254,15 @@ def load_config(root: str) -> RetrievalConfig:
     # distinction is exactly the question being asked, so ask it directly.
     logged = _last_logged_settings(root)
     if logged is not None:
-        scorer, floor = logged
+        label, floor = logged
+        # The logged label may carry the arm composition; restoring only the
+        # lexical half would silently drop the semantic arm and change the
+        # denominator in the direction this pinning exists to prevent.
+        scorer, fusion = parse_eligibility_label(label)
         return RetrievalConfig(
             scorer=scorer,
             floor=floor,
+            fusion=fusion,
             pinned_for_running_experiment=True,
         )
     if has_recorded_assignments(root):
@@ -206,14 +275,23 @@ def load_config(root: str) -> RetrievalConfig:
 
 
 def configure(root: str, *, scorer: str | None = None, floor: float | None = None,
-              note: str = "") -> RetrievalConfig:
+              fusion: str | None = None, max_lessons: int | None = None,
+              max_chars: int | None = None, note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings.
 
-    Callers that change `scorer` or `floor` on a store with a running
-    experiment must rotate the holdout salt afterwards
-    (holdout_io.configure): both change which lessons are eligible, so the
-    assignments before and after describe two different treatments, exactly
-    as a changed holdout rate does.
+    EVERY setting is carried through from the current config, not just the
+    ones this call changes. Writing only the named fields meant a store that
+    had set a context budget lost it the next time anyone touched the floor
+    -- the budget silently reverted to the default, so an operator tightening
+    precision by one flag also tripled how much text their agents received,
+    with nothing printed. A partial write is the wrong shape for a settings
+    file that more than one command edits.
+
+    Callers that change `scorer`, `floor` or `fusion` on a store with a
+    running experiment must rotate the holdout salt afterwards
+    (holdout_io.configure): all three change which lessons are eligible, so
+    the assignments before and after describe two different treatments,
+    exactly as a changed holdout rate does.
     """
     current = load_config(root)
     new_scorer = current.scorer if scorer is None else scorer
@@ -225,12 +303,24 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
     new_floor = current.floor if floor is None else float(floor)
     if not 0.0 <= new_floor <= 1.0:
         raise ValueError(f"relevance floor must be in [0.0, 1.0], got {new_floor}")
+    new_fusion = current.fusion if fusion is None else fusion
+    if new_fusion not in FUSIONS:
+        raise ValueError(
+            f"unknown fusion mode {new_fusion!r}: expected one of "
+            f"{', '.join(repr(f) for f in FUSIONS)}"
+        )
 
     config = RetrievalConfig(
         scorer=new_scorer,
         floor=new_floor,
+        fusion=new_fusion,
+        rrf_k=current.rrf_k,
+        max_lessons=(
+            current.max_lessons if max_lessons is None else max(0, int(max_lessons))),
+        max_chars=(
+            current.max_chars if max_chars is None else max(0, int(max_chars))),
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        note=note,
+        note=note or current.note,
     )
     # Atomic + locked + fsynced, matching holdout_io.configure: the previous
     # fixed ".tmp" name without a lock raced concurrent configures and a
@@ -250,6 +340,10 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                     {
                         "scorer": config.scorer,
                         "floor": config.floor,
+                        "fusion": config.fusion,
+                        "rrf_k": config.rrf_k,
+                        "max_lessons": config.max_lessons,
+                        "max_chars": config.max_chars,
                         "configured_at": config.configured_at,
                         "note": config.note,
                     },
