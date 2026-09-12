@@ -1078,11 +1078,43 @@ python -m hub.manage search-content <org_id> '\d{5}' regex
   actually need to go.
 - **Not a completeness guarantee.** A match proves the text is present;
   a non-match is not proof of absence — free text can misspell,
-  abbreviate, or split an identifier this cannot reassemble. This closes
-  the "locate the traces" half of 2.2; whole-account deletion/export
-  (`purge-org`/`export-assignments`) already existed, and per-person
-  erasure still has no structured subject-id column to search on
-  instead — see `AUDIT_RESPONSE.md` §2.2 for what remains open.
+  abbreviate, or split an identifier this cannot reassemble. For content
+  a curator has explicitly tagged (below), it IS a completeness
+  guarantee — that's what the structured column buys.
+
+### Structured subject tagging: exact find/purge (`Trace.subject_ids`, implemented)
+
+The other half of §2.2, closing what the section above's own docstring
+names as the remaining gap: "per-person erasure still has no structured
+subject-id column to search on". `Trace.subject_ids` (empty by default —
+nothing populates it automatically) lets a curator explicitly tag which
+end user(s)/customer(s) a trace's content concerns; once tagged,
+`find_traces_by_subject`/`purge_traces_by_subject` are EXACT
+array-membership queries, not a scan a human still has to review.
+
+```bash
+python -m hub.manage tag-trace-subjects <org_id> <trace_id> user-42,user-99
+python -m hub.manage find-subject-traces <org_id> user-42
+python -m hub.manage purge-subject-traces <org_id> user-42   # irreversible
+```
+
+- **Tagging REPLACES, never appends.** A retried or corrected call
+  cannot accumulate duplicates or leave a stale subject behind; pass an
+  empty list to clear a mistaken tag entirely.
+- **Purge deletes the whole amendment chain**, the same completeness
+  `delete_trace` already gives a single trace — a subject's content can
+  persist across a supersession even where only one revision in the
+  chain was explicitly tagged. The reported count reflects the full
+  expanded chain, not just the directly-tagged subset.
+- **Untagged and historical content is not covered.** This does not
+  retroactively fix that — `search_trace_content` above is still the
+  tool for it, and remains the honest answer for anything nobody
+  explicitly tagged.
+- **A provisioned tag never implies elevated access to anything else** —
+  `tag_trace_subjects` (`SCOPE_WRITE`), `find_traces_by_subject`
+  (`SCOPE_READ`), `purge_traces_by_subject` (`SCOPE_ADMIN`, matching
+  `delete_trace`'s own trust level) are ordinary scoped MCP tools, same
+  as everything else in this file.
 
 ## Operator CLI (`hub/manage.py`)
 

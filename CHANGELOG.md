@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Structured subject tagging for exact-match erasure (`Trace.subject_ids`,
+  `tag_trace_subjects`/`find_traces_by_subject`/`purge_traces_by_subject`).**
+  Audit §2.2's remaining line: `search_trace_content` could locate
+  candidates via free text but could never honestly certify "this subject
+  has no data here" (a match proves presence, never absence). A curator
+  can now explicitly tag a trace with the subject(s) it concerns; once
+  tagged, finding and purging by that subject is an exact array-membership
+  match, not a scan. Opt-in and explicit throughout: nothing populates a
+  tag automatically, and untagged content still needs the free-text scan.
+  Tagging replaces rather than appends (a retried call can't accumulate
+  duplicates); purge deletes each matched trace's full amendment chain,
+  reporting the actual expanded set rather than just the directly-tagged
+  subset. New column + GIN index (migration `f3a8c6d92e14`, verified
+  upgrade/`alembic check`/downgrade round-trip against real Postgres).
+  Tests: `hub/tests/test_subject_tagging.py` (20), plus CLI coverage in
+  `hub/tests/test_manage.py`.
+
 - **Application-level IP allowlisting (`hub/server.py:IpAllowlistMiddleware`,
   `HUB_IP_ALLOWLIST`).** Audit §1.6 named "no IP allowlisting / private
   networking" as a single gap; it's really two things, and only one of

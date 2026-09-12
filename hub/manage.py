@@ -134,6 +134,19 @@
                                        deleting. Not a completeness guarantee: a match
                                        proves the text is present, a non-match is not
                                        proof of absence
+    tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]
+                                   -> REPLACE which end user(s)/customer(s) a trace's
+                                       content concerns. Omit subject_ids_csv (or pass "")
+                                       to clear. Optional and explicit -- nothing tags a
+                                       trace automatically.
+    find-subject-traces <org_id> <subject_id>
+                                   -> exact match against traces tagged with subject_id
+                                       (tag-trace-subjects), not a scan. Untagged content
+                                       needs search-content instead.
+    purge-subject-traces <org_id> <subject_id>
+                                   -> permanently delete every trace tagged with
+                                       subject_id, full amendment chain included.
+                                       Irreversible.
     webhook-add <org_id> <https_url> [events]
                                    -> tell this org's own systems what happens here.
                                        [events] is a comma-separated subset of
@@ -1679,6 +1692,71 @@ async def search_content(
     return True
 
 
+async def tag_trace_subjects(
+    org_id: str, trace_id: str, subject_ids_csv: str = "", session_factory=None,
+) -> bool:
+    """`tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]`.
+
+    Operator-assisted counterpart to the `tag_trace_subjects` MCP tool --
+    for tagging a trace on behalf of an org whose own team is not doing
+    it themselves. REPLACES any previous tags; omit `subject_ids_csv` (or
+    pass an empty string) to clear a mistaken tag entirely.
+    """
+    subject_ids = [s.strip() for s in subject_ids_csv.split(",") if s.strip()]
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            result = await crud.tag_trace_subjects(
+                session, org_id, trace_id, subject_ids, actor=audit.ACTOR_OPERATOR_CLI,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    if result is None:
+        print(f"error: no trace {trace_id} in {org_id}", file=sys.stderr)
+        return False
+    print(f"{trace_id}: tagged with {len(result['subject_ids'])} subject id(s)")
+    return True
+
+
+async def find_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
+    """`find-subject-traces <org_id> <subject_id>`.
+
+    Operator-assisted counterpart to the `find_traces_by_subject` MCP
+    tool -- an EXACT match against traces this org explicitly tagged
+    (`tag-trace-subjects`), not a scan. For untagged content, use
+    `search-content` instead."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        results = await crud.find_traces_by_subject(session, org_id, subject_id)
+    if not results:
+        print(f"no traces in {org_id} are tagged with subject {subject_id!r}.")
+        return True
+    for r in results:
+        state = " [quarantined]" if r["quarantined"] else ""
+        print(f"{r['id']}  created={r['created_at']}{state}")
+        print(f"    {r['title']!r}  subject_ids={r['subject_ids']}")
+    print(f"\n{len(results)} exact match(es). `purge-subject-traces {org_id} {subject_id}` "
+          "deletes them all.")
+    return True
+
+
+async def purge_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
+    """`purge-subject-traces <org_id> <subject_id>`.
+
+    Permanently deletes every trace in `org_id` tagged with `subject_id`
+    (`crud.purge_traces_by_subject` -- each deletion includes its full
+    amendment chain, same as `purge-trace`). Irreversible. A subject_id
+    nothing was tagged with is not an error -- it purges zero traces."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        result = await crud.purge_traces_by_subject(
+            session, org_id, subject_id, actor=audit.ACTOR_OPERATOR_CLI,
+        )
+    print(f"purged {result['purged']} trace(s) in {org_id} tagged with subject {subject_id!r}.")
+    return True
+
+
 async def purge_trace(trace_id: str, session_factory=None) -> bool:
     """Permanently deletes one trace AND every trace in its amendment chain
     (see crud.amendment_chain -- shared with the self-service delete_trace
@@ -2507,6 +2585,9 @@ _COMMANDS = {
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
     "search-content": (search_content, 2, 3),
+    "tag-trace-subjects": (tag_trace_subjects, 2, 3),
+    "find-subject-traces": (find_subject_traces, 2, 2),
+    "purge-subject-traces": (purge_subject_traces, 2, 2),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
     "webhook-add": (webhook_add, 2, 3),

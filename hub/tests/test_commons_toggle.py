@@ -88,6 +88,7 @@ class TestCommonsEnabledByDefault:
             "add_comment", "list_comments", "assign_trace", "unassign_trace",
             "list_my_notifications", "mark_notification_read",
             "search_trace_content",
+            "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
         }
 
 
@@ -118,6 +119,7 @@ class TestCommonsDisabled:
             "add_comment", "list_comments", "assign_trace", "unassign_trace",
             "list_my_notifications", "mark_notification_read",
             "search_trace_content",
+            "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
         ):
             assert tool in names, tool
 

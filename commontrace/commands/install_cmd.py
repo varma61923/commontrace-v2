@@ -41,6 +41,9 @@ _HUB_TOOLS = [
     "list_my_notifications", "mark_notification_read",
     # locating traces for a subject-erasure request
     "search_trace_content",
+    # structured subject tagging + exact-match find/purge, the other half
+    # of subject-erasure support
+    "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 
 _GENERIC_POINTER_SKILL = """---

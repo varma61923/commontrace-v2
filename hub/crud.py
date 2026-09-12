@@ -1474,8 +1474,11 @@ async def search_trace_content(
     non-match is not proof of absence: free text can misspell, abbreviate,
     paraphrase, or split an identifier across two matches this cannot
     reassemble. Treat this as one instrument in a manual review, never as
-    an automated "subject has no data here" certification -- that claim is
-    exactly the one AUDIT_RESPONSE.md 2.2 says this schema cannot support.
+    an automated "subject has no data here" certification. For content a
+    curator has explicitly tagged with `tag_trace_subjects` below,
+    `find_traces_by_subject`/`purge_traces_by_subject` ARE that
+    certification -- an exact structured match, not a scan -- which is
+    the other half of what AUDIT_RESPONSE.md 2.2 says this schema needed.
 
     Deliberately a SCAN, not indexed: this is a rare, targeted compliance
     action, not a per-occasion retrieval call, and `HUB_DB_STATEMENT_TIMEOUT_MS`
@@ -1551,6 +1554,168 @@ async def search_trace_content(
             "snippet": snippet,
         })
     return results
+
+
+#: A trace tagged with more subjects than this is almost certainly a
+#: mistake (an id pasted where a paragraph was meant) rather than a real
+#: multi-subject incident -- refused at tag time, not silently truncated.
+MAX_SUBJECT_IDS_PER_TRACE = 20
+#: Matches Trace.subject_ids' own column width (hub/models.py).
+MAX_SUBJECT_ID_CHARS = 256
+
+
+def _clean_subject_ids(subject_ids: list) -> list[str]:
+    """Validate and de-duplicate a caller-supplied subject_ids list,
+    order-preserving. Raises ValueError (not silently drops) on anything
+    that would not survive being stored -- the same "reject, don't
+    truncate" posture MAX_TITLE_CHARS/MAX_TAG_CHARS already apply,
+    because a silently-dropped id is a subject this trace would then
+    fail to be found under later."""
+    if not isinstance(subject_ids, (list, tuple)):
+        raise ValueError("subject_ids must be a list")
+    if len(subject_ids) > MAX_SUBJECT_IDS_PER_TRACE:
+        raise ValueError(
+            f"too many subject_ids ({len(subject_ids)}); the maximum is {MAX_SUBJECT_IDS_PER_TRACE}"
+        )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in subject_ids:
+        value = str(raw).strip()
+        if not value:
+            continue
+        if len(value) > MAX_SUBJECT_ID_CHARS:
+            raise ValueError(f"subject_id exceeds {MAX_SUBJECT_ID_CHARS} chars")
+        reject_unstorable_text(value, "subject_id")
+        if value not in seen:
+            seen.add(value)
+            cleaned.append(value)
+    return cleaned
+
+
+async def tag_trace_subjects(
+    session: AsyncSession, org_id: str, trace_id: str, subject_ids: list,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict | None:
+    """REPLACES (not appends to) `trace_id`'s `subject_ids` -- the same
+    idempotent-under-retry shape `set_user_role` gives a role, so a
+    retried call cannot accumulate duplicates or drift from what the
+    caller most recently asserted. Pass `[]` to clear a mistaken tag.
+
+    None (not found / another org's id / malformed id) on anything that
+    is not this org's own trace, the same 404-shaped-not-403 posture
+    `get_trace` documents -- a foreign org's trace id must not be
+    distinguishable from one that does not exist at all.
+    """
+    if not _is_uuid(trace_id):
+        return None
+    trace = await session.get(Trace, trace_id)
+    if trace is None or trace.org_id != org_id:
+        return None
+    cleaned = _clean_subject_ids(subject_ids)
+    trace.subject_ids = cleaned
+    await audit.record(
+        session, actor=actor, action="tag_trace_subjects", org_id=org_id,
+        target_type="trace", target_id=trace_id,
+        summary=f"{len(cleaned)} subject id(s)",
+    )
+    return {"id": trace.id, "subject_ids": cleaned}
+
+
+async def find_traces_by_subject(session: AsyncSession, org_id: str, subject_id: str) -> list[dict]:
+    """EXACT array-membership match against `Trace.subject_ids` -- not a
+    scan, and not stemmed/tokenized like `search_traces`' full-text index:
+    `subject_id` must equal a tag exactly, the same "exact match, no
+    surviving a stemmer" reasoning `search_trace_content`'s own docstring
+    gives for why THAT function uses ILIKE instead of search_vector.
+
+    Only ever returns traces this org itself tagged -- untagged content,
+    however clearly it names the same subject in free text, needs
+    `search_trace_content` instead; this function does not fall back to
+    scanning for it.
+    """
+    subject_id = str(subject_id or "").strip()
+    if not subject_id:
+        return []
+    reject_unstorable_text(subject_id, "subject_id")
+    stmt = (
+        select(Trace.id, Trace.title, Trace.created_at, Trace.quarantined, Trace.subject_ids)
+        .where(Trace.org_id == org_id, Trace.subject_ids.any(subject_id))
+        .order_by(Trace.created_at)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "id": row.id, "title": row.title, "created_at": row.created_at.isoformat(),
+            "quarantined": row.quarantined, "subject_ids": list(row.subject_ids),
+        }
+        for row in rows
+    ]
+
+
+async def purge_traces_by_subject(
+    session: AsyncSession, org_id: str, subject_id: str, actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict:
+    """Permanently deletes every trace this org tagged with `subject_id`,
+    AND every trace in each matched trace's amendment chain -- the actual
+    erasure step `find_traces_by_subject` only ever located candidates for.
+
+    The reported `ids`/`purged` count is the full, expanded chain set,
+    computed BEFORE anything is deleted -- not just the directly-tagged
+    subset. A subject's content can persist across a supersession even
+    where only one revision in the chain was tagged, and `delete_trace`
+    already deletes the whole chain as a side effect of deleting any one
+    member; computing the expansion up front means what this function
+    reports matches what it actually removes, which matters here more
+    than anywhere else in this module -- an under-reported count would be
+    a false "still not fully erased" the same way an over-reported one
+    would be a false "already erased".
+
+    Delegates each actual deletion to `delete_trace`, not a bare DELETE,
+    so a purge inherits everything that function already gets right: the
+    `TraceRelation` cleanup and the `Organization.trace_count` decrement,
+    with its own org-ownership re-verification of every chain id (see its
+    docstring) as the actual authority over what gets deleted -- this
+    function's own expansion is for accurate REPORTING, not a second
+    source of truth for what happens.
+    """
+    subject_id = str(subject_id or "").strip()
+    if not subject_id:
+        return {"purged": 0, "ids": []}
+    matched = (
+        await session.execute(
+            select(Trace.id).where(Trace.org_id == org_id, Trace.subject_ids.any(subject_id))
+        )
+    ).scalars().all()
+    if not matched:
+        return {"purged": 0, "ids": []}
+    expanded: set[str] = set()
+    for trace_id in matched:
+        expanded |= await amendment_chain(session, trace_id)
+    own_ids = (
+        await session.execute(
+            select(Trace.id).where(Trace.id.in_(expanded), Trace.org_id == org_id)
+        )
+    ).scalars().all()
+    for trace_id in matched:
+        await delete_trace(session, org_id, trace_id, actor=actor)
+    # Confirm what actually disappeared rather than trusting each
+    # delete_trace call's own return value: a chain shared by more than
+    # one matched id is deleted whole by the FIRST call, so a later call
+    # for another member of that same chain correctly returns False
+    # (already gone) -- which must not read as "not purged" for reporting
+    # purposes, since own_ids already established it belonged to this
+    # deletion in the first place.
+    remaining = set(
+        (await session.execute(select(Trace.id).where(Trace.id.in_(own_ids)))).scalars().all()
+    )
+    deleted_ids = [trace_id for trace_id in own_ids if trace_id not in remaining]
+    if deleted_ids:
+        await audit.record(
+            session, actor=actor, action="purge_traces_by_subject", org_id=org_id,
+            target_type="trace", target_id=deleted_ids[0],
+            summary=f"purged {len(deleted_ids)} trace(s) for one subject id",
+        )
+    return {"purged": len(deleted_ids), "ids": deleted_ids}
 
 
 def _is_uuid(value: str) -> bool:

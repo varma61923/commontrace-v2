@@ -1782,3 +1782,76 @@ class TestSearchContentCLI:
     async def test_search_content_is_dispatchable_and_documented(self):
         assert "search-content" in manage._COMMANDS
         assert "search-content" in manage.__doc__
+
+
+class TestSubjectTaggingCLI:
+    async def test_tag_then_find_then_purge_round_trip(self, session_factory, two_orgs, capsys):
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="c", solution_text="s",
+                agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            trace_id = trace.id
+
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "user-42", session_factory=session_factory,
+        )
+        assert "tagged with 1 subject" in capsys.readouterr().out
+
+        assert await manage.find_subject_traces(
+            two_orgs["org_a"], "user-42", session_factory=session_factory,
+        )
+        out = capsys.readouterr().out
+        assert trace_id in out
+        assert "exact match" in out
+
+        assert await manage.purge_subject_traces(
+            two_orgs["org_a"], "user-42", session_factory=session_factory,
+        )
+        assert "purged 1 trace" in capsys.readouterr().out
+
+        async with session_factory() as session:
+            assert await session.get(Trace, trace_id) is None
+
+    async def test_find_with_no_match_says_so_plainly(self, session_factory, two_orgs, capsys):
+        assert await manage.find_subject_traces(
+            two_orgs["org_a"], "no-such-subject", session_factory=session_factory,
+        )
+        assert "no traces" in capsys.readouterr().out
+
+    async def test_purge_with_no_match_purges_zero_not_an_error(self, session_factory, two_orgs, capsys):
+        assert await manage.purge_subject_traces(
+            two_orgs["org_a"], "no-such-subject", session_factory=session_factory,
+        )
+        assert "purged 0 trace" in capsys.readouterr().out
+
+    async def test_tagging_an_unknown_trace_is_refused(self, session_factory, two_orgs, capsys):
+        assert not await manage.tag_trace_subjects(
+            two_orgs["org_a"], "00000000-0000-0000-0000-000000000000", "user-42",
+            session_factory=session_factory,
+        )
+        assert "no trace" in capsys.readouterr().err
+
+    async def test_empty_subject_ids_csv_clears_the_tag(self, session_factory, two_orgs, capsys):
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="c", solution_text="s",
+                agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            trace_id = trace.id
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "user-42", session_factory=session_factory,
+        )
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "", session_factory=session_factory,
+        )
+        assert "tagged with 0 subject" in capsys.readouterr().out
+
+    async def test_subject_tagging_commands_are_dispatchable_and_documented(self):
+        for command in ("tag-trace-subjects", "find-subject-traces", "purge-subject-traces"):
+            assert command in manage._COMMANDS
+            assert command in manage.__doc__

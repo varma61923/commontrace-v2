@@ -254,6 +254,19 @@ class Trace(Base):
     context_text: Mapped[str] = mapped_column(Text, nullable=False)
     solution_text: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
+    # Optional, explicit, curator-set: which end user(s)/customer(s) this
+    # trace's content concerns, for audit §2.2's subject-erasure request.
+    # Empty by default -- nothing populates this automatically, the same
+    # "no auto-provisioning" caution hub/sso.py applies elsewhere, because
+    # inferring a subject from free text would just be search_trace_content
+    # wearing a structured column's clothes. What this buys once populated:
+    # `hub/crud.py:find_traces_by_subject`/`purge_traces_by_subject` are
+    # EXACT array-membership queries, not a fuzzy scan a human still has to
+    # review -- for TAGGED content this really can be provably complete,
+    # unlike search_trace_content, which can prove presence but never
+    # absence. Untagged and historical content still needs that free-text
+    # search; this does not retroactively fix that.
+    subject_ids: Mapped[list[str]] = mapped_column(ARRAY(String(256)), default=list, nullable=False)
     agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
     # The AGENT, as distinct from the KIND of agent above. agent_type is a
     # category ("support", "sales", "code"): a fleet of 25 support agents
@@ -480,6 +493,7 @@ class Trace(Base):
     __table_args__ = (
         Index("ix_traces_org_quarantined", "org_id", "quarantined"),
         Index("ix_traces_tags_gin", "tags", postgresql_using="gin"),
+        Index("ix_traces_subject_ids_gin", "subject_ids", postgresql_using="gin"),
         Index("ix_traces_search_vector_gin", "search_vector", postgresql_using="gin"),
         # search_traces orders by created_at DESC within an org; without this
         # the ordering step sorts the whole org partition on every query.

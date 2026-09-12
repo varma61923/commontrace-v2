@@ -1158,6 +1158,65 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def tag_trace_subjects(id: str, subject_ids: list) -> dict:
+        """Set (REPLACING any previous tags, not appending) which end
+        user(s)/customer(s) this trace's content concerns -- pass `[]` to
+        clear a mistaken tag. Optional and explicit: nothing populates
+        this automatically.
+
+        This is what makes `find_traces_by_subject`/`purge_traces_by_subject`
+        an exact, provably-complete match instead of the free-text scan
+        `search_trace_content` already offers -- see that tool's own
+        docstring for what it can and cannot guarantee. Untagged content
+        still needs the free-text search; tagging it here is what upgrades
+        it to a certainty.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.tag_trace_subjects(
+                    session, org_id, id, subject_ids, actor=auth.get_current_actor(),
+                )
+            if result is None:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def find_traces_by_subject(subject_id: str) -> dict:
+        """Every trace THIS ORG explicitly tagged (`tag_trace_subjects`)
+        with `subject_id`, exactly matched -- not a scan, and not stemmed
+        the way `search_traces`' full-text index is. Untagged content
+        naming the same subject in free text is not returned here; use
+        `search_trace_content` for that."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                results = await crud.find_traces_by_subject(session, org_id, subject_id)
+            return {"results": results}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_ADMIN)
+    async def purge_traces_by_subject(subject_id: str) -> dict:
+        """Permanently delete every trace this org tagged with
+        `subject_id` (`tag_trace_subjects`), including each one's full
+        amendment chain -- the actual erasure step
+        `find_traces_by_subject` only ever located candidates for.
+        Irreversible. A `subject_id` nothing was tagged with returns
+        `purged: 0`, not an error."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.purge_traces_by_subject(
+                    session, org_id, subject_id, actor=auth.get_current_actor(),
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
     @scoped_tool(scopes.SCOPE_ADMIN)
     async def delete_trace(id: str) -> dict:
         """Permanently delete one of your own traces, and every trace in

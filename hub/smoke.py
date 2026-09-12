@@ -247,6 +247,12 @@ CORE_TOOLS = [
     # search_trace_content) -- org-scoped and unmetered like the rest of
     # this list; unaffected by HUB_COMMONS_ENABLED.
     "search_trace_content",
+    # structured subject tagging + exact-match find/purge (hub/crud.py:
+    # tag_trace_subjects/find_traces_by_subject/purge_traces_by_subject) --
+    # the other half of subject-erasure support, for content a curator
+    # explicitly tagged. Org-scoped and unmetered like the rest of this
+    # list; unaffected by HUB_COMMONS_ENABLED.
+    "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
