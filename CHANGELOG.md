@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A live OpenTelemetry span exporter (`commontrace/otel_exporter.py`,
+  `commontrace[otel]`).** Audit §6.2: "Not done: auto-instrumentation,
+  runtime wrappers, or a collector — CommonTrace consumes OTel, it does
+  not emit it." `CommonTraceSpanExporter` is a real
+  `opentelemetry.sdk.trace.export.SpanExporter`: attach it to a
+  `TracerProvider` your application already has (from your own
+  instrumentation or an existing vendor SDK — this adds none) and a
+  completed GenAI-semantic-convention span becomes a CommonTrace trace
+  the moment it exports, through the exact same parsing
+  (`adapters._otel`) and schema-validated, atomically-written path
+  `commontrace import --source otel` uses — not a second implementation
+  with its own idea of what a valid trace is. A span with no GenAI
+  content is skipped, never an exception, since an exporter that raises
+  into the application it's attached to would take it down for an
+  unrelated telemetry side-channel. Optional install; importing the
+  module costs nothing, only constructing the exporter needs the SDK.
+  Tests: `tests/test_otel_exporter.py` (10), through a real
+  `TracerProvider`.
+
 - **Named environments and scheduled release promotion
   (`commontrace/environments.py`, `commontrace release promote|current|
   pending`).** dev/stage/prod each track which release (`commontrace

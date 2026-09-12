@@ -120,6 +120,27 @@ dropped or a hard failure of the whole batch. `resolved`/`escalated`/`repeated_e
 `frustration_signal`/`tokens_used`/`llm_calls` columns, if present, populate
 `Trace.outcome` (§ [Outcome Metrics](#outcome-metrics)) automatically.
 
+**Already emitting OTel spans? Skip the file.** `pip install
+'commontrace[otel]'` and attach `CommonTraceSpanExporter` to a
+`TracerProvider` you already have — a completed GenAI span becomes a
+trace the moment it exports, through the identical parsing and
+schema-validated write path `--source otel` uses above:
+
+```python
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from commontrace.otel_exporter import CommonTraceSpanExporter
+
+provider.add_span_processor(BatchSpanProcessor(
+    CommonTraceSpanExporter(agent_type="support")
+))
+```
+
+This adds no instrumentation to your application — it consumes spans
+your own code or an existing vendor SDK already produces. A span with
+no GenAI attributes is skipped, never an exception: an exporter that
+raised into the application it's attached to would take it down for an
+unrelated telemetry side-channel.
+
 ### 3 — Wire it into your agent platform
 
 ```bash

@@ -69,6 +69,23 @@ hub-sync = [
 serve = [
     "mcp>=2.0,<3.0",
 ]
+# `commontrace/otel_exporter.py`'s CommonTraceSpanExporter -- a live
+# opentelemetry.sdk.trace.export.SpanExporter that turns completed GenAI
+# spans into traces as your own application runs, instead of via
+# `commontrace import --source otel <file>`. Optional for the same
+# reason hub-sync/serve are: most users never attach an OTel exporter,
+# and importing commontrace/otel_exporter.py itself costs nothing --
+# only constructing CommonTraceSpanExporter needs the SDK installed.
+#
+# >=1.20,<2.0: the SDK's export interface (SpanExporter, SpanExportResult,
+# Status/StatusCode) has been stable since well before 1.20; the floor is
+# a recent-enough release to avoid resolving into pre-stable API
+# variants, and the ceiling follows this repo's own "no unbounded pin"
+# convention rather than any known incompatibility with a 2.x that does
+# not exist yet.
+otel = [
+    "opentelemetry-sdk>=1.20,<2.0",
+]
 dev = [
     # >=9.0.3, not the previous >=7.0: every release below 9.0.3, including
     # the newest 8.x (8.4.2), carries a known vulnerability
@@ -103,6 +120,11 @@ dev = [
     # behaviour for a bare install and the wrong one for a contributor who
     # just ran `pip install -e ".[dev]"` and believes the suite is green.
     "mcp>=2.0,<3.0",
+    # tests/test_otel_exporter.py drives a real
+    # opentelemetry.sdk.trace.TracerProvider + CommonTraceSpanExporter,
+    # same "don't let the suite silently skip the real thing" reasoning
+    # as the mcp entry above.
+    "opentelemetry-sdk>=1.20,<2.0",
 ]
 
 [project.urls]
