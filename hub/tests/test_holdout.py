@@ -82,6 +82,14 @@ _UNRELATED_TOPICS = [
     "N plus one query pattern degrading dashboard latency",
     "flaky integration test caused by shared fixture state",
     "incorrect timezone conversion in scheduled report export",
+    "duplicate message delivery from at least once queue semantics",
+    "silent truncation of oversized payload in log ingestion",
+    "misconfigured retry budget starving a downstream dependency",
+    "index bloat from unvacuumed table slowing point lookups",
+    "leaked file descriptors exhausting the process open file limit",
+    "inconsistent read replica lag returning stale account balances",
+    "broken pagination cursor skipping rows under concurrent inserts",
+    "misapplied feature flag rollout enabling code path for wrong cohort",
 ]
 
 
@@ -250,8 +258,16 @@ class TestSearchIntegration:
     async def test_every_trace_is_still_returned(self, session_factory, org):
         """A withheld trace is flagged, never omitted. Silently dropping
         results would break search_traces' contract (PROTOCOL.md §5) and
-        make the experiment invisible to a caller who ignores the block."""
-        traces = await _traces(session_factory, org, 10)
+        make the experiment invisible to a caller who ignores the block.
+
+        n=20, not some smaller number: assignment is a hash of (salt,
+        trace_id, occasion_id) at holdout_rate=0.5, so each trace is an
+        independent coin flip and `holdout["withhold"]` being empty is a
+        legitimate outcome, not a bug -- just one this test must not see at
+        a rate CI will eventually hit. 20 independent units keeps that
+        chance at 2**-20 instead of the 2**-10 an earlier, smaller n gave
+        (which is exactly what flaked one run)."""
+        traces = await _traces(session_factory, org, 20)
         async with session_scope(session_factory) as session:
             found = await crud.search_traces(session, org, limit=50)
             holdout = await crud.holdout_for_results(
