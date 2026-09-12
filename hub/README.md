@@ -649,10 +649,13 @@ traffic beyond a pilot:
   and any browser-based login flow are not. `hub.manage link-sso` is the
   only way a person gets an account today; there is no self-service
   sign-up.
-- **Break-glass procedure.** If every `ROLE_SECURITY_ADMIN`/`ROLE_OWNER`
-  account is disabled or its IdP is unreachable, recovering access is an
-  operator `hub.manage create-user`/`set-user-role` run directly against
-  the database, not a documented in-product procedure.
+- **A purpose-built break-glass mechanism.** Recovering access when every
+  `ROLE_SECURITY_ADMIN`/`ROLE_OWNER` account is disabled or its IdP is
+  unreachable IS now a documented procedure (`hub/DEPLOYMENT.md` §9a) —
+  direct database access via `hub.manage`, same as any other operator
+  action. What is not built: a dedicated, time-boxed emergency
+  credential, an automatic alert when the procedure is used, or a
+  second-person witness requirement.
 
 ### Human users, roles, and OIDC SSO (implemented)
 

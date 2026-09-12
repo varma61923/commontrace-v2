@@ -650,6 +650,62 @@ The corollary matters for incident response: restoring an older backup
 **resurrects keys revoked after that backup was taken**. If you restore
 across a revocation, re-revoke those key ids immediately.
 
+## 9a. Break-glass: every admin account is disabled or its IdP is unreachable
+
+Human sign-in (`hub/README.md` "Human users, roles, and OIDC SSO") has no
+password and no recovery email — a `User` row authenticates only through
+its linked OIDC identity, and there is no self-service anything. That is
+the right default (no secondary credential to leak, no password reset flow
+to phish), and it means the ordinary path to a `ROLE_SECURITY_ADMIN`/
+`ROLE_OWNER` account has exactly one dependency: the identity provider.
+This is what to do when that dependency fails — every such account is
+disabled, or the IdP itself is down/misconfigured, and nobody can sign in.
+
+**The recovery path is always the same one an operator already has**:
+direct database access, via `hub.manage`, run from wherever
+`HUB_DATABASE_URL` is reachable (a bastion host, a deploy box, `kubectl
+exec` into the Hub's own pod — whatever your topology already trusts with
+that connection string; this is not a new credential, it is the same one
+that runs every migration).
+
+```bash
+# 1. Confirm what's actually broken before changing anything.
+python -m hub.manage list-users <org_id>          # who exists, whose role, who is disabled
+
+# 2a. An account is disabled that should not be -- re-enable it.
+python -m hub.manage enable-user <user_id>
+
+# 2b. No working Security Admin/Owner exists at all -- mint a fresh one.
+#     This does NOT need the IdP to be reachable: create-user only writes
+#     a row, and role alone does not authenticate anybody.
+python -m hub.manage create-user <org_id> <email> owner
+
+# 3. The IdP is unreachable, but you need this person signed in NOW --
+#    link a DIFFERENT, reachable IdP's identity to the row instead of
+#    waiting for the original one to come back. (Standing configuration
+#    change: point HUB_OIDC_ISSUER/HUB_OIDC_JWKS_URI at the new IdP.)
+python -m hub.manage link-sso <user_id> <new_issuer> <new_external_subject>
+
+# 4. Verify: the recovered account can actually reach a tool, not just
+#    that the row looks right.
+python -m hub.manage audit-log <org_id> | head    # confirm what you just did, and by whom
+```
+
+**Every one of these steps is an audited action** (`hub/manage.py`'s own
+`audit.record` call on `create-user`/`enable-user`/`link-sso`), so a
+break-glass recovery leaves the same trail an ordinary one would — there
+is no "off the books" path here, only a faster one that does not depend on
+the thing that just broke.
+
+**This is a documented procedure, not a built one.** There is no
+dedicated break-glass tooling (no time-boxed emergency token, no
+automatic alert when it is used, no requirement for a second person to
+witness it) beyond what `hub.manage` and `audit-log` already give you.
+For a deployment that needs stronger guarantees than "whoever can reach
+`HUB_DATABASE_URL` can do this," that is the next thing to build, and it
+is listed as not done in `AUDIT_RESPONSE.md` §1.2 rather than implied by
+this section existing.
+
 ## 10. Security checklist before a client's data lands
 
 - [ ] TLS terminated in front of the Hub (API keys are bearer credentials).
