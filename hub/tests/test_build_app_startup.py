@@ -105,6 +105,23 @@ class TestTheProductionAppBoots:
         messages = await _run_lifespan(build_app(cfg, session_factory))
         assert "lifespan.startup.complete" in [m["type"] for m in messages]
 
+    async def test_it_boots_and_shuts_down_cleanly_with_the_alert_scheduler_enabled(
+        self, config, session_factory
+    ):
+        """hub/scheduler.py is off by default; enabling it starts a
+        background asyncio task from the lifespan and must join it again on
+        shutdown. A short interval so a bug that left the loop sleeping
+        through the stop event would show up as this test hanging, not
+        merely as a slow one."""
+        cfg = dataclasses.replace(
+            config, alert_scheduler_enabled=True, alert_scheduler_interval_seconds=10,
+        )
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        types = [m["type"] for m in messages]
+        assert "lifespan.startup.complete" in types
+        assert "lifespan.shutdown.complete" in types
+        assert "lifespan.startup.failed" not in types
+
 
 class TestStartupToleratesADeadDatabase:
     async def test_the_app_still_boots_when_the_database_is_unreachable(

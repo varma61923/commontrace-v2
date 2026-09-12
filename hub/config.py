@@ -429,6 +429,16 @@ class HubConfig:
     # --- Lifecycle ---
     graceful_shutdown_seconds: int = 30
 
+    # --- Alert scheduler (hub/scheduler.py) ---
+    # False (default): no background loop starts at all -- a deployment
+    # already pointing cron at `hub.manage check-alerts` sees no change.
+    # True: the Hub process sweeps hub/alerts.py's check_rules itself,
+    # every alert_scheduler_interval_seconds, for as long as the process
+    # runs. See hub/scheduler.py's own docstring for why running this on
+    # more than one replica is safe.
+    alert_scheduler_enabled: bool = False
+    alert_scheduler_interval_seconds: int = 300
+
     # --- Misc ---
     log_level: str = "INFO"
     extra: dict = field(default_factory=dict)
@@ -552,5 +562,8 @@ class HubConfig:
                 "HUB_MAX_CONCURRENT_REQUESTS", 512, 0, 100_000),
             db_pool_recycle=_env_int_in_range("HUB_DB_POOL_RECYCLE", 1800, -1, 86_400),
             graceful_shutdown_seconds=_env_int_in_range("HUB_GRACEFUL_SHUTDOWN_SECONDS", 30, 0, 3600),
+            alert_scheduler_enabled=_env_bool("HUB_ALERT_SCHEDULER_ENABLED", False),
+            alert_scheduler_interval_seconds=_env_int_in_range(
+                "HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", 300, 10, 86_400),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )

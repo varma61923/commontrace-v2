@@ -929,14 +929,25 @@ refused at rule-creation time, not silently skipped at evaluation time. A
 metric that cannot be computed right now (no traces yet, an unlimited
 plan) never fires — a rate over zero traces is not a signal.
 
-**No in-process scheduler.** `check-alerts` and `generate-report` are
-pure operator-CLI commands, meant to be invoked by *your own* cron, in
-the exact same shape as `webhook-deliver`'s existing redelivery sweep.
-This Hub's server is request-driven with no background loop, and adding
-one for this feature alone would be a bigger architectural commitment
-than the feature is worth. Each rule's own `cooldown_minutes` (default
-60) is what keeps a metric that stays past its threshold from firing on
-every single cron tick.
+**Two ways to run `check-alerts` on a schedule.** `check-alerts` and
+`generate-report` are pure functions either way — something else has to
+call them periodically:
+
+- **Your own cron** invoking the CLI commands above, the exact same shape
+  as `webhook-deliver`'s existing redelivery sweep. Works for either
+  command, at whatever cadence you configure.
+- **An opt-in in-process scheduler** (`hub/scheduler.py`), for
+  `check-alerts` only: set `HUB_ALERT_SCHEDULER_ENABLED=true` and the Hub
+  process sweeps every enabled rule itself, every
+  `HUB_ALERT_SCHEDULER_INTERVAL_SECONDS` (default 300). Off by default —
+  a deployment that already points cron at `check-alerts` sees no change.
+  `generate-report` stays cron-only: a usage report's natural cadence is
+  daily/monthly, aligned to a billing period, not a single short fixed
+  interval a sweep loop can reuse for both.
+
+Each rule's own `cooldown_minutes` (default 60) is what keeps a metric
+that stays past its threshold from firing on every single check, cron or
+in-process.
 
 ## Locating content for a subject-erasure request (`search_trace_content`)
 

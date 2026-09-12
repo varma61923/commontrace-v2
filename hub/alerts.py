@@ -9,12 +9,14 @@ through the SAME signed, at-least-once queue, so an org's already-
 configured endpoint and signature verification cover these for free. An
 alert or a report is a kind of event, not a second delivery mechanism.
 
-NO IN-PROCESS SCHEDULER. `check_rules` and `generate_report` are pure
-functions an operator's own cron invokes via `hub.manage check-alerts`/
+NO SCHEDULER OF ITS OWN. `check_rules` and `generate_report` are pure
+functions; something else has to call them on a schedule. That something
+is either an operator's own cron invoking `hub.manage check-alerts`/
 `generate-report` -- the exact same shape as `webhook-deliver`'s existing
-redelivery sweep. This Hub's server is request-driven with no background
-loop, and adding one for this feature alone would be a bigger
-architectural commitment than the feature is worth.
+redelivery sweep -- or, opt-in, `hub/scheduler.py`'s in-process loop, for
+an operator who would rather the Hub process own its heartbeat than wire
+up cron next to it. Neither lives in this module: this stays a pure
+function either way.
 
 METRICS ARE A CLOSED, NAMED SET, NOT A FREE-FORM EXPRESSION LANGUAGE.
 Each one is a small function against tables this Hub already has (never

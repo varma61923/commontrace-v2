@@ -87,6 +87,28 @@ class TestSignupAndBillingDefaultOff:
         monkeypatch.setenv("HUB_SIGNUP_ENABLED", "true")
         assert HubConfig.from_env().signup_enabled is True
 
+    def test_alert_scheduler_defaults_disabled(self, monkeypatch):
+        """Same posture: hub/scheduler.py's loop must not start for a
+        deployment that never set HUB_ALERT_SCHEDULER_ENABLED."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        cfg = HubConfig.from_env()
+        assert cfg.alert_scheduler_enabled is False
+        assert cfg.alert_scheduler_interval_seconds == 300
+
+    def test_alert_scheduler_can_be_enabled_with_a_custom_interval(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_ENABLED", "true")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", "60")
+        cfg = HubConfig.from_env()
+        assert cfg.alert_scheduler_enabled is True
+        assert cfg.alert_scheduler_interval_seconds == 60
+
+    def test_alert_scheduler_interval_out_of_range_is_refused(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", "1")
+        with pytest.raises(ValueError, match="HUB_ALERT_SCHEDULER_INTERVAL_SECONDS"):
+            HubConfig.from_env()
+
     def test_stripe_settings_default_empty(self, monkeypatch):
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         config = HubConfig.from_env()

@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, collab, commons, crud, observability, plans, scopes
+from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -1550,7 +1550,30 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             )
             yield
 
-    inner_app.router.lifespan_context = _lifespan_with_rls_check
+    @contextlib.asynccontextmanager
+    async def _lifespan_with_scheduler(app):
+        async with _lifespan_with_rls_check(app):
+            if not config.alert_scheduler_enabled:
+                yield
+                return
+            # See hub/scheduler.py's own docstring: off unless explicitly
+            # enabled, so a deployment relying on `hub.manage check-alerts`
+            # via its own cron is unaffected either way.
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(
+                scheduler.run(
+                    session_factory,
+                    interval_seconds=config.alert_scheduler_interval_seconds,
+                    stop_event=stop_event,
+                )
+            )
+            try:
+                yield
+            finally:
+                stop_event.set()
+                await task
+
+    inner_app.router.lifespan_context = _lifespan_with_scheduler
     inner_app.add_middleware(
         LoadShedMiddleware,
         max_concurrent=config.max_concurrent_requests,

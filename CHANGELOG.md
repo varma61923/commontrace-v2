@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An opt-in in-process scheduler for alert checks (`hub/scheduler.py`,
+  `HUB_ALERT_SCHEDULER_ENABLED`).** Audit §8.3 named "no in-process
+  scheduler" as the remaining gap once alerting and reports existed:
+  `check-alerts` and `generate-report` were pure operator-CLI commands
+  meant for external cron. `hub/scheduler.py` now runs `check_rules`
+  itself, on a timer, inside the Hub server process — for an operator who
+  would rather not wire up cron next to it. Off by default, so a
+  deployment already using cron sees no change; enabling it on more than
+  one replica is safe for the same reason overlapping cron entries
+  already were (see the module's own docstring). `generate-report` stays
+  cron-only: its natural cadence (daily/monthly, aligned to a billing
+  period) doesn't fit the same short interval alert checking wants.
+  Tests: `hub/tests/test_scheduler.py` (5), plus boot coverage in
+  `hub/tests/test_build_app_startup.py`.
+
 - **A live OpenTelemetry span exporter (`commontrace/otel_exporter.py`,
   `commontrace[otel]`).** Audit §6.2: "Not done: auto-instrumentation,
   runtime wrappers, or a collector — CommonTrace consumes OTel, it does
