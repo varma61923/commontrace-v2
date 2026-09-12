@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Named environments and scheduled release promotion
+  (`commontrace/environments.py`, `commontrace release promote|current|
+  pending`).** dev/stage/prod each track which release (`commontrace
+  release cut`) they are running. Scheduled activation needs no separate
+  flip step — a promotion carries the moment it should take effect, and
+  `current` starts returning it once that moment arrives by comparing
+  against `now` on every call, the same read-time trick this release's
+  Hub-side alerting and legal holds already use. Promoting into `prod`
+  reuses `commontrace/approval.py`'s exact separation-of-duties/
+  require-human logic — checked only against lessons newly entering the
+  environment, so an unrelated promotion is never blocked by a lesson
+  that was already there. **Deliberately does not gate retrieval**: this
+  is pure record-keeping, the same way releases themselves were before
+  this existed. A `Release` pins a lesson to a content-addressed
+  fingerprint, not its actual text, and this codebase does not retain a
+  past revision's text once a lesson is edited again — so there is no
+  canary/ring traffic-splitting here, and this is not a stopgap toward
+  one; that would need a real revision store, named as separate, larger
+  work rather than implied to already exist. Tests:
+  `tests/test_environments.py` (20).
+
 - **Locating traces for a subject-erasure request (`search_trace_content`,
   `hub.manage search-content`).** Audit §2.2: "a customer who needs
   subject-level erasure over trace content must locate the traces

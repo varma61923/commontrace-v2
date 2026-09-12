@@ -219,6 +219,35 @@ rule under the same name. Approving does not cut a release automatically:
 six approvals over an afternoon are usually one deployment, and only you
 know where that boundary is.
 
+**Named environments track which release each one is running.**
+
+```bash
+commontrace release promote <release_id> stage
+commontrace release promote <release_id> prod --at 2026-04-01T09:00:00Z  # scheduled
+commontrace release current prod
+commontrace release pending prod
+```
+
+`dev`/`stage`/`prod` are the closed set. `promote` needs no separate
+activation step for a scheduled promotion — it carries the moment it
+should take effect, and `current` simply starts returning it once that
+moment arrives. Promoting into `prod` goes through the same
+separation-of-duties check a single lesson's own approval already does
+(above), checked only against lessons **newly** entering the
+environment — one already running there isn't re-litigated on every
+promotion.
+
+**This is pure record-keeping, not a rollout mechanism.** Retrieval
+still reads a lesson's own `status`, exactly as before `environments.py`
+existed — there is no canary/ring *traffic* targeting between
+environments, and none is planned as a quick follow-up: a release pins
+a lesson to a content-addressed **hash**, not its actual text, and
+nothing in this store retains what a lesson used to say once it's been
+edited again (the same limit `release rollback` already lives with
+honestly, by refusing rather than fabricating). Serving "what prod is
+running" for an edited lesson needs a real revision *store*, which is
+separate, larger work.
+
 `distill` clusters traces by word-overlap similarity (pure Python, no LLM
 call, no API key) and never writes anything above `status: review` — a
 candidate only becomes retrieval-eligible once a human runs `lesson

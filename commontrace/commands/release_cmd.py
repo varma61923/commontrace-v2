@@ -10,16 +10,23 @@ how do I put that back?
     release show      one release's contents
     release diff      what changed between two releases
     release rollback  return to an earlier release, and record having done so
+    release promote   record which release a named environment is running
+    release current   the release one environment is running right now
+    release pending   promotions scheduled for the future, for one environment
 
 See commontrace/release.py for why a release stores revisions rather than
-text, and why rolling back appends rather than rewinds.
+text, and why rolling back appends rather than rewinds. See
+commontrace/environments.py for why `promote` is pure record-keeping (it
+does not change what retrieval serves) and for the real, storage-level
+reason it cannot yet.
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import sys
 
-from commontrace import paths, release
+from commontrace import approval, environments, paths, release
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -78,6 +85,36 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     rollback.add_argument("--dest", default=None)
     rollback.set_defaults(func=run_rollback)
+
+    promote = sub.add_parser(
+        "promote",
+        help="Record which release a named environment (dev/stage/prod) is running.",
+    )
+    promote.add_argument("release_id")
+    promote.add_argument("environment", choices=environments.ENVIRONMENTS)
+    promote.add_argument("--reason", default="")
+    promote.add_argument(
+        "--at", default=None,
+        help="ISO-8601 timestamp to schedule this for, instead of immediately. "
+             "Needs no separate activation step: `release current` simply starts "
+             "returning this release once that moment arrives.",
+    )
+    promote.add_argument("--dest", default=None)
+    promote.set_defaults(func=run_promote)
+
+    env_current = sub.add_parser(
+        "current", help="The release one environment is running right now.",
+    )
+    env_current.add_argument("environment", choices=environments.ENVIRONMENTS)
+    env_current.add_argument("--dest", default=None)
+    env_current.set_defaults(func=run_env_current)
+
+    env_pending = sub.add_parser(
+        "pending", help="Promotions scheduled for the future, for one environment.",
+    )
+    env_pending.add_argument("environment", choices=environments.ENVIRONMENTS)
+    env_pending.add_argument("--dest", default=None)
+    env_pending.set_defaults(func=run_env_pending)
 
 
 def _actor() -> str:
@@ -238,4 +275,49 @@ def run_rollback(args: argparse.Namespace) -> int:
     print(f"\n[commontrace] rolled back; recorded as release {_short(cut.release_id)}")
     print("  History is append-only: returning to an earlier state is itself a "
           "deployment, and is recorded as one.")
+    return 0
+
+
+def run_promote(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    activate_at = None
+    if args.at:
+        try:
+            activate_at = datetime.datetime.fromisoformat(args.at)
+        except ValueError:
+            print(f"[commontrace] --at must be an ISO-8601 timestamp, got {args.at!r}",
+                  file=sys.stderr)
+            return 1
+    try:
+        record = environments.promote(
+            root, args.release_id, args.environment,
+            actor=_actor(), reason=args.reason, activate_at=activate_at,
+        )
+    except (environments.EnvironmentError, approval.ApprovalDenied) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    when = "immediately" if not args.at else f"at {record['activate_at']}"
+    print(f"[commontrace] {args.environment} -> {_short(record['release_id'])}, {when}.")
+    return 0
+
+
+def run_env_current(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    release_id = environments.current(root, args.environment)
+    if release_id is None:
+        print(f"[commontrace] nothing has ever been promoted to {args.environment!r}.")
+        return 0
+    print(f"[commontrace] {args.environment}: {_short(release_id)}")
+    return 0
+
+
+def run_env_pending(args: argparse.Namespace) -> int:
+    root = paths.resolve_root(args.dest)
+    upcoming = environments.pending(root, args.environment)
+    if not upcoming:
+        print(f"[commontrace] nothing scheduled for {args.environment!r}.")
+        return 0
+    for record in upcoming:
+        print(f"  {record['activate_at']}  -> {_short(record['release_id'])}"
+              + (f"  -- {record['reason']}" if record["reason"] else ""))
     return 0
