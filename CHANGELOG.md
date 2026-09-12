@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Application-level IP allowlisting (`hub/server.py:IpAllowlistMiddleware`,
+  `HUB_IP_ALLOWLIST`).** Audit §1.6 named "no IP allowlisting / private
+  networking" as a single gap; it's really two things, and only one of
+  them is code. This closes the code-only half: a comma-separated CIDR
+  list, checked through the same trusted-proxy-aware client-address
+  resolution the rate limiters already use, refuses every other source
+  with 403 on every route except `/healthz`/`/readyz`. Off by default
+  (the middleware isn't even mounted with nothing configured). Private
+  networking itself — a VPC, peering, a topology unreachable from outside
+  at all — stays a deployment-topology decision for whoever operates the
+  Hub, not something this change claims to close. Tests:
+  `hub/tests/test_ip_allowlist.py` (9), plus config and boot coverage.
+
 - **SCIM 2.0 user provisioning (`hub/scim.py`, `/scim/v2/Users`).** Audit
   §1.2 named "SCIM auto-provisioning" as still open. An IdP can now create
   and, critically, immediately deactivate `User` rows itself, through a

@@ -122,6 +122,15 @@ class TestTheProductionAppBoots:
         assert "lifespan.shutdown.complete" in types
         assert "lifespan.startup.failed" not in types
 
+    async def test_it_boots_with_an_ip_allowlist_configured(self, config, session_factory):
+        """IpAllowlistMiddleware is only mounted when HUB_IP_ALLOWLIST is
+        set -- proves the conditional wiring in build_app itself doesn't
+        raise, same as the commons_enabled=False / postgres-backend cases
+        above cover their own conditional branches."""
+        cfg = dataclasses.replace(config, ip_allowlist=("10.0.0.0/8",))
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        assert "lifespan.startup.complete" in [m["type"] for m in messages]
+
 
 class TestStartupToleratesADeadDatabase:
     async def test_the_app_still_boots_when_the_database_is_unreachable(

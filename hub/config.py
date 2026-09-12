@@ -8,6 +8,7 @@ falling back to something unsafe.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 
@@ -68,6 +69,23 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_cidr_list(name: str) -> tuple[str, ...]:
+    """A comma-separated list of CIDR blocks, validated at startup rather
+    than on the first request that happens to reach the middleware --
+    the same "name the variable and the reason" policy `_env_int_in_range`
+    already applies to a numeric misconfiguration."""
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return ()
+    entries = tuple(item.strip() for item in raw.split(",") if item.strip())
+    for entry in entries:
+        try:
+            ipaddress.ip_network(entry, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"{name} contains an invalid CIDR entry {entry!r}: {exc}") from None
+    return entries
 
 
 @dataclass(frozen=True)
@@ -190,6 +208,26 @@ class HubConfig:
     # its own network topology; setting it when no such proxy exists lets a
     # client forge its own rate-limit identity via a spoofed header.
     trusted_proxy_hops: int = 0
+
+    # --- Source-address restriction (hub/server.py:IpAllowlistMiddleware) ---
+    # Empty (default): every source reaches every route, unchanged from
+    # before this existed. Set HUB_IP_ALLOWLIST to a comma-separated list
+    # of CIDR blocks ("10.0.0.0/8,203.0.113.5/32") to refuse every OTHER
+    # source with 403, on every route except /healthz and /readyz (an
+    # orchestrator's liveness/readiness probes are a different population
+    # than the external traffic this restricts, and blocking them turns a
+    # security control into a self-inflicted outage). Resolved via the
+    # same trusted_proxy_hops-aware client-address logic the rate limiters
+    # already use, so a request behind a trusted reverse proxy is checked
+    # against its real origin, not the proxy's own address.
+    #
+    # This is the half of "no IP allowlisting / private networking" that
+    # is genuinely code-only. The OTHER half -- actual private networking,
+    # VPC peering, a network topology this Hub is simply unreachable from
+    # outside at all -- is a deployment-topology decision made by whoever
+    # operates it, not something this application can decide for them; see
+    # hub/DEPLOYMENT.md for that half.
+    ip_allowlist: tuple[str, ...] = ()
 
     # --- Operator console (hub/admin.py) ---
     # Empty (the default) means the /admin routes are NEVER REGISTERED --
@@ -534,6 +572,7 @@ class HubConfig:
             readyz_rate_limit_per_minute=_env_int_in_range("HUB_READYZ_RATE_LIMIT_PER_MINUTE", 120, 0, 10_000_000),
             readyz_rate_limit_burst=_env_int_in_range("HUB_READYZ_RATE_LIMIT_BURST", 30, 0, 1_000_000),
             trusted_proxy_hops=_env_int_in_range("HUB_TRUSTED_PROXY_HOPS", 0, 0, 16),
+            ip_allowlist=_env_cidr_list("HUB_IP_ALLOWLIST"),
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),

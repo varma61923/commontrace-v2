@@ -109,6 +109,27 @@ class TestSignupAndBillingDefaultOff:
         with pytest.raises(ValueError, match="HUB_ALERT_SCHEDULER_INTERVAL_SECONDS"):
             HubConfig.from_env()
 
+    def test_ip_allowlist_defaults_empty(self, monkeypatch):
+        """Same posture: hub/server.py:IpAllowlistMiddleware must not even
+        be mounted for a deployment that never set HUB_IP_ALLOWLIST."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        assert HubConfig.from_env().ip_allowlist == ()
+
+    def test_ip_allowlist_parses_a_comma_separated_list(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_IP_ALLOWLIST", " 10.0.0.0/8 , 203.0.113.5/32 ")
+        cfg = HubConfig.from_env()
+        assert cfg.ip_allowlist == ("10.0.0.0/8", "203.0.113.5/32")
+
+    def test_ip_allowlist_rejects_an_invalid_entry_at_startup(self, monkeypatch):
+        """Not on the first request that happens to reach the middleware --
+        the same "fail loud, name the variable" policy every other
+        misconfiguration in this file gets."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_IP_ALLOWLIST", "not-a-cidr")
+        with pytest.raises(ValueError, match="HUB_IP_ALLOWLIST"):
+            HubConfig.from_env()
+
     def test_stripe_settings_default_empty(self, monkeypatch):
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         config = HubConfig.from_env()

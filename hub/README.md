@@ -644,10 +644,27 @@ traffic beyond a pilot:
   docstring for why a small Starlette middleware was simpler and more
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
-- **SAML and a login UI.** OIDC bearer-JWT verification and named roles
-  are implemented (below) — SAML sign-in and any browser-based login flow
-  are not. `hub.manage link-sso` is the only way a person gets an OIDC
-  identity linked today; there is no self-service sign-up.
+- **SAML and a browser-based login UI are deliberately not built** — not
+  merely deferred. Both need something that does not exist anywhere in
+  this Hub yet: a PERSON-scoped browser session. `hub/console.py`'s
+  `SESSION_COOKIE` today carries `{org, key_prefix}` — an ORG-level
+  session equivalent to full API-key capability, checked by every
+  existing console route with no notion of a role at all. Retrofitting a
+  role-scoped person session (what a browser-redirect OIDC login or a
+  SAML assertion would need to issue) means re-deciding, route by route,
+  which existing mutating actions a lower-privileged person-session
+  should and should not reach — get one route wrong and a Viewer-level
+  browser login reaches an Owner-level action. That is a session-model
+  redesign across every route in this file, not an additive endpoint, and
+  doing it as a fast follow-on to something else is how a privilege-
+  escalation bug gets shipped, not how one gets caught. SAML compounds
+  this with its own separate, historically hazardous surface (XML
+  signature-wrapping forgery, the class of bug behind more real SSO
+  bypasses than any other SAML mistake) that is only safe to take on via
+  a mature, dedicated, heavily-audited library and focused review — never
+  hand-rolled alongside something else. Both stay named here, precisely,
+  rather than attempted at a size and speed that would make them worse
+  than not having them.
 - **SCIM auto-provisioning is now implemented** (`hub/scim.py`,
   `/scim/v2/Users`, audit § below): an IdP can create and, critically,
   immediately deactivate `User` rows itself instead of an operator running
@@ -825,6 +842,32 @@ A scope denial returns `{"error": "forbidden", "required_scope": …,
 valid, and telling a client to re-authenticate when retrying with the same
 key will fail identically forever turns a configuration error into a retry
 loop.
+
+### IP allowlisting (`hub/server.py:IpAllowlistMiddleware`, implemented)
+
+Audit §1.6, "no IP allowlisting / private networking", splits into two
+different things. **Private networking** — a VPC, peering, a topology
+where this Hub is simply unreachable from outside at all — is a
+deployment-topology decision made by whoever operates it; no application
+code can decide that for them (see `hub/DEPLOYMENT.md`). **IP
+allowlisting**, though, needs no such decision: set `HUB_IP_ALLOWLIST` to
+a comma-separated list of CIDR blocks and every route except `/healthz`
+and `/readyz` refuses any OTHER source address with 403 — no VPC, no
+proxy, no infrastructure change required.
+
+- **Off by default.** An unset `HUB_IP_ALLOWLIST` means the middleware
+  isn't even mounted — same "absent, not merely permissive" posture as
+  `/admin`/`/app` when their own secrets are unset.
+- **`/healthz`/`/readyz` are always exempt.** An orchestrator's own
+  liveness/readiness probes arrive from the platform's internal network,
+  a different population than the external traffic this restricts;
+  blocking them would turn a security control into a self-inflicted
+  outage.
+- **Resolved through the same `HUB_TRUSTED_PROXY_HOPS`-aware logic** every
+  rate limiter already uses, so a request behind a documented reverse
+  proxy is checked against its real origin, not the proxy's own address —
+  and a client-forged `X-Forwarded-For` cannot bypass it when
+  `HUB_TRUSTED_PROXY_HOPS=0` (the default).
 
 ### Abuse controls (implemented, with a known scaling limit)
 

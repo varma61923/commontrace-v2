@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import ipaddress
 import json
 import logging
 import math
@@ -496,6 +497,61 @@ def _error_response(exc: Exception) -> dict:
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
     return {"error": "internal_error", "detail": "an unexpected error occurred"}
+
+
+class IpAllowlistMiddleware(BaseHTTPMiddleware):
+    """Application-level source-address restriction -- the code-only half
+    of audit 1.6's "no IP allowlisting / private networking" (see
+    HubConfig.ip_allowlist's own docstring for why the OTHER half, actual
+    private networking, is a deployment-topology decision this middleware
+    does not and cannot make).
+
+    Only mounted when `HUB_IP_ALLOWLIST` is set (see `build_app`) -- a
+    deployment that never configures it pays nothing extra per request,
+    same "absent, not merely permissive" posture as `/admin`/`/app` being
+    unregistered when their own secrets are unset.
+
+    `/healthz` and `/readyz` are exempt for the same reason
+    `ApiKeyAuthMiddleware` exempts `/healthz`: an orchestrator's own
+    liveness/readiness probes are a different population than the
+    external traffic this restricts, arriving from the platform's
+    internal network rather than wherever this allowlist is meant to
+    keep out -- refusing them would turn a security control into a
+    self-inflicted outage.
+    """
+
+    def __init__(self, app: ASGIApp, networks, trusted_proxy_hops: int = 0):
+        super().__init__(app)
+        self._networks = networks
+        self._trusted_proxy_hops = trusted_proxy_hops
+
+    async def dispatch(self, request: Request, call_next):
+        # Defensive, not load-bearing: build_app never mounts this
+        # middleware at all when config.ip_allowlist is empty. Checked
+        # again here so the class's own behavior matches its docstring
+        # ("no restriction when unconfigured") independent of how a
+        # future caller constructs it.
+        if not self._networks:
+            return await call_next(request)
+        if request.url.path in ("/healthz", "/readyz"):
+            return await call_next(request)
+        client_ip_raw = resolve_client_key(request, self._trusted_proxy_hops)
+        try:
+            client_ip = ipaddress.ip_address(client_ip_raw)
+        except ValueError:
+            # "unknown" (no request.client at all) or a malformed
+            # X-Forwarded-For entry -- either way, a source address this
+            # deployment cannot verify is allowlisted is refused, not
+            # let through by default.
+            return JSONResponse(
+                {"error": "forbidden", "detail": "source address could not be determined"},
+                status_code=403,
+            )
+        if not any(client_ip in network for network in self._networks):
+            return JSONResponse(
+                {"error": "forbidden", "detail": "source address not allowlisted"}, status_code=403
+            )
+        return await call_next(request)
 
 
 def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rate_limiter: RateLimiter):
@@ -1591,6 +1647,19 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         max_concurrent=config.max_concurrent_requests,
         timeout_seconds=config.request_timeout_seconds,
     )
+    # Only mounted when configured -- see HubConfig.ip_allowlist's own
+    # docstring. Added AFTER LoadShedMiddleware (so it runs BEFORE it,
+    # Starlette applies middleware outer-to-inner in reverse registration
+    # order): a source this deployment has decided should never reach it
+    # at all shouldn't spend a slot in the concurrency/timeout budget
+    # either, the same reasoning ApiKeyAuthMiddleware's own rate limiter
+    # runs before any cryptographic verification work.
+    if config.ip_allowlist:
+        inner_app.add_middleware(
+            IpAllowlistMiddleware,
+            networks=tuple(ipaddress.ip_network(c, strict=False) for c in config.ip_allowlist),
+            trusted_proxy_hops=config.trusted_proxy_hops,
+        )
     # Added last => outermost: a request id exists (and the request gets
     # logged) even for calls the auth middleware rejects with a 401, and
     # for one LoadShedMiddleware sheds or times out.
