@@ -412,6 +412,19 @@ than it is.
 HUB_LEDGER_SIGNING_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 ```
 
+**This key now has a second job, and rotating it breaks both.** Webhook
+signing secrets are *derived* from it rather than stored
+(`hub/events.py:derive_secret`), which is what keeps a database dump from
+yielding the ability to forge an event. The consequence an operator has to
+know before rotating: changing `HUB_LEDGER_SIGNING_KEY` silently changes
+every endpoint's signing secret, so every customer's webhook receiver starts
+rejecting deliveries as unsigned, and every previously issued ledger
+signature stops verifying. Neither failure announces itself at rotation
+time — the receiver just starts returning 401 and the queue starts
+retrying. If you must rotate it, re-issue every endpoint's secret
+(`webhook-rotate`) and tell every customer holding one, in the same
+maintenance window.
+
 Set it **identically across every replica**. Unlike `HUB_API_KEY_PEPPER`
 (which tolerates a per-process fallback, because a missing pepper only ever
 weakens one timing defense), a value ledger is meant to be verified by the
