@@ -1545,7 +1545,18 @@ tests, not left to convention:
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
 | Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
+| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. See [`DATA_RETENTION.md`](DATA_RETENTION.md) §2. |
+| Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
+
+**What this does *not* have** is as important as the table above, and is
+written down rather than left to be discovered: no legal entity, no SOC 2,
+no penetration test, no SSO/SCIM, no residency commitment and no support
+SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
+full weight; [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) answers a third-party
+readiness audit finding by finding, marking each one done, partial, not
+applicable, or *requires business action* — with the rule that the last
+category is never quietly downgraded by building something adjacent to it.
 
 Before putting a client's data on it, work through the security checklist in
 `hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.

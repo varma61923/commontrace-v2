@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TRUST.md` and `AUDIT_RESPONSE.md`: the boundary, and the gaps at full
+  weight.** `TRUST.md` answers the question that actually decides adoption —
+  *which bytes leave the machine this runs on* — exhaustively, per path, and
+  gives the commands to verify each claim without trusting the document.
+  (The load-bearing one: `commontrace/hub_client.py` is the only
+  network-capable module in the client, checkable with one `grep`.)
+
+  `AUDIT_RESPONSE.md` answers a third-party readiness audit finding by
+  finding. Every row is **done**, **partial**, **not applicable**, or
+  **requires business action**, under two rules the document holds itself
+  to: no "done" without a module and a test file a reader can run, and
+  "requires business action" is never downgraded to "partial" by building
+  something adjacent — shipping an audit log is not progress toward SOC 2,
+  and shipping retention controls is not progress toward a DPA.
+
+  Both list what does not exist at full weight: no legal entity, no SOC 2,
+  no penetration test, no SSO/SCIM/human users, no residency commitment, no
+  signed artifacts or SBOM, no support SLA. A buyer who finds those after a
+  reassuring answer is worse off than one who reads them first.
+
+- **`commons/eval/sequential_error_rates.py`.** The sequential-testing unit
+  tests pin the mechanics and cannot answer the question a buyer asks — *how
+  often does this call a useless memory a winner?* That needs simulation,
+  which is too slow for the test suite and too important to leave as an
+  unchecked claim in a document. It measures, at 500 occasions/arm looking
+  every 25 and stopping on the first significant look: false positives under
+  the null **14.7% → 0.7%**, and states the cost rather than omitting it —
+  power at a real +10pp effect is **65.3%**.
+
 - **Import adapters for LangSmith, Langfuse, Braintrust and OpenTelemetry.**
   `commontrace import` could read JSONL and CSV with `--title-field` and
   friends, which works for a spreadsheet and works for none of the four
