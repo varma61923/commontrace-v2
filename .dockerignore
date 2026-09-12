@@ -74,6 +74,10 @@ commontrace/**
 # names. Imported at module level, so without it the container starts
 # and dies.
 !commontrace/value.py
+# Evidence decay: how old a measured effect may be and still be billed
+# on. Imported by hub/crud.py at module scope (it also owns the horizon
+# constant the working-set block reads). Pure stdlib.
+!commontrace/decay.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
 # Secret/PII/prompt-injection screening (OWASP ASI06), imported at module

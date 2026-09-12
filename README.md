@@ -1287,6 +1287,28 @@ existed, carrying the confidence interval through. On the Hub it is the
 currency to anything. You say what one resolved occasion is worth to your
 organisation; nothing about that is stored.
 
+**And evidence expires.** An effect estimate is a statement about the world
+*at the time it was measured*. Six months later the API the lesson described
+is deprecated and the policy it encoded has changed — but the estimate is
+unchanged, because nothing re-ran it. Past a 180-day horizon a memory stops
+being billed, and `value_delivered` tells you which memories to re-run the
+holdout for, oldest first.
+
+The rule is deliberately **not symmetric**, and the asymmetry is the point. A
+memory measured as *harmful* contributes a negative number and reduces the
+figure. If staleness simply expired every old verdict, a stale harm would
+stop counting and the invoice would go **up** — a vendor deleting its own
+harms by waiting long enough. So:
+
+| Stale verdict | What happens | Effect on the invoice |
+|---|---|---|
+| HELPS | stops counting — you cannot bill for value you can no longer show is current | down |
+| HURTS | **keeps** counting until re-measured — a harm you stopped looking at is not a harm that went away | down |
+
+Both move the figure down. That is the rule, not a coincidence: when evidence
+decays, it resolves against the party who benefits from the doubt. Evidence
+carrying no date at all is treated exactly as expired.
+
 Three rules, and the third is the one that makes the number worth quoting:
 
 - **A compromised experiment produces no figure at all** — not a hedged one.

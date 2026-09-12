@@ -1726,6 +1726,17 @@ async def value(org_id: str, value_per_occasion: str | None = None, session_fact
     print(f"occasions improved: {report['occasions_improved']:,.1f} "
           f"(95% CI {report['ci_95'][0]:,.1f} .. {report['ci_95'][1]:,.1f})")
     print(f"memories counted: {report['n_counted']}  excluded: {report['n_excluded']}")
+    evidence = report.get("evidence")
+    if evidence and evidence["n_stale"]:
+        # An action, not a footnote: a figure that silently shrank is a
+        # support ticket, and the fix is always the same one command.
+        print(
+            f"evidence: {evidence['n_stale']} memory/memories are past the "
+            f"{evidence['horizon_days']}-day horizon, "
+            f"{evidence['n_withheld']} of them no longer billed."
+        )
+        print("  re-measure (oldest first): "
+              + ", ".join(evidence["due_for_remeasurement"][:5]))
     if rate is not None and report["money"] is not None:
         low, high = report["money_range"] or (report["money"], report["money"])
         billable = report["money"] * plans.VALUE_CAPTURE_SHARE

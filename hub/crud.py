@@ -34,7 +34,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import distill, experiment, integrity, prereg, raw_export, revision, value
+from commontrace import (
+    decay,
+    distill,
+    experiment,
+    integrity,
+    prereg,
+    raw_export,
+    revision,
+    value,
+)
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -2916,6 +2925,7 @@ async def value_delivered(
     value_per_occasion: float | None = None,
     rate_tiers: list[dict] | None = None,
     signing_key: str = "",
+    evidence_horizon_days: int | None = decay.DEFAULT_HORIZON_DAYS,
 ) -> dict:
     """What this fleet's memory was worth, causally, in its own units.
 
@@ -3025,9 +3035,25 @@ async def value_delivered(
         readable=bool(wire_policy.get("readable", False)),
         reason=str(wire_policy.get("reason", "")),
     )
+    # Evidence decay (commontrace/decay.py). The same horizon the pinned
+    # working-set block already expires graduation at -- one number, both
+    # surfaces. Before this the block stopped serving a memory nobody had
+    # re-measured while the INVOICE kept billing for it, so the two surfaces
+    # disagreed about whether the same evidence was current and the one that
+    # disagreed was attached to money.
+    #
+    # Rebuilt from the wire projection for the same reason `overlap` is: it
+    # came from the same query these effects did, and re-deriving it here
+    # could date the figure against a different run than the one it prices.
+    last_measured = {
+        e["trace_id"]: e.get("last_measured_at") or ""
+        for e in causal.get("effects", [])
+    }
     report = value.compute(
         effects, audit, value_per_occasion=value_per_occasion, rate_card=card,
         overlap=overlap,
+        last_measured=last_measured,
+        evidence_horizon_days=evidence_horizon_days,
     )
     report = dataclasses.replace(report, policy=policy)
     ledger = report.ledger()
@@ -3077,6 +3103,20 @@ async def value_delivered(
         # below stand either way.
         "aggregate_readable": report.aggregate_readable,
         "aggregate_reason": report.aggregate_reason,
+        # What the evidence horizon did (commontrace/decay.py). Surfaced
+        # rather than left implicit in the per-memory `why_not`, because
+        # "your invoice went down and here is the list of memories to
+        # re-measure" is an action, and a figure that silently shrank is
+        # a support ticket.
+        "evidence": (
+            {
+                "horizon_days": report.decay.horizon_days,
+                "n_stale": len(report.decay.stale),
+                "n_withheld": len(report.decay.withheld),
+                "due_for_remeasurement": list(report.decay.due_for_remeasurement),
+            }
+            if report.decay is not None else None
+        ),
         # How many DISTINCT occasions received anything -- the ceiling the
         # total cannot exceed, and the denominator needed to judge whether a
         # number is large.
@@ -3223,7 +3263,12 @@ MAX_WORKING_SET_CHARS = 8000
 # deliberately generous -- long enough that a genuinely stable lesson is
 # not churned, short enough that no fleet's system prompt carries a claim
 # nobody has checked in half a year.
-DEFAULT_EVIDENCE_HORIZON_DAYS = 180
+# The value lives in commontrace/decay.py, which is also what the value
+# ledger's own horizon reads. Two constants that must agree is drift
+# waiting to happen, and the two surfaces disagreeing about whether the
+# same evidence is current is precisely the defect the ledger horizon
+# was added to close.
+DEFAULT_EVIDENCE_HORIZON_DAYS = decay.DEFAULT_HORIZON_DAYS
 MAX_EVIDENCE_HORIZON_DAYS = 36500
 # Enough of a solution to act on without fetching the trace. A caller that
 # needs the whole thing has the id and `get_trace`.

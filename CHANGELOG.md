@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Evidence decay: a measured effect stops being billed when nobody has
+  re-measured it.** This product's argument is that a memory earns its place
+  by measured effect. Nothing in that sentence had a date in it, and every
+  part of it should — six months on, the API the lesson described is
+  deprecated and the policy it encoded has changed, but the estimate is
+  unchanged because nothing re-ran it. The lesson stayed `active`, injected,
+  counted and **billed**.
+
+  The Hub already expired graduation from the pinned working-set block at a
+  180-day horizon. The value ledger — the surface attached to money — had no
+  horizon at all, so the two surfaces disagreed about whether the same
+  evidence was current and the one that disagreed was the one the customer
+  pays on. `commontrace/decay.py` closes that, and both surfaces now read one
+  constant instead of two that must agree.
+
+  **The asymmetry is the whole design.** Expiring every stale verdict is the
+  obvious implementation and is wrong in the vendor's favour: `value.py`
+  counts HELPS *and* HURTS deliberately ("dropping the second would make this
+  a brochure"), and a HURTS contributes a negative figure. So a stale HURTS
+  that stopped counting would *raise* the invoice — a vendor deleting its own
+  harms by waiting long enough. Therefore: a stale **HELPS stops counting**
+  (you cannot bill for value you can no longer show is current); a stale
+  **HURTS keeps counting** until it is re-measured (a harm you stopped
+  looking at is not a harm that went away). Both rules move the figure down,
+  which is the rule: when evidence decays, it resolves against the party who
+  benefits from the doubt.
+
+  **Undated is treated exactly as expired.** "We cannot tell when this was
+  measured" and "this was measured too long ago" have the same standing in an
+  argument about whether a number is current, and assuming in the vendor's
+  favour because a timestamp is missing is how missing timestamps become
+  convenient.
+
+  `value_delivered` now reports an `evidence` block — how many memories are
+  past the horizon, how many that actually cost, and which to re-measure
+  oldest first — and `hub.manage value` prints it. A figure that silently
+  shrank is a support ticket; a figure that shrank with a list of memories to
+  re-run is an action. `evidence_horizon_days=None` restores the historical
+  behaviour for reconstructing what was billed before the horizon existed.
+
 - **Hybrid retrieval: both arms, fused, instead of picking one.**
   `commontrace query` chose ONE retriever — semantic when the attention extra
   was installed and the index was fresh, lexical otherwise — and discarded

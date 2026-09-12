@@ -1781,3 +1781,83 @@ class TestTheOperatorCLIReachesTheSameNumbers:
         out = capsys.readouterr().out
         assert "not readable" in out
         assert "COMPROMISED" in out
+
+
+class TestEvidenceDecayReachesTheInvoice:
+    """The pinned working-set block already expired graduation at a 180-day
+    horizon. The value ledger -- the surface attached to money -- had none, so
+    the two disagreed about whether the same evidence was current and the one
+    that disagreed was the one the customer pays on.
+
+    These go through `crud.value_delivered` rather than `value.compute`
+    directly: the horizon is only worth anything if it is reachable from the
+    call that produces an invoice.
+    """
+
+    async def _established(self, session_factory, org, n=120, helps=True):
+        return await TestTheWorkingSet()._established(
+            session_factory, org, n=n, helps=helps)
+
+    async def _backdate(self, session_factory, org, days):
+        await TestTheWorkingSet()._backdate(session_factory, org, days)
+
+    async def test_fresh_evidence_is_billed(self, session_factory, org):
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=10)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+        assert worth["n_counted"] == 1
+        assert worth["occasions_improved"] > 0
+
+    async def test_evidence_past_the_horizon_is_not_billed(self, session_factory, org):
+        """The defect this closes: a memory nobody has re-measured in over a
+        year was still counted at full weight on today's invoice."""
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=400)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+        assert worth["n_counted"] == 0
+        assert worth["occasions_improved"] == 0
+
+    async def test_the_withheld_memory_says_why(self, session_factory, org):
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=400)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+        [memory] = worth["memories"]
+        assert not memory["counted"]
+        assert "evidence" in memory["why_not"]
+        assert "Re-run the holdout" in memory["why_not"]
+
+    async def test_a_stale_HARM_is_still_counted(self, session_factory, org):
+        """The asymmetry, on the surface that matters. Expiring a stale HURTS
+        would RAISE the invoice -- a vendor deleting its own damage by waiting
+        long enough. It keeps counting until it is re-measured."""
+        await self._established(session_factory, org, helps=False)
+        await self._backdate(session_factory, org, days=400)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(session, org, value_per_occasion=25.0)
+        [memory] = worth["memories"]
+        assert memory["verdict"] == experiment.VERDICT_HURTS
+        assert memory["counted"], "a stale harm must not vanish from the invoice"
+        assert worth["occasions_improved"] < 0
+
+    async def test_the_horizon_can_be_turned_off_for_a_historical_figure(
+        self, session_factory, org
+    ):
+        """An operator reconstructing what was billed before the horizon
+        existed needs the old behaviour available, explicitly."""
+        await self._established(session_factory, org)
+        await self._backdate(session_factory, org, days=400)
+        async with session_scope(session_factory) as session:
+            worth = await crud.value_delivered(
+                session, org, value_per_occasion=25.0, evidence_horizon_days=None)
+        assert worth["n_counted"] == 1
+
+    async def test_the_hub_and_the_ledger_share_one_horizon(self):
+        """Two constants that must agree is drift waiting to happen, and the
+        two surfaces disagreeing about whether the same evidence is current
+        is the exact defect this closes."""
+        from commontrace import decay
+
+        assert crud.DEFAULT_EVIDENCE_HORIZON_DAYS == decay.DEFAULT_HORIZON_DAYS

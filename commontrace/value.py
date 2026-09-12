@@ -91,6 +91,7 @@ import hmac
 import math
 from dataclasses import dataclass, field
 
+from commontrace import decay as decay_mod
 from commontrace import experiment, integrity
 
 # Domain separator for the audit chain below. Hashing the empty string as a
@@ -454,6 +455,12 @@ class ValueReport:
     # was supplied to compute it from.
     policy: PolicyEffect | None = None
 
+    # What the evidence horizon did, per memory (commontrace/decay.py). None
+    # when no horizon was supplied, which is the historical behaviour and is
+    # distinguishable from "a horizon ran and found nothing stale" -- those
+    # are different facts and only one of them means decay is switched on.
+    decay: decay_mod.DecayReport | None = None
+
     @property
     def rate(self) -> float | None:
         """What one improved occasion is worth, however it was supplied.
@@ -720,6 +727,9 @@ def compute(
     rate_card: RateCard | None = None,
     overlap: OccasionOverlap | None = None,
     assignments=None,
+    last_measured: dict[str, object] | None = None,
+    evidence_horizon_days: int | None = None,
+    now=None,
 ) -> ValueReport:
     """Causal value delivered, or a refusal to state one.
 
@@ -727,6 +737,17 @@ def compute(
     audited", which is treated as not-readable rather than as clean: a value
     figure computed from an unexamined experiment is the exact artifact this
     module exists to not produce.
+
+    `evidence_horizon_days` turns on evidence decay (commontrace/decay.py):
+    an effect nobody has re-measured inside the horizon stops being billed.
+    None keeps the historical behaviour, where an estimate is counted forever
+    regardless of when it was taken -- opt-in, because switching it on
+    changes an invoice and that is a decision rather than an upgrade.
+
+    `last_measured` maps slug -> the date behind that effect. A slug missing
+    from it is UNDATED, which is treated exactly as expired: "we cannot tell
+    when this was measured" and "this was measured too long ago" have the
+    same standing in an argument about whether a number is current.
     """
     # One input, two derived facts: whether these memories may be added
     # (overlap) and what the policy as a whole was worth (policy). A caller
@@ -775,6 +796,7 @@ def compute(
         )
 
     memories: list[MemoryValue] = []
+    decayed: list[decay_mod.DecayItem] = []
     total = 0.0
     unselected_total = 0.0
     variance = 0.0
@@ -788,7 +810,34 @@ def compute(
         # brochure -- see the module docstring.
         include = effect.verdict in (experiment.VERDICT_HELPS, experiment.VERDICT_HURTS)
         why_not = ""
-        if effect.verdict == experiment.VERDICT_UNDERPOWERED:
+
+        # And an estimate is a statement about the world WHEN IT WAS TAKEN.
+        # Past the horizon a HELPS stops being billed and a HURTS keeps
+        # counting -- see commontrace/decay.py for why those are different.
+        # Both rules move the figure down, which is the point: when evidence
+        # decays, it resolves against the party that benefits from the doubt.
+        fresh = None
+        if evidence_horizon_days is not None:
+            fresh = decay_mod.freshness(
+                (last_measured or {}).get(effect.lesson_slug),
+                now=now, horizon_days=evidence_horizon_days,
+            )
+            if include:
+                still, stale_reason = decay_mod.still_counts(
+                    effect.verdict, fresh,
+                    helps=experiment.VERDICT_HELPS, hurts=experiment.VERDICT_HURTS,
+                )
+                if not still:
+                    include = False
+                    why_not = stale_reason
+            decayed.append(decay_mod.DecayItem(
+                slug=effect.lesson_slug, verdict=effect.verdict,
+                freshness=fresh, withheld=bool(why_not),
+            ))
+
+        if why_not:
+            pass
+        elif effect.verdict == experiment.VERDICT_UNDERPOWERED:
             why_not = ("not established: this design could not detect an effect worth "
                        "acting on, so multiplying it by a volume would produce a large "
                        "number with no evidence under it")
@@ -874,6 +923,11 @@ def compute(
         occasions_improved_unselected=round(unselected_total, 2),
         n_examined=len(effects),
         policy=policy,
+        decay=(
+            decay_mod.DecayReport(
+                items=tuple(decayed), horizon_days=evidence_horizon_days)
+            if evidence_horizon_days is not None else None
+        ),
     )
 
 
