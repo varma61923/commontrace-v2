@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`SUBPROCESSORS.md` and `SOC2_READINESS.md`** (audit §2.4, §7.1). Not
+  a DPA and not a SOC 2 attestation — both stay correctly out of scope,
+  needing a registered legal entity and an accredited audit firm
+  respectively, neither of which a repository file can substitute for.
+  What these are: an honest, evidence-cited inventory. `SUBPROCESSORS.md`
+  names the one third party this code actually sends data to (Stripe,
+  for billing) and states exactly what would change the list. 
+  `SOC2_READINESS.md` maps the Trust Services Criteria to the specific
+  controls already implemented and tested in this repo (RLS, RBAC,
+  SCIM, audit logging, the measured backup/restore drill, subject
+  erasure, and more), and names precisely what a real Type II engagement
+  still needs that no document can provide.
+
 - **A measured backup/restore drill and a continuous deletion drill**
   (audit §7.5). The restore rehearsal documented in `hub/DEPLOYMENT.md`
   §9 was actually run end to end — dump, restore into a fresh database,
