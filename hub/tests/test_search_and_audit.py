@@ -35,13 +35,15 @@ async def other_org(session_factory):
         return o.id
 
 
-async def _contribute(session_factory, config, org_id, title, context, solution, tags=None, actor="test"):
+async def _contribute(
+    session_factory, config, org_id, title, context, solution, tags=None, actor="test", outcome=None,
+):
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
         return await crud.contribute_trace(
             session, org_id, config, rate_limiter,
             title=title, context_text=context, solution_text=solution,
-            tags=tags or [], agent_type="code", actor=actor,
+            tags=tags or [], agent_type="code", actor=actor, outcome=outcome,
         )
 
 
@@ -153,6 +155,266 @@ class TestFullTextSearch:
         async with session_scope(session_factory) as session:
             page = await crud.search_traces(session, org, query="")
         assert len(page["traces"]) == 1
+
+
+class TestRelevanceTieOrdering:
+    """Exact ts_rank ties are the signature of near-duplicate text, and a
+    fleet produces those constantly: it resolves an occasion using a
+    lesson, then contributes a trace saying the same thing in the same
+    words. Inside a tie the ORIGINAL is the better result to hand an
+    agent, and keeping it on the page is also what lets the near-duplicate
+    clustering hold a stable randomization unit."""
+
+    async def test_the_original_wins_a_relevance_tie_against_its_own_retellings(
+        self, session_factory, config, org
+    ):
+        original = await _contribute(
+            session_factory, config, org, "pool exhausted",
+            "connection pool exhausted running the suite", "dispose the engine",
+        )
+        for _ in range(4):
+            await _contribute(
+                session_factory, config, org, "pool exhausted",
+                "connection pool exhausted running the suite", "dispose the engine",
+            )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(
+                session, org, query="connection pool exhausted running the suite", limit=3
+            )
+        assert page["traces"][0]["id"] == original["id"]
+
+    async def test_the_original_stays_on_page_one_as_retellings_accumulate(
+        self, session_factory, config, org
+    ):
+        """The property the clustering depends on: an original that falls
+        off the page once enough re-tellings exist leaves a page with no
+        fixed member to anchor a randomization unit to."""
+        original = await _contribute(
+            session_factory, config, org, "pool exhausted",
+            "connection pool exhausted running the suite", "dispose the engine",
+        )
+        for _ in range(12):
+            await _contribute(
+                session_factory, config, org, "pool exhausted",
+                "connection pool exhausted running the suite", "dispose the engine",
+            )
+            async with session_scope(session_factory) as session:
+                page = await crud.search_traces(
+                    session, org, query="connection pool exhausted running the suite", limit=5
+                )
+            assert original["id"] in {t["id"] for t in page["traces"]}
+
+    async def test_recency_still_orders_the_no_query_browse_path(
+        self, session_factory, config, org
+    ):
+        """Oldest-first applies inside a relevance tie, not to browsing --
+        `search_traces` with no query is a recency feed and stays one."""
+        await _contribute(session_factory, config, org, "first", "c", "s")
+        newest = await _contribute(session_factory, config, org, "second", "c", "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="")
+        assert page["traces"][0]["id"] == newest["id"]
+
+
+class TestFailedOutcomeRanking:
+    """A trace whose own `outcome.resolved` is False -- an agent's
+    self-logged, unresolved attempt, not a curated solution -- must never
+    outrank a same-relevance trace with no such marker. Text relevance
+    alone cannot separate them: both describe the same failure in the same
+    words, so without this a hand-written lesson and a fleet's own escalated
+    retry of the same query rank on equal footing."""
+
+    async def test_a_failed_occasion_sorts_after_an_otherwise_equal_result(
+        self, session_factory, config, org
+    ):
+        await _contribute(
+            session_factory, config, org, "escalated attempt",
+            "connection pool exhausted running tests", "gave up, escalated",
+            outcome={"resolved": False, "escalated": True},
+        )
+        await _contribute(
+            session_factory, config, org, "the actual fix",
+            "connection pool exhausted running tests", "dispose the engine in teardown",
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="connection pool exhausted tests")
+        titles = [t["title"] for t in page["traces"]]
+        assert titles == ["the actual fix", "escalated attempt"]
+
+    async def test_a_resolved_occasion_is_not_demoted(self, session_factory, config, org):
+        """The floor is specifically for a recorded FAILURE, not for having
+        an outcome at all -- a successfully resolved occasion competes on
+        relevance exactly as before."""
+        await _contribute(
+            session_factory, config, org, "resolved once",
+            "connection pool exhausted running tests", "dispose the engine",
+            outcome={"resolved": True},
+        )
+        await _contribute(
+            session_factory, config, org, "no outcome recorded",
+            "connection pool exhausted running tests", "dispose the engine",
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="connection pool exhausted tests")
+        # Both equally eligible for the top spot -- neither is demoted.
+        assert {t["title"] for t in page["traces"][:2]} == {"resolved once", "no outcome recorded"}
+
+    async def test_the_floor_also_applies_with_no_query(self, session_factory, config, org):
+        await _contribute(
+            session_factory, config, org, "failed", "c", "unresolved",
+            outcome={"resolved": False},
+        )
+        await _contribute(session_factory, config, org, "clean", "c", "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="")
+        assert page["traces"][-1]["title"] == "failed"
+
+    async def test_a_failed_result_is_still_returned_not_dropped(
+        self, session_factory, config, org
+    ):
+        """A ranking floor, not a filter: still findable, just never ahead
+        of a better-standing result for the same query."""
+        await _contribute(
+            session_factory, config, org, "only match",
+            "extremely specific unmatched vocabulary here", "unresolved",
+            outcome={"resolved": False},
+        )
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, query="extremely specific unmatched vocabulary")
+        assert len(page["traces"]) == 1
+
+
+class TestBriefMode:
+    """context_text/solution_text are each allowed up to 20,000 characters
+    (HubConfig.max_text_chars), so a full page at MAX_SEARCH_LIMIT can
+    legitimately run to millions of characters -- enough to blow a calling
+    agent's own context budget, not just its bill. `brief=True` previews
+    both fields instead."""
+
+    async def test_default_behavior_is_unchanged(self, session_factory, config, org):
+        """Off by default -- an existing caller reading context_text/
+        solution_text straight off a search result must keep working
+        exactly as before."""
+        await _contribute(session_factory, config, org, "t", "short context", "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org)
+        trace = page["traces"][0]
+        assert trace["context_text"] == "short context"
+        assert trace["solution_text"] == "short solution"
+        assert "brief" not in trace
+
+    async def test_a_short_field_is_returned_whole_but_marked_brief(self, session_factory, config, org):
+        """Short enough to need no truncation is not the same claim as
+        'this is the full record' -- brief=True always marks its output,
+        whether or not anything was actually cut."""
+        await _contribute(session_factory, config, org, "t", "short context", "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert trace["context_text"] == "short context"
+        assert trace["solution_text"] == "short solution"
+        assert trace["brief"] is True
+
+    async def test_a_long_field_is_truncated_with_an_ellipsis(self, session_factory, config, org):
+        long_context = "word " * 500  # far past BRIEF_PREVIEW_CHARS
+        await _contribute(session_factory, config, org, "t", long_context, "short solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert len(trace["context_text"]) < len(long_context)
+        assert trace["context_text"].endswith("…")
+
+    async def test_truncation_cuts_at_a_word_boundary(self, session_factory, config, org):
+        long_context = "alpha " * 500
+        await _contribute(session_factory, config, org, "t", long_context, "s")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        preview = page["traces"][0]["context_text"]
+        # Never ends mid-word: strip the ellipsis and the remainder must be
+        # whole "alpha" tokens, not a fragment like "alph".
+        body = preview.rstrip("…")
+        assert body == "" or body.split()[-1] == "alpha"
+
+    async def test_ids_titles_and_tags_are_unaffected_by_brief(self, session_factory, config, org):
+        await _contribute(
+            session_factory, config, org, "unaffected title", "c" * 1000, "s" * 1000, tags=["x", "y"]
+        )
+        async with session_scope(session_factory) as session:
+            full = await crud.search_traces(session, org, brief=False)
+            brief = await crud.search_traces(session, org, brief=True)
+        assert full["traces"][0]["id"] == brief["traces"][0]["id"]
+        assert full["traces"][0]["title"] == brief["traces"][0]["title"] == "unaffected title"
+        assert full["traces"][0]["tags"] == brief["traces"][0]["tags"] == ["x", "y"]
+
+    async def test_get_trace_is_never_brief(self, session_factory, config, org):
+        """brief is a search_traces-only concept -- fetching one trace by id
+        to actually use it must always return the whole thing."""
+        long_context = "word " * 500
+        contributed = await _contribute(session_factory, config, org, "t", long_context, "s")
+        async with session_scope(session_factory) as session:
+            trace = await crud.get_trace(session, org, contributed["id"])
+        assert trace["context_text"] == long_context
+        assert "brief" not in trace
+
+    async def test_default_valued_operational_fields_are_omitted_in_brief_mode(
+        self, session_factory, config, org
+    ):
+        """`brief=True` exists so 'browse many, then get_trace the one you
+        pick' costs less than one non-brief call -- which measurably failed
+        while every one of these ~14 fields was always present, even at
+        their empty/false/zero default, on every brief result. None of them
+        were set on this trace, so none of them should ship."""
+        await _contribute(session_factory, config, org, "t", "some context", "some solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        # Not `retrievals`: search_traces increments it (as a side effect
+        # of being returned by THIS call) before hydrating the wire dict,
+        # so it is never actually 0 on a result -- pre-existing behavior,
+        # unrelated to this trimming.
+        for field in (
+            "agent_id", "profile", "extensions", "watch_condition", "review_after",
+            "supersedes_trace_id", "contributor", "depth", "votes",
+            "related", "outcome", "shared_with_commons", "quarantine_reason",
+        ):
+            assert field not in trace, f"{field!r} should be omitted at its default in brief mode"
+        assert trace["retrievals"] == 1
+        # Always present regardless -- never conditionally dropped.
+        for field in ("id", "title", "context_text", "solution_text", "tags",
+                      "agent_type", "created_at", "trust", "quarantined", "brief"):
+            assert field in trace
+
+    async def test_a_populated_operational_field_still_ships_in_brief_mode(
+        self, session_factory, config, org
+    ):
+        """Only the DEFAULT value is omitted -- a field actually holding
+        something must still reach the caller in brief mode, same as full."""
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            await crud.contribute_trace(
+                session, org, config, rate_limiter,
+                title="t", context_text="some context", solution_text="some solution",
+                tags=[], agent_type="code",
+                outcome={"resolved": True, "tokens_used": 42},
+            )
+            page = await crud.search_traces(session, org, brief=True)
+        trace = page["traces"][0]
+        assert trace["outcome"] == {"resolved": True, "tokens_used": 42}
+
+    async def test_full_mode_still_ships_every_field_at_its_default(
+        self, session_factory, config, org
+    ):
+        """The trimming above is brief-only -- an existing full-mode caller
+        reading any of these fields off a normal result must see exactly
+        what it always has, default value included."""
+        await _contribute(session_factory, config, org, "t", "some context", "some solution")
+        async with session_scope(session_factory) as session:
+            page = await crud.search_traces(session, org, brief=False)
+        trace = page["traces"][0]
+        assert trace["agent_id"] == ""
+        assert trace["votes"] == []
+        assert trace["outcome"] == {}
+        assert trace["shared_with_commons"] is False
 
 
 class TestBatchHydration:
@@ -283,11 +545,28 @@ class TestApiKeyExpiry:
         fix re-reads revocation state fresh immediately after verify()
         returns; this simulates a revoke landing exactly inside that
         window by hooking the asyncio.to_thread call verify() is offloaded
-        through."""
+        through.
+
+        This window exists only in the legacy (Argon2 prefix-scan) path --
+        the fast `key_hmac` lookup added later reads revocation in the same
+        single indexed SELECT that finds the row, with no `to_thread` call
+        and no gap for a concurrent revoke to land in. A freshly issued key
+        now has `key_hmac` set at issuance and would resolve via that fast
+        path, never calling `asyncio.to_thread` at all -- clear it here to
+        force this key through the legacy path this test exercises, exactly
+        as a key issued before that column existed would be."""
         import asyncio as asyncio_module
+
+        from sqlalchemy import update
+
+        from hub.models import ApiKey
 
         async with session_scope(session_factory) as session:
             issued = await auth.issue_api_key(session, org)
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                update(ApiKey).where(ApiKey.id == issued.key_id).values(key_hmac=None)
+            )
 
         real_to_thread = asyncio_module.to_thread
         revoked_once = False

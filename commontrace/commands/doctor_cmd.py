@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import importlib.util
 import os
+import re
 import shutil
 import sys
 
-from commontrace import paths
+from commontrace import frontmatter, paths, store_state
 from commontrace.commands._shellout import find_reference_script
 
 
@@ -75,6 +77,79 @@ def _info(label: str, detail: str = "") -> None:
     print(line)
 
 
+def _legacy_suffix(trace_id: str) -> str:
+    """The filename fragment capture_cmd used to compute, before it was made
+    injective -- the first 16 characters of the sanitized id."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", trace_id).strip("-.")
+    return safe[:16]
+
+
+def _collision_suspects(root: str) -> int:
+    """How many groups of occasions could have overwritten each other.
+
+    Detection leans on the holdout log rather than on the traces, because the
+    traces are the thing that was destroyed: the log is append-only JSONL and
+    still names every occasion that was ever assigned an arm, including ones
+    whose trace file was later clobbered by a sibling.
+
+    A group counts as a suspect when two or more DISTINCT occasion ids share
+    a legacy 16-character filename fragment (so they would have collided) and
+    at least one of them has no trace on disk while another does. Either half
+    alone is innocent -- ids can share a prefix without either being captured
+    yet, and an occasion can legitimately have no outcome recorded -- which is
+    why both are required before saying anything.
+    """
+    from commontrace import holdout_io
+
+    try:
+        records, _ = holdout_io.read_log(root)
+    except Exception:  # noqa: BLE001 - doctor must not fail on a damaged log
+        return 0
+    if not records:
+        return 0
+
+    on_disk: set[str] = set()
+    for path in glob.glob(os.path.join(paths.traces_dir(root), "*.md")):
+        if os.path.basename(path) == "README.md":
+            continue
+        try:
+            fm, _ = frontmatter.read(path)
+        except Exception:  # noqa: BLE001
+            continue
+        on_disk.add(str(fm.get("id", "")))
+
+    groups: dict[str, set[str]] = {}
+    for rec in records:
+        groups.setdefault(_legacy_suffix(rec.occasion_id), set()).add(rec.occasion_id)
+
+    suspects = 0
+    for ids in groups.values():
+        if len(ids) < 2:
+            continue
+        present = {i for i in ids if i in on_disk}
+        if present and len(present) < len(ids):
+            suspects += 1
+    return suspects
+
+
+def _declared_agent_type(root: str) -> str | None:
+    """What memory/INDEX.md's first line literally says, unvalidated.
+
+    paths.store_agent_type returns what commands will USE, substituting a
+    default for anything unusable. Comparing the two is the only way to see
+    a store whose declared type is being silently ignored.
+    """
+    try:
+        with open(paths.index_path(root), encoding="utf-8") as fh:
+            first = fh.readline()
+    except OSError:
+        return None
+    _, sep, value = first.partition("agent_type:")
+    if not sep:
+        return None
+    return value.strip() or None
+
+
 def run(args: argparse.Namespace) -> int:
     _FAILURES.clear()
     root = paths.resolve_root(args.dest)
@@ -103,6 +178,85 @@ def run(args: argparse.Namespace) -> int:
             except OSError:
                 n_lessons = 0
         _check("lessons in store", n_lessons > 0, f"{n_lessons} found")
+
+        # A headcount is not an answer to "why does query return nothing".
+        # `doctor` is where someone goes when the product is not behaving,
+        # and until this block existed it could report a wall of green OKs
+        # to a store that cannot serve a single retrieval -- every
+        # dependency installed, every file present, and no ACTIVE lesson
+        # for `query` to rank. Retrieval readiness is the health check
+        # this tool was actually being run for.
+        state = store_state.inspect(root)
+        # Only reported when the store has CONTENT that is not serving.
+        #
+        # A freshly `init`-ed store has nothing active and that is correct,
+        # not a problem -- "lessons in store: 0 found" above already says
+        # so once. Warning about it a second time is how a health check
+        # teaches people to skim past its warnings, which is the failure
+        # mode _check's own docstring is about. The first version of this
+        # block warned unconditionally and flattened "you have not started"
+        # back together with "you started and it is stuck" -- the exact
+        # distinction this diagnosis exists to draw.
+        stuck = state.active == 0 and (state.traces > 0 or state.lessons > 0)
+        if stuck:
+            _check(
+                "retrieval ready (>= 1 ACTIVE lesson)",
+                False,
+                f"{state.active} active, {state.review} at review, {state.traces} trace(s)",
+            )
+            # The same diagnosis `query` and the MCP `retrieve` tool give,
+            # so the tools agree rather than sending someone in different
+            # directions.
+            print()
+            print(store_state.why_no_results(root, searched="query"))
+            print()
+        elif state.active:
+            _check(
+                "retrieval ready (>= 1 ACTIVE lesson)",
+                True,
+                f"{state.active} active, {state.review} at review, {state.traces} trace(s)",
+            )
+
+        # What this store says it is, versus what every command will actually
+        # read back. These can disagree silently, and when they do, every
+        # trace captured without an explicit --agent-type is stamped with the
+        # wrong fleet and `--agent-type <yours>` then matches nothing.
+        # Traces this store may already have lost. Nothing is rewritten --
+        # the data is gone and only a person can decide what to do about it --
+        # but a store that silently dropped captures should not have to
+        # discover that from a headcount months later.
+        collided = _collision_suspects(root)
+        if collided:
+            _check(
+                "trace filename collisions", False,
+                f"{collided} trace file(s) hold fewer captures than were made under "
+                "them. Before this was fixed, two occasion ids sharing their first 16 "
+                "characters (e.g. TICKET-PROJECT-4711 and -4712) wrote to one filename "
+                "and the second silently replaced the first. New captures are safe; "
+                "these are already-lost traces. Re-capture them if the source data "
+                "still exists.",
+            )
+        else:
+            _check("trace filename collisions", True, "none detected")
+
+        declared = _declared_agent_type(root)
+        effective = paths.store_agent_type(root)
+        if declared is None:
+            _info(
+                "store agent_type",
+                f"not declared in memory/INDEX.md; commands will assume '{effective}'. "
+                "Add `agent_type: <your fleet>` to the first line to make it explicit.",
+            )
+        elif declared == effective:
+            _check("store agent_type", True, f"{declared!r} (any field is valid; taxonomy is open)")
+        else:
+            _check(
+                "store agent_type", False,
+                f"memory/INDEX.md declares {declared!r} but commands read back "
+                f"{effective!r} -- it is not a valid slug "
+                f"({paths.AGENT_TYPE_RE.pattern}). Traces are being stamped "
+                f"{effective!r}. Fix the first line of memory/INDEX.md.",
+            )
 
     attention_extra = _installed("numpy") and _installed("sentence_transformers")
     # Labels below are stated NEUTRALLY, not affirmatively.
@@ -143,8 +297,14 @@ def run(args: argparse.Namespace) -> int:
     if query_script is not None:
         _check("reference attention/query.py", True, query_script)
     else:
-        _info("reference attention/query.py",
-              "not found; expected for a pip-installed client (it ships only in a repo checkout)")
+        # It ships inside the package now, so absence means a damaged install
+        # rather than "you are not in a repo checkout". This used to be an
+        # [INFO] saying absence was expected -- which meant the one command
+        # that exists to diagnose a broken retriever reported the breakage as
+        # normal, while `commontrace query` exited non-zero for anyone who
+        # had installed the attention extra.
+        _check("reference attention/query.py", False,
+               "missing from the installed package - try `pip install --force-reinstall commontrace`")
 
     bench_script = find_reference_script(root, "benchmark/measure_performance.py")
     if bench_script is not None:

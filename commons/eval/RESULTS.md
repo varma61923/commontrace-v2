@@ -240,3 +240,48 @@ That is still a design decision with the same trust and legal
 consequences described above, not a decision this file makes.
 
 Reproduce: `python commons/eval/representations.py`
+
+## Addendum: would fusing the lexical and semantic retrievers beat either?
+
+The previous addendum ended by pointing at "ranking/top-k retrieval" as the
+next thing worth trying. `commons/eval/hybrid_fusion.py` tries the standard
+form of it: run both retrieval arms and combine their ranked lists with
+Reciprocal Rank Fusion (Cormack, Clarke & Buettcher, SIGIR 2009), which
+reads only ranks and so needs no calibration between two incomparable
+score scales. **No change was made** — this was a measurement, not a patch.
+
+Tuned and tested on all 92 positives at once, fusion wins: **+4.4pp at rank
+1** over semantic alone. That number is the reason the file does not stop
+there. It is the maximum of 30 swept configurations scored on the same
+probes that selected it, and at n=92 one standard error is already ~2.7pp.
+
+Split honestly — tune on one probe set, score on the other — it does not
+survive. `probes-v2.jsonl` is the meaningful holdout (written after the
+original evaluation, never used to shape a candidate), and on it fusion
+ties the best single arm exactly:
+
+| Tuned on | Scored on | Lexical | Semantic | Fusion | vs best single arm |
+|---|---|---|---|---|---|
+| v1 | **v2** (true holdout) | 89.1% | 84.8% | 89.1% | **+0 probes** |
+| v2 | v1 | 91.3% | 97.8% | 91.3% | **−3 probes** |
+
+Fusion never beats the better arm; it ties it once and loses to it once.
+
+The instrument, not the method, is the real finding. The two probe sets
+disagree about which *single* arm is better — semantic wins v1 by 6.5pp,
+lexical wins v2 by 4.3pp — and recall sits at 90–99% everywhere, leaving
+@3 and @5 saturated at one missed probe. A 46-record corpus with 92 probes
+cannot resolve a difference this size. Nothing here says hybrid retrieval
+does not work; it says this corpus cannot tell.
+
+That distinction decides the action, because retrieval is not a standalone
+feature in this product. The scorer picks which lessons are *eligible* on
+an occasion, which is the denominator of the causal estimate, and
+`commontrace/integrity.py:check_scorer_drift` treats a scorer change
+mid-experiment as `SEVERITY_INVALIDATES` — it discards the comparison. A
+retrieval change therefore costs every customer their running experiment,
+so it has to be measurably better, not plausibly better. At "cannot tell",
+the shipped retriever stays.
+
+Reproduce: `python commons/eval/hybrid_fusion.py` (needs the `attention`
+extra and the cached model; skips cleanly without them).

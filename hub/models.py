@@ -88,6 +88,23 @@ class Organization(Base):
     # only way to raise this number is to write something an operator
     # judged worth publishing.
     bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # A maintained counter, not derived: hub/crud.py's _reserve_trace_slot
+    # used to enforce plan.max_traces with a `SELECT count(*) FROM traces
+    # WHERE org_id = ...` on every single contribute_trace/amend_trace call
+    # -- an index scan whose cost grows with the org's ENTIRE trace history,
+    # on the org's own write path, forever. This column is incremented (by
+    # crud.contribute_trace/amend_trace, unconditionally, regardless of
+    # plan) and decremented (by crud.delete_trace and manage.purge_trace,
+    # by however many rows an amendment-chain deletion actually removes) in
+    # the SAME transaction as the row mutation that changes it, via a plain
+    # atomic `UPDATE ... SET trace_count = trace_count +/- N`, so it can
+    # never observe a partial write: either both change together, or
+    # (transaction rollback) neither does. manage.purge_org needs no
+    # matching decrement -- deleting the Organization row deletes this
+    # column's value along with it. See hub/tests/test_trace_count.py for
+    # the property this whole mechanism exists to guarantee: this value
+    # equals a real `count(*)` after every mutation path, every time.
+    trace_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # --- Randomized holdout configuration ------------------------------
     #
@@ -113,6 +130,19 @@ class Organization(Base):
     # like ordinary noise rather than like a broken experiment.
     holdout_salt: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
+    # What this experiment committed to measuring, written when it started
+    # and never edited afterwards (commontrace/prereg.py). NULL means the
+    # experiment was not pre-registered, which is reported as such rather
+    # than passing silently: the outcome measured, the effect size treated
+    # as meaningful, and the point the run stopped at were then all settled
+    # with the results already visible.
+    #
+    # Stored beside the salt because it is ABOUT the salt: a new salt is a
+    # new experiment and needs its own registration rather than inheriting
+    # the credibility of the last one's. `start_experiment` writes both
+    # together for exactly that reason.
+    holdout_prereg: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
     #
     # A two-call design, deliberately: `request_account_deletion` alone
@@ -132,6 +162,31 @@ class Organization(Base):
     deletion_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deletion_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- Self-serve billing (hub/billing.py) -----------------------------
+    #
+    # NULL until this org's first Checkout Session completes -- most orgs on
+    # the free plan never set either column, which is the expected steady
+    # state, not a migration gap. Set together, by the same
+    # checkout.session.completed webhook handler, in the same transaction:
+    # an org with a subscription id but no customer id (or vice versa) is
+    # not a state this code ever intentionally produces.
+    #
+    # `stripe_customer_id` is also the lookup key every LATER webhook event
+    # (customer.subscription.updated/deleted) resolves an org by -- those
+    # events carry a customer id, never an org id, so this column is what
+    # makes them attributable at all. unique+indexed because it is both a
+    # real 1:1 relationship (one Stripe Customer object is never shared
+    # across two orgs) and a hot lookup path on every subscription webhook.
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    # NULL means "no active subscription" -- billing.py's own upgrade UI
+    # reads that to decide whether to offer a fresh Checkout Session (mints
+    # a NEW subscription) or Stripe's Billing Portal (manages an EXISTING
+    # one). Getting this branch wrong is not cosmetic: sending an org with
+    # a live subscription through Checkout again would create a SECOND
+    # subscription on the same customer rather than changing the first,
+    # which is silent double billing.
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 
@@ -148,6 +203,17 @@ class ApiKey(Base):
     )
     key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     key_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Hex SHA-256 HMAC of the raw key, keyed by a server-side pepper
+    # (HUB_API_KEY_PEPPER) -- an indexed, O(1) verification path that makes
+    # hub/auth.py's per-request Argon2id computation (measured: ~83ms, 64MiB
+    # per verify, a ~48 req/s ceiling on a 4-core box) unnecessary for any
+    # key that has one. NULL for a key issued before this column existed, or
+    # not yet used since it was added -- verify_api_key backfills it lazily
+    # on that key's next successful (legacy Argon2) verification, so no
+    # migration job and no downtime. key_hash is kept regardless, forever,
+    # as the fallback verification path and the break-glass copy if a
+    # pepper is ever lost or rotated.
+    key_hmac: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -156,6 +222,21 @@ class ApiKey(Base):
     # at verification time in hub/auth.py, so an expired key stops working
     # without anyone having to run a revocation job.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What this key may do, as distinct from which org it speaks for
+    # (hub/scopes.py). Before this column there was one privilege level per
+    # org, so a credential minted for a CI job could also delete the org.
+    #
+    # server_default is every scope: an existing key could do everything
+    # when it was issued, and narrowing live credentials from inside a
+    # migration would break running fleets on upgrade -- a decision that
+    # belongs to the operator, who can re-issue narrower keys whenever they
+    # choose. NOT NULL for the same reason `tags` is: a nullable array
+    # gives every reader two ways to spell "nothing" and one of them
+    # (hub/scopes.py:satisfies) has to mean "everything" for legacy rows,
+    # so the column itself should never produce NULLs going forward.
+    scopes: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), nullable=False, server_default="{read,write,admin}", default=list
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="api_keys")
 
@@ -173,6 +254,19 @@ class Trace(Base):
     context_text: Mapped[str] = mapped_column(Text, nullable=False)
     solution_text: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String(128)), default=list, nullable=False)
+    # Optional, explicit, curator-set: which end user(s)/customer(s) this
+    # trace's content concerns, for audit §2.2's subject-erasure request.
+    # Empty by default -- nothing populates this automatically, the same
+    # "no auto-provisioning" caution hub/sso.py applies elsewhere, because
+    # inferring a subject from free text would just be search_trace_content
+    # wearing a structured column's clothes. What this buys once populated:
+    # `hub/crud.py:find_traces_by_subject`/`purge_traces_by_subject` are
+    # EXACT array-membership queries, not a fuzzy scan a human still has to
+    # review -- for TAGGED content this really can be provably complete,
+    # unlike search_trace_content, which can prove presence but never
+    # absence. Untagged and historical content still needs that free-text
+    # search; this does not retroactively fix that.
+    subject_ids: Mapped[list[str]] = mapped_column(ARRAY(String(256)), default=list, nullable=False)
     agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
     # The AGENT, as distinct from the KIND of agent above. agent_type is a
     # category ("support", "sales", "code"): a fleet of 25 support agents
@@ -203,6 +297,39 @@ class Trace(Base):
     contributor: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     outcome: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    # Bi-temporal supersession: the forward half of the amendment chain
+    # `supersedes_trace_id` only ever points backward. crud.py:amend_trace
+    # creates a NEW row and leaves the original one it amends untouched --
+    # correct for history (nothing is mutated), but it meant the original
+    # carried no signal of its own that a correction exists. search_traces
+    # had no predicate that could tell a live trace from one someone had
+    # since amended, so a search could return the STALE original --
+    # sometimes instead of its correction, if the old text happened to
+    # rank higher -- with nothing on the row itself to say it had been
+    # superseded. Reproduced against a live Hub before this existed: amend
+    # a trace, search for the old wording, get the old wording back.
+    #
+    # The fix (the idea, not the code, adapted from Zep/Graphiti's
+    # bi-temporal fact model: a superseded fact is invalidated, never
+    # deleted, and the invalidation itself is a timestamped, queryable
+    # event) is to record the fact of supersession on the row that WAS
+    # superseded, set atomically in the same transaction as the amending
+    # INSERT. Two columns, not one: `_by` says WHAT superseded it (a
+    # forward pointer, letting a caller walk the chain in either
+    # direction without a self-join), `_at` says WHEN, which is what a
+    # partial index and a WHERE clause can act on directly.
+    #
+    # Not a ForeignKey, matching `supersedes_trace_id`'s own precedent
+    # just above: the trace THIS one points to may later be purged
+    # (hub/manage.py:purge_trace's amendment-chain walk), and a dangling
+    # FK would block that deletion rather than let the chain be cleaned
+    # up. NULL means "this is the current head" -- still true, still the
+    # right thing to search for.
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    superseded_by_trace_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
 
     # Hub-computed / read-only fields ------------------------------------
     trust: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
@@ -366,6 +493,7 @@ class Trace(Base):
     __table_args__ = (
         Index("ix_traces_org_quarantined", "org_id", "quarantined"),
         Index("ix_traces_tags_gin", "tags", postgresql_using="gin"),
+        Index("ix_traces_subject_ids_gin", "subject_ids", postgresql_using="gin"),
         Index("ix_traces_search_vector_gin", "search_vector", postgresql_using="gin"),
         # search_traces orders by created_at DESC within an org; without this
         # the ordering step sorts the whole org partition on every query.
@@ -397,6 +525,18 @@ class Trace(Base):
             postgresql_where=text(
                 "shared_with_commons AND NOT quarantined AND commons_retracted_at IS NULL"
             ),
+        ),
+        # search_traces now excludes a superseded trace from its default
+        # result set (superseded_at IS NULL) alongside its existing org_id
+        # + quarantined predicate. A superseded trace is expected to
+        # eventually be a minority of any active org's rows -- the same
+        # reasoning as ix_traces_commons above -- so a partial index over
+        # just the live ones keeps the common case (search an org) off the
+        # full table instead of scanning every historical version.
+        Index(
+            "ix_traces_org_live",
+            "org_id",
+            postgresql_where=text("superseded_at IS NULL"),
         ),
     )
 
@@ -742,4 +882,461 @@ class UsageCounter(Base):
         # constraint by name, and an auto-generated name would break that
         # silently on a schema rebuild.
         UniqueConstraint("org_id", "period", "metric", name="uq_usage_org_period_metric"),
+    )
+
+
+class RetentionPolicy(Base):
+    """How long one org keeps one (object type, status), in days.
+
+    Per (org, type, status) rather than per org: "keep quarantined traces
+    for two years and ordinary ones for ninety days" is the shape real
+    policies take, and a single per-org number cannot express it -- an
+    operator forced to pick one would pick the longer, which is how
+    indefinite retention survives having a policy.
+
+    `max_age_days` is validated against a per-type floor in hub/retention.py
+    at write time, not here: the floor is a product decision with a reason
+    attached, and a CHECK constraint could only refuse the row, not say why.
+    """
+
+    __tablename__ = "retention_policies"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    #: One of hub/retention.py's KINDS.
+    object_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: A status within that type, or "any".
+    status: Mapped[str] = mapped_column(String(32), default="any", nullable=False)
+    max_age_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        # One policy per (org, type, status). Two rows disagreeing about the
+        # same objects would make the retention period depend on iteration
+        # order -- a difference nobody would see until data went early.
+        UniqueConstraint(
+            "org_id", "object_type", "status", name="uq_retention_org_type_status"
+        ),
+    )
+
+
+class LegalHold(Base):
+    """A freeze that outranks every retention policy.
+
+    Scope widens as fields are left empty: no `object_type` holds everything
+    the org has; a type with no `target_id` holds all rows of that type.
+
+    NOT a boolean on the held rows. A hold is an event with a reason, an
+    author and (eventually) a release -- and the rows it protects include
+    ones that do not exist yet when it is placed, which a per-row flag
+    cannot express. It also has to survive the release: "this was frozen
+    from March to July, by whom and why" is the question a hold is
+    ultimately asked, so releasing sets `released_at` rather than deleting
+    the row.
+    """
+
+    __tablename__ = "legal_holds"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    #: "" means every object type the org has.
+    object_type: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    #: "" means every row of `object_type`.
+    target_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    placed_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+    __table_args__ = (
+        # Every purge plan asks the same question -- "what is frozen for this
+        # org right now" -- so the partial index is on exactly that.
+        Index(
+            "ix_legal_holds_active",
+            "org_id", "object_type",
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
+
+
+class WebhookEndpoint(Base):
+    """Where one org wants to be told what happened here.
+
+    NO SECRET COLUMN, deliberately. A webhook secret has to be USED on every
+    delivery, so it cannot live as a hash the way an API key does -- which
+    normally means a recoverable secret sitting in a column waiting for a
+    database dump to find it. It is instead derived per endpoint from the
+    deployment's own signing key plus `id` and `key_version`
+    (hub/events.py:derive_secret), so this table holds a version integer and
+    nothing else, and rotation bumps the integer.
+
+    `events` is the subscribed subset; an endpoint that wants everything
+    stores every name rather than an empty "all" sentinel, so adding a new
+    event type never silently starts delivering to endpoints that predate
+    it.
+    """
+
+    __tablename__ = "webhook_endpoints"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    events: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), default=list, nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Bumped to rotate the derived signing secret without storing one.
+    key_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class WebhookDelivery(Base):
+    """One queued attempt to tell someone one thing.
+
+    A durable row rather than a fire-and-forget call, because the moments
+    worth a webhook (a quarantine, an experiment verdict) are exactly the
+    ones a receiver cannot afford to miss because their load balancer was
+    restarting. Delivery is AT-LEAST-ONCE and the envelope carries a stable
+    `event_id` so receivers can deduplicate -- promising exactly-once here
+    would be a promise this cannot keep.
+
+    `payload` holds only the fields its event type declares
+    (hub/events.py:check_payload): ids, counts and verdicts, never trace
+    content. A webhook is egress to a third party, and this column is the
+    one place where "just this once" would become permanent.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    endpoint_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # The drain query, exactly: what is pending and due, oldest first.
+        Index(
+            "ix_webhook_deliveries_due", "status", "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+
+class User(Base):
+    """A person, distinct from the workload credential (ApiKey) an org's
+    agents authenticate with.
+
+    WHY THIS EXISTS
+    ---------------
+    Every request into this Hub, before this table, resolved to an
+    ORGANIZATION -- one shared API key, no notion of who on that org's team
+    was actually acting. That is a workload-identity model, and it is the
+    right one for an agent's own credential; it is the wrong one for the
+    humans who curate lessons, approve them, decide what deploys, and would
+    need to be individually deprovisioned when they leave. hub/auth.py's own
+    module docstring names this as an explicit, not-yet-built follow-up.
+
+    `role` is one of hub/rbac.py's named roles (Viewer, Analyst, Curator,
+    Validator, Deployer, Security Admin, Billing Admin, Owner) and decides
+    what this person may do, checked per MCP tool call
+    (hub/rbac.py:require_capability) IN ADDITION TO the org's own API-key
+    scope -- see hub/rbac.py's module docstring for why both gates run.
+
+    DEPROVISIONING IS `disabled_at`, NEVER A DELETE. The row is kept because
+    it is exactly what an auditor asks about later: who had access, with what
+    role, and when it was revoked. `disabled_at is not None` is checked on
+    EVERY authenticated call (hub/auth.py:verify_user_token), not only at
+    token issuance -- a JWT that was valid when minted must stop authorizing
+    anything the moment this column is set, independent of the token's own
+    expiry, which is what makes deprovisioning actually block access rather
+    than merely record an intention to.
+
+    `external_subject`/`issuer` link this row to an OIDC identity
+    (hub/sso.py) once one is verified. NOT auto-populated: a subject claim
+    arriving in a valid JWT is proof the issuer vouches for a person, not
+    proof that person should have an account here, so linking one is always
+    an explicit operator action (`hub.manage link-sso`), never automatic
+    just-in-time provisioning. SCIM-style automated provisioning is exactly
+    the piece that absence leaves open -- see hub/README.md "Auth
+    follow-ups" for what this table does and does not close.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Set once this row is linked to a verified OIDC identity
+    # (hub.manage link-sso). Both empty until then: a user created for a
+    # deployment with no SSO configured never needs either.
+    issuer: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    external_subject: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    # NULL means active. Set, never cleared by re-enabling to a prior value --
+    # `enable-user` clears it to NULL outright, and the audit log entry for
+    # each transition is the record of when and by whom.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+        # Partial: two rows may both carry ("", "") -- no SSO linked yet --
+        # without colliding. Only an ACTUAL linked identity has to be unique.
+        Index(
+            "ix_users_issuer_subject", "issuer", "external_subject", unique=True,
+            postgresql_where=text("external_subject != ''"),
+        ),
+    )
+
+
+class ScimGroup(Base):
+    """A group an IdP pushes via SCIM (`/scim/v2/Groups`, hub/scim.py) --
+    pure membership metadata, deliberately granting nothing.
+
+    hub/rbac.py gives one `User` exactly one `role`; there is no additive,
+    many-to-many permission surface anywhere in this Hub for a group to
+    plug into. A real SCIM Groups API needs real many-to-many membership,
+    so this row and `ScimGroupMembership` exist to hold that faithfully --
+    an IdP's group roster stays in sync here -- without inventing a second
+    authorization system alongside `role`. Nothing in `hub/rbac.py` or
+    `hub/server.py`'s tool gating ever reads either table.
+    """
+
+    __tablename__ = "scim_groups"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # SCIM's own externalId: the IdP's own identifier for this group, kept
+    # verbatim and never interpreted -- same stance as User.external_subject.
+    external_id: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now, nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "display_name", name="uq_scim_groups_org_display_name"),
+    )
+
+
+class ScimGroupMembership(Base):
+    """One (group, user) membership row -- the many-to-many `ScimGroup`
+    needs and `User.role` alone cannot express. Membership here confers no
+    capability by itself; see `ScimGroup`'s own docstring.
+
+    `org_id` is denormalized from `ScimGroup.org_id` rather than looked up
+    through `group_id` -- same reasoning as `Comment`/`Assignment` above:
+    row-level security needs a column on THIS row to scope against, not a
+    join, and a membership never outlives the group or user it points to
+    (both cascade) so there is nothing for the copy to drift out of sync
+    with.
+    """
+
+    __tablename__ = "scim_group_memberships"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    group_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("scim_groups.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_scim_group_memberships"),
+    )
+
+
+class Comment(Base):
+    """A remark a signed-in person (hub/auth.py:current_user) leaves on one
+    of their org's own traces, so a customer's own team has somewhere to
+    discuss a trace before or after it is curated -- audit §8.1 named this
+    absence explicitly.
+
+    `target_type`/`target_id` (not a ForeignKey to Trace) is deliberately
+    the same shape as `KnowledgeBaseSubmission.resulting_trace_id`: a later
+    purge-trace on a heavily-discussed trace must not be blocked by a
+    comment still referencing it, and keeping the column generic leaves the
+    door open to commenting on some other kind of row later without a
+    schema change. Only `target_type == "trace"` is validated and reachable
+    through the MCP tool surface today (hub/collab.py).
+
+    Requires a PERSON, not merely an authenticated API key: `author_user_id`
+    is who said this, and there is no meaningful author for a shared
+    workload credential. hub/auth.py:get_current_user raises for an
+    API-key-only request before this row is ever created.
+    """
+
+    __tablename__ = "comments"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    author_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    body: Mapped[str] = mapped_column(String(4000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        Index("ix_comments_target", "org_id", "target_type", "target_id"),
+    )
+
+
+class Assignment(Base):
+    """Who currently owns following up on one target (a trace, today).
+
+    ONE assignee at a time -- `uq_assignments_target` enforces it -- because
+    this answers "whose job is this right now", not "who has ever touched
+    it"; that history already lives in AuditLogEntry (action
+    `assignment.set`), which is append-only where this row is deliberately
+    mutable state. Re-assigning updates this row rather than adding a
+    second one.
+    """
+
+    __tablename__ = "assignments"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    assignee_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    assigned_by_user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "target_type", "target_id", name="uq_assignments_target",
+        ),
+    )
+
+
+class Notification(Base):
+    """One line in a person's inbox (hub/collab.py:list_my_notifications):
+    "you were assigned X" or "Y commented on Z you're assigned to". Created
+    server-side by the action that causes it (add_comment, assign) --
+    there is no separate "send a notification" tool, so an inbox entry
+    always corresponds to something that actually happened.
+
+    No delivery beyond this table: no email, no push, no webhook. A person
+    (or whatever a customer builds against this) polls
+    `list_my_notifications`. This mirrors the project's existing stance
+    that signup (hub/signup.py) has no outbound email integration either --
+    added here rather than assumed, since a notification a customer never
+    sees is worse than no notification claimed at all.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    summary: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_notifications_user_unread", "org_id", "user_id", "read_at"),
+    )
+
+
+class AlertRule(Base):
+    """A threshold an org wants to know about without polling for it
+    (audit §8.3: "no alerting, scheduled reports, BI export").
+
+    Evaluated by `python -m hub.manage check-alerts`, an operator-cron
+    entry point in the same shape as `webhook-deliver`'s existing
+    redelivery sweep -- this Hub's request-driven server has no
+    background loop, and adding one for this alone would be a bigger
+    architectural commitment than the feature is worth.
+
+    Firing emits `alert.triggered` through the EXISTING webhook pipeline
+    (hub/events.py), not a second delivery mechanism: an alert is a kind
+    of event, so an org's already-configured endpoint and signature
+    verification cover it for free. See hub/alerts.py for the supported
+    metrics and how a value is computed.
+    """
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparator: Mapped[str] = mapped_column(String(8), nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    # How long a rule stays quiet after firing, even if the condition
+    # still holds -- without this, a metric that stays past its
+    # threshold for a week would emit one event per check-alerts run
+    # (every cron tick) rather than one event per crossing.
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+
+    __table_args__ = (
+        Index("ix_alert_rules_org_enabled", "org_id", "enabled"),
     )

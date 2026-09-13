@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
+import uuid
 from dataclasses import dataclass
 
 from commontrace import experiment, frontmatter, lesson_io, paths
@@ -128,8 +130,12 @@ def configure(
         rate=rate,
         # Derived from the moment it was set rather than random, so the salt
         # itself records WHEN this randomization began -- which is the first
-        # thing anyone asks when two of them appear in one log.
-        salt=f"{now[:19].replace(':', '').replace('-', '')}-{rate:g}",
+        # thing anyone asks when two of them appear in one log. Timestamp
+        # alone has 1-second granularity and collides when configure is
+        # called twice in the same second, pooling two experiments under one
+        # salt; the uuid suffix makes every rotation unique while keeping
+        # the human-readable timestamp prefix.
+        salt=f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
         detect=detect,
         started_at=now,
         note=note,
@@ -167,11 +173,32 @@ def assign_and_log(
     occasion_id: str,
     rate: float,
     salt: str,
+    relevance: dict[str, float] | None = None,
+    scorer: str = "",
+    floor: float | None = None,
 ) -> set[str]:
     """Decide which of `slugs` to withhold on this occasion, and record it.
 
     Assignment is a deterministic hash of (lesson, occasion, salt), so a
     retry returns the same answer and an occasion cannot change arms.
+
+    `slugs` must be in rank order; the position is recorded alongside each
+    row. `relevance` maps slug -> the score that made it eligible, and
+    `scorer`/`floor` record the settings that decided eligibility at all.
+
+    WHY THE EVIDENCE IS RECORDED, not just the arm. A row said only that a
+    lesson was eligible on an occasion, which reads as "this lesson was about
+    this task" and frequently was not: retrieval returns top-k, and a lesson
+    that scraped in on one incidental word got a row identical to one that
+    was squarely on topic. The analysis then attributed that occasion's
+    outcome to it. In a six-lesson store this produced a lesson with 246
+    assignments against ~80 occasions actually about it, and a significant
+    HURTS verdict for a lesson that did nothing -- the product's single most
+    important number, wrong, with no way to see why from the log alone.
+    commontrace/integrity.py's check_marginal_eligibility and
+    check_assignment_concentration read these fields; without them they
+    cannot be computed retroactively, because the corpus that produced the
+    scores has moved on.
     """
     withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rate, salt)}
     # Written on every line from now on. Without it the log says how far an
@@ -193,14 +220,17 @@ def assign_and_log(
     # prevent, near-impossible to detect after the fact.
     with frontmatter.locked(path):
         with open(path, "a", encoding="utf-8") as fh:
-            for slug in slugs:
-                fh.write(json.dumps({
+            for rank, slug in enumerate(slugs, start=1):
+                row = {
                     "occasion_id": occasion_id,
                     "lesson": slug,
                     "injected": slug not in withheld,
                     "rate": rate,
                     "salt": salt,
                     "at": now,
+                    # Where this lesson placed among the eligible set, and how
+                    # strongly it matched. See this function's docstring.
+                    "rank": rank,
                     # WHICH TEXT was eligible on this occasion, not just which
                     # lesson name. A lesson is a file and every surface can
                     # rewrite it -- so a slug alone identifies a mutable
@@ -213,7 +243,14 @@ def assign_and_log(
                     # every caller would otherwise have to remember to, and
                     # the one that forgot would silently log the old shape.
                     "revision": lesson_io.revision_for_slug(root, slug),
-                }) + "\n")
+                }
+                if relevance is not None and slug in relevance:
+                    row["relevance"] = round(float(relevance[slug]), 6)
+                if scorer:
+                    row["scorer"] = scorer
+                if floor is not None:
+                    row["floor"] = float(floor)
+                fh.write(json.dumps(row) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
     return withheld
@@ -235,6 +272,16 @@ class LogRecord:
     # an unknown revision as unknown rather than as a change -- an old log
     # must not read as a broken experiment.
     revision: str | None = None
+    # The retrieval evidence behind the assignment: how strongly the lesson
+    # matched, where it placed, and under which settings it was judged
+    # eligible. All None on lines written before these were recorded, and the
+    # integrity checks that read them SKIP such lines rather than assuming a
+    # value -- an old log must degrade to "cannot assess this" rather than
+    # to a finding it has no evidence for.
+    relevance: float | None = None
+    rank: int | None = None
+    scorer: str | None = None
+    floor: float | None = None
 
 
 def read_log(root: str) -> tuple[list[LogRecord], int]:
@@ -293,12 +340,50 @@ def read_log(root: str) -> tuple[list[LogRecord], int]:
                 salt=str(raw.get("salt") or DEFAULT_SALT),
                 at=at,
                 revision=(str(raw["revision"]) if raw.get("revision") else None),
+                relevance=_opt_float(raw.get("relevance")),
+                rank=_opt_int(raw.get("rank")),
+                scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
+                floor=_opt_float(raw.get("floor")),
             ))
     return records, corrupt
 
 
+def _opt_float(value: object) -> float | None:
+    """None rather than a default. A missing score is "not recorded", which
+    the integrity checks must be able to tell apart from a recorded 0.0."""
+    if value is None:
+        return None
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out):
+        return None
+    return out
+
+
+def _opt_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        # `int(float("inf"))` raises OverflowError, not ValueError -- and
+        # JSON's `Infinity`/`-Infinity`/`NaN` tokens are accepted by
+        # `json.loads` by default, so a log line carrying one of those for
+        # `rank` must not be able to crash the whole read.
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _float_or(value: object, default: float) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        out = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+    # NaN/Inf parse successfully but break every downstream consumer:
+    # rate=nan silently stops the experiment (nan > 0 is False) then raises
+    # in is_held_out (math.isfinite check). Fall back to defaults instead,
+    # honouring load_config's "Never raises" contract.
+    if not math.isfinite(out):
+        return default
+    return out

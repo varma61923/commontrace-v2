@@ -72,38 +72,122 @@ class TestConfigRefusesNonsenseAtStartup:
         assert _env_int_in_range("HUB_NOT_SET_ANYWHERE", 5, 1, 10) == 5
 
 
+class TestSignupAndBillingDefaultOff:
+    """Same posture as HUB_ADMIN_TOKEN/HUB_CONSOLE_SECRET: unset means the
+    corresponding routes are never registered (hub/server.py), so these
+    just pin that the config layer itself defaults to the off/empty state
+    rather than silently opting a fresh deployment in."""
+
+    def test_signup_defaults_disabled(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        assert HubConfig.from_env().signup_enabled is False
+
+    def test_signup_can_be_enabled(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_SIGNUP_ENABLED", "true")
+        assert HubConfig.from_env().signup_enabled is True
+
+    def test_alert_scheduler_defaults_disabled(self, monkeypatch):
+        """Same posture: hub/scheduler.py's loop must not start for a
+        deployment that never set HUB_ALERT_SCHEDULER_ENABLED."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        cfg = HubConfig.from_env()
+        assert cfg.alert_scheduler_enabled is False
+        assert cfg.alert_scheduler_interval_seconds == 300
+
+    def test_alert_scheduler_can_be_enabled_with_a_custom_interval(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_ENABLED", "true")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", "60")
+        cfg = HubConfig.from_env()
+        assert cfg.alert_scheduler_enabled is True
+        assert cfg.alert_scheduler_interval_seconds == 60
+
+    def test_alert_scheduler_interval_out_of_range_is_refused(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", "1")
+        with pytest.raises(ValueError, match="HUB_ALERT_SCHEDULER_INTERVAL_SECONDS"):
+            HubConfig.from_env()
+
+    def test_ip_allowlist_defaults_empty(self, monkeypatch):
+        """Same posture: hub/server.py:IpAllowlistMiddleware must not even
+        be mounted for a deployment that never set HUB_IP_ALLOWLIST."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        assert HubConfig.from_env().ip_allowlist == ()
+
+    def test_ip_allowlist_parses_a_comma_separated_list(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_IP_ALLOWLIST", " 10.0.0.0/8 , 203.0.113.5/32 ")
+        cfg = HubConfig.from_env()
+        assert cfg.ip_allowlist == ("10.0.0.0/8", "203.0.113.5/32")
+
+    def test_ip_allowlist_rejects_an_invalid_entry_at_startup(self, monkeypatch):
+        """Not on the first request that happens to reach the middleware --
+        the same "fail loud, name the variable" policy every other
+        misconfiguration in this file gets."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_IP_ALLOWLIST", "not-a-cidr")
+        with pytest.raises(ValueError, match="HUB_IP_ALLOWLIST"):
+            HubConfig.from_env()
+
+    def test_stripe_settings_default_empty(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        config = HubConfig.from_env()
+        assert config.stripe_secret_key == ""
+        assert config.stripe_webhook_secret == ""
+        assert config.stripe_price_team == ""
+        assert config.stripe_price_scale == ""
+
+    def test_stripe_settings_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_STRIPE_SECRET_KEY", "sk_test_123")
+        monkeypatch.setenv("HUB_STRIPE_WEBHOOK_SECRET", "whsec_123")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM", "price_team_123")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_SCALE", "price_scale_123")
+        config = HubConfig.from_env()
+        assert config.stripe_secret_key == "sk_test_123"
+        assert config.stripe_webhook_secret == "whsec_123"
+        assert config.stripe_price_team == "price_team_123"
+        assert config.stripe_price_scale == "price_scale_123"
+
+
 class TestRateLimiterReportsWhenToComeBack:
-    def test_an_allowed_call_asks_for_no_wait(self):
-        allowed, retry_after = RateLimiter(per_minute=60, burst=5).check("k")
+    @pytest.mark.asyncio
+    async def test_an_allowed_call_asks_for_no_wait(self):
+        allowed, retry_after = await RateLimiter(per_minute=60, burst=5).check("k")
         assert allowed is True and retry_after == 0.0
 
-    def test_a_refused_call_says_how_long_until_a_token_exists(self):
+    @pytest.mark.asyncio
+    async def test_a_refused_call_says_how_long_until_a_token_exists(self):
         """Without this a refused client can only guess -- and every client
         guessing short against a limiter already saying no is what turns one
         burst into a sustained stampede."""
         limiter = RateLimiter(per_minute=60, burst=2)  # 1 token/sec
         for _ in range(2):
-            assert limiter.check("k")[0] is True
-        allowed, retry_after = limiter.check("k")
+            assert (await limiter.check("k"))[0] is True
+        allowed, retry_after = await limiter.check("k")
         assert allowed is False
         assert 0 < retry_after <= 1.01
         assert max(1, math.ceil(retry_after)) == 1
 
-    def test_a_deny_everything_limiter_does_not_promise_a_finite_wait(self):
+    @pytest.mark.asyncio
+    async def test_a_deny_everything_limiter_does_not_promise_a_finite_wait(self):
         """per_minute=0 never refills; advertising a short wait would invite
         an endless retry loop."""
-        allowed, retry_after = RateLimiter(per_minute=0, burst=10).check("k")
+        allowed, retry_after = await RateLimiter(per_minute=0, burst=10).check("k")
         assert allowed is False
         assert retry_after >= 60
 
-    def test_allow_still_works_for_every_existing_caller(self):
+    @pytest.mark.asyncio
+    async def test_allow_still_works_for_every_existing_caller(self):
         limiter = RateLimiter(per_minute=60, burst=1)
-        assert limiter.allow("k") is True
-        assert limiter.allow("k") is False
+        assert await limiter.allow("k") is True
+        assert await limiter.allow("k") is False
 
 
 class TestRateLimiterMemoryIsBounded:
-    def test_tracked_keys_are_capped(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_tracked_keys_are_capped(self, monkeypatch):
         """The idle sweep alone evicts nothing until a bucket has been
         untouched for an hour. A client-address-keyed limiter is keyed on
         something the peer chooses (any address out of an IPv6 /64), so an
@@ -113,17 +197,18 @@ class TestRateLimiterMemoryIsBounded:
         monkeypatch.setattr(RateLimiter, "_MAX_TRACKED_KEYS", 50)
         limiter = RateLimiter(per_minute=600, burst=10)
         for i in range(500):
-            limiter.allow(f"2001:db8::{i:x}")
+            await limiter.allow(f"2001:db8::{i:x}")
         assert len(limiter._buckets) <= 50
 
-    def test_eviction_never_lowers_another_clients_limit(self):
+    @pytest.mark.asyncio
+    async def test_eviction_never_lowers_another_clients_limit(self):
         """A re-created bucket starts full, so the worst case is that a
         flooding client resets its OWN limit."""
         limiter = RateLimiter(per_minute=60, burst=1)
-        assert limiter.allow("victim") is True
-        assert limiter.allow("victim") is False   # victim is out of tokens
+        assert await limiter.allow("victim") is True
+        assert await limiter.allow("victim") is False   # victim is out of tokens
         limiter._evict_if_over_capacity(0.0)      # a no-op below capacity
-        assert limiter.allow("victim") is False   # still limited, not reset by others
+        assert await limiter.allow("victim") is False   # still limited, not reset by others
 
 
 class TestMetricsEndpoint:
@@ -143,7 +228,11 @@ class TestMetricsEndpoint:
         out = m.render()
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="200"} 2' in out
         assert 'commontrace_hub_requests_total{method="POST",path="/mcp",status="429"} 1' in out
-        assert 'commontrace_hub_request_duration_ms_total{path="/mcp"} 21.00' in out
+        # A histogram now, not a plain summed counter -- see
+        # hub/tests/test_observability.py::TestDurationHistogram for the
+        # bucket/percentile behavior this replaced the old metric to get.
+        assert 'commontrace_hub_request_duration_ms_sum{path="/mcp"} 21.00' in out
+        assert 'commontrace_hub_request_duration_ms_count{path="/mcp"} 3' in out
 
     def test_an_arbitrary_path_cannot_inflate_label_cardinality(self):
         """An unbounded label set is the classic way a metrics endpoint
@@ -198,40 +287,44 @@ class TestAuthLimiterChargesOnlyFailedCredentials:
     anti-brute-force limiter, not the per-org fair-use one, the binding
     constraint on this product's own documented onboarding."""
 
-    def test_a_refund_returns_a_token(self):
+    @pytest.mark.asyncio
+    async def test_a_refund_returns_a_token(self):
         limiter = RateLimiter(per_minute=60, burst=2)
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is False
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is False
         limiter.refund("1.2.3.4")
-        assert limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
 
-    def test_a_refund_never_exceeds_capacity(self):
+    @pytest.mark.asyncio
+    async def test_a_refund_never_exceeds_capacity(self):
         """Otherwise a long-lived valid client would accumulate an unbounded
         credit and the limiter would stop meaning anything for that key."""
         limiter = RateLimiter(per_minute=60, burst=2)
         for _ in range(50):
             limiter.refund("1.2.3.4")
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is True
-        assert limiter.allow("1.2.3.4") is False
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is True
+        assert await limiter.allow("1.2.3.4") is False
 
     def test_refunding_an_unseen_key_is_a_no_op(self):
         limiter = RateLimiter(per_minute=60, burst=1)
         limiter.refund("never-seen")
         assert limiter._buckets == {}
 
-    def test_a_source_that_always_succeeds_is_never_throttled(self):
+    @pytest.mark.asyncio
+    async def test_a_source_that_always_succeeds_is_never_throttled(self):
         """The valid-client path: spend then refund, indefinitely."""
         limiter = RateLimiter(per_minute=1, burst=1)
         for _ in range(200):
-            assert limiter.allow("1.2.3.4") is True
+            assert await limiter.allow("1.2.3.4") is True
             limiter.refund("1.2.3.4")
 
-    def test_a_source_that_always_fails_is_still_throttled(self):
+    @pytest.mark.asyncio
+    async def test_a_source_that_always_fails_is_still_throttled(self):
         """The brute-force path is unchanged: no refund, so the budget is
         spent exactly as before."""
         limiter = RateLimiter(per_minute=60, burst=5)
-        allowed = [limiter.allow("9.9.9.9") for _ in range(20)]
+        allowed = [await limiter.allow("9.9.9.9") for _ in range(20)]
         assert allowed[:5] == [True] * 5
         assert False in allowed[5:]

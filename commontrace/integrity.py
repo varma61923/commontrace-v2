@@ -65,9 +65,10 @@ rather than checked here.
 from __future__ import annotations
 
 import datetime
+import statistics
 from dataclasses import dataclass, field
 
-from commontrace import experiment
+from commontrace import experiment, survival
 
 # A p-value below this on an arm-comparison check means the imbalance is
 # unlikely to be chance. Deliberately LOOSER than the 0.05 the effect
@@ -106,6 +107,24 @@ ARM_BALANCE_ALPHA = 0.001
 # bias the estimate, it just shrinks it, but at this level the run is mostly
 # unobserved and the CI stops describing what a reader thinks it describes.
 ATTRITION_WEAKENS_AT = 0.30
+
+# The share of eventually-reported occasions used to define "has had a fair
+# chance to report". An occasion younger than the time by which this much of
+# the run's OWN reported outcomes had arrived is not attrition, it is pending:
+# it has not yet reached the age at which its absence would mean anything.
+#
+# Derived from the run's own reporting curve rather than fixed in wall-clock
+# time, because the honest horizon is a property of the work. A fleet closing
+# support tickets in ninety seconds and one escalating incidents over four days
+# would each be mis-served by any constant, and a constant is exactly the kind
+# of unmeasured policy number this package exists to avoid.
+MATURITY_QUANTILE = 0.90
+
+# How far apart the two arms' reporting SCHEDULES have to be before the run is
+# called too early to read. Deliberately looser than VALIDITY_ALPHA: a speed
+# difference is not itself a defect -- a lesson that helps should close work
+# sooner -- so this only fires to say "wait", never to say "biased".
+CENSORING_ALPHA = 0.05
 
 # What the experiment randomizes, as a word for the reports.
 #
@@ -147,11 +166,27 @@ class Assignment:
     salt: str = ""
     succeeded: bool | None = None
     at: datetime.datetime | None = None
+    # WHEN the outcome came back, against `at` above being when the arm was
+    # decided. The gap between them is follow-up time, and it is the only
+    # thing that can tell an occasion nobody has reported YET apart from one
+    # nobody will EVER report (commontrace/survival.py). None on a row that is
+    # still waiting -- and also on any row written before this was recorded,
+    # where the checks fall back to their untimed behaviour rather than
+    # guessing a duration.
+    resolved_at: datetime.datetime | None = None
     # Content identity of the lesson AS IT WAS on this occasion
     # (commontrace/revision.py). None means unknown -- an assignment logged
     # before revisions were recorded, or a lesson that could not be read --
     # and unknown is treated as unknown, never as a change.
     revision: str | None = None
+    # WHY this lesson was eligible: how strongly it matched, where it placed,
+    # and the retrieval settings that judged it. None on assignments logged
+    # before these were recorded; the checks that read them skip such rows
+    # rather than inferring a value they do not have.
+    relevance: float | None = None
+    rank: int | None = None
+    scorer: str | None = None
+    floor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -268,7 +303,179 @@ def normalize(rows: list[Assignment]) -> tuple[list[Assignment], int]:
 # --- the checks ----------------------------------------------------------
 
 
-def check_differential_attrition(rows: list[Assignment]) -> Finding:
+def _follow_up(
+    rows: list[Assignment], now: datetime.datetime | None
+) -> list[tuple[Assignment, survival.Observation]] | None:
+    """Pair each row with how long it was watched, or None if unanswerable.
+
+    Returns None -- meaning "fall back to the untimed behaviour" -- whenever
+    the log cannot support a timed reading:
+
+      * no row carries `at`, so nothing can be placed on a clock at all; or
+      * some row HAS an outcome but no `resolved_at`, so the event is known to
+        have happened at an unknown time.
+
+    The second rule is deliberately strict. A resolved row with no timestamp is
+    interval-censored: placing it at `now` would stretch its follow-up to the
+    full age of the run and drag the reporting curve right, and placing it at
+    `at` would compress it to zero and drag the curve left. Either guess moves
+    the horizon that decides which occasions count as attrition. Refusing the
+    timed path on a partly-timed log keeps the old answer, which is merely
+    coarse, instead of inventing a new one that is precise and wrong.
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    if not any(r.at is not None for r in rows):
+        return None
+    paired: list[tuple[Assignment, survival.Observation]] = []
+    for row in rows:
+        if row.at is None:
+            return None
+        reported = row.succeeded is not None
+        if reported and row.resolved_at is None:
+            return None
+        end = row.resolved_at if reported else now
+        # Clamped at zero: `now` is the reader's clock and the timestamps are
+        # the database's, so a little skew between them is ordinary and must
+        # not surface as a negative time-to-event.
+        duration = max(0.0, (end - row.at).total_seconds())
+        paired.append((row, survival.Observation(duration=duration, event=reported)))
+    return paired
+
+
+def _mature_horizon(paired: list[tuple[Assignment, survival.Observation]]) -> float | None:
+    """How old an occasion must be before its silence means anything.
+
+    The time by which MATURITY_QUANTILE of outcomes had arrived -- computed per
+    arm, and the SLOWER arm's answer wins.
+
+    Taking the max rather than pooling is the whole difficulty of this check in
+    one line. A pooled horizon is dominated by whichever arm reports faster, so
+    a run where the treated arm concludes in minutes and the control takes
+    hours would judge the control's occasions against the treated arm's clock
+    and call every one of them missing -- reintroducing, one level down, the
+    exact false positive the maturity rule exists to remove. Each arm is
+    therefore given the follow-up its own reporting behaviour says it needs.
+
+    An arm whose curve never reaches the quantile contributes nothing instead
+    of raising the horizon to infinity. That case is the signature worth
+    keeping: an arm that is merely SLOW still reports eventually and so still
+    has a quantile, while an arm that is genuinely LOSING outcomes never gets
+    there. Letting it set the horizon would let a broken arm excuse its own
+    missingness forever.
+
+    `None` when no arm reaches the quantile, and the caller falls back to the
+    untimed comparison -- which, on a run where almost nothing is ever
+    reported, is exactly the blunt answer that is called for.
+    """
+    horizons: list[float] = []
+    for injected in (True, False):
+        arm = [obs for row, obs in paired if row.injected is injected]
+        if not arm:
+            continue
+        reached = survival.time_to_reported_fraction(
+            survival.kaplan_meier(arm), MATURITY_QUANTILE
+        )
+        if reached is not None:
+            horizons.append(reached)
+    return max(horizons) if horizons else None
+
+
+def check_censoring_hazard(
+    rows: list[Assignment], now: datetime.datetime | None = None
+) -> Finding:
+    """Are the two arms reporting on the same schedule -- and is it too early?
+
+    Distinct from attrition, and the distinction is the point. Attrition asks
+    whether one arm ends up permanently less observed than the other, which
+    biases the estimate. This asks whether one arm is merely reporting SOONER,
+    which does not -- everything still arrives, just not yet.
+
+    That is not a defect; it is arguably the treatment working. A lesson that
+    helps closes work faster, so its arm's outcomes land first. The hazard only
+    matters for WHEN the effect can be read: while a materially large pending
+    population remains and the arms are draining it at different rates, the
+    sample the estimate is computed over is not yet equally observed, and the
+    number moves as the laggards land. So this reports WEAKENS -- "wait" -- and
+    never INVALIDATES. Calling a working lesson biased because it was fast is
+    the exact failure this check exists to stop.
+    """
+    paired = _follow_up(rows, now)
+    if paired is None:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            "Reporting schedule not checkable.",
+            "This log does not carry an assignment time and a resolution time for "
+            "every row, so how long each occasion was watched is unknown. The "
+            "attrition check still reads the totals; only the timing does not.",
+            {},
+        )
+    inj = [obs for row, obs in paired if row.injected]
+    wit = [obs for row, obs in paired if not row.injected]
+    pending = sum(1 for _, obs in paired if not obs.event)
+    z, p = survival.log_rank_test(inj, wit)
+    numbers = {
+        "injected": len(inj), "withheld": len(wit),
+        "pending": pending, "z": z, "p": p,
+    }
+    if not inj or not wit:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            "Reporting schedule not comparable yet.",
+            "One arm has no assignments, so there are no two schedules to compare.",
+            numbers,
+        )
+
+    inj_curve = survival.kaplan_meier(inj)
+    wit_curve = survival.kaplan_meier(wit)
+    # Median reporting time per arm, where each arm reaches one half reported.
+    # Absent when an arm never gets there, which the text handles rather than
+    # printing "None seconds".
+    med_inj = survival.time_to_reported_fraction(inj_curve, 0.5)
+    med_wit = survival.time_to_reported_fraction(wit_curve, 0.5)
+    numbers |= {"median_seconds_injected": med_inj, "median_seconds_withheld": med_wit}
+
+    if p >= CENSORING_ALPHA:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            f"Both arms report on the same schedule (log-rank p={p:.3g}).",
+            "Outcomes arrive at the same rate in each arm, so reading the effect "
+            "now is not reading it mid-drain.",
+            numbers,
+        )
+
+    faster, slower = ("injected", "withheld") if z > 0 else ("withheld", "injected")
+    pending_share = pending / len(paired) if paired else 0.0
+    if pending_share < 1.0 - MATURITY_QUANTILE:
+        return Finding(
+            "censoring_hazard", SEVERITY_OK,
+            f"The {faster} arm reported faster than the {slower} arm "
+            f"(log-rank p={p:.3g}), but the run has since caught up.",
+            f"{_pct(pending_share)} of occasions are still waiting, so the speed "
+            "difference no longer decides which occasions the estimate can see. "
+            "Worth knowing on its own: an arm that concludes work sooner is what "
+            "a lesson that helps looks like before the outcomes are counted.",
+            numbers,
+        )
+    return Finding(
+        "censoring_hazard", SEVERITY_WEAKENS,
+        f"The {faster} arm is reporting faster than the {slower} arm "
+        f"(log-rank p={p:.3g}) and {_pct(pending_share)} of occasions are still "
+        "waiting.",
+        f"This is a statement about timing, NOT about bias: the {slower} arm's "
+        "occasions are pending, not lost, and the attrition check below only "
+        "counts an occasion against an arm once it is old enough to have "
+        "reported. But the effect read right now is computed over a sample the "
+        "two arms have drained to different depths, and it will move as the "
+        "laggards land. Re-read it once the pending share falls, or widen the "
+        "window the outcomes are collected over.",
+        numbers,
+    )
+
+
+def check_differential_attrition(
+    rows: list[Assignment], now: datetime.datetime | None = None
+) -> Finding:
     """Are the two arms equally likely to have an outcome recorded?
 
     THE load-bearing check. Dropping unresolved occasions is unbiased only
@@ -283,14 +490,47 @@ def check_differential_attrition(rows: list[Assignment]) -> Finding:
     ones -- which flatters the control and UNDERSTATES the lesson. When the
     injected arm loses more, the effect is overstated. Either way the number
     is not the causal effect.
+
+    An occasion counts here only once it is old enough for its silence to mean
+    something: either it has already reported, or it has been waiting at least
+    as long as `_mature_horizon` -- the time by which most of this run's own
+    outcomes had arrived. Anything younger is pending, not missing.
+
+    Without that rule this check had a failure mode that punished the product
+    for working. Outcomes are reported some time after the arm is assigned, and
+    a lesson that helps concludes its occasions SOONER; so at any moment before
+    the run has run its course, the injected arm has more outcomes on the books
+    purely because it got there first. The terminal comparison read that head
+    start as differential attrition and returned INVALIDATES, suppressing the
+    effect estimate exactly when the lesson was working, and the better the
+    lesson the faster it was disqualified. The speed difference is still
+    reported -- by `check_censoring_hazard`, which calls it what it is.
+
+    On a log without timestamps the maturity rule cannot run and every row is
+    judged, which is the behaviour this check has always had.
     """
-    inj = [r for r in rows if r.injected]
-    wit = [r for r in rows if not r.injected]
+    judged = rows
+    immature = 0
+    horizon: float | None = None
+    paired = _follow_up(rows, now)
+    if paired is not None:
+        horizon = _mature_horizon(paired)
+        if horizon is not None:
+            # Reported occasions always count -- they are evidence however
+            # young. Silent ones count only once they are past the horizon.
+            mature = [row for row, obs in paired if obs.event or obs.duration >= horizon]
+            immature = len(rows) - len(mature)
+            judged = mature
+
+    inj = [r for r in judged if r.injected]
+    wit = [r for r in judged if not r.injected]
     s_inj, n_inj = sum(r.succeeded is not None for r in inj), len(inj)
     s_wit, n_wit = sum(r.succeeded is not None for r in wit), len(wit)
     numbers = {
         "injected_resolved": s_inj, "injected_total": n_inj,
         "withheld_resolved": s_wit, "withheld_total": n_wit,
+        "pending_too_young": immature,
+        "maturity_horizon_seconds": horizon,
     }
     if not n_inj or not n_wit:
         return Finding(
@@ -364,8 +604,10 @@ def check_arm_balance(rows: list[Assignment]) -> Finding:
     """
     if not rows:
         return Finding("arm_balance", SEVERITY_OK, "No assignments yet.", "", {})
-    rates = {r.rate for r in rows}
-    configured = sum(rates) / len(rates)
+    # Row-weighted mean: the MLE of the assignment probability. Averaging
+    # distinct rates instead (e.g. 90 rows @0.1 + 10 @0.5 -> 0.3 instead of
+    # 0.14) tests against a rate that matches neither run and mis-reports.
+    configured = sum(r.rate for r in rows) / len(rows)
     n = len(rows)
     k = sum(1 for r in rows if not r.injected)
     observed = k / n
@@ -435,6 +677,210 @@ def check_assignment_drift(rows: list[Assignment]) -> Finding:
         "assignments are two different experiments pooled into one comparison -- "
         "and the same occasion can sit in opposite arms in each. Analyse one "
         "randomization at a time, or start a fresh run and let this one end.",
+        numbers,
+    )
+
+
+# A lesson is "marginally eligible" on an occasion when it barely cleared the
+# retrieval floor. The band is absolute rather than a percentile because the
+# relevance scale itself is absolute (commontrace/retrieval.py) -- a
+# percentile would move with the store's own distribution and stop meaning
+# the same thing between two fleets.
+MARGINAL_BAND = 0.10
+_MARGINAL_WEAKENS = 0.40
+_MARGINAL_INVALIDATES = 0.70
+
+# How far a lesson's assignment count may exceed the median before it looks
+# like it is absorbing occasions that are not about it.
+_CONCENTRATION_MULTIPLE = 3.0
+
+
+def check_marginal_eligibility(rows: list[Assignment]) -> Finding:
+    """How much of the evidence comes from lessons that barely matched.
+
+    THE FAILURE THIS EXISTS FOR. Retrieval returns top-k, and every retrieved
+    lesson is logged as eligible on that occasion -- so a lesson that scraped
+    in on one incidental word gets an assignment row identical to one that was
+    squarely on topic, and the occasion's outcome is attributed to both. The
+    outcome had nothing to do with the marginal one, so those rows are noise
+    with a sign: they pull the estimate toward the store's base rate, and with
+    enough of them a lesson that does nothing acquires a significant verdict.
+
+    Observed in practice: in a six-lesson store, one lesson accumulated 246
+    assignments against roughly 80 occasions actually about it, and was
+    reported as significantly HURTING outcomes (-14.5pp, p=0.018) after
+    Benjamini-Hochberg. Nothing in the log could show why, because the log
+    recorded that the lesson was eligible and not how weakly.
+
+    Rows with no recorded relevance are skipped, not assumed: an assignment
+    logged before the evidence was recorded cannot be assessed, and reporting
+    it as clean would be as wrong as reporting it as marginal.
+    """
+    scored = [r for r in rows if r.relevance is not None and r.floor is not None]
+    numbers: dict = {"n_scored": len(scored), "n_unscored": len(rows) - len(scored)}
+    if not scored:
+        return Finding(
+            "marginal_eligibility", SEVERITY_OK,
+            "No retrieval scores recorded, so eligibility strength cannot be assessed.",
+            "Assignments logged before retrieval evidence was recorded carry no "
+            "relevance score. Newer assignments will carry one; this check reports "
+            "on those.",
+            numbers,
+        )
+
+    by_lesson: dict[str, list[Assignment]] = {}
+    for r in scored:
+        by_lesson.setdefault(r.lesson, []).append(r)
+
+    worst_slug = ""
+    worst_share = 0.0
+    shares: dict[str, float] = {}
+    for slug, group in sorted(by_lesson.items()):
+        marginal = sum(
+            1 for r in group
+            if r.relevance is not None and r.floor is not None
+            and r.relevance < r.floor + MARGINAL_BAND
+        )
+        share = marginal / len(group)
+        shares[slug] = round(share, 4)
+        if share > worst_share:
+            worst_slug, worst_share = slug, share
+    numbers["marginal_share_by_lesson"] = shares
+    numbers["worst"] = {"lesson": worst_slug, "share": round(worst_share, 4)}
+
+    if worst_share >= _MARGINAL_INVALIDATES:
+        severity = SEVERITY_INVALIDATES
+        detail = (
+            f"Most of {worst_slug!r}'s evidence comes from occasions it barely matched, "
+            "so its effect is mostly measured on tasks it was never about. That is a "
+            "bias in the estimate, not a shortage of data -- more occasions of the same "
+            "kind make it worse, not better. Raise the retrieval floor "
+            "(`commontrace retrieval --floor`) and start a fresh randomization before "
+            "quoting an effect for it."
+        )
+    elif worst_share >= _MARGINAL_WEAKENS:
+        severity = SEVERITY_WEAKENS
+        detail = (
+            f"A large minority of {worst_slug!r}'s assignments only just cleared the "
+            "retrieval floor. Its effect is diluted toward the store's base rate by "
+            "occasions it was not really about. Compare against the top-relevance "
+            "band before drawing a conclusion."
+        )
+    else:
+        return Finding(
+            "marginal_eligibility", SEVERITY_OK,
+            "Assignments come from lessons that matched their occasions solidly.",
+            "", numbers,
+        )
+
+    return Finding(
+        "marginal_eligibility", severity,
+        f"{worst_share:.0%} of {worst_slug!r}'s assignments only just cleared the "
+        "retrieval floor.",
+        detail, numbers,
+    )
+
+
+def check_assignment_concentration(rows: list[Assignment]) -> Finding:
+    """Is one lesson being logged far more often than the rest, and worse?
+
+    A lesson eligible on several times more occasions than its peers is either
+    genuinely broad or matching things it should not. The two are told apart
+    by relevance: a broad lesson matches its many occasions as strongly as
+    other lessons match theirs, while an over-matching one is both more
+    frequent AND weaker. Only the second is a problem, and only the second is
+    reported here.
+    """
+    if not rows:
+        return Finding("assignment_concentration", SEVERITY_OK, "No assignments.", "", {})
+
+    by_lesson: dict[str, list[Assignment]] = {}
+    for r in rows:
+        by_lesson.setdefault(r.lesson, []).append(r)
+    if len(by_lesson) < 3:
+        return Finding(
+            "assignment_concentration", SEVERITY_OK,
+            "Too few lessons under test to compare assignment counts.",
+            "", {"n_lessons": len(by_lesson)},
+        )
+
+    counts = {slug: len(group) for slug, group in by_lesson.items()}
+    median_count = statistics.median(counts.values())
+    medians = {
+        slug: statistics.median([r.relevance for r in group if r.relevance is not None])
+        for slug, group in by_lesson.items()
+        if any(r.relevance is not None for r in group)
+    }
+    overall_median_rel = statistics.median(medians.values()) if medians else None
+
+    flagged = []
+    for slug, count in sorted(counts.items()):
+        if median_count <= 0 or count < _CONCENTRATION_MULTIPLE * median_count:
+            continue
+        rel = medians.get(slug)
+        if rel is None or overall_median_rel is None or rel >= overall_median_rel:
+            # Broad, but matching as strongly as its peers. Not a defect.
+            continue
+        flagged.append((slug, count, rel))
+
+    numbers = {
+        "counts": counts,
+        "median_count": median_count,
+        "median_relevance_by_lesson": {k: round(v, 4) for k, v in medians.items()},
+        "flagged": [f[0] for f in flagged],
+    }
+    if not flagged:
+        return Finding(
+            "assignment_concentration", SEVERITY_OK,
+            "No lesson is absorbing a disproportionate share of occasions.",
+            "", numbers,
+        )
+
+    slug, count, rel = flagged[0]
+    return Finding(
+        "assignment_concentration", SEVERITY_WEAKENS,
+        f"{slug!r} was eligible on {count} occasions against a median of "
+        f"{median_count:.0f}, and matched them less strongly than other lessons match theirs.",
+        "A lesson that is both far more frequent and weaker than its peers is being "
+        "retrieved into occasions it is not about, and those occasions' outcomes are "
+        "attributed to it. Its effect estimate describes a mixture of the tasks it "
+        "addresses and the tasks it merely matched.",
+        numbers,
+    )
+
+
+def check_scorer_drift(rows: list[Assignment]) -> Finding:
+    """Did retrieval change what counts as eligible, mid-experiment?
+
+    The same reasoning as check_assignment_drift, one level up. That check
+    catches a changed randomization; this catches a changed DENOMINATOR. The
+    scorer and the floor together decide which lessons get an assignment at
+    all, so changing either mid-run means the rows before and after describe
+    two different treatments -- "injected when retrieved" is not one treatment
+    if what counts as retrieved moved.
+    """
+    scorers = sorted({r.scorer for r in rows if r.scorer})
+    floors = sorted({round(r.floor, 6) for r in rows if r.floor is not None})
+    numbers = {"scorers": scorers, "floors": floors}
+    if len(scorers) <= 1 and len(floors) <= 1:
+        return Finding(
+            "scorer_drift", SEVERITY_OK,
+            "One retrieval configuration throughout.",
+            "", numbers,
+        )
+    changed = []
+    if len(scorers) > 1:
+        changed.append(f"scorer ({', '.join(repr(s) for s in scorers)})")
+    if len(floors) > 1:
+        changed.append(f"floor ({', '.join(str(f) for f in floors)})")
+    return Finding(
+        "scorer_drift", SEVERITY_INVALIDATES,
+        f"Retrieval changed mid-run: {' and '.join(changed)}.",
+        "The scorer and floor decide which lessons are eligible on an occasion, so "
+        "these assignments describe two different treatments pooled into one "
+        "comparison. Analyse one configuration at a time, or start a fresh "
+        "randomization (`commontrace experiment --configure --rate <rate>`) so the "
+        "new settings get their own run.",
         numbers,
     )
 
@@ -669,6 +1115,7 @@ def audit(
     rows: list[Assignment],
     min_arm: int = experiment.DEFAULT_MIN_ARM,
     unit: str = UNIT_LESSON,
+    now: datetime.datetime | None = None,
 ) -> IntegrityReport:
     """Every check, plus the projection, over one experiment's assignments.
 
@@ -682,14 +1129,31 @@ def audit(
     # same unit the estimate is computed on.
     conflicts = check_inconsistent_arms(rows, unit)
     drift = check_assignment_drift(rows)
+    # Read the raw rows for the same reason drift does: a configuration
+    # change is visible across every line written under each setting, and
+    # normalizing first would hide a change that happened within one pair's
+    # retries.
+    scorer_drift = check_scorer_drift(rows)
     unique, duplicates = normalize(rows)
     findings = [
-        check_differential_attrition(unique),
+        check_differential_attrition(unique, now=now),
+        # Immediately after attrition, and deliberately: the two are read
+        # together. Attrition says whether an arm is permanently less observed;
+        # this says whether it is merely behind. `now` is threaded from the
+        # caller so a test can read the log at a fixed instant instead of
+        # against a wall clock that moves while it runs.
+        check_censoring_hazard(unique, now=now),
         check_arm_balance(unique),
         drift,
+        scorer_drift,
         conflicts,
         check_treatment_stability(unique, unit),
         check_outcome_variation(unique),
+        # Both read the de-duplicated rows: these are about which occasions
+        # the estimate is computed over, so they must count assignments the
+        # same way the estimate does.
+        check_marginal_eligibility(unique),
+        check_assignment_concentration(unique),
     ]
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=0)
     return IntegrityReport(

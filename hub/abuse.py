@@ -11,8 +11,10 @@ search useful for that org. contribute_trace runs through, in order:
   1. schema validation (hub/schema_validation.py)      -> hard reject, 4xx
   2. per-field / per-trace size limits (this module)     -> hard reject, 4xx
   3. per-org rate limiting (this module)                 -> hard reject, 429
-  4. a cheap suspicion heuristic (this module)           -> soft: store
-     quarantined=True, excluded from search_traces, pending manual review
+  4. a cheap suspicion heuristic, now including a content-safety scan for
+     secrets and prompt-injection payloads (commontrace/memory_guard.py,
+     OWASP ASI06) -> soft: store quarantined=True, excluded from
+     search_traces, pending manual review
 
 Rate limiting keys off org_id and, by default, is an in-memory token bucket
 (`RateLimiter` below). That is a known, documented MVP limitation: it resets
@@ -25,15 +27,18 @@ HUB_RATE_LIMIT_BACKEND=postgres (hub/config.py); the default stays "memory"
 so existing single-process deployments are unaffected. See hub/DEPLOYMENT.md
 section 6 for the operational trade-offs of each.
 
-Both backends expose the exact same `allow(key) -> bool` method -- callers
-(hub/server.py's ApiKeyAuthMiddleware, hub/crud.py's contribute_trace/
-amend_trace) call it synchronously, un-awaited, from inside async functions,
-so that signature is load-bearing and neither backend can change it.
+Both backends expose the same `check(key) -> (bool, retry_after)` and
+`refund(key) -> None` methods (plus a simpler `allow(key) -> bool`) --
+callers (hub/server.py's ApiKeyAuthMiddleware, hub/crud.py's contribute_trace/
+amend_trace/submit_kb_entry) call `check`/`refund` synchronously, un-awaited,
+from inside async functions, so those signatures are load-bearing and neither
+backend can change them. See RateLimiterBackend's docstring below.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
@@ -42,6 +47,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from commontrace import memory_guard
 from hub.config import HubConfig
 
 logger = logging.getLogger("commontrace.hub.abuse")
@@ -194,7 +200,21 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     """Return a short human-readable reason to quarantine this trace, or
     None if it looks fine. Deliberately simple and named as a placeholder:
     this is not a moderation system, just a first line of defense against
-    obvious spam. Replace/extend as real abuse patterns are observed."""
+    obvious spam. Replace/extend as real abuse patterns are observed.
+
+    Also runs `commontrace.memory_guard` over the same three fields --
+    OWASP ASI06 (Memory & Context Poisoning): a trace stored here is
+    fleet-wide history a later agent reads back, and a quarantined trace is
+    excluded from `search_traces` (hub/crud.py), so routing a detected
+    secret or prompt-injection payload through this same quarantine gate
+    keeps it out of retrieval until an operator reviews it -- the same
+    protection this function already gave spam, extended to content that is
+    actively dangerous rather than merely low-quality. Only HIGH-confidence
+    secret and injection findings quarantine on their own
+    (`GuardReport.should_block`); PII and medium-confidence matches do not
+    reach this function's decision at all, by that module's own design --
+    see `commontrace/memory_guard.py` for why.
+    """
     text = " ".join(str(fields.get(k, "")) for k in ("title", "context_text", "solution_text"))
 
     url_count = len(_URL_RE.findall(text))
@@ -204,6 +224,12 @@ def suspicion_reason(fields: dict, config: HubConfig) -> str | None:
     stripped = text.strip()
     if stripped and len(set(stripped.lower())) <= 3 and len(stripped) > 20:
         return "content has near-zero character diversity (likely filler/spam)"
+
+    guard = memory_guard.scan_fields({
+        k: fields.get(k, "") for k in ("title", "context_text", "solution_text")
+    })
+    if guard.should_block:
+        return guard.summary()
 
     return None
 
@@ -307,10 +333,10 @@ class RateLimiter:
         self._lock = threading.Lock()
         self._last_sweep = time.monotonic()
 
-    def allow(self, key: str) -> bool:
-        return self.check(key)[0]
+    async def allow(self, key: str) -> bool:
+        return (await self.check(key))[0]
 
-    def check(self, key: str) -> tuple[bool, float]:
+    async def check(self, key: str) -> tuple[bool, float]:
         """(allowed, retry_after_seconds).
 
         `retry_after` is 0.0 when allowed, and otherwise how long until this
@@ -397,13 +423,27 @@ class RateLimiter:
 
 
 class RateLimiterBackend(Protocol):
-    """The structural contract both backends satisfy. hub/server.py's
-    ApiKeyAuthMiddleware and hub/crud.py's contribute_trace/amend_trace
-    (both out of scope for this change) call `.allow(key)` synchronously,
-    un-awaited, from inside `async def` functions -- so this signature is
-    load-bearing and identical across backends, not merely similar."""
+    """The structural contract both backends satisfy. `check`/`refund` are
+    the load-bearing pair every real caller in this codebase uses --
+    hub/server.py's ApiKeyAuthMiddleware and hub/crud.py's per-write-op and
+    KB-submission limiters -- called synchronously, un-awaited, from inside
+    `async def` functions, so these signatures must stay identical across
+    backends, not merely similar. `allow` is the simpler boolean-only form,
+    kept for a caller (this module's own tests included) that has no use
+    for `retry_after` or the refund-on-success pattern.
 
-    def allow(self, key: str) -> bool: ...
+    PostgresRateLimiter did not implement `check`/`refund` until this
+    docstring described them as the real contract -- it only had `allow`,
+    which no production call site actually calls, so
+    HUB_RATE_LIMIT_BACKEND=postgres (the documented configuration for any
+    multi-replica deployment) raised AttributeError on every single
+    request through the auth middleware. Nothing exercised that backend
+    through the middleware to catch it; hub/tests/test_auth_middleware.py
+    only ever constructed it with the in-memory RateLimiter."""
+
+    async def allow(self, key: str) -> bool: ...
+    async def check(self, key: str) -> tuple[bool, float]: ...
+    def refund(self, key: str) -> None: ...
 
 
 def _to_asyncpg_dsn(database_url: str) -> str:
@@ -421,6 +461,8 @@ def _to_asyncpg_dsn(database_url: str) -> str:
 # Base metadata -- created with CREATE TABLE IF NOT EXISTS (see
 # _SharedPgPool._setup) rather than an Alembic migration, and never touched
 # by `alembic upgrade head`.
+_RATE_LIMIT_TABLE_EXISTS_SQL = "SELECT to_regclass('hub_rate_limit_buckets') IS NOT NULL"
+
 _RATE_LIMIT_DDL = """
     CREATE TABLE IF NOT EXISTS hub_rate_limit_buckets (
         limiter_name text NOT NULL,
@@ -477,6 +519,16 @@ _RATE_LIMIT_SWEEP_SQL = """
     WHERE limiter_name = $1 AND last_refill < now() - ($2 * interval '1 second')
 """
 
+# $1=limiter_name $2=bucket_key $3=capacity. A no-op (0 rows) if this key
+# has no row yet -- refund only ever follows a successful check()/allow(),
+# which always leaves a row behind, so that case is defensive rather than
+# expected. Does NOT refresh last_refill: this adds a token, it is not a
+# request the bucket is being asked to account for at "now".
+_RATE_LIMIT_REFUND_SQL = """
+    UPDATE hub_rate_limit_buckets SET tokens = LEAST($3, tokens + 1)
+    WHERE limiter_name = $1 AND bucket_key = $2
+"""
+
 # How long __init__ waits for the background pool thread to finish startup
 # (connect + CREATE TABLE IF NOT EXISTS) before giving up. Without a bound,
 # a background-thread failure that happens *before* the try/except around
@@ -484,6 +536,12 @@ _RATE_LIMIT_SWEEP_SQL = """
 # broken install) would kill that thread without ever signalling
 # `_ready`, and __init__ would hang forever instead of raising.
 _POOL_STARTUP_TIMEOUT_SECONDS = 30.0
+
+# How long a rate-limit decision may take before the caller gives up. Kept
+# from the blocking implementation this replaced: past this, the database
+# is broken rather than slow, and a request needs an answer more than it
+# needs to keep waiting for one.
+_POOL_CALL_TIMEOUT_SECONDS = 10.0
 
 
 class _SharedPgPool:
@@ -572,10 +630,23 @@ class _SharedPgPool:
         pool = await asyncpg.create_pool(dsn, min_size=self._POOL_MIN_SIZE, max_size=self._POOL_MAX_SIZE)
         try:
             async with pool.acquire() as conn:
-                await conn.execute(_RATE_LIMIT_DDL)
+                # Checked BEFORE the DDL, not left to IF NOT EXISTS, because
+                # of the least-privilege runtime role this deployment now
+                # ships (hub/postgres-init/10-runtime-role.sql, added so the
+                # RLS policies can actually bite). Postgres evaluates the
+                # schema's CREATE privilege ahead of the IF NOT EXISTS
+                # existence check, so a role with only DML grants gets
+                # "permission denied for schema public" for this statement
+                # EVEN WHEN THE TABLE ALREADY EXISTS -- verified against
+                # Postgres 16. Without this check, choosing the
+                # database-backed limiter (the one a horizontally-scaled
+                # deployment needs) and the non-bypassing role (the one
+                # tenant isolation needs) would be mutually exclusive.
+                if not await conn.fetchval(_RATE_LIMIT_TABLE_EXISTS_SQL):
+                    await conn.execute(_RATE_LIMIT_DDL)
         except asyncpg.exceptions.DuplicateTableError:
-            # Another replica created it between our IF NOT EXISTS check and
-            # the CREATE -- the table exists either way, which is all this
+            # Another replica created it between the existence check and the
+            # CREATE -- the table exists either way, which is all this
             # cares about.
             pass
         return pool
@@ -604,24 +675,27 @@ class PostgresRateLimiter:
     below all share one table) plus `bucket_key` (the same key `allow()`
     always took -- an org id or a client address).
 
-    Interface note: `allow()` must stay synchronous and non-blocking-to-
-    the-caller in the async sense (see RateLimiterBackend's docstring). A
+    Interface note: `allow()`/`check()` must stay synchronous and non-
+    blocking-to-the-caller in the async sense (see RateLimiterBackend's
+    docstring) -- real callers (hub/server.py, hub/crud.py) call them
+    synchronously, un-awaited, from inside async functions, so neither
+    signature can become a coroutine without changing every call site. A
     real query can't simply be awaited from a sync method, so the actual
     connection pool lives on a dedicated background thread (`_SharedPgPool`
-    above); `allow()` hands the query to that thread with
+    above); `check()`/`allow()` hand the query to that thread with
     `asyncio.run_coroutine_threadsafe(...).result(...)`, which blocks the
     CALLING thread until the transaction completes. Concretely: on the
     HUB_RATE_LIMIT_BACKEND=postgres path, every authenticated request
     (ApiKeyAuthMiddleware calls both the auth and the read limiter) and
-    every contribute_trace/amend_trace call blocks the ASGI event loop for
-    that one small transaction (an upsert-refill and a conditional
-    decrement, see `_allow_async`) -- typically sub-millisecond to a few ms
-    against a co-located Postgres, but during it NO other request on that
-    replica's event loop makes progress either. That is a real throughput
-    trade-off, accepted deliberately to preserve the existing interface
-    (hub/server.py and hub/crud.py, both out of scope for this change, call
-    `.allow()` this same synchronous way already) without adding a Redis
-    dependency. See hub/DEPLOYMENT.md section 6.
+    every contribute_trace/amend_trace/submit_kb_entry call blocks the ASGI
+    event loop for that one small transaction (an upsert-refill and a
+    conditional decrement, see `_refill_and_maybe_decrement`) -- typically
+    sub-millisecond to a few ms against a co-located Postgres, but during
+    it NO other request on that replica's event loop makes progress
+    either. That is a real throughput trade-off, accepted deliberately to
+    preserve the existing interface without adding a Redis dependency.
+    `refund()` avoids it entirely by not waiting for its write (see its own
+    docstring). See hub/DEPLOYMENT.md section 6.
     """
 
     _IDLE_TTL_SECONDS = RateLimiter._IDLE_TTL_SECONDS
@@ -638,17 +712,104 @@ class PostgresRateLimiter:
         self._last_sweep = time.monotonic()
         self._shared = _get_shared_pool(_to_asyncpg_dsn(database_url))
 
-    def allow(self, key: str) -> bool:
-        future = asyncio.run_coroutine_threadsafe(self._allow_async(key), self._shared.loop)
-        return future.result(timeout=10.0)
+    async def _await_on_pool_loop(self, coro):
+        """Run `coro` on the pool's background loop and AWAIT the result.
+
+        The pool lives on its own loop in its own thread (see
+        `_SharedPgPool`), so the work has to be handed across; the only
+        question is what the caller does while it runs.
+        `run_coroutine_threadsafe` returns a concurrent.futures.Future, and
+        calling `.result()` on it blocks the CALLING thread -- which, for
+        every real caller here, is the ASGI event loop, so no other request
+        on the replica progressed until the query came back.
+        `asyncio.wrap_future` adapts that same future into an awaitable this
+        loop can suspend on instead, which frees it to serve other requests
+        for the duration. Same pool, same thread, same query, same
+        cross-replica correctness -- the difference is entirely in who
+        waits.
+
+        This does NOT buy throughput, and the measurement says so:
+        hub/bench_concurrency.py reports 165 -> 177 rps at 128 concurrent
+        clients, which is noise. Nor is the connection pool the ceiling --
+        raising it from 5 to 32 moved nothing. On a benchmark where EVERY
+        request needs a limiter decision, freeing the loop cannot help,
+        because everything it could switch to is queued behind the same
+        work. What this fixes is the case that benchmark cannot show: work
+        that does NOT need a limiter decision -- a health check, another
+        endpoint, an in-flight response -- no longer waits behind one.
+        Measured directly: an unauthenticated /healthz polled while 32
+        clients hammer the limited path goes from p50 42.3ms / p99 62.8ms
+        to p50 2.3ms / p99 8.6ms, completing 448 probes in the window
+        instead of 81. That is the real defect this closes -- a replica
+        whose health endpoint answers in 63ms because something ELSE is
+        rate-limited looks unhealthy to a load balancer for reasons that
+        have nothing to do with its health.
+        See hub/SCALING.md "Concurrency: measured".
+
+        The 10s ceiling is kept from the blocking version it replaces: a
+        rate-limit decision that has not come back in ten seconds is a
+        broken database, not a slow one, and the caller needs an answer
+        rather than an indefinite wait.
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self._shared.loop)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future), timeout=_POOL_CALL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # wrap_future's own cancellation does not reach across loops on
+            # its own; cancel the real future so the query is not left
+            # running on the pool thread after nobody is waiting for it.
+            future.cancel()
+            raise
+
+    async def allow(self, key: str) -> bool:
+        return await self._await_on_pool_loop(self._allow_async(key))
 
     async def _allow_async(self, key: str) -> bool:
-        # Two statements in one transaction rather than one combined SQL
-        # statement -- see _RATE_LIMIT_UPSERT_SQL's comment for why a
-        # single-statement version of this is not just an optimization but
-        # actually broken for a never-before-seen key. The row lock the
-        # UPSERT takes is held until COMMIT, so nothing else can touch this
-        # (limiter_name, key) row between the refill and the decrement.
+        allowed, _retry_after = await self._refill_and_maybe_decrement(key)
+        return allowed
+
+    async def check(self, key: str) -> tuple[bool, float]:
+        """(allowed, retry_after_seconds) -- the method every real caller in
+        this codebase actually uses (hub/server.py's ApiKeyAuthMiddleware,
+        hub/crud.py's per-write-op and KB-submission limiters). `allow()`
+        above is kept for direct testing and any external caller wanting
+        the plain boolean, but until this method existed on this class,
+        `HUB_RATE_LIMIT_BACKEND=postgres` -- the officially documented
+        configuration for any multi-replica deployment -- made every
+        single request through the auth middleware raise AttributeError:
+        RateLimiter (the in-memory default) grew `.check()`/`.refund()` at
+        some point, and every real call site was updated to use them, but
+        this class was never given matching methods, and nothing exercised
+        the Postgres backend through that middleware to catch it. See
+        RateLimiter.check's docstring for what `retry_after` is for."""
+        return await self._await_on_pool_loop(self._check_async(key))
+
+    async def _check_async(self, key: str) -> tuple[bool, float]:
+        allowed, tokens = await self._refill_and_maybe_decrement(key)
+        if allowed:
+            return True, 0.0
+        if self._rate_per_sec <= 0:
+            # Same rationale as RateLimiter.check: a deny-everything
+            # limiter never refills, so advertising a finite wait would be
+            # a lie that invites an endless retry loop.
+            return False, float(RateLimiter._DENY_ALL_RETRY_AFTER_SECONDS)
+        return False, (1.0 - tokens) / self._rate_per_sec
+
+    async def _refill_and_maybe_decrement(self, key: str) -> tuple[bool, float]:
+        """Shared by `_allow_async` and `_check_async`: refill this bucket
+        (capped at capacity) and decrement it by one token IF it now holds
+        at least one, all inside a single transaction. Returns
+        (allowed, tokens_after) -- `tokens_after` is the refilled-but-not-
+        decremented count, which `_check_async` needs to compute
+        `retry_after` and `_allow_async` discards.
+
+        Two statements in one transaction rather than one combined SQL
+        statement -- see _RATE_LIMIT_UPSERT_SQL's comment for why a
+        single-statement version of this is not just an optimization but
+        actually broken for a never-before-seen key. The row lock the
+        UPSERT takes is held until COMMIT, so nothing else can touch this
+        (limiter_name, key) row between the refill and the decrement.
+        """
         async with self._shared.pool.acquire() as conn, conn.transaction():
             tokens = await conn.fetchval(
                 _RATE_LIMIT_UPSERT_SQL, self._limiter_name, key, self._capacity, self._rate_per_sec
@@ -657,7 +818,35 @@ class PostgresRateLimiter:
             if allowed:
                 await conn.execute(_RATE_LIMIT_DECREMENT_SQL, self._limiter_name, key)
         self._maybe_sweep()
-        return allowed
+        return allowed, tokens
+
+    def refund(self, key: str) -> None:
+        """Give back one token, never exceeding capacity -- see
+        RateLimiter.refund's docstring for why this exists (charging only
+        credentials that fail to verify, not every attempt).
+
+        Fire-and-forget, deliberately unlike `allow`/`check`: the caller
+        (hub/server.py, immediately after already deciding the request is
+        authenticated) does not need this write to land before it can
+        proceed, and there is no correctness cost to occasionally losing
+        one to a transient failure -- that bucket simply refills a moment
+        later via time instead of via the refund. Not waiting also means
+        this call never blocks the ASGI event loop at all, unlike
+        `allow`/`check`'s documented trade-off above.
+        """
+        future = asyncio.run_coroutine_threadsafe(self._refund_async(key), self._shared.loop)
+        future.add_done_callback(self._log_refund_failure)
+
+    async def _refund_async(self, key: str) -> None:
+        await self._shared.pool.execute(_RATE_LIMIT_REFUND_SQL, self._limiter_name, key, self._capacity)
+
+    @staticmethod
+    def _log_refund_failure(future: concurrent.futures.Future) -> None:
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            logger.warning("hub_rate_limit_buckets refund failed: %r", exc)
 
     def _maybe_sweep(self) -> None:
         """Mirrors RateLimiter._sweep_idle_buckets: bound table growth by
@@ -721,7 +910,19 @@ def make_read_rate_limiter(config: HubConfig) -> RateLimiterBackend:
 
 
 def make_auth_rate_limiter(config: HubConfig) -> RateLimiterBackend:
-    """Keyed by client address, checked before Argon2 verification even
-    runs -- bounds CPU spent verifying credentials from one source rather
-    than only counting failures after paying for them."""
+    """Keyed by client address, checked before verification even runs --
+    bounds CPU spent verifying credentials from one source rather than only
+    counting failures after paying for them. Most requests never reach the
+    expensive path this defends (hub/auth.py's indexed key_hmac lookup
+    handles them for ~1ms), but the legacy Argon2 fallback for unmigrated
+    keys is still exactly as expensive as before, so this stays in place."""
     return _make_limiter(config, config.auth_attempts_per_minute, config.auth_attempts_burst, "auth")
+
+
+def make_scim_auth_rate_limiter(config: HubConfig) -> RateLimiterBackend:
+    """The same defense as `make_auth_rate_limiter`, for hub/scim.py's own
+    endpoint -- a distinct `limiter_name` ("scim_auth") so a client hitting
+    both surfaces (or an attacker aiming at one) does not draw down the
+    other's budget under HUB_RATE_LIMIT_BACKEND=postgres, where buckets are
+    shared by name across replicas."""
+    return _make_limiter(config, config.auth_attempts_per_minute, config.auth_attempts_burst, "scim_auth")

@@ -58,6 +58,12 @@ commontrace/**
 # sample can support them -- and the container would not even start,
 # because crud.py imports it at module level.
 !commontrace/integrity.py
+# Kaplan-Meier and the log-rank test, which integrity.py imports at module
+# level to tell an occasion nobody has reported YET from one nobody ever
+# will. Without it the container starts and dies on the import, and with the
+# import stubbed the attrition audit would go back to reading a fast-
+# concluding treated arm as missing data.
+!commontrace/survival.py
 # Content identity for a trace, stamped onto every holdout assignment
 # (hub/crud.py:holdout_assign) so an amended trace cannot silently split
 # an experiment's arms across two treatments. Imported at module level,
@@ -68,8 +74,42 @@ commontrace/**
 # names. Imported at module level, so without it the container starts
 # and dies.
 !commontrace/value.py
+# Evidence decay: how old a measured effect may be and still be billed
+# on. Imported by hub/crud.py at module scope (it also owns the horizon
+# constant the working-set block reads). Pure stdlib.
+!commontrace/decay.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
+# Secret/PII/prompt-injection screening (OWASP ASI06), imported at module
+# level by hub/abuse.py:suspicion_reason so the same content-safety scan
+# a customer's own `commontrace lesson approve` runs also gates
+# contribute_trace/amend_trace on the Hub -- one implementation, not a
+# copy that could drift and cover different patterns on each side. Pure
+# stdlib (re, dataclasses). Imported at module level, so without it the
+# container starts and dies.
+!commontrace/memory_guard.py
+# What an experiment committed to measuring before it could see the answer,
+# and the diff of the run against it (hub/crud.py:causal_effects, and
+# hub/manage.py:start_experiment, which writes the registration). Imported
+# at module level, so without it the container starts and dies. Pure stdlib
+# (datetime, hashlib, json, dataclasses).
+!commontrace/prereg.py
+# The assignment rows a customer re-runs the arithmetic from, and the digest
+# the value ledger's signature commits to (hub/crud.py, hub/manage.py:
+# export_assignments). Imported at module level. Pure stdlib (csv, hashlib,
+# io, dataclasses).
+!commontrace/raw_export.py
+# Near-duplicate clustering (hub/crud.py:_cluster_representatives, used by
+# holdout_for_results) -- the same reason as retrieval.py/_lexical.py
+# above: a customer's own `commontrace distill` and the Hub's holdout
+# randomization must treat "these are probably the same lesson" identically,
+# or a trace the client would cluster locally fragments into its own
+# randomization unit on the Hub instead. Imported at module level, so
+# without it the container starts and dies. Pure stdlib (re, dataclasses,
+# collections.Counter) plus its own two imports below.
+!commontrace/distill.py
+# distill.py's own import (STARTER_DOMAINS) -- pure stdlib (os, re, sys).
+!commontrace/paths.py
 
 # Secrets must come from the platform's secret store, never be baked in
 .env

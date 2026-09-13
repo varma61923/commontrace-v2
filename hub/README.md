@@ -47,6 +47,14 @@ subtracted rather than dropped, nothing at all if the experiment is
 COMPROMISED -- and attaches your own supplied rate to it if you pass one;
 this is this product's pricing basis (STRATEGY.md §11.5), so it is worth
 knowing it exists even though it reads like a footnote to `fleet_outcomes`.
+`working_set(budget_chars)` is the other end of that same instrument: it
+returns only the memories whose effect is already *established* as helping,
+packed to a character budget, as one block an agent pins to its system
+prompt once per session instead of paying for on every query. Because the
+block does not change between turns, a provider's prompt-prefix cache can
+serve it; a memory that were both pinned and still under randomization
+would be injected on every occasion and destroy its own control arm, so a
+trace is either being randomized or graduated, never both.
 `hub/smoke.py` pins the tool surface, so a tool
 appearing or disappearing fails a post-deploy check rather than
 surprising a client.
@@ -68,12 +76,18 @@ hub/config.py      env-driven settings, no unsafe defaults
 hub/models.py      SQLAlchemy 2.0 ORM: Organization, ApiKey, Trace, Vote, TraceRelation, UsageCounter
 hub/db.py          async engine/session plumbing
 hub/schema_validation.py   loads protocol/schemas/*.json from disk, validates against them
-hub/auth.py        argon2 API-key hashing/verification/rotation/expiry + request-scoped org_id
-hub/abuse.py       size limits, per-org rate limiting, a spam heuristic -> quarantine
+hub/auth.py        API-key hashing/verification/rotation/expiry (HMAC fast path, argon2 fallback) + request-scoped org_id
+hub/abuse.py       size limits, per-org rate limiting, a spam + content-safety heuristic -> quarantine
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
-hub/console.py         read-only customer console at /app (off unless HUB_CONSOLE_SECRET is set)
+hub/console.py         customer console at /app (off unless HUB_CONSOLE_SECRET is set) -- mostly
+                        read-only over this Hub's own data; Users & roles, API Keys, and Alerts
+                        are admin-scope-gated exceptions; can also send a browser to Stripe (billing.py)
+hub/disclosure.py   always-on, unauthenticated GET /disclosure -- an operator's self-reported
+                    data region / legal name / support contact, or an honest "not disclosed"
+hub/signup.py       public, self-serve org creation at /signup (off unless HUB_SIGNUP_ENABLED is set)
+hub/billing.py      self-serve Stripe upgrades: Checkout/Billing Portal + the webhook that applies them
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
@@ -132,35 +146,77 @@ miss rate, audit history and the Knowledge Base queue — and for anything
 that changes state it shows the `hub.manage` command rather than doing it.
 That is deliberate: see `hub/admin.py`.
 
-Set `HUB_CONSOLE_SECRET` to also serve a second, **read-only** console at
-`/app` — not for you, for your **customers** (unset means these routes do
-not exist either, same as `/admin`). Where the operator console is
-cross-tenant and moderates, this one is scoped to a single organization
-and cannot change any state at all. A customer signs in with the same API
-key their agents already authenticate with; the Hub verifies it once and
-never stores it, then hands back a signed, `HttpOnly` session cookie
-scoped to that org, checked against the key's live/revoked state on every
-request — so revoking a key ends the browser sessions it opened, not just
-future MCP calls. From there they get four pages, all reading through the
-same `org_id`-scoped functions in `hub/crud.py` as every other Hub
-surface, rather than a second set of queries to keep tenant-isolated: an
-overview of what their fleet has captured and how it sits against plan; a
-proof page where the randomized holdout's validity verdict renders
-*above* the effect sizes it qualifies, because a report that leads with a
-significant number and caveats it underneath is how a broken one gets
-quoted; their own corpus, searched the way their agents search it; and
-their Knowledge Base proposals and the query credit those proposals
-earned. Everything that changes state — capturing a trace, running the
-experiment, proposing to the Knowledge Base — still goes through MCP or
-the CLI, where it is authenticated and audited; the console being
-strictly read-only is also why it carries no CSRF token, since there is
-no state-changing request left for a forged one to trigger. See
-`hub/console.py`'s module docstring for the rest of that reasoning.
-`HUB_CONSOLE_SECRET` is deliberately a separate value from
-`HUB_ADMIN_TOKEN`, too — one is your operator credential, the other signs
-customer sessions, and collapsing them into one secret would mean a
-single leak compromises both surfaces at once (see
-[DEPLOYMENT.md](DEPLOYMENT.md)).
+Set `HUB_CONSOLE_SECRET` to also serve a second console at `/app` — not
+for you, for your **customers** (unset means these routes do not exist
+either, same as `/admin`). Where the operator console is cross-tenant and
+moderates, this one is scoped to a single organization. A customer signs
+in with the same API key their agents already authenticate with; the Hub
+verifies it once and never stores it, then hands back a signed, `HttpOnly`
+session cookie scoped to that org, checked against the key's live/revoked
+state — and, for the three pages below that can mutate, its live
+*scopes* — on every request, so revoking or narrowing a key ends what its
+browser sessions can do immediately, not just at the next MCP call. From
+there they get seven pages, all reading through the same `org_id`-scoped
+functions in `hub/crud.py`/`hub/manage.py`/`hub/auth.py`/`hub/alerts.py`
+as every other Hub surface, rather than a second set of queries to keep
+tenant-isolated: an overview of what their fleet has captured and how it
+sits against plan; a proof page where the randomized holdout's validity
+verdict renders *above* the effect sizes it qualifies, because a report
+that leads with a significant number and caveats it underneath is how a
+broken one gets quoted; their own corpus, searched the way their agents
+search it; their Knowledge Base proposals and the query credit those
+proposals earned; and — the one deliberate exception to "changes
+nothing" — **Users & roles**, **API Keys**, and **Alerts**, gated behind
+`admin` scope on top of the ordinary sign-in check. Capturing a trace,
+running the experiment, proposing to the Knowledge Base still goes
+through MCP or the CLI, where it is authenticated and audited the same
+way it always was; nothing at `/app` writes to `Trace`,
+`Organization.plan`, or any other measurement/corpus row directly. Users,
+API Keys, and Alerts are different: they call the SAME
+`hub/manage.py`/`hub/auth.py`/`hub/alerts.py` functions `hub.manage
+create-user`/`issue-key`/`create-alert-rule`/etc. already call (no second
+implementation), audited with the console session's own credential
+(`api-key:<prefix>`) rather than a borrowed `operator-cli` label, and an
+explicit org-ownership check on every id-addressed mutation — `auth.
+revoke_api_key`/`rotate_api_key` and `alerts.delete_rule` all take only a
+bare id and trust a cross-tenant operator caller to have already scoped
+it, which a customer's browser session has not. A merely `read`- or
+`write`-scoped session sees these three pages exist but cannot act on
+them. The Alerts page also has a "Generate now" button for a one-off
+usage report — `alerts.generate_report` reachable by POST only, never
+GET, since it queues a real `report.generated` webhook delivery and a
+page load must never trigger one. The one other exception carries its
+own trust boundary rather than weakening this one:
+an "Upgrade" click sends the browser to a Stripe-hosted Checkout/Billing
+Portal page (`hub/billing.py`), and this Hub's own `Organization.plan`
+only ever changes later, from Stripe's own signed webhook call — never
+from the browser request itself. The console still carries no CSRF token:
+its session cookie is `SameSite=Strict`, so a forged cross-site request
+arrives with no session at all and is turned back at sign-in, the same
+defense that already covered every other route here, mutating ones
+included. See `hub/console.py`'s and `hub/billing.py`'s module docstrings
+for the rest of that reasoning. `HUB_CONSOLE_SECRET` is deliberately a
+separate value from `HUB_ADMIN_TOKEN`, too — one is your operator
+credential, the other signs customer sessions, and collapsing them into
+one secret would mean a single leak compromises both surfaces at once
+(see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+Set `HUB_SIGNUP_ENABLED=true` to also serve a public, unauthenticated
+`/signup` route: a visitor creates their own free-plan org and first API
+key with no operator involved (unset means, as with `/admin` and `/app`,
+the route does not exist). See `hub/signup.py`'s module docstring for what
+this deliberately does not do (no email verification) and how it's kept
+from becoming an abuse vector (a tight per-address rate limit, a honeypot
+field, and the free plan's own storage/agent/query ceilings either way).
+
+Set `HUB_STRIPE_SECRET_KEY`, `HUB_STRIPE_WEBHOOK_SECRET`, and at least one
+of `HUB_STRIPE_PRICE_TEAM`/`HUB_STRIPE_PRICE_SCALE` to let a signed-in
+customer upgrade themselves via Stripe Checkout, and to keep this Hub's
+own plan column in sync with what Stripe actually charged via
+`/billing/webhook` (also off, and unregistered, until the webhook secret
+is set). See `hub/billing.py`'s module docstring for why there's no Stripe
+SDK dependency and why an already-subscribed org is routed to Stripe's
+Billing Portal rather than through Checkout a second time.
 
 ### Running the tests
 
@@ -185,6 +241,53 @@ highest-priority requirement" and specifies a hard test: as `org_a`, zero
 rows belonging to `org_b` may ever appear in any tool's responses,
 and `get_trace` on a known `org_b` id must 404, never 403 (never confirm the
 id exists). `hub/tests/test_tenant_isolation.py` enforces exactly that.
+
+**Two independent layers now enforce it.** The first is the one that does
+the work on every normal path: every read in `hub/crud.py` filters by
+`org_id` in the SQL `WHERE` clause. The second is Postgres row-level
+security, which exists because the first is a *discipline* — it holds for
+every query somebody remembered to write correctly, and one omitted
+predicate in one future query is a cross-tenant read no existing test
+would catch.
+
+`hub/db.py:session_scope` issues
+`SELECT set_config('app.org_id', :org, true)` at the start of every
+transaction, taking the org from the contextvar the auth middleware
+already sets, so no call site has to remember to pass it. The policies
+(`hub/alembic/versions/d5c8b3a91e77_row_level_security.py`) then make a
+missing `WHERE` return **zero rows instead of another tenant's**.
+`hub/tests/test_row_level_security.py` proves it by running the mistake
+itself — a query with no `org_id` predicate at all — and includes a
+control asserting that same query really does leak when RLS is off, so
+the test cannot pass for the wrong reason.
+
+Operator paths (`hub/manage.py`, the benchmarks, alembic) never set the
+contextvar and are treated as unscoped, exactly as before. Knowledge Base
+entries stay readable across orgs, because that is what the Knowledge Base
+is; the write policy grants no such latitude, so no caller can create or
+alter a row in another org's name.
+
+**A policy only counts if the connecting role is subject to it.** Postgres
+skips every policy for a superuser or a `BYPASSRLS` role, silently — no
+error, no log line — which makes "installed but inert" a worse state than
+"not installed": a guarantee an operator believes in and does not have.
+This repo shipped that state, because the Postgres image makes
+`POSTGRES_USER` the cluster superuser and `docker-compose.yml` served as
+exactly that role. Two changes close it: the compose stack now creates a
+`NOSUPERUSER`/`NOBYPASSRLS` runtime role that owns nothing
+(`hub/postgres-init/10-runtime-role.sql`) and serves as that, keeping the
+owner for migrations only; and `hub/db.py:check_row_level_security`
+**refuses to start** when it finds policies installed that the connecting
+role would bypass, unless `HUB_ALLOW_RLS_BYPASS=true` says so deliberately
+(`HUB_REQUIRE_RLS=true` is the stronger form — policies must be present and
+enforced). An unreachable database at boot still only warns: "cannot
+determine" is not "determined to be unsafe". See `hub/DEPLOYMENT.md` §2.1.
+
+RLS is worth not over-trusting even when it does bite, and the migration
+lists its limits in full: FK and `UNIQUE` checks run outside the policy and
+remain a side channel, RLS does not sanitise query logs, views need
+`security_invoker = true`, and logical replication ignores policies unless
+per-publication filters are configured.
 
 An earlier design opened a second door alongside the six protocol tools:
 an org could opt a trace into a shared corpus other orgs' queries could
@@ -527,6 +630,16 @@ on that log has the whole grace window to notice and `revoke-key` a
 credential they don't recognize before `confirm_account_deletion` can
 possibly succeed.
 
+If this org has ever used self-serve billing (`hub/billing.py`) and has a
+live Stripe subscription, `confirm_account_deletion` cancels it FIRST,
+before deleting anything -- deleting the org row out from under an active
+subscription would leave it charging that customer's card every billing
+cycle with no CommonTrace account left to ever notice. If Stripe cannot
+be reached to cancel it, nothing is deleted: the call fails with
+`deletion_blocked` instead, so a client knows to retry rather than treat
+the deletion as done. `python -m hub.manage purge-org` does the same
+cancel-first check at the operator-CLI trust level.
+
 ### Why there's no `lessons` table
 
 `Trace` and `Lesson` are both loaded by `hub/schema_validation.py` (per the
@@ -539,12 +652,15 @@ Trace via `contribute_trace`." A `lessons` table would be dead schema. If a
 future Hub tool ever needs to accept a Lesson, `validate_lesson()` is already
 there and ready.
 
-### Auth follow-ups (not implemented)
+### Auth follow-ups (partially implemented)
 
 API-key-per-org (argon2-hashed, shown once, rotatable via
-`hub/manage.py rotate-key`) is the whole auth story today, per the brief's
-explicit MVP scope. Not implemented, and worth doing before this serves
-traffic beyond a pilot:
+`hub/manage.py rotate-key`) was the whole auth story at the brief's
+original MVP scope. It no longer is: human users, roles, OIDC SSO, SCIM
+provisioning (Users and Groups), and a documented break-glass procedure
+with an automatic alert on use are all implemented below. What is still
+genuinely missing, and worth doing before this serves traffic beyond a
+pilot:
 
 - **OAuth/JWT.** The `mcp` SDK's built-in auth framework
   (`mcp.server.auth`) is OAuth-resource-server-shaped (issuer URLs, token
@@ -552,8 +668,252 @@ traffic beyond a pilot:
   docstring for why a small Starlette middleware was simpler and more
   honest about what's actually implemented than forcing API keys through
   an OAuth-shaped surface that isn't OAuth.
-- **Per-key scopes.** Every key currently has full read/write access to its
-  org's traces. Read-only keys, or per-tool scoping, aren't implemented.
+- **SAML and a browser-based login UI are deliberately not built** — not
+  merely deferred, and re-examined for a smaller cut (a read-only-only
+  person session, restricted to routes with no side effects) rather than
+  dropped again unchanged. That restriction doesn't reach where the real
+  risk is: both need a browser OAuth2/OIDC Authorization Code (or SAML
+  assertion) handshake that does not exist anywhere in this Hub today —
+  `hub/sso.py` only verifies a bearer JWT a caller already holds; there is
+  no `redirect_uri`, `state`/nonce, PKCE, or token-exchange client here at
+  all. That handshake's own well-known failure modes — an open redirect
+  via an unvalidated `redirect_uri`, a forgeable `state` letting one
+  browser's login complete as another's, a session issued for the wrong
+  person after a mixed-up code exchange — live in the LOGIN step itself,
+  before any role or read-only flag is ever checked, so restricting what
+  the resulting session can reach does not make a flawed handshake safe.
+  This is new, security-critical surface with no existing, already-
+  audited scaffold to extend (unlike this Hub's webhook pipeline or
+  `hub/scim.py`'s CRUD pattern, both reused rather than reinvented
+  elsewhere in this file) — building it as a fast follow-on to something
+  else is how a login-bypass or session-fixation bug gets shipped, not
+  how one gets caught. SAML compounds this with its own separate,
+  historically hazardous surface (XML signature-wrapping forgery, the
+  class of bug behind more real SSO bypasses than any other SAML mistake)
+  that is only safe to take on via a mature, dedicated, heavily-audited
+  library (e.g. `python3-saml`) and focused review — never hand-rolled
+  alongside something else. Both stay named here, precisely, and the
+  honest next increment is a dedicated Authorization Code + PKCE module,
+  built and reviewed on its own before any console route changes at all
+  — not a rushed version shipped in the same pass as other work.
+- **SCIM auto-provisioning is now implemented** (`hub/scim.py`,
+  `/scim/v2/Users`, audit § below): an IdP can create and, critically,
+  immediately deactivate `User` rows itself instead of an operator running
+  `create-user`/`disable-user` by hand for every hire and every
+  termination. It manages the ROW's existence and `active` state ONLY —
+  it does not itself grant a login. A SCIM-created account still has no
+  OIDC identity linked until `hub.manage link-sso` does that separately,
+  same as any other account; see hub/scim.py's own module docstring for
+  why conflating the two would reintroduce the auto-provisioning-grants-
+  access risk this design otherwise avoids. **SCIM Groups
+  (`/scim/v2/Groups`) are now also implemented** as pure membership
+  metadata (`ScimGroup`/`ScimGroupMembership`, `hub/models.py`) —
+  deliberately granting nothing: this Hub still gives one `User` exactly
+  one `role`, and nothing in `hub/rbac.py` or the MCP tool gating ever
+  reads either table. Not covered: the full RFC 7644 filter/PATCH grammar
+  (a deliberately narrow, named subset — see that docstring).
+- **A purpose-built break-glass mechanism.** Recovering access when every
+  `ROLE_SECURITY_ADMIN`/`ROLE_OWNER` account is disabled or its IdP is
+  unreachable IS now a documented procedure (`hub/DEPLOYMENT.md` §9a) —
+  direct database access via `hub.manage`, same as any other operator
+  action. What is not built: a dedicated, time-boxed emergency
+  credential, an automatic alert when the procedure is used, or a
+  second-person witness requirement.
+
+### Human users, roles, and OIDC SSO (implemented)
+
+A `User` row (`hub/models.py`) is a *person*, distinct from an org's
+workload API key — email, a named role, and (optionally) one linked OIDC
+identity (`issuer` + `external_subject`). None of this replaces API keys:
+a request authenticates with either an API key (the pre-existing,
+unchanged path) or a person's bearer JWT, never both, and
+`ApiKeyAuthMiddleware` (`hub/server.py`) tells the two apart by shape
+before doing any cryptographic work — three non-empty dot-separated
+base64url segments reads as a JWT, anything else is tried as an API key.
+
+- **Roles are explicit capability sets, not a hierarchy** (`hub/rbac.py`),
+  matching the "scopes do not imply each other" philosophy above: Viewer,
+  Analyst, Curator, Validator, Deployer, Security Admin, Billing Admin,
+  Owner. Every real MCP tool maps to exactly one required capability
+  (`TOOL_CAPABILITY`), checked by `hub/tests/test_rbac.py` against the
+  *live* tool registry so a newly added tool without a mapping fails
+  closed rather than silently inheriting access.
+- **Capability is a second, additive gate — never a wider one.** A
+  request still needs the API key's own scope (read/write/admin) to reach
+  a tool at all; the per-person capability check only ever narrows what a
+  role may do further, and is skipped entirely for API-key-only requests
+  (there is no person to check).
+- **OIDC verification (`hub/sso.py`) is deliberately narrow.** Only
+  asymmetric algorithms are accepted (RS/ES families) — `HS256` and
+  `none` are refused outright regardless of what the token's own header
+  claims, closing the classic "sign an HS256 token with the issuer's
+  public RSA key as the HMAC secret" confusion attack. JWKS keys are
+  resolved strictly by the token's `kid`; a token with no `kid`, or a
+  `kid` the JWKS document doesn't contain, is refused rather than falling
+  back to "the only key available."
+- **No auto-provisioning.** A verified token proves the IdP vouches for
+  that subject, not that the subject should have a CommonTrace account.
+  `hub.manage link-sso <user_id> <issuer> <subject>` is always an explicit
+  operator action; there is no just-in-time account creation from a
+  token alone.
+- **Deprovisioning is immediate, not token-expiry-bounded.**
+  `hub.manage disable-user` sets `disabled_at`, and `verify_user_token`
+  checks it on *every* authenticated call — not once at token issuance,
+  not cached — so a disabled person's very next request is refused even
+  if their JWT has ten more minutes to live.
+- Configured via `HUB_OIDC_ISSUER`, `HUB_OIDC_AUDIENCE`, and either
+  `HUB_OIDC_JWKS` (a static JWKS document, for an IdP that doesn't rotate
+  keys or for tests) or `HUB_OIDC_JWKS_URI` (fetched and cached for one
+  hour). Leaving `HUB_OIDC_ISSUER`/`HUB_OIDC_AUDIENCE` unset disables SSO
+  entirely — every token-shaped credential is then refused before it
+  reaches the database, and the Hub behaves exactly as it did before this
+  existed.
+- CLI: `hub.manage create-user | list-users | set-user-role | disable-user
+  | enable-user | link-sso | unlink-sso` — see `hub/manage.py`'s module
+  docstring for full usage.
+
+### SCIM 2.0 user provisioning (`hub/scim.py`, implemented)
+
+`/scim/v2/Users` lets an IdP (Okta, Azure AD, ...) create and deactivate
+`User` rows itself, instead of an operator running `create-user`/
+`disable-user` by hand for every hire and every termination — audit
+§1.2's "no SCIM auto-provisioning" line.
+
+```bash
+python -m hub.manage issue-key <org_id> [days] scim   # a dedicated, scim-only key
+curl -H "Authorization: Bearer $KEY" https://<hub>/scim/v2/Users
+```
+
+- **A wholly separate credential class**, not a wider read/write/admin
+  key: `scopes.SCOPE_SCIM` gates this endpoint and nothing an MCP tool
+  ever checks (`hub/tests/test_api_key_scopes.py` asserts no tool is ever
+  scim-scoped, and no scim-scoped key ever satisfies read/write/admin). A
+  legacy key (issued before the `scopes` column existed, which otherwise
+  holds every original capability) does **not** get this one either —
+  `scim` joined the vocabulary after those keys were minted, and the
+  whole point of `hub/scopes.py`'s `_LEGACY_IMPLIED_SCOPES` split is that
+  growing the vocabulary must never retroactively widen an already-issued
+  production key.
+- **Manages the row; does not grant a login.** A SCIM-created account has
+  no OIDC identity linked and cannot authenticate until a separate
+  `hub.manage link-sso` does that — see `hub/scim.py`'s own module
+  docstring for why conflating SCIM provisioning with SSO authentication
+  would reintroduce exactly the auto-provisioning risk OIDC linking
+  above declines.
+- **Starts as `viewer`**, never a higher role: an IdP vouching someone
+  should have SOME account is not the same as saying what they may do
+  with it.
+- **`DELETE` deactivates; it never removes the row** — the same
+  `disabled_at`-never-a-delete contract every other deprovisioning path
+  in this Hub follows, so the audit trail an auditor asks about later
+  survives.
+- **A narrow, named subset, not the full RFC 7644 grammar**: `filter`
+  supports exactly `userName eq "<value>"` (the one shape every real
+  integration sends); `PATCH` applies only `active` (and, leniently,
+  `displayName`) replace operations, leaving anything else in the same
+  request untouched rather than guessed at or rejecting the whole call.
+- **`/scim/v2/Groups` tracks membership; it grants nothing.** A real
+  Groups API needs many-to-many membership, which this Hub's
+  one-role-per-user model has no room for (`hub/rbac.py`) — so
+  `ScimGroup`/`ScimGroupMembership` hold an IdP's group roster faithfully
+  (create/get/list/PUT/PATCH/DELETE, `displayName eq "<value>"` filtering,
+  `members` add/remove including the single-member
+  `members[value eq "<id>"]` filtered-path shape Okta and others actually
+  send) without plugging into authorization anywhere: adding or removing
+  someone from a group changes nothing about what they can do. `DELETE`
+  really deletes the group row (unlike a `User`, a group confers no
+  access, so there is no deprovisioning history a real delete could
+  falsify) but never touches its members' own `User` rows.
+
+### Collaboration: comments, assignment, notifications (implemented)
+
+`hub/collab.py`, built on the human users above. `hub/manage.py`'s
+Knowledge Base review queue (`kb-review`, `approve-submission`,
+`reject-submission`) is an *operator* surface across every tenant; this
+is the missing piece for a customer's *own* team working on their own
+traces — audit §8.1's "no reviewer queue, comments, assignments,
+notification inbox, ownership."
+
+- **`add_comment`/`list_comments`** — leave and read remarks on one of
+  your org's own traces.
+- **`assign_trace`/`unassign_trace`** — one person owns following up on a
+  trace at a time; re-assigning replaces whoever held it before.
+- **`list_my_notifications`/`mark_notification_read`** — a person's own
+  inbox: "you were assigned a trace", "someone commented on a trace
+  assigned to you." No delivery beyond this table — no email, no push,
+  no webhook (this mirrors `hub/signup.py`'s existing stance of having no
+  outbound email integration at all); a client polls its own inbox.
+- **All six require a signed-in PERSON**, not just an API key — there is
+  no meaningful author for a shared workload credential, and no
+  per-person inbox for one either. Called with an API key alone, each
+  returns `{"error": "person_required"}`, distinct from a scope or
+  capability denial: the credential itself is perfectly valid.
+- **Gated by the same two authorization layers as everything else**:
+  `add_comment`/`assign_trace`/`unassign_trace` need `CAP_CURATE` (and
+  the API key's own `write` scope); `list_comments`/
+  `list_my_notifications`/`mark_notification_read` need only `CAP_VIEW`
+  (and `read` scope) — a Viewer can read the discussion and clear their
+  own inbox, but not add to it.
+- **A notification never reveals its target across people.** Marking
+  someone else's notification read (by guessing its id) reports
+  not-found rather than confirming the id exists.
+
+### Per-key scopes (implemented)
+
+An API key carries a scope list — `read`, `write`, `admin`
+(`hub/scopes.py`) — so a credential minted for a CI job is not also able to
+delete the organization. Every MCP tool declares the scope it needs at its
+registration site, and `hub/tests/test_api_key_scopes.py` asserts that no
+tool can be registered without that decision: the failure mode being
+designed out is a tool silently inheriting "any authenticated key may call
+this", which is what the entire surface did before scopes existed.
+
+    read    search, get, tags, Knowledge Base, fleet outcomes, value
+            report, working set
+    write   contribute, amend, vote, KB submission, holdout assignment,
+            occasion outcomes
+    admin   delete_trace, and the account deletion request/cancel/confirm
+            trio
+
+**Scopes do not imply each other.** `admin` does not confer `read`. The
+grant list says exactly what a key may do, which is what makes "can this
+key escalate?" answerable by reading one row rather than by simulating a
+hierarchy. A key meant to do everything says `read,write,admin`, which is
+what `issue-key` grants when no scopes are given — so the documented
+onboarding one-liner, and every key issued before this existed, are
+unchanged.
+
+A scope denial returns `{"error": "forbidden", "required_scope": …,
+"granted_scopes": …}`, deliberately not `unauthorized`: the credential is
+valid, and telling a client to re-authenticate when retrying with the same
+key will fail identically forever turns a configuration error into a retry
+loop.
+
+### IP allowlisting (`hub/server.py:IpAllowlistMiddleware`, implemented)
+
+Audit §1.6, "no IP allowlisting / private networking", splits into two
+different things. **Private networking** — a VPC, peering, a topology
+where this Hub is simply unreachable from outside at all — is a
+deployment-topology decision made by whoever operates it; no application
+code can decide that for them (see `hub/DEPLOYMENT.md`). **IP
+allowlisting**, though, needs no such decision: set `HUB_IP_ALLOWLIST` to
+a comma-separated list of CIDR blocks and every route except `/healthz`
+and `/readyz` refuses any OTHER source address with 403 — no VPC, no
+proxy, no infrastructure change required.
+
+- **Off by default.** An unset `HUB_IP_ALLOWLIST` means the middleware
+  isn't even mounted — same "absent, not merely permissive" posture as
+  `/admin`/`/app` when their own secrets are unset.
+- **`/healthz`/`/readyz` are always exempt.** An orchestrator's own
+  liveness/readiness probes arrive from the platform's internal network,
+  a different population than the external traffic this restricts;
+  blocking them would turn a security control into a self-inflicted
+  outage.
+- **Resolved through the same `HUB_TRUSTED_PROXY_HOPS`-aware logic** every
+  rate limiter already uses, so a request behind a documented reverse
+  proxy is checked against its real origin, not the proxy's own address —
+  and a client-forged `X-Forwarded-For` cannot bypass it when
+  `HUB_TRUSTED_PROXY_HOPS=0` (the default).
 
 ### Abuse controls (implemented, with a known scaling limit)
 
@@ -573,10 +933,13 @@ Three properties worth knowing, because each one was a real defect:
   limiter already saying no turns one burst into a sustained stampede.
   `commontrace sync` paces its whole batch off this value.
 - **The auth-attempt limiter charges only credentials that fail to
-  verify.** Its job is bounding the Argon2 CPU an unauthenticated source
-  can force; charging successful authentications too made it throttle the
-  legitimate heavy client hardest — a bulk push is hundreds of successful
-  authentications from one address against a 60/min budget. Valid callers
+  verify.** Most requests resolve via an indexed `key_hmac` lookup in
+  ~1ms now; this limiter's job is bounding the Argon2 CPU an
+  unauthenticated source can still force through the legacy fallback path
+  (an unmigrated or guessed-prefix key). Charging successful
+  authentications too made it throttle the legitimate heavy client
+  hardest — a bulk push is hundreds of successful authentications from
+  one address against a 60/min budget. Valid callers
   are governed by the per-org read limiter instead, where they are
   authenticated, accountable and metered.
 - **Tracked keys are capped** (`_MAX_TRACKED_KEYS`). The idle sweep alone
@@ -590,6 +953,22 @@ simple — too many URLs, or near-zero character diversity — and is explicitly
 documented in its own docstring as a placeholder, not a moderation system.
 Replace/extend it as real abuse patterns are observed; do not read its
 current thresholds as a considered content-moderation policy.
+
+The same function also runs `commontrace/memory_guard.py`'s content-safety
+scan (OWASP ASI06: Memory & Context Poisoning) over the same three fields,
+and quarantines on a HIGH-confidence secret (a structured AWS/GitHub/Slack/
+Stripe/Google/Anthropic token shape, a PEM private key block, a JWT) or a
+prompt-injection pattern (instruction-override phrasing, a forged
+system-role block, hidden zero-width/bidi-override Unicode). PII findings
+(email, phone, a Luhn-valid card number) are surfaced by that module but
+never quarantine anything on their own — a support trace legitimately
+mentions a customer's email. This is pattern matching, not semantic
+understanding, and carries the same "not exhaustive" caveat as the spam
+heuristic; what it changes is the default, from nothing being checked to a
+known-dangerous shape being caught before it reaches `search_traces` (and,
+on the client side, before a lesson containing one can be activated —
+`commontrace lesson approve` / the MCP `approve_lesson` tool run the same
+scan).
 
 ### `related` / `CO_RETRIEVED` — partially implemented
 
@@ -622,6 +1001,167 @@ Still unproven, so worth saying: **the compose stack is not exercised by
 CI** (only the image is), and neither has been run against a
 production-like environment. Do a rehearsal deploy first.
 
+## Event export (webhooks)
+
+Everything this Hub knew was readable only by polling it. A fleet that
+wanted to open a ticket when a memory was quarantined, or gate a deploy on
+an experiment reaching a verdict, had to cron `hub/manage.py` and diff the
+output against last time.
+
+```bash
+python -m hub.manage webhook-add <org_id> https://you.example/hooks/commontrace
+# prints the signing secret ONCE
+python -m hub.manage webhook-deliver          # drain the queue; run on a schedule
+python -m hub.manage webhook-list <org_id>    # endpoints, pending, and what gave up
+```
+
+**Events carry no trace content.** A webhook is egress to a third party, set
+up once and then forgotten, so it is the one place where a leak would be
+permanent and unobserved. Every event type declares its exact fields
+(`hub/events.py`) and `emit` refuses a payload with any other key — a
+*whitelist*, because a denylist fails the moment someone adds a field nobody
+thought to ban. Events carry ids, counts and verdicts; a receiver that needs
+the text comes back and asks for it, authenticated, over the tenant-scoped
+API.
+
+**The signing secret is never stored.** Unlike an API key, which the Hub
+only ever *verifies* (and so can keep as an argon2 hash), a webhook secret
+must be *used* to compute an HMAC on every delivery. It is derived per
+endpoint from `HUB_LEDGER_SIGNING_KEY` plus the endpoint id and its key
+version, so `webhook_endpoints` holds a version integer and nothing else: a
+full database dump reveals which URLs an org uses and yields no ability to
+forge a single event. `webhook-rotate` bumps the version.
+
+**Verifying a delivery.** The `X-CommonTrace-Signature` header is
+`t=<unix>,v1=<hex>`, where the HMAC-SHA256 covers `"{timestamp}.{body}"` —
+the timestamp is inside the signed material, so altering it breaks the
+signature and a captured delivery cannot be replayed forever. Reject
+anything more than 300 seconds from your own clock.
+`hub/events.py:verify_signature` is the reference implementation, and is
+what this project's own tests use.
+
+**Delivery is at-least-once.** Deliveries are durable rows retried with
+backoff and given up on after 8 attempts — visibly, in `webhook-list`,
+because a queue that gives up quietly is a queue that lies about delivery.
+Every envelope carries a stable `event_id`: **deduplicate on it**. Promising
+exactly-once here would be a promise this cannot keep.
+
+## Alerting and scheduled reports (`hub/alerts.py`)
+
+Webhooks (above) tell a receiver *when* something happened. This adds
+*whether* a number has crossed a line an operator cares about, and a
+periodic summary of what a number has been doing — both delivered through
+the **same** signed, at-least-once webhook queue rather than a second
+delivery mechanism. An alert or a report is a kind of event
+(`alert.triggered`, `report.generated`), so an org's already-configured
+endpoint and signature verification cover these for free.
+
+```bash
+python -m hub.manage create-alert-rule <org_id> quarantine_rate gt 10
+python -m hub.manage list-alert-rules <org_id>
+python -m hub.manage check-alerts             # all orgs; run on a schedule
+python -m hub.manage generate-report <org_id> # one usage summary, on demand or scheduled
+```
+
+**Metrics are a closed, named set** (`quarantine_rate`,
+`commons_queries_used_pct`, `traces_used_pct`), never a free-form
+expression a customer supplies — the same "deny by construction"
+discipline `hub/rbac.py` applies to an unmapped tool: an unknown metric is
+refused at rule-creation time, not silently skipped at evaluation time. A
+metric that cannot be computed right now (no traces yet, an unlimited
+plan) never fires — a rate over zero traces is not a signal.
+
+**Two ways to run `check-alerts` on a schedule.** `check-alerts` and
+`generate-report` are pure functions either way — something else has to
+call them periodically:
+
+- **Your own cron** invoking the CLI commands above, the exact same shape
+  as `webhook-deliver`'s existing redelivery sweep. Works for either
+  command, at whatever cadence you configure.
+- **An opt-in in-process scheduler** (`hub/scheduler.py`), for
+  `check-alerts` only: set `HUB_ALERT_SCHEDULER_ENABLED=true` and the Hub
+  process sweeps every enabled rule itself, every
+  `HUB_ALERT_SCHEDULER_INTERVAL_SECONDS` (default 300). Off by default —
+  a deployment that already points cron at `check-alerts` sees no change.
+  `generate-report` stays cron-only: a usage report's natural cadence is
+  daily/monthly, aligned to a billing period, not a single short fixed
+  interval a sweep loop can reuse for both.
+
+Each rule's own `cooldown_minutes` (default 60) is what keeps a metric
+that stays past its threshold from firing on every single check, cron or
+in-process.
+
+## Locating content for a subject-erasure request (`search_trace_content`)
+
+Audit §2.2: "a customer who needs subject-level erasure over trace
+content must locate the traces themselves; there is no field this
+system could search on to do it for them." This is that tool — for a
+customer's own org (`search_trace_content`, an MCP tool) or an operator
+acting on a support ticket (`python -m hub.manage search-content
+<org_id> <pattern> [literal|regex]`).
+
+```bash
+python -m hub.manage search-content <org_id> "jane.smith@example.com"
+python -m hub.manage search-content <org_id> '\d{5}' regex
+```
+
+- **Literal by default, POSIX regex opt-in.** `search_traces`
+  deliberately moved off substring matching onto `search_vector`'s
+  stemmed full-text index — the right call for relevance search, and the
+  wrong one here: a subject's exact identifier must match exactly, not
+  survive being reduced to a stemmed lexeme. This is a plain scan (no
+  index, no ranking), which is the correct trade for a rare, targeted
+  compliance action rather than a per-occasion retrieval call.
+- **Only one regex engine is ever consulted.** `regex=True` uses
+  Postgres's own POSIX engine end to end, for both matching and
+  detecting which field matched — never a second pass through Python's
+  `re`, whose grammar is different enough (lookaheads, POSIX bracket
+  expressions) that pre-validating with it would reject patterns
+  Postgres accepts, or accept ones it rejects. An invalid pattern
+  surfaces as Postgres's own error, converted to a clean refusal.
+- **Finds candidates, including quarantined traces; deletes nothing.**
+  Review each match, then `delete_trace`/`purge-trace` the ones that
+  actually need to go.
+- **Not a completeness guarantee.** A match proves the text is present;
+  a non-match is not proof of absence — free text can misspell,
+  abbreviate, or split an identifier this cannot reassemble. For content
+  a curator has explicitly tagged (below), it IS a completeness
+  guarantee — that's what the structured column buys.
+
+### Structured subject tagging: exact find/purge (`Trace.subject_ids`, implemented)
+
+The other half of §2.2, closing what the section above's own docstring
+names as the remaining gap: "per-person erasure still has no structured
+subject-id column to search on". `Trace.subject_ids` (empty by default —
+nothing populates it automatically) lets a curator explicitly tag which
+end user(s)/customer(s) a trace's content concerns; once tagged,
+`find_traces_by_subject`/`purge_traces_by_subject` are EXACT
+array-membership queries, not a scan a human still has to review.
+
+```bash
+python -m hub.manage tag-trace-subjects <org_id> <trace_id> user-42,user-99
+python -m hub.manage find-subject-traces <org_id> user-42
+python -m hub.manage purge-subject-traces <org_id> user-42   # irreversible
+```
+
+- **Tagging REPLACES, never appends.** A retried or corrected call
+  cannot accumulate duplicates or leave a stale subject behind; pass an
+  empty list to clear a mistaken tag entirely.
+- **Purge deletes the whole amendment chain**, the same completeness
+  `delete_trace` already gives a single trace — a subject's content can
+  persist across a supersession even where only one revision in the
+  chain was explicitly tagged. The reported count reflects the full
+  expanded chain, not just the directly-tagged subset.
+- **Untagged and historical content is not covered.** This does not
+  retroactively fix that — `search_trace_content` above is still the
+  tool for it, and remains the honest answer for anything nobody
+  explicitly tagged.
+- **A provisioned tag never implies elevated access to anything else** —
+  `tag_trace_subjects` (`SCOPE_WRITE`), `find_traces_by_subject`
+  (`SCOPE_READ`), `purge_traces_by_subject` (`SCOPE_ADMIN`, matching
+  `delete_trace`'s own trust level) are ordinary scoped MCP tools, same
+  as everything else in this file.
+
 ## Operator CLI (`hub/manage.py`)
 
 There is no web admin panel — this CLI *is* the admin/monitoring surface,
@@ -643,6 +1183,10 @@ python -m hub.manage outcomes [org_id]            # is the product working, per 
 python -m hub.manage start-experiment <org_id> [rate]   # begin a randomized holdout (causal)
 python -m hub.manage experiment <org_id>          # what the holdout established, per trace
 python -m hub.manage stop-experiment <org_id>     # stop withholding; observations are kept
+python -m hub.manage value <org_id> [value_per_occasion]  # what the memory was worth, causally --
+                                                   # occasions improved, priced only if you pass a
+                                                   # rate (never stored); the CLI path to the same
+                                                   # numbers a customer sees on their own Proof page
 python -m hub.manage kb-stats                     # corpus size, hits delivered, standing breakdown, submission funnel
 python -m hub.manage kb-review [limit]            # which entries need a human, worst first
 python -m hub.manage kb-retract <trace_id> [reason]  # withdraw an entry from the Knowledge Base (reversible)

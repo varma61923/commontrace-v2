@@ -209,9 +209,34 @@ def run(args: argparse.Namespace) -> int:
             f"(>= {args.min_cluster_size} traces, similarity >= {args.similarity_threshold}). "
             "Nothing proposed."
         )
+        # Distillation looks for REPEATS, so a store with one trace -- or
+        # several unrelated ones -- correctly proposes nothing. Said alone
+        # that reads as a failure, and it is the second of three identical
+        # dead ends a new user hits before anything works. Name the way
+        # forward instead: a rule you already know does not need to be
+        # rediscovered from repetition.
+        if len(traces) < args.min_cluster_size:
+            print(
+                f"  Distilling finds rules by REPETITION, so it needs at least "
+                f"{args.min_cluster_size} similar traces.\n"
+                "  With fewer, write the rule directly -- one trace is enough when you "
+                "already know the lesson:\n"
+                "    commontrace lesson new --slug lesson_my_rule --description '...' "
+                "--domain '...'"
+            )
+        else:
+            print(
+                "  The traces are there but none look alike enough to generalise from. "
+                "Either keep capturing,\n"
+                "  lower the bar with `--similarity-threshold` (default "
+                f"{args.similarity_threshold}), or write the rule directly:\n"
+                "    commontrace lesson new --slug lesson_my_rule --description '...' "
+                "--domain '...'"
+            )
         return 0
 
     ldir = paths.lessons_dir(root)
+    paths.warn_if_implicit_cwd_store(args.dest)
     os.makedirs(ldir, exist_ok=True)
     date = datetime.date.today().strftime("%Y%m%d")
 

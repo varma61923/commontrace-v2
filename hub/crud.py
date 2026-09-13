@@ -19,6 +19,7 @@ property testable without spinning up a live MCP transport for every case.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import math
@@ -29,11 +30,20 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, literal, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from commontrace import experiment, integrity, revision, value
+from commontrace import (
+    decay,
+    distill,
+    experiment,
+    integrity,
+    prereg,
+    raw_export,
+    revision,
+    value,
+)
 from hub import audit, commons, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
@@ -44,6 +54,7 @@ from hub.abuse import (
     suspicion_reason,
     validate_size,
 )
+from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, HubConfig
 from hub.models import (
     MAX_FEEDBACK_TEXT_CHARS,
@@ -218,25 +229,96 @@ async def _related_by_trace(session: AsyncSession, trace_ids: list[str]) -> dict
     return out
 
 
-def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
+# search_traces' `brief` mode truncates to this many characters per text
+# field, cut at the nearest preceding whitespace so a preview never ends
+# mid-word. Not operator-configurable: it is a wire-shaping constant, not a
+# deployment policy like max_text_chars (HubConfig) is -- there is no
+# version of "too short to be useful" or "too long to save anything" that
+# varies legitimately by deployment the way a storage/abuse limit does.
+BRIEF_PREVIEW_CHARS = 240
+
+
+def _preview(text: str, limit: int = BRIEF_PREVIEW_CHARS) -> str:
+    """First `limit` characters of `text`, or `text` unchanged if it
+    already fits. Cuts at the last whitespace inside the limit rather than
+    mid-word, and only when that does not throw away more than half the
+    budget -- a preview that is merely short must never be confused with
+    one that was cut, so a truncated preview always ends in `…`."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
+
+
+def _to_wire(trace: Trace, votes: list[dict], related: list[dict], *, brief: bool = False) -> dict:
     """Pure shaping -- no I/O. Callers batch-load `votes`/`related` first
-    (see _votes_by_trace) rather than letting this function issue queries."""
-    return {
+    (see _votes_by_trace) rather than letting this function issue queries.
+
+    `brief=True` (search_traces only -- see its own docstring) previews
+    `context_text`/`solution_text` instead of returning them whole. Those
+    two fields are individually bounded by `HubConfig.max_text_chars`
+    (20,000 by default) EACH, so a full page of results (`MAX_SEARCH_LIMIT`
+    = 200) can legitimately run to millions of characters -- enough to
+    blow a calling agent's own context budget, not just run up its bill.
+
+    Brief mode also drops the operational/bookkeeping fields below when
+    they hold their default (empty/false/zero) value -- measured on a real
+    5-result page where none of them were populated, these ~14 fields cost
+    roughly as many tokens as `brief`'s own truncation saved, which meant
+    "browse many with brief, then get_trace the one you want" cost MORE
+    than a single non-brief call, not less. A field that actually holds
+    something (a real `agent_id`, a non-zero `trust`, an `outcome`) is
+    still shipped in brief mode -- only the empty defaults are omitted, and
+    only when brief; full mode is unchanged so an existing caller reading
+    any of these off a normal result keeps working exactly as before.
+    """
+    out = {
         "id": trace.id,
         "title": trace.title,
-        "context_text": trace.context_text,
-        "solution_text": trace.solution_text,
+        "context_text": _preview(trace.context_text) if brief else trace.context_text,
+        "solution_text": _preview(trace.solution_text) if brief else trace.solution_text,
         "tags": list(trace.tags or []),
         "agent_type": trace.agent_type,
+        "created_at": _iso(trace.created_at),
+        "trust": trace.trust,
+        # Whether this trace is quarantined. Surfaced (unlike the
+        # models.py column comment's original framing of these as
+        # "governance fields, not part of the wire object") because a caller
+        # that reaches a quarantined trace of its OWN -- via get_trace/
+        # vote_trace by id, which do not filter quarantine the way
+        # search_traces/list_tags do -- otherwise gets the full body back
+        # with no indication it is excluded from search and pending review.
+        # Safe to expose on every call site: get_trace/vote_trace are
+        # org-scoped to the trace's owner, and the one cross-org call site
+        # (commons_overlap/commons_search's `_to_commons_wire(hit)`) only
+        # ever reaches rows already filtered to `quarantined.is_(False)`,
+        # so this is always False there. Kept unconditional (not folded
+        # into `optional` below) because its own absence must never be
+        # mistaken for "not quarantined" -- the one field on this object
+        # where silence is not a safe default to imply.
+        "quarantined": trace.quarantined,
+    }
+    optional = {
         "agent_id": trace.agent_id,
         "profile": trace.profile,
         "extensions": dict(trace.extensions or {}),
         "watch_condition": trace.watch_condition,
         "review_after": trace.review_after,
         "supersedes_trace_id": trace.supersedes_trace_id or "",
+        # The forward half of the same chain -- see hub/models.py's
+        # docstring on these two columns. Empty string / None, matching
+        # supersedes_trace_id's own convention, when this trace is still
+        # the current head. get_trace is unaffected by superseded_at (it
+        # fetches by id regardless -- see search_traces's docstring for
+        # why the exclusion belongs there, not here): a caller who already
+        # has the id of a superseded trace can still retrieve it and see
+        # what replaced it.
+        "superseded_by_trace_id": trace.superseded_by_trace_id or "",
+        "superseded_at": trace.superseded_at.isoformat() if trace.superseded_at else "",
         "contributor": trace.contributor,
-        "created_at": _iso(trace.created_at),
-        "trust": trace.trust,
         "retrievals": trace.retrievals,
         "depth": trace.depth,
         "votes": votes,
@@ -250,21 +332,17 @@ def _to_wire(trace: Trace, votes: list[dict], related: list[dict]) -> dict:
         # rather than merely asserted -- a customer can see for themselves
         # that nothing of theirs is flagged.
         "shared_with_commons": trace.shared_with_commons,
-        # Whether this trace is quarantined, and why. Surfaced (unlike the
-        # models.py column comment's original framing of these as
-        # "governance fields, not part of the wire object") because a caller
-        # that reaches a quarantined trace of its OWN -- via get_trace/
-        # vote_trace by id, which do not filter quarantine the way
-        # search_traces/list_tags do -- otherwise gets the full body back
-        # with no indication it is excluded from search and pending review.
-        # Safe to expose on every call site: get_trace/vote_trace are
-        # org-scoped to the trace's owner, and the one cross-org call site
-        # (commons_overlap/commons_search's `_to_commons_wire(hit)`) only
-        # ever reaches rows already filtered to `quarantined.is_(False)`,
-        # so this is always False there.
-        "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
     }
+    if brief:
+        # A caller checking this key programmatically never has to guess
+        # whether a short-but-complete field and a truncated one look the
+        # same -- they don't rely on noticing the trailing "…" either.
+        out["brief"] = True
+        out.update({k: v for k, v in optional.items() if v})
+    else:
+        out.update(optional)
+    return out
 
 
 def commons_visible() -> list:
@@ -292,12 +370,25 @@ def commons_visible() -> list:
     itself, the second is a matcher precondition -- and folding them in
     here would silently break `vote_trace`, which correctly applies
     neither.
+
+    `superseded_at IS NULL` is the newest of the five, for the same reason
+    search_traces gained it (hub/models.py:Trace.superseded_at's
+    docstring): a trace an org later amends stops being the org's own
+    current answer, and amend_trace does not carry `shared_with_commons`
+    forward onto the new row -- re-sharing a correction is a separate,
+    explicit decision this function does not make for the org. Left
+    unfiltered, the stale, superseded original would keep being served to
+    every OTHER org from the Knowledge Base indefinitely, which is a worse
+    version of the bug this predicate fixes for per-org search: there it
+    misled the org that wrote it, here it would mislead every org that
+    didn't.
     """
     return [
         Trace.shared_with_commons.is_(True),
         Trace.commons_source == "seed",
         Trace.quarantined.is_(False),
         Trace.commons_retracted_at.is_(None),
+        Trace.superseded_at.is_(None),
     ]
 
 
@@ -355,13 +446,13 @@ def _to_commons_wire(trace: Trace, now: datetime | None = None) -> dict:
     }
 
 
-async def _hydrate(session: AsyncSession, traces: list[Trace]) -> list[dict]:
+async def _hydrate(session: AsyncSession, traces: list[Trace], *, brief: bool = False) -> list[dict]:
     """Wire-shape a list of already-org-scoped traces, batch-loading their
     votes and relations (2 queries total, regardless of list length)."""
     trace_ids = [t.id for t in traces]
     votes = await _votes_by_trace(session, trace_ids)
     related = await _related_by_trace(session, trace_ids)
-    return [_to_wire(t, votes.get(t.id, []), related.get(t.id, [])) for t in traces]
+    return [_to_wire(t, votes.get(t.id, []), related.get(t.id, []), brief=brief) for t in traces]
 
 
 async def _hydrate_one(session: AsyncSession, trace: Trace) -> dict:
@@ -485,23 +576,54 @@ async def _reserve_trace_slot(session: AsyncSession, org_id: str, plan: plans.Pl
     org already at its cap could grow storage without bound simply by
     amending instead of contributing.
 
+    Reads Organization.trace_count -- a maintained counter (see its column
+    comment in hub/models.py), not a `count(*)` over the org's traces. That
+    used to be a real per-write index scan whose cost grew with the org's
+    ENTIRE trace history; this is a single-row read of an already-current
+    value, and stays O(1) forever regardless of how large the org's corpus
+    gets. contribute_trace/amend_trace increment it, unconditionally,
+    right after the insert this call is guarding actually succeeds --
+    NOT here, and not gated on plan: an unlimited-plan org still needs an
+    accurate count in case it is ever downgraded to a bounded one later.
+
     SELECT ... FOR UPDATE on the org's own row, same as before: count-then-
     insert is a TOCTOU race under concurrent callers for the SAME org
     without it, and a different org's row lock never blocks this one.
     """
     if plan.max_traces == plans.UNLIMITED:
         return
-    await session.execute(
-        select(Organization.id).where(Organization.id == org_id).with_for_update()
-    )
     stored = int(await session.scalar(
-        select(func.count()).select_from(Trace).where(Trace.org_id == org_id)
+        select(Organization.trace_count).where(Organization.id == org_id).with_for_update()
     ) or 0)
     if not plans.within(plan.max_traces, stored):
         raise plans.EntitlementExceeded(
             metric="traces", limit=plan.max_traces, used=stored, plan=plan.name,
             remedy="Purge traces you no longer need, or move to a plan with more storage.",
         )
+
+
+async def _adjust_trace_count(session: AsyncSession, org_id: str, delta: int) -> None:
+    """Atomically add `delta` (positive on insert, negative on delete) to
+    Organization.trace_count. A plain `UPDATE ... SET trace_count =
+    trace_count + $delta` rather than a read-modify-write: two concurrent
+    calls for the same org (a write and a delete racing each other, or two
+    concurrent deletes) both need to land, not have the second silently
+    overwrite the first's effect the way separate read-then-write steps
+    would -- the same lost-update hazard `_meter`'s docstring explains for
+    UsageCounter. GREATEST(0, ...) is a defensive floor, not an expected
+    path: it exists so a bug elsewhere in this mechanism degrades to an
+    inaccurately-low (but never negative, never crash-on-underflow) count
+    rather than corrupting the column into something plans.within() would
+    choke on -- it must never be relied upon to paper over a real
+    increment/decrement site being missed.
+    """
+    if delta == 0:
+        return
+    await session.execute(
+        update(Organization)
+        .where(Organization.id == org_id)
+        .values(trace_count=func.greatest(0, Organization.trace_count + delta))
+    )
 
 
 def _active_agent_cutoff(now: datetime | None = None) -> datetime:
@@ -666,18 +788,33 @@ async def search_traces(
     tags: list[str] | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
     offset: int = 0,
+    brief: bool = False,
 ) -> dict:
     """Returns {"traces": [...], "limit", "offset", "has_more", "terms"}.
 
-    Three deliberate properties, all visible to callers:
+    Four deliberate properties, all visible to callers:
 
-    1. **Pagination.** This used to hard-cap at 50 results with no offset,
+    1. **`brief` trades content for headroom.** `context_text`/
+       `solution_text` are each independently bounded by
+       `HubConfig.max_text_chars` (20,000 by default), so a full page at
+       `MAX_SEARCH_LIMIT` (200) can legitimately run to millions of
+       characters -- enough to blow a calling agent's own context budget,
+       not just its bill. `brief=True` previews both fields instead
+       (`BRIEF_PREVIEW_CHARS`, marked with a trailing "…" when actually
+       cut, plus `"brief": true` on every row so a caller never has to
+       infer it from the ellipsis) while leaving id/title/tags/agent_type/
+       score untouched -- enough to judge relevance and decide which
+       result to fetch in full via `get_trace`. Off by default: an
+       existing caller reading `context_text`/`solution_text` straight off
+       a search result keeps working exactly as before.
+
+    2. **Pagination.** This used to hard-cap at 50 results with no offset,
        so a client could never reach result 51 at all. `limit` is clamped
        to [1, MAX_SEARCH_LIMIT] and `has_more` tells the caller whether to
        page again (computed by fetching one extra row, not by a second
        COUNT query).
 
-    2. **Matching is full-text, not substring.** The old
+    3. **Matching is full-text, not substring.** The old
        `ILIKE '%query%'` could not use an index -- a leading wildcard
        defeats B-tree prefix matching -- so every search sequentially
        scanned the org's traces. It now matches against the
@@ -691,7 +828,7 @@ async def search_traces(
        substring hits are mostly noise -- but it IS a behavior change, not
        a transparent optimization.
 
-    3. **Query terms are OR-ed, not AND-ed** (`hub/search.py`). This is the
+    4. **Query terms are OR-ed, not AND-ed** (`hub/search.py`). This is the
        correction of a defect that made the product's core loop return
        nothing at all for the query shape it exists to serve.
 
@@ -724,6 +861,7 @@ async def search_traces(
     """
     limit = _clamp_int(limit, 1, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
     offset = _clamp_int(offset, 0, MAX_SEARCH_OFFSET, 0)
+    brief = bool(brief)
     if query:
         reject_unstorable_text(query, "query")
     # search_traces has no schema validation ahead of it the way the
@@ -740,8 +878,34 @@ async def search_traces(
     for tag in tags or []:
         reject_unstorable_text(tag, "tag")
 
-    stmt = select(Trace).where(Trace.org_id == org_id, Trace.quarantined.is_(False))
+    # Trace.superseded_at.is_(None): the bi-temporal fix (hub/models.py's
+    # docstring on the column has the full story). Before this predicate
+    # existed, amend_trace's own docstring correctly described the chain
+    # as "supersedes, does not mutate" -- but nothing here acted on that:
+    # a search could return the STALE original, occasionally in place of
+    # its correction, whenever the old wording happened to rank higher.
+    # Reproduced against a live Hub before this predicate existed: amend a
+    # trace, search the old wording, get the old wording back. A
+    # superseded trace is still reachable directly via get_trace (Zep's
+    # "invalidated, never deleted" -- see the model docstring) and via
+    # `superseded_by_trace_id` from whichever row now supersedes it; it is
+    # simply no longer offered as a live search RESULT, which is the one
+    # place staleness actually reaches an agent's context.
+    stmt = select(Trace).where(
+        Trace.org_id == org_id, Trace.quarantined.is_(False), Trace.superseded_at.is_(None)
+    )
     chosen = hub_search.ChosenTerms((), (), ())
+    # A trace whose OWN recorded outcome says the attempt failed
+    # (`outcome.resolved: false` -- an agent's self-logged, unresolved
+    # occasion, not a curated solution) sorts after every other trace at
+    # the same relevance, rather than competing with them on text match
+    # alone. A hand-written lesson and a fleet's own escalated retry of the
+    # same query otherwise rank on equal footing, and text relevance alone
+    # cannot tell them apart: both describe the same failure in the same
+    # words. This is a ranking floor, not a filter -- a failed attempt is
+    # still findable, just never placed ahead of a better-standing result
+    # for the same query.
+    failed_outcome = case((Trace.outcome["resolved"].astext == "false", 1), else_=0)
     if query:
         frequencies = (
             await session.execute(hub_search.term_frequency_stmt(org_id, query))
@@ -750,19 +914,37 @@ async def search_traces(
         if chosen.used:
             tsquery = hub_search.tsquery_for(chosen.used)
             stmt = stmt.where(Trace.search_vector.op("@@")(tsquery))
-            # id.desc() as a tiebreaker: created_at alone is not unique
-            # enough under concurrent inserts (or two rows sharing a
+            # created_at ASCENDING inside a relevance tie, not descending.
+            # Exact ts_rank ties are the signature of near-duplicate text,
+            # and a fleet produces those constantly: it resolves an
+            # occasion using a lesson, then contributes a trace describing
+            # what happened, which says the same thing in the same words.
+            # Ordering those newest-first returns the fleet's own most
+            # recent RE-TELLING of a lesson and pushes the original off the
+            # page entirely once enough occasions have accumulated -- the
+            # worse result of the two to hand an agent, and the reason the
+            # near-duplicate clustering below could not hold a stable
+            # randomization unit (a page made only of re-tellings has no
+            # fixed member to anchor to, so the unit drifted with the page:
+            # measured at 8 units for one lesson over 12 occasions).
+            # Oldest-first inside a tie returns the original and keeps it
+            # on the page. Recency still orders the no-query browse path
+            # below, which is what that path is for.
+            #
+            # id.desc() as a final tiebreaker: created_at alone is not
+            # unique enough under concurrent inserts (or two rows sharing a
             # timestamp) to make OFFSET/LIMIT paging deterministic --
             # without a total order, Postgres is free to break ties by
             # physical row order, which is not guaranteed stable across two
             # separate queries.
             stmt = stmt.order_by(
+                failed_outcome.asc(),
                 hub_search.relevance(Trace.search_vector, tsquery).desc(),
-                Trace.created_at.desc(),
+                Trace.created_at.asc(),
                 Trace.id.desc(),
             )
     else:
-        stmt = stmt.order_by(Trace.created_at.desc(), Trace.id.desc())
+        stmt = stmt.order_by(failed_outcome.asc(), Trace.created_at.desc(), Trace.id.desc())
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
@@ -803,7 +985,7 @@ async def search_traces(
             .values(retrievals=Trace.retrievals + 1)
         )
     return {
-        "traces": await _hydrate(session, traces),
+        "traces": await _hydrate(session, traces, brief=brief),
         "limit": limit,
         "offset": offset,
         "has_more": has_more,
@@ -865,6 +1047,89 @@ async def search_health(
         "miss_rate": (empty / searchable) if searchable else None,
         "traces": int(stored or 0),
     }
+
+
+async def _possible_duplicates(
+    session: AsyncSession,
+    org_id: str,
+    trace_id: str,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+) -> list[str]:
+    """Ids of other LIVE traces in this org that look like the same thing
+    as the one just contributed -- so the caller can `amend_trace` instead
+    of leaving two disagreeing answers to the same problem both live.
+
+    Graphiti (getzep/graphiti, cloned to scratch for this pass under
+    Apache-2.0) resolves this with an LLM call per extracted fact: every
+    new edge is checked against related existing edges for semantic
+    contradiction, and a contradicted edge is invalidated automatically
+    (graphiti_core/utils/maintenance/edge_operations.py:resolve_edge_
+    contradictions). That is the wrong shape to adopt here -- adapting the
+    idea, not the code: `commontrace/distill.py`'s own docstring already
+    made this call deliberately for the identical tradeoff ("a headless
+    CLI command has no standing agent session to call out to, and baking
+    in a hardcoded model call/API-key dependency here would be a much
+    bigger, riskier addition than this pass is scoped for"), and this is
+    the Hub's write path, hit far more often than a batch CLI command.
+    Automatic invalidation is also a stronger claim than this module wants
+    to make unilaterally: `amend_trace` already exists as the explicit,
+    human/agent-decided path for "this replaces that", and this function
+    does not call it -- it only surfaces candidates.
+
+    So: zero-LLM, using the same word-overlap Jaccard clustering
+    `_cluster_representatives` above already reuses from distill.py for
+    an unrelated problem (collapsing near-duplicate randomization units),
+    rather than a third implementation of "these are probably the same
+    thing". And bounded, per this module's own established discipline
+    against scanning the tenant on a write (hub/crud.py's module
+    docstring; see also `_reserve_trace_slot`): candidates come from ONE
+    indexed query (`Trace.tags.overlap`, backed by `ix_traces_tags_gin`,
+    the same idiom `search_traces` already uses), capped at 25 rows, and
+    skipped entirely when the new trace has no tags to narrow on --
+    exactly the shape `_cluster_representatives` documents as bounded to
+    "one search page, not the cluster's true membership". A trace that
+    happens not to cluster with anything in this bounded, recent sample
+    is simply not flagged; a full-corpus guarantee is not the point, an
+    agent about to contribute a near-duplicate of something recent is.
+    """
+    if not tags:
+        return []
+    stmt = (
+        select(Trace.id, Trace.title, Trace.context_text, Trace.solution_text, Trace.tags, Trace.agent_type)
+        .where(
+            Trace.org_id == org_id,
+            Trace.id != trace_id,
+            Trace.superseded_at.is_(None),
+            Trace.quarantined.is_(False),
+            Trace.tags.overlap(tags),
+        )
+        .order_by(Trace.created_at.desc())
+        .limit(25)
+    )
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return []
+    candidates = [
+        distill.TraceCandidate(
+            id=trace_id, path="", title=title, context_text=context_text,
+            solution_text=solution_text, tags=tags, agent_type=agent_type,
+        )
+    ] + [
+        distill.TraceCandidate(
+            id=row.id, path="", title=row.title, context_text=row.context_text,
+            solution_text=row.solution_text, tags=list(row.tags), agent_type=row.agent_type,
+        )
+        for row in rows
+    ]
+    for cluster in distill.find_clusters(candidates, existing_lessons_source_traces=[]):
+        cluster_ids = {c.id for c in cluster.traces}
+        if trace_id in cluster_ids:
+            return sorted(cluster_ids - {trace_id})
+    return []
 
 
 async def contribute_trace(
@@ -936,6 +1201,12 @@ async def contribute_trace(
     returning stale content. Omitting the key (the default) is unaffected
     -- NULL never conflicts with anything under the backing
     UNIQUE(org_id, idempotency_key).
+
+    `possible_duplicates` in the return value: ids of other live traces in
+    this org that a bounded, zero-LLM heuristic (`_possible_duplicates`
+    above) thinks may be the same thing as this one -- informational only,
+    never blocking and never auto-amending. `[]` on an idempotent replay,
+    matching that path's "store nothing new" contract.
     """
     tags = tags or []
 
@@ -996,7 +1267,7 @@ async def contribute_trace(
                 profile,
             )
 
-    allowed, retry_after = rate_limiter.check(org_id)
+    allowed, retry_after = await rate_limiter.check(org_id)
     if not allowed:
         raise RateLimited(
             f"org {org_id} exceeded contribute_trace rate limit", retry_after=retry_after
@@ -1066,6 +1337,10 @@ async def contribute_trace(
             profile,
         )
 
+    # Only reached on a genuine new row -- never for the idempotent-replay
+    # return above, which stores nothing new and must not double-count.
+    await _adjust_trace_count(session, org_id, +1)
+
     # Bounded, content-free summary -- audit rows outlive an org purge, so
     # they must never carry the trace body. See hub/audit.py.
     await audit.record(
@@ -1080,7 +1355,15 @@ async def contribute_trace(
             f"n_tags={len(tags)} quarantined={trace.quarantined}"
         ),
     )
-    return {"id": trace.id, "quarantined": trace.quarantined, "quarantine_reason": trace.quarantine_reason}
+    possible_duplicates = await _possible_duplicates(
+        session, org_id, trace.id, title, context_text, solution_text, tags, agent_type,
+    )
+    return {
+        "id": trace.id,
+        "quarantined": trace.quarantined,
+        "quarantine_reason": trace.quarantine_reason,
+        "possible_duplicates": possible_duplicates,
+    }
 
 
 def _idempotent_replay_or_conflict(
@@ -1106,6 +1389,9 @@ def _idempotent_replay_or_conflict(
         "id": existing.id,
         "quarantined": existing.quarantined,
         "quarantine_reason": existing.quarantine_reason,
+        # A replay stores nothing new, so there is nothing new to check for
+        # duplicates of -- see contribute_trace's docstring on this key.
+        "possible_duplicates": [],
     }
 
 
@@ -1132,6 +1418,304 @@ async def _amend_idempotent_replay_or_conflict(
     # retrying client sees a different response shape than the original
     # call got.
     return await _hydrate_one(session, existing)
+
+
+#: search_trace_content's own limit, separate from search_traces' --
+#: this is a compliance-lookup tool, not a hot retrieval path, and its
+#: query has no index to bound with (see the function's own docstring).
+MAX_CONTENT_SEARCH_LIMIT = 100
+_CONTENT_SNIPPET_RADIUS = 60
+#: Postgres SQLSTATE for "invalid_regular_expression" -- the one error
+#: search_trace_content re-raises as a clean ValueError; anything else
+#: is a real failure and must not be misreported as a bad pattern.
+_SQLSTATE_INVALID_REGEX = "2201B"
+
+
+def _snippet_at(text: str, start: int, end: int) -> str:
+    """~2*_CONTENT_SNIPPET_RADIUS characters of `text` around [start, end)."""
+    lo = max(0, start - _CONTENT_SNIPPET_RADIUS)
+    hi = min(len(text), end + _CONTENT_SNIPPET_RADIUS)
+    prefix = "…" if lo > 0 else ""
+    suffix = "…" if hi < len(text) else ""
+    return prefix + text[lo:hi] + suffix
+
+
+async def search_trace_content(
+    session: AsyncSession, org_id: str, pattern: str, *, regex: bool = False,
+    limit: int = MAX_CONTENT_SEARCH_LIMIT,
+) -> list[dict]:
+    """Locate traces whose title/context_text/solution_text contain
+    `pattern` -- literally by default, or as a POSIX regex (`regex=True`).
+
+    WHY THIS EXISTS, AND WHY IT IS NOT search_traces
+    -------------------------------------------------
+    Audit 2.2 ("subject deletion and export... not done"): "a customer who
+    needs subject-level erasure over trace content must locate the traces
+    themselves; there is no field this system could search on to do it for
+    them." This is the tool that locates them, for a customer's own org --
+    hand it a name, an email address, a ticket number, whatever the
+    erasure request names -- and then `delete_trace`/`purge-trace` removes
+    what it finds.
+
+    `search_traces` deliberately moved OFF substring matching onto
+    `search_vector`'s stemmed, tokenized full-text index (see that
+    function's own docstring, point 3) precisely because stemming is the
+    right behavior for "find prior experience relevant to this task."
+    Stemming is the WRONG behavior here: a subject's exact identifier must
+    match exactly, not survive being reduced to a stemmed lexeme, or a
+    trace naming "j.smith@example.com" could be missed because the tsvector
+    tokenizer split or discarded exactly the substring that matters. This
+    function therefore runs a literal ILIKE/regex scan (no index -- a
+    leading wildcard defeats one, same as search_traces used to run before
+    it added search_vector) with no relevance ranking at all: every match
+    is returned, oldest first, up to `limit`.
+
+    NOT A COMPLETENESS GUARANTEE. A match proves the text is present. A
+    non-match is not proof of absence: free text can misspell, abbreviate,
+    paraphrase, or split an identifier across two matches this cannot
+    reassemble. Treat this as one instrument in a manual review, never as
+    an automated "subject has no data here" certification. For content a
+    curator has explicitly tagged with `tag_trace_subjects` below,
+    `find_traces_by_subject`/`purge_traces_by_subject` ARE that
+    certification -- an exact structured match, not a scan -- which is
+    the other half of what AUDIT_RESPONSE.md 2.2 says this schema needed.
+
+    Deliberately a SCAN, not indexed: this is a rare, targeted compliance
+    action, not a per-occasion retrieval call, and `HUB_DB_STATEMENT_TIMEOUT_MS`
+    already bounds any single query's worst case the same way it bounds
+    every other query in this module.
+
+    ONE ENGINE VALIDATES THE PATTERN, NOT TWO. `regex=True` uses Postgres's
+    own POSIX regex engine (the `~*` operator) end to end -- for both the
+    WHERE clause and the matched-field detection below -- rather than also
+    checking the pattern against Python's `re` module first. The two are
+    different grammars (lookaheads and non-capturing groups are Python-only;
+    POSIX bracket-expression and backreference details differ), so
+    pre-validating with `re.compile` would reject a pattern Postgres accepts
+    just as often as it would accept one Postgres rejects. Postgres itself
+    is the one judge of validity: an invalid pattern surfaces as Postgres's
+    own `invalid_regular_expression` error (SQLSTATE 2201B), caught below
+    and re-raised as a clean `ValueError` rather than an opaque 500.
+    """
+    limit = _clamp_int(limit, 1, MAX_CONTENT_SEARCH_LIMIT, MAX_CONTENT_SEARCH_LIMIT)
+    reject_unstorable_text(pattern, "pattern")
+    if regex:
+        title_hit = Trace.title.op("~*")(pattern)
+        context_hit = Trace.context_text.op("~*")(pattern)
+        solution_hit = Trace.solution_text.op("~*")(pattern)
+    else:
+        like = f"%{pattern}%"
+        title_hit = Trace.title.ilike(like)
+        context_hit = Trace.context_text.ilike(like)
+        solution_hit = Trace.solution_text.ilike(like)
+    stmt = (
+        select(
+            Trace.id, Trace.title, Trace.context_text, Trace.solution_text,
+            Trace.created_at, Trace.quarantined,
+            title_hit.label("title_hit"), context_hit.label("context_hit"),
+            solution_hit.label("solution_hit"),
+        )
+        .where(Trace.org_id == org_id, or_(title_hit, context_hit, solution_hit))
+        .order_by(Trace.created_at)
+        .limit(limit)
+    )
+    try:
+        rows = (await session.execute(stmt)).all()
+    except DBAPIError as exc:
+        if regex and getattr(exc.orig, "sqlstate", None) == _SQLSTATE_INVALID_REGEX:
+            raise ValueError(f"pattern is not a valid regular expression: {exc.orig}") from None
+        raise
+
+    results = []
+    for row in rows:
+        if row.title_hit:
+            field, text = "title", row.title
+        elif row.context_hit:
+            field, text = "context_text", row.context_text
+        else:
+            field, text = "solution_text", row.solution_text
+        if regex:
+            # The exact match SPAN is Postgres's own regex engine's to
+            # know, not re-derived with Python's `re` (see the module
+            # docstring above) -- so the snippet previews from the start
+            # of the matched field rather than centering on a position
+            # this function does not independently compute.
+            snippet = _snippet_at(text, 0, min(len(text), 2 * _CONTENT_SNIPPET_RADIUS))
+        else:
+            idx = text.lower().find(pattern.lower())
+            start = idx if idx >= 0 else 0
+            snippet = _snippet_at(text, start, start + len(pattern))
+        results.append({
+            "id": row.id,
+            "title": row.title,
+            "created_at": row.created_at.isoformat(),
+            "quarantined": row.quarantined,
+            "matched_field": field,
+            "snippet": snippet,
+        })
+    return results
+
+
+#: A trace tagged with more subjects than this is almost certainly a
+#: mistake (an id pasted where a paragraph was meant) rather than a real
+#: multi-subject incident -- refused at tag time, not silently truncated.
+MAX_SUBJECT_IDS_PER_TRACE = 20
+#: Matches Trace.subject_ids' own column width (hub/models.py).
+MAX_SUBJECT_ID_CHARS = 256
+
+
+def _clean_subject_ids(subject_ids: list) -> list[str]:
+    """Validate and de-duplicate a caller-supplied subject_ids list,
+    order-preserving. Raises ValueError (not silently drops) on anything
+    that would not survive being stored -- the same "reject, don't
+    truncate" posture MAX_TITLE_CHARS/MAX_TAG_CHARS already apply,
+    because a silently-dropped id is a subject this trace would then
+    fail to be found under later."""
+    if not isinstance(subject_ids, (list, tuple)):
+        raise ValueError("subject_ids must be a list")
+    if len(subject_ids) > MAX_SUBJECT_IDS_PER_TRACE:
+        raise ValueError(
+            f"too many subject_ids ({len(subject_ids)}); the maximum is {MAX_SUBJECT_IDS_PER_TRACE}"
+        )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in subject_ids:
+        value = str(raw).strip()
+        if not value:
+            continue
+        if len(value) > MAX_SUBJECT_ID_CHARS:
+            raise ValueError(f"subject_id exceeds {MAX_SUBJECT_ID_CHARS} chars")
+        reject_unstorable_text(value, "subject_id")
+        if value not in seen:
+            seen.add(value)
+            cleaned.append(value)
+    return cleaned
+
+
+async def tag_trace_subjects(
+    session: AsyncSession, org_id: str, trace_id: str, subject_ids: list,
+    actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict | None:
+    """REPLACES (not appends to) `trace_id`'s `subject_ids` -- the same
+    idempotent-under-retry shape `set_user_role` gives a role, so a
+    retried call cannot accumulate duplicates or drift from what the
+    caller most recently asserted. Pass `[]` to clear a mistaken tag.
+
+    None (not found / another org's id / malformed id) on anything that
+    is not this org's own trace, the same 404-shaped-not-403 posture
+    `get_trace` documents -- a foreign org's trace id must not be
+    distinguishable from one that does not exist at all.
+    """
+    if not _is_uuid(trace_id):
+        return None
+    trace = await session.get(Trace, trace_id)
+    if trace is None or trace.org_id != org_id:
+        return None
+    cleaned = _clean_subject_ids(subject_ids)
+    trace.subject_ids = cleaned
+    await audit.record(
+        session, actor=actor, action="tag_trace_subjects", org_id=org_id,
+        target_type="trace", target_id=trace_id,
+        summary=f"{len(cleaned)} subject id(s)",
+    )
+    return {"id": trace.id, "subject_ids": cleaned}
+
+
+async def find_traces_by_subject(session: AsyncSession, org_id: str, subject_id: str) -> list[dict]:
+    """EXACT array-membership match against `Trace.subject_ids` -- not a
+    scan, and not stemmed/tokenized like `search_traces`' full-text index:
+    `subject_id` must equal a tag exactly, the same "exact match, no
+    surviving a stemmer" reasoning `search_trace_content`'s own docstring
+    gives for why THAT function uses ILIKE instead of search_vector.
+
+    Only ever returns traces this org itself tagged -- untagged content,
+    however clearly it names the same subject in free text, needs
+    `search_trace_content` instead; this function does not fall back to
+    scanning for it.
+    """
+    subject_id = str(subject_id or "").strip()
+    if not subject_id:
+        return []
+    reject_unstorable_text(subject_id, "subject_id")
+    stmt = (
+        select(Trace.id, Trace.title, Trace.created_at, Trace.quarantined, Trace.subject_ids)
+        .where(Trace.org_id == org_id, Trace.subject_ids.any(subject_id))
+        .order_by(Trace.created_at)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "id": row.id, "title": row.title, "created_at": row.created_at.isoformat(),
+            "quarantined": row.quarantined, "subject_ids": list(row.subject_ids),
+        }
+        for row in rows
+    ]
+
+
+async def purge_traces_by_subject(
+    session: AsyncSession, org_id: str, subject_id: str, actor: str = AUDIT_ACTOR_UNKNOWN,
+) -> dict:
+    """Permanently deletes every trace this org tagged with `subject_id`,
+    AND every trace in each matched trace's amendment chain -- the actual
+    erasure step `find_traces_by_subject` only ever located candidates for.
+
+    The reported `ids`/`purged` count is the full, expanded chain set,
+    computed BEFORE anything is deleted -- not just the directly-tagged
+    subset. A subject's content can persist across a supersession even
+    where only one revision in the chain was tagged, and `delete_trace`
+    already deletes the whole chain as a side effect of deleting any one
+    member; computing the expansion up front means what this function
+    reports matches what it actually removes, which matters here more
+    than anywhere else in this module -- an under-reported count would be
+    a false "still not fully erased" the same way an over-reported one
+    would be a false "already erased".
+
+    Delegates each actual deletion to `delete_trace`, not a bare DELETE,
+    so a purge inherits everything that function already gets right: the
+    `TraceRelation` cleanup and the `Organization.trace_count` decrement,
+    with its own org-ownership re-verification of every chain id (see its
+    docstring) as the actual authority over what gets deleted -- this
+    function's own expansion is for accurate REPORTING, not a second
+    source of truth for what happens.
+    """
+    subject_id = str(subject_id or "").strip()
+    if not subject_id:
+        return {"purged": 0, "ids": []}
+    matched = (
+        await session.execute(
+            select(Trace.id).where(Trace.org_id == org_id, Trace.subject_ids.any(subject_id))
+        )
+    ).scalars().all()
+    if not matched:
+        return {"purged": 0, "ids": []}
+    expanded: set[str] = set()
+    for trace_id in matched:
+        expanded |= await amendment_chain(session, trace_id)
+    own_ids = (
+        await session.execute(
+            select(Trace.id).where(Trace.id.in_(expanded), Trace.org_id == org_id)
+        )
+    ).scalars().all()
+    for trace_id in matched:
+        await delete_trace(session, org_id, trace_id, actor=actor)
+    # Confirm what actually disappeared rather than trusting each
+    # delete_trace call's own return value: a chain shared by more than
+    # one matched id is deleted whole by the FIRST call, so a later call
+    # for another member of that same chain correctly returns False
+    # (already gone) -- which must not read as "not purged" for reporting
+    # purposes, since own_ids already established it belonged to this
+    # deletion in the first place.
+    remaining = set(
+        (await session.execute(select(Trace.id).where(Trace.id.in_(own_ids)))).scalars().all()
+    )
+    deleted_ids = [trace_id for trace_id in own_ids if trace_id not in remaining]
+    if deleted_ids:
+        await audit.record(
+            session, actor=actor, action="purge_traces_by_subject", org_id=org_id,
+            target_type="trace", target_id=deleted_ids[0],
+            summary=f"purged {len(deleted_ids)} trace(s) for one subject id",
+        )
+    return {"purged": len(deleted_ids), "ids": deleted_ids}
 
 
 def _is_uuid(value: str) -> bool:
@@ -1468,6 +2052,13 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
         )
     )
     await session.execute(delete(Trace).where(Trace.id.in_(own_chain_ids)))
+    # own_chain_ids, not chain_ids -- decrement by exactly what was
+    # actually deleted above, which is the same defense-in-depth
+    # own_chain_ids exists for in the first place (see this function's
+    # docstring): a chain that somehow included a foreign id must not
+    # decrement this org's count for a row that was never deleted (or
+    # never even belonged to it).
+    await _adjust_trace_count(session, org_id, -len(own_chain_ids))
     await audit.record(
         session, actor=actor, action="delete_trace", org_id=org_id,
         target_type="trace", target_id=trace_id,
@@ -1494,6 +2085,15 @@ DELETION_TOKEN_TTL_HOURS = 24
 class DeletionNotReady(ValueError):
     """Raised when confirm_org_deletion is called before the grace period
     has elapsed, with no matching request, or past the token's expiry."""
+
+
+class SubscriptionCancellationFailed(RuntimeError):
+    """Raised when confirm_org_deletion (or hub/manage.py:purge_org)
+    could not cancel an org's live Stripe subscription. The org is NOT
+    deleted when this is raised -- see billing.cancel_subscription's
+    docstring for why leaving a subscription active with no org row left
+    to reconcile it against is worse than a deletion that must be
+    retried."""
 
 
 def _hash_deletion_token(raw_token: str) -> str:
@@ -1555,7 +2155,8 @@ async def cancel_org_deletion(session: AsyncSession, org_id: str, actor: str = A
 
 
 async def confirm_org_deletion(
-    session: AsyncSession, org_id: str, token: str, actor: str = AUDIT_ACTOR_UNKNOWN
+    session: AsyncSession, org_id: str, token: str, actor: str = AUDIT_ACTOR_UNKNOWN,
+    stripe: StripeSettings = StripeSettings(),
 ) -> bool:
     """The second call: permanently deletes the org and everything scoped
     to it (api_keys, traces, votes, kb_submissions -- all FK
@@ -1567,6 +2168,17 @@ async def confirm_org_deletion(
     DELETION_GRACE_SECONDS has elapsed since the request, or a token past
     its DELETION_TOKEN_TTL_HOURS expiry -- the last two are exactly the
     window the two-call design exists to create.
+
+    If this org has a live Stripe subscription (`stripe_subscription_id`),
+    it is cancelled FIRST, before anything is deleted. An org row deleted
+    out from under an active subscription would keep charging that
+    customer's card every billing cycle with no CommonTrace account left
+    to ever notice -- charged and gone is a strictly worse failure than a
+    deletion that has to be retried, so `SubscriptionCancellationFailed`
+    is raised (and nothing is deleted) rather than deleting anyway on a
+    Stripe error. `stripe` defaults to an unconfigured `StripeSettings()`
+    for every caller (almost all of hub/tests/) that has no Stripe
+    settings to pass and no subscription that could exist to cancel.
     """
     org = await session.get(Organization, org_id)
     if org is None:
@@ -1583,15 +2195,26 @@ async def confirm_org_deletion(
     if not secrets.compare_digest(_hash_deletion_token(token), org.deletion_token_hash):
         raise DeletionNotReady("confirmation token does not match the pending request")
 
+    if org.stripe_subscription_id:
+        try:
+            await cancel_subscription(stripe, subscription_id=org.stripe_subscription_id)
+        except StripeError as exc:
+            raise SubscriptionCancellationFailed(
+                f"could not cancel the active Stripe subscription for org {org_id}; "
+                f"account deletion was NOT performed: {exc}"
+            ) from exc
+
     trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
     if trace_ids:
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
     org_name = org.name
+    had_subscription = bool(org.stripe_subscription_id)
     await session.delete(org)
     await audit.record(
         session, actor=actor, action="confirm_org_deletion", org_id=org_id,
         target_type="org", target_id=org_id,
-        summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+        summary=f"name={org_name!r} n_traces={len(trace_ids)} "
+                f"stripe_subscription_cancelled={had_subscription} irreversible",
     )
     return True
 
@@ -1684,7 +2307,7 @@ async def amend_trace(
     # payloads (a title past the column width became a hard 500 rather than
     # a clean rejection), and spam that quarantine would have caught on the
     # way in.
-    allowed, retry_after = rate_limiter.check(org_id)
+    allowed, retry_after = await rate_limiter.check(org_id)
     if not allowed:
         raise RateLimited(f"org {org_id} exceeded write rate limit", retry_after=retry_after)
 
@@ -1775,6 +2398,42 @@ async def amend_trace(
             else None
         ),
     )
+    # Bi-temporal supersession (hub/models.py:Trace.superseded_at, adapted
+    # from Zep/Graphiti's bi-temporal fact model): the row being amended
+    # records its own invalidation, set in the SAME flush as the amending
+    # INSERT so the two are atomic -- a reader can never observe a new
+    # head with no superseded original, or vice versa. `original` is
+    # already the loaded, session-attached row fetched above; mutating its
+    # attributes and letting flush() emit the UPDATE is the ordinary
+    # SQLAlchemy unit-of-work pattern, not a second explicit statement.
+    # Skipped entirely on the idempotent-replay paths above (both return
+    # before reaching here), which is correct: a replay observes the
+    # amendment that already happened rather than re-performing it.
+    #
+    # `original` is not required to be the current head of its lineage --
+    # amend_trace intentionally accepts a stale (already-superseded)
+    # trace_id too, and this is how the supersession graph FORKS (see this
+    # function's docstring on idempotency_key, and
+    # test_manage.py:test_amendment_chain_includes_a_fork_off_an_ancestor):
+    # two independent amend_trace calls against the same still-unmutated
+    # original are both accepted, producing two children of one parent.
+    # superseded_by_trace_id is a single scalar column, so on a fork it can
+    # only end up naming ONE child -- whichever amend_trace call reaches
+    # this line last, silently overwriting the other's pointer -- while
+    # supersedes_trace_id (the backward pointer, set below on `amended`)
+    # stays accurate for every child regardless of forking, since each
+    # child gets its own row. This is an accepted limitation of the
+    # forward pointer as a search/commons-visibility convenience, not a
+    # correctness bug: superseded_at is set correctly on `original` either
+    # way (excluding it from search_traces/commons_visible()), and both
+    # forked children still get superseded_at IS NULL and stay live and
+    # independently searchable, which is what actually matters for this
+    # column's purpose. crud.amendment_chain, not this scalar, is the
+    # authoritative source when a fork's complete set of children matters
+    # (e.g. hub/manage.py:purge_trace's delete of a whole lineage).
+    original.superseded_at = datetime.now(timezone.utc)
+    original.superseded_by_trace_id = amended_id
+
     session.add(amended)
     try:
         await session.flush()
@@ -1794,6 +2453,12 @@ async def amend_trace(
         return await _amend_idempotent_replay_or_conflict(
             session, existing, idempotency_key, trace_id, title, context_text, solution_text, tags, outcome
         )
+
+    # Only reached on a genuine new row -- see contribute_trace's identical
+    # comment. amend_trace INSERTs rather than mutating (this function's
+    # own docstring), so this is a real new storage slot exactly like
+    # contribute_trace's, not a no-op that would double-count on replay.
+    await _adjust_trace_count(session, org_id, +1)
 
     session.add(TraceRelation(trace_id=amended.id, related_trace_id=original.id, relationship_type="AMENDS"))
     session.add(
@@ -1882,9 +2547,27 @@ async def holdout_assign(
     trace_ids: list[str],
     occasion_id: str,
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    pinned: list[str] | None = None,
 ) -> dict:
     """For each trace eligible on this occasion, decide inject or withhold,
     record the decision, and return it.
+
+    `pinned` is the caller's own working-set block: the trace ids that are
+    already in this session's system prompt (`working_set` returns exactly
+    this list in `entries[].trace_id`). They are excluded from the
+    randomization entirely -- reported as `inject`, with NO observation
+    recorded -- and passing them is what keeps the experiment honest.
+
+    The note below says injecting a withheld trace "biases the measured
+    effect toward zero". A pinned trace does precisely that, structurally,
+    without the agent doing anything wrong: `working_set` puts it in the
+    system prompt for the whole session, so when this function later draws
+    it into the WITHHELD arm for a search result, the occasion is treated
+    anyway -- the trace is still sitting in the prompt -- and is recorded as
+    a control. `working_set`'s own contract says a trace is "either being
+    randomized or it has graduated, never both"; nothing enforced that,
+    because only the caller knows what it actually pasted. This parameter is
+    how it says so. Omitting it preserves the previous behaviour exactly.
 
     Idempotent by construction, and it has to be: an agent that times out
     and retries must get the SAME arms back, or the retry would move an
@@ -1937,8 +2620,17 @@ async def holdout_assign(
         ).all()
     )
 
+    # Already in the caller's system prompt, so there is no arm to assign:
+    # a "withheld" verdict here would be recorded as a control while the
+    # trace remains visible to the agent for the whole session. Skipped
+    # before any decision is taken, so no observation row is written.
+    pinned_ids = {str(p) for p in (pinned or [])}
     decisions = []
+    already_pinned = []
     for row in valid:
+        if row.id in pinned_ids:
+            already_pinned.append(row.id)
+            continue
         withheld = experiment.is_held_out(
             row.id, occasion_id, rate=org.holdout_rate, salt=org.holdout_salt
         )
@@ -1979,15 +2671,110 @@ async def holdout_assign(
     return {
         "occasion_id": occasion_id,
         "holdout_rate": org.holdout_rate,
-        "inject": [d["trace_id"] for d in decisions if d["injected"]],
+        # Pinned traces are reported as inject because that is the truth --
+        # they are in the prompt already -- but they are deliberately absent
+        # from the recorded observations, so they contribute to neither arm.
+        "inject": [d["trace_id"] for d in decisions if d["injected"]] + already_pinned,
         "withhold": [d["trace_id"] for d in decisions if not d["injected"]],
+        "pinned": already_pinned,
         "note": (
             "Withheld traces must NOT be used on this occasion. Injecting one anyway "
             "moves it into the treated arm without the record saying so, which does "
             "not fail loudly -- it biases the measured effect toward zero. Report the "
             "result with record_occasion_outcome(occasion_id, succeeded)."
+            + (
+                f" {len(already_pinned)} trace(s) you reported as already pinned were "
+                "left out of the randomization entirely: a trace in the system prompt "
+                "cannot serve as its own control."
+                if already_pinned else ""
+            )
         ),
     }
+
+
+def _cluster_representatives(traces: list[dict]) -> dict[str, str]:
+    """id -> the id its whole near-duplicate cluster is randomized under.
+
+    Without this, a fleet's own habit of contributing a trace of what
+    happened after each occasion -- the exact pattern `commontrace capture`
+    encourages on the local tier -- creates one new, independent trace id
+    per occasion that is a near-duplicate of whatever lesson it resolved.
+    `holdout_assign` treats every id it is given as its own randomization
+    unit, so those duplicates each accumulate their own handful of
+    injections instead of one lesson's injections accumulating on one id --
+    which is exactly the shape that keeps a real, large effect UNDERPOWERED
+    forever. `commontrace/distill.py` exists to solve the identical problem
+    for the local tier's own lesson corpus; this reuses its clustering
+    rather than inventing a second implementation of "these are probably
+    the same thing".
+
+    A cluster's representative is its OLDEST member (`created_at`, ties
+    broken by id), preferring one with no recorded FAILED outcome
+    (`outcome.resolved is not False`) when the cluster has any: an
+    unresolved, escalated occasion log should not become the one id the
+    whole cluster's observations -- and the causal effect a customer
+    eventually reads -- are attributed to, when a better-standing member of
+    the same cluster is available. Ids that cluster with nothing map to
+    themselves, so a genuinely distinct trace is completely unaffected.
+
+    OLDEST, specifically, and not `distill.representative`'s medoid, for a
+    reason that is invisible until this runs against a real corpus: this
+    function only ever sees ONE SEARCH PAGE, not the cluster's true
+    membership, and the medoid is a function of which members happen to
+    share that page. As a fleet logs more occasions, the page composition
+    shifts, the textual centre of it shifts with it, and the "same" lesson
+    is randomized under a different id from one occasion to the next --
+    which re-creates, one level up, exactly the fragmentation this
+    clustering exists to remove. Measured over the audit's own dynamics
+    (top-5 page, corpus growing by one occasion log at a time): the medoid
+    rule produced 17 distinct randomization units for a single lesson; the
+    oldest-member rule produces 1.
+
+    The oldest member is also the semantically right anchor rather than
+    merely a stable one: a lesson is contributed before any occasion that
+    used it, so the original is the oldest member of its own duplicate
+    family, and it is what a customer reading `causal_effects` should see
+    named as the memory under test.
+
+    Clusters on whatever text `traces` already carries, which may be
+    brief-truncated (`_to_wire(..., brief=True)`); a degraded grouping on
+    truncated text still only ever falls back to today's per-id behavior,
+    never to a wrong answer, so this is an acceptable degradation rather
+    than a correctness risk.
+    """
+    candidates = [
+        distill.TraceCandidate(
+            id=t["id"], path="", title=t.get("title", ""),
+            context_text=t.get("context_text", ""), solution_text=t.get("solution_text", ""),
+            tags=list(t.get("tags") or []), agent_type=t.get("agent_type", ""),
+        )
+        for t in traces if isinstance(t, dict) and t.get("id")
+    ]
+    if len(candidates) < 2:
+        return {c.id: c.id for c in candidates}
+    by_id = {
+        t["id"]: t for t in traces if isinstance(t, dict) and t.get("id")
+    }
+
+    def _age_key(trace_id: str) -> tuple[str, str]:
+        # `created_at` is an ISO-8601 UTC string (`_iso`), so lexicographic
+        # order IS chronological order. Id breaks ties, and stands in
+        # entirely for a row with no timestamp, so the choice stays
+        # deterministic either way.
+        return (str(by_id.get(trace_id, {}).get("created_at") or ""), trace_id)
+
+    clusters = distill.find_clusters(candidates, existing_lessons_source_traces=[])
+    representative_of: dict[str, str] = {c.id: c.id for c in candidates}
+    for cluster in clusters:
+        preferred = [
+            c for c in cluster.traces
+            if (by_id.get(c.id, {}).get("outcome") or {}).get("resolved") is not False
+        ]
+        pool = preferred or cluster.traces
+        rep_id = min((c.id for c in pool), key=_age_key)
+        for c in cluster.traces:
+            representative_of[c.id] = rep_id
+    return representative_of
 
 
 async def holdout_for_results(
@@ -1996,8 +2783,16 @@ async def holdout_for_results(
     traces: list[dict],
     occasion_id: str,
     actor: str = AUDIT_ACTOR_UNKNOWN,
+    pinned: list[str] | None = None,
 ) -> dict:
     """Assign holdout arms for whatever a search just returned.
+
+    `pinned` -- the trace ids already in the caller's system prompt, as
+    returned by `working_set` -- are dropped BEFORE clustering, not after.
+    Dropping them afterwards would not be enough: `_cluster_representatives`
+    can elect a pinned trace as the representative of a near-duplicate
+    cluster, and the whole cluster would then inherit that trace's arm. See
+    `holdout_assign` for why a pinned trace has no arm to inherit.
 
     The friction this removes is the reason it exists. The local tier makes
     running an experiment a single flag (`commontrace query --experiment`):
@@ -2014,17 +2809,34 @@ async def holdout_for_results(
     ExperimentNotRunning: a caller of THAT tool has explicitly asked to
     run an experiment and should be told it is off, while a caller of
     search_traces has only asked to search.
+
+    Near-duplicate results (see `_cluster_representatives`) are assigned
+    ONE holdout decision, under whichever member best represents the
+    cluster -- but every id in `traces` still gets a `withhold`/`inject`
+    verdict of its own in the response, so this is invisible at the wire
+    level: a caller checking `holdout.withhold` for a specific id it
+    fetched sees exactly the same shape as before, just backed by an
+    experiment that is no longer fragmenting its own statistical power
+    across duplicates the caller never asked to see as separate memories.
     """
     org = await session.get(Organization, org_id)
     if org is None or org.holdout_rate <= 0 or not org.holdout_salt:
         return {}
-    ids = [t["id"] for t in traces if isinstance(t, dict) and t.get("id")]
+    pinned_ids = {str(p) for p in (pinned or [])}
+    measurable = [
+        t for t in traces
+        if isinstance(t, dict) and t.get("id") and t["id"] not in pinned_ids
+    ]
+    ids = [t["id"] for t in measurable]
     if not ids:
         return {}
-    assignment = await holdout_assign(session, org_id, ids, occasion_id, actor=actor)
+    representative_of = _cluster_representatives(measurable)
+    assign_ids = list({representative_of.get(i, i) for i in ids})
+    assignment = await holdout_assign(session, org_id, assign_ids, occasion_id, actor=actor)
+    rep_withheld = set(assignment["withhold"])
     return {
         "occasion_id": assignment["occasion_id"],
-        "withhold": assignment["withhold"],
+        "withhold": [i for i in ids if representative_of.get(i, i) in rep_withheld],
         "note": assignment["note"],
     }
 
@@ -2102,24 +2914,15 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
     }
 
 
-async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
-    """Per-trace causal effect estimates from the running experiment.
+async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
+    """Every arm decision in this org's CURRENT experiment, as
+    `integrity.Assignment` rows -- including the ones with no outcome yet.
 
-    Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
-    two-proportion tests, Benjamini-Hochberg across the lessons that met the
-    per-arm floor, a minimum detectable effect on every inconclusive one, and
-    an explicit UNDERPOWERED verdict so "cannot answer yet" never reads as
-    "no effect".
-
-    That last guarantee is stronger than it used to be, and it is why a Hub
-    customer may see more UNDERPOWERED rows than before. Clearing the
-    per-arm floor is a condition for running the test, not evidence the test
-    could see anything: at 10 observations per arm the minimum detectable
-    effect is over 60 percentage points. A null from a design that could not
-    have detected an effect worth acting on is now reported as UNDERPOWERED
-    rather than as NO_MEASURABLE_EFFECT, which is what it is
-    (commontrace/experiment.py:DEFAULT_PRACTICAL_EFFECT). The projections
-    beside it say how far each trace is from an answer.
+    Extracted so there is exactly one definition. Three things read it now
+    (the causal estimate, the validity audit, and the raw export a customer
+    re-runs the arithmetic from), and a second copy of this query is a second
+    chance for the numbers on an invoice and the rows handed over to justify
+    it to describe different data.
     """
     org = await session.get(Organization, org_id)
     # A Core column-select, not `select(HoldoutObservation)`: the latter
@@ -2143,6 +2946,13 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 HoldoutObservation.succeeded,
                 HoldoutObservation.salt,
                 HoldoutObservation.created_at,
+                # Paired with created_at above, this is follow-up time: how
+                # long each occasion was watched before its outcome arrived.
+                # It is what lets the attrition audit tell an occasion nobody
+                # has reported YET from one nobody ever will, instead of
+                # counting a fast-concluding treated arm as missing data
+                # (commontrace/survival.py).
+                HoldoutObservation.resolved_at,
                 HoldoutObservation.trace_revision,
             ).where(
                 HoldoutObservation.org_id == org_id,
@@ -2171,7 +2981,7 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             )
         )
     ).all()  # plain Row tuples (named attribute access below), not `.scalars()`
-    # -- there is no single-entity column to scalar-ize; this selects seven.
+    # -- there is no single-entity column to scalar-ize; this selects eight.
 
     assignments = [
         integrity.Assignment(
@@ -2182,15 +2992,77 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
             salt=r.salt,
             succeeded=r.succeeded,
             at=r.created_at,
+            resolved_at=r.resolved_at,
             revision=r.trace_revision,
         )
         for r in rows
     ]
+    return assignments
+
+
+async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05) -> dict:
+    """Per-trace causal effect estimates from the running experiment.
+
+    Analysis is `commontrace.experiment.analyze` unchanged: per-lesson
+    two-proportion tests, Benjamini-Hochberg across the lessons that met the
+    per-arm floor, a minimum detectable effect on every inconclusive one, and
+    an explicit UNDERPOWERED verdict so "cannot answer yet" never reads as
+    "no effect".
+
+    That last guarantee is stronger than it used to be, and it is why a Hub
+    customer may see more UNDERPOWERED rows than before. Clearing the
+    per-arm floor is a condition for running the test, not evidence the test
+    could see anything: at 10 observations per arm the minimum detectable
+    effect is over 60 percentage points. A null from a design that could not
+    have detected an effect worth acting on is now reported as UNDERPOWERED
+    rather than as NO_MEASURABLE_EFFECT, which is what it is
+    (commontrace/experiment.py:DEFAULT_PRACTICAL_EFFECT). The projections
+    beside it say how far each trace is from an answer.
+    """
+    assignments = await holdout_assignments(session, org_id)
+    org = await session.get(Organization, org_id)
     # unit="trace": the Hub randomizes traces, not lessons. Without this the
     # customer console tells a Hub customer that a `lesson` was edited, which
     # is the other tier's vocabulary and sends them looking for an object they
     # do not have.
     report = integrity.audit(assignments, unit=integrity.UNIT_TRACE)
+    # Built from the same rows, for the same reason the audit is: a caller
+    # that adds these effects together needs to know whether doing so counts
+    # any occasion twice (commontrace/value.py:OccasionOverlap).
+    _overlap = value.overlap_from_assignments(assignments)
+    # The policy-level comparison on unique occasions, from the same rows.
+    # On this Hub one occasion routinely receives several traces
+    # (holdout_assign takes a list), so the per-trace effects below cannot be
+    # added -- this is the aggregate that can be.
+    _policy = value.policy_effect(assignments)
+    # Identifies the data set every figure below was computed from, so the
+    # export a customer re-runs the arithmetic from can be checked against
+    # the invoice that cites it.
+    _evidence_digest = raw_export.digest_of(assignments)
+    # And the commitments this run made before it could see the answer. The
+    # first observation's timestamp is what makes "registered after the data
+    # started arriving" detectable at all.
+    _registered = None
+    if org is not None and org.holdout_prereg:
+        try:
+            _registered = prereg.Preregistration.from_dict(org.holdout_prereg)
+        except prereg.PreregError:
+            # A stored registration that cannot be read is reported as
+            # unregistered rather than crashing the report it qualifies: the
+            # figures are still computable, and "we cannot show you what this
+            # promised" is the honest rendering of a corrupt record.
+            _registered = None
+    _first_observation = min(
+        (a.at for a in assignments if a.at is not None), default=None
+    )
+    _prereg_check = prereg.check(
+        _registered,
+        actual_salt=(org.holdout_salt if org else ""),
+        actual_holdout_rate=(org.holdout_rate if org else None),
+        actual_detectable=experiment.DEFAULT_PRACTICAL_EFFECT,
+        actual_occasions=len({a.occasion_id for a in assignments}),
+        first_observation_at=_first_observation,
+    )
 
     unique, _ = integrity.normalize(assignments)
     observations = [
@@ -2200,7 +3072,35 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         )
         for r in unique if r.succeeded is not None
     ]
-    effects = experiment.analyze(observations, alpha=alpha)
+    # sequential=True because THIS SURFACE IS A LOOK AT A RUNNING EXPERIMENT,
+    # and it is read continuously: value_delivered calls it, the console
+    # Proof page calls it, working_set calls it to decide what to promote,
+    # and an agent can call it whenever it likes. Repeatedly testing
+    # accumulating data against a fixed threshold crosses it by luck sooner
+    # or later -- measured on this estimator, a false HELPS in 28% of runs
+    # where the true effect was zero. That verdict promotes a memory into
+    # every later retrieval and feeds an invoice, so it has to survive
+    # having been watched (commontrace/experiment.py:analyze).
+    effects = experiment.analyze(observations, alpha=alpha, sequential=True)
+
+    # WHEN each estimate stopped being updated. `analyze` pools a trace's
+    # entire history with no notion of time, so an effect established in a
+    # fleet's first month and never observed since carries exactly the same
+    # authority here as one measured yesterday. That is correct for an audit
+    # table -- the estimate IS what those occasions showed -- and it is not
+    # sufficient for `working_set`, which pins the winners into every future
+    # session's prompt on the strength of it. Dated here so the promotion
+    # decision can see the age of the evidence it is acting on.
+    #
+    # Read from the RESOLVED observations only, and from `unique` rather than
+    # the raw rows: those are the occasions the estimate was actually
+    # computed from, so they are what "last measured" can honestly mean.
+    last_measured: dict[str, datetime] = {}
+    for r in unique:
+        if r.succeeded is None or r.at is None:
+            continue
+        if r.lesson not in last_measured or r.at > last_measured[r.lesson]:
+            last_measured[r.lesson] = r.at
 
     titles = dict(
         (
@@ -2221,6 +3121,67 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
         # `effects` without reading this can quote a number that a named,
         # identified mechanism is biasing.
         "integrity": _integrity_wire(report),
+        # What this run committed to measuring before it could see the
+        # answer, and every way the run differs from it. An unregistered
+        # experiment says so here rather than passing silently -- the
+        # absence is the finding (commontrace/prereg.py).
+        "preregistration": {
+            "registered": _prereg_check.registered,
+            "clean": _prereg_check.clean,
+            "fingerprint": _prereg_check.fingerprint,
+            "note": _prereg_check.note,
+            "deviations": [
+                {"field": d.field, "promised": d.promised, "actual": d.actual,
+                 "detail": d.detail}
+                for d in _prereg_check.deviations
+            ],
+            "registered_design": (org.holdout_prereg or None) if org else None,
+        },
+        # Identifies the exact assignment rows every figure here was computed
+        # from. `hub.manage export-assignments` writes those rows out, and
+        # the value ledger's signature commits to this digest -- so a
+        # customer can prove the export they hold is the one the invoice
+        # came from (commontrace/raw_export.py).
+        "evidence_digest": _evidence_digest,
+        # Which traces were injected on the same occasions as which others.
+        # Computed here because this is where the raw assignments already
+        # are -- `value_delivered` needs it to know whether the per-trace
+        # contributions may be ADDED (one occasion that received two traces
+        # would otherwise be counted, and billed, twice) and re-querying
+        # hundreds of thousands of rows for it would be the expensive half
+        # of this call run a second time. Pairs only, not occasion ids: the
+        # question is which traces collide, and shipping the ids would put
+        # an unbounded list on the wire to answer a bounded question.
+        "co_injection": {
+            "pairs": [sorted(pair) for pair in sorted(
+                _overlap.shared_pairs, key=lambda p: sorted(p)
+            )],
+            "unique_injected_occasions": _overlap.unique_injected_occasions,
+        },
+        # The whole-policy comparison on UNIQUE occasions: occasions that got
+        # any trace against occasions that got none. This is the aggregate
+        # that stays valid when the per-trace sum does not -- which on this
+        # Hub is the normal case, because holdout_assign takes a LIST of
+        # traces for one occasion, so traces routinely share occasions.
+        "policy_effect": {
+            "readable": _policy.readable,
+            "reason": _policy.reason,
+            "n_treated": _policy.n_treated,
+            "n_control": _policy.n_control,
+            "rate_treated": _policy.rate_treated,
+            "rate_control": _policy.rate_control,
+            "effect": _policy.effect,
+            "ci_95": [_policy.ci_low, _policy.ci_high],
+            "p_value": _policy.p_value,
+            "significant": _policy.significant,
+            "occasions_improved": _policy.occasions_improved,
+            "note": (
+                "Occasions that received ANY memory against occasions that received "
+                "none. Attributes nothing to an individual memory -- that is what the "
+                "per-trace effects above are for -- but counts every occasion exactly "
+                "once, which is what makes it addable when those are not."
+            ),
+        },
         "effects": [
             {
                 "trace_id": e.lesson_slug,
@@ -2236,6 +3197,12 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
                 "min_detectable_effect": e.min_detectable_effect,
                 "verdict": e.verdict,
                 "note": e.note,
+                # Empty string, not null, matching the wire convention the
+                # trace fields already use for "there is no such value".
+                "last_measured_at": (
+                    last_measured[e.lesson_slug].isoformat()
+                    if e.lesson_slug in last_measured else ""
+                ),
             }
             for e in effects
         ],
@@ -2251,7 +3218,12 @@ async def causal_effects(session: AsyncSession, org_id: str, alpha: float = 0.05
 
 
 async def value_delivered(
-    session: AsyncSession, org_id: str, value_per_occasion: float | None = None
+    session: AsyncSession,
+    org_id: str,
+    value_per_occasion: float | None = None,
+    rate_tiers: list[dict] | None = None,
+    signing_key: str = "",
+    evidence_horizon_days: int | None = decay.DEFAULT_HORIZON_DAYS,
 ) -> dict:
     """What this fleet's memory was worth, causally, in its own units.
 
@@ -2276,6 +3248,36 @@ async def value_delivered(
     `value_per_occasion` is the caller's. This function returns a COUNT of
     occasions; currency enters only if the caller supplies a rate, and no
     price is stored anywhere.
+
+    `rate_tiers` is the same statement made properly. A flat rate prices a
+    password reset and an averted SLA breach identically, which is the first
+    thing a finance team rejects. Supplied as
+    `[{"name": ..., "share": ..., "cost_per_occasion": ...}, ...]`, shares
+    summing to 1, it prices the measured occasions against the mix the
+    customer actually agreed to. It is still entirely the caller's: nothing
+    here measures which tier an occasion belonged to, and the tiers are echoed
+    back in the response as inputs so a negotiated assumption can never be
+    read back later as a finding.
+
+    When a rate is available and the run is readable the response also carries
+    `ledger`: one hash-chained line per counted memory, each hash covering the
+    previous one, so editing a figure, dropping the memory that HURT, or
+    reordering to bury it all break the chain. `commontrace.value.verify_ledger`
+    recomputes it, and is written to be reimplementable by whoever audits the
+    invoice.
+
+    That chain alone only proves internal consistency, not who issued it --
+    its genesis and algorithm are both public, so anyone with write access to
+    wherever a ledger is stored could fabricate an entire replacement chain
+    that verifies just as cleanly. `signing_key` (from `HubConfig.
+    ledger_signing_key`, i.e. `HUB_LEDGER_SIGNING_KEY`) closes that: when set,
+    the response also carries `signature` and `issued_at`, an HMAC-SHA256
+    (`commontrace.value.sign_ledger`) over the chain's root bound to this org
+    and this timestamp, checkable with `commontrace.value.
+    verify_ledger_signature` against the same key. Left unset, `signature` is
+    `None` and `signature_reason` says so explicitly -- silently returning an
+    unsigned ledger with no signal would let a hash-chained invoice look more
+    authenticated than it is.
     """
     causal = await causal_effects(session, org_id)
     effects = [
@@ -2291,8 +3293,98 @@ async def value_delivered(
         for e in causal.get("effects", [])
     ]
     audit = _integrity_from_wire(causal.get("integrity") or {})
-    report = value.compute(effects, audit, value_per_occasion=value_per_occasion)
+    # A malformed rate card is the caller's mistake, not a server fault, and
+    # it has to surface as one: silently falling back to the flat rate would
+    # price the invoice against a number the customer thought they had
+    # replaced. RateCard's own validation raises ValueError, which this
+    # tool's error envelope already renders as a structured tool error.
+    card = None
+    if rate_tiers:
+        card = value.RateCard(tiers=tuple(
+            value.Tier(
+                name=str(t.get("name") or ""),
+                share=float(t.get("share", 0.0)),
+                cost_per_occasion=float(t.get("cost_per_occasion", 0.0)),
+            )
+            for t in rate_tiers
+        ))
+    # Rebuilt from the wire projection rather than re-querying: causal_effects
+    # computed it over the same assignments this figure is derived from, and
+    # the two must agree about which traces collide or the total could be
+    # certified against a different experiment than the one it prices.
+    wire_overlap = causal.get("co_injection") or {}
+    overlap = value.OccasionOverlap(
+        shared_pairs=frozenset(
+            frozenset(pair) for pair in wire_overlap.get("pairs", []) if len(pair) == 2
+        ),
+        unique_injected_occasions=int(wire_overlap.get("unique_injected_occasions", 0)),
+    )
+    wire_policy = causal.get("policy_effect") or {}
+    policy = value.PolicyEffect(
+        n_treated=int(wire_policy.get("n_treated", 0)),
+        n_control=int(wire_policy.get("n_control", 0)),
+        rate_treated=float(wire_policy.get("rate_treated", 0.0)),
+        rate_control=float(wire_policy.get("rate_control", 0.0)),
+        effect=float(wire_policy.get("effect", 0.0)),
+        ci_low=float((wire_policy.get("ci_95") or [0.0, 0.0])[0]),
+        ci_high=float((wire_policy.get("ci_95") or [0.0, 0.0])[1]),
+        p_value=float(wire_policy.get("p_value", 1.0)),
+        significant=bool(wire_policy.get("significant", False)),
+        readable=bool(wire_policy.get("readable", False)),
+        reason=str(wire_policy.get("reason", "")),
+    )
+    # Evidence decay (commontrace/decay.py). The same horizon the pinned
+    # working-set block already expires graduation at -- one number, both
+    # surfaces. Before this the block stopped serving a memory nobody had
+    # re-measured while the INVOICE kept billing for it, so the two surfaces
+    # disagreed about whether the same evidence was current and the one that
+    # disagreed was attached to money.
+    #
+    # Rebuilt from the wire projection for the same reason `overlap` is: it
+    # came from the same query these effects did, and re-deriving it here
+    # could date the figure against a different run than the one it prices.
+    last_measured = {
+        e["trace_id"]: e.get("last_measured_at") or ""
+        for e in causal.get("effects", [])
+    }
+    report = value.compute(
+        effects, audit, value_per_occasion=value_per_occasion, rate_card=card,
+        overlap=overlap,
+        last_measured=last_measured,
+        evidence_horizon_days=evidence_horizon_days,
+    )
+    report = dataclasses.replace(report, policy=policy)
+    ledger = report.ledger()
     titles = {e["trace_id"]: e.get("title") for e in causal.get("effects", [])}
+
+    # Issuer signature over the chain's root. Computed even for an empty
+    # ledger (ledger_root falls back to the chain genesis) -- "zero counted
+    # lines this period" is itself a fact worth being able to authenticate,
+    # not just a nonzero invoice.
+    issued_at = datetime.now(timezone.utc).isoformat()
+    # The signature covers the evidence digest and the pre-registration
+    # fingerprint as well as the chain, so an invoice cannot be paired with
+    # an assignment export or a registered design it was not computed under.
+    evidence_digest = str(causal.get("evidence_digest") or "")
+    prereg_fingerprint = str(
+        ((causal.get("preregistration") or {}).get("fingerprint")) or ""
+    )
+    if signing_key:
+        signature = value.sign_ledger(
+            ledger, signing_key.encode("utf-8"), org_id=org_id, issued_at=issued_at,
+            evidence_digest=evidence_digest, prereg_fingerprint=prereg_fingerprint,
+        )
+        signature_reason = ""
+    else:
+        signature = None
+        signature_reason = (
+            "HUB_LEDGER_SIGNING_KEY is not configured on this deployment: the "
+            "ledger above is hash-chained (internally consistent, checkable "
+            "with commontrace.value.verify_ledger) but not cryptographically "
+            "signed by the issuer, so a party with write access to the "
+            "underlying store could still fabricate a whole replacement chain "
+            "that verifies just as cleanly. See hub/DEPLOYMENT.md."
+        )
 
     return {
         "readable": report.readable,
@@ -2301,9 +3393,77 @@ async def value_delivered(
         "ci_95": [report.ci_low, report.ci_high],
         "n_counted": report.n_counted,
         "n_excluded": report.n_excluded,
+        # Whether those per-trace contributions may be ADDED, which is a
+        # different question from whether each one is readable. False when
+        # two counted traces were injected on the same occasions: the sum
+        # would attribute one improved occasion more than once, and this is
+        # the quantity an invoice is computed from. The per-trace figures
+        # below stand either way.
+        "aggregate_readable": report.aggregate_readable,
+        "aggregate_reason": report.aggregate_reason,
+        # What the evidence horizon did (commontrace/decay.py). Surfaced
+        # rather than left implicit in the per-memory `why_not`, because
+        # "your invoice went down and here is the list of memories to
+        # re-measure" is an action, and a figure that silently shrank is
+        # a support ticket.
+        "evidence": (
+            {
+                "horizon_days": report.decay.horizon_days,
+                "n_stale": len(report.decay.stale),
+                "n_withheld": len(report.decay.withheld),
+                "due_for_remeasurement": list(report.decay.due_for_remeasurement),
+            }
+            if report.decay is not None else None
+        ),
+        # How many DISTINCT occasions received anything -- the ceiling the
+        # total cannot exceed, and the denominator needed to judge whether a
+        # number is large.
+        "unique_occasions": report.unique_occasions,
+        # The same total over EVERY measured trace, not only the ones whose
+        # effect cleared significance. `occasions_improved` selects on the
+        # data it reports, which biases its magnitude away from zero; this
+        # does not. Reported beside it so the size of that selection is a
+        # figure rather than a caveat. Never billed on -- it includes
+        # effects the experiment did not establish.
+        "occasions_improved_unselected": report.occasions_improved_unselected,
+        "n_examined": report.n_examined,
+        # The aggregate that stays valid when the per-trace sum does not,
+        # carried through from causal_effects so both surfaces report the
+        # same comparison over the same occasions.
+        "policy_effect": causal.get("policy_effect"),
+        # What this invoice is anchored to. `evidence_digest` identifies the
+        # assignment rows it was computed from (export them with
+        # `hub.manage export-assignments`); `preregistration` is what the run
+        # promised to measure before it could see the answer. Both are inside
+        # the signed payload, so a signature that verifies proves the three
+        # belong together.
+        "evidence_digest": evidence_digest,
+        "preregistration": causal.get("preregistration"),
         "value_per_occasion": value_per_occasion,
+        # Echoed back as INPUTS. The tiers and the mix are contractual; only
+        # `occasions_improved` above was measured, and keeping the two
+        # labelled apart on the wire is what stops a negotiated assumption
+        # being quoted later as a finding.
+        "rate_tiers": [
+            {"name": t.name, "share": t.share, "cost_per_occasion": t.cost_per_occasion}
+            for t in (card.tiers if card else ())
+        ],
+        "rate_applied": report.rate,
         "money": report.money,
         "money_range": list(report.money_range) if report.money_range else None,
+        "ledger": [
+            {"index": e.index, "trace_id": e.slug, "verdict": e.verdict,
+             "occasions_improved": e.occasions_improved, "rate": e.rate,
+             "money": e.money, "previous_hash": e.previous_hash,
+             "entry_hash": e.entry_hash}
+            for e in ledger
+        ],
+        # Issuer authentication for the ledger above. `None` when this
+        # deployment has no signing key configured -- see signature_reason.
+        "issued_at": issued_at,
+        "signature": signature,
+        "signature_algorithm": "HMAC-SHA256" if signature else None,
+        "signature_reason": signature_reason,
         "memories": [
             {"trace_id": m.slug, "title": titles.get(m.slug, "(deleted trace)"),
              "verdict": m.verdict, "n_injected": m.n_injected, "effect": m.effect,
@@ -2320,6 +3480,333 @@ async def value_delivered(
             "Underpowered memories contribute nothing, because an effect that was "
             "not established multiplied by a volume is a large number with no "
             "evidence under it."
+        ),
+    }
+
+
+# --- The working set: memory that costs nothing per query ---------------
+#
+# WHY THIS EXISTS
+#
+# Retrieval is not free, and this product's own measurements say how much:
+# one `search_traces` page costs roughly 1,160 tokens, paid again on every
+# call, and paid whether or not the corpus had anything useful to say. An
+# agent doing twenty lookups in a session spends ~23,000 tokens on
+# retrieval alone.
+#
+# The comparison worth making is against the simplest design in the field.
+# Nous Research's Hermes Agent (MIT) keeps memory in two small files read
+# once at session start and pasted into the system prompt, where they stay
+# unchanged for the whole session -- deliberately, so the provider's prefix
+# cache is never invalidated. That buys zero marginal cost per query, for a
+# total budget of roughly 1,300 tokens. At twenty lookups it is ~26x
+# cheaper than retrieving.
+#
+# What it cannot do is decide what belongs in those 1,300 tokens. Hermes
+# fills them by asking the agent to curate its own notes; Mem0, Zep and
+# Letta fill their equivalents by automatic extraction and grade themselves
+# on recall benchmarks (LoCoMo, LongMemEval) -- "did you remember the
+# fact", never "did remembering it make the work go better".
+#
+# This Hub can answer the second question, because it already runs a
+# randomized holdout per trace. So the working set is selected by MEASURED
+# CAUSAL EFFECT: a trace earns a place in the always-on block by having
+# been established as HELPS by the fleet's own experiment, and nothing
+# else gets in. The experiment stops being only a report and becomes the
+# PROMOTION MECHANISM.
+#
+# That also resolves what would otherwise be a real methodological
+# problem. A trace pinned into every session's prompt is injected on every
+# occasion, which would quietly destroy the control arm it is still being
+# measured against. Restricting the block to traces whose effect is
+# already established means nothing under test is ever pinned: a trace is
+# either still being randomized, or it has graduated. Never both.
+
+# Hermes Agent's MEMORY.md ships a 2,200-character budget and its own
+# usage gauge; this default is deliberately the same order of magnitude,
+# for the same reason (a block big enough to matter and small enough that
+# a cached system prompt stays cheap). Callers can ask for less.
+DEFAULT_WORKING_SET_CHARS = 2000
+MAX_WORKING_SET_CHARS = 8000
+
+# How long a measured effect stays fresh enough to PIN. A policy number,
+# not a measurement -- and the honest half of a problem this design creates
+# for itself.
+#
+# Every competing memory system ages memory out on a PROXY for usefulness.
+# Mem0 scales retrieval rank by an Ebbinghaus-style recency/access curve
+# (roughly 0.3x-1.5x, a soft rerank rather than a delete); the 2026 survey
+# literature converges on "differential exponential decay keyed to
+# relevance, access frequency and temporal pattern". Every one of those is
+# a guess dressed as a measurement, because none of those systems can see
+# whether a memory still WORKS -- only whether it was recently read. A
+# lesson nobody happened to retrieve decays; an obsolete lesson everyone
+# keeps retrieving does not.
+#
+# This Hub measures the thing itself, and therefore has to confront what
+# the measurement's age means. Promotion here is what freezes it: a pinned
+# trace is injected on EVERY occasion, so it is never withheld, so it stops
+# accumulating the withheld arm its effect was computed from. Graduation
+# ends the experiment for that trace. Left alone, "has a measured causal
+# effect" quietly becomes "had one once, against a world that has since
+# moved on" -- and the upstream fix, the API change, or the dependency bump
+# that made the lesson obsolete are all invisible to it.
+#
+# So graduation expires. Past this horizon an entry leaves the pinned
+# block, which is not a demotion so much as a renewal: leaving the block is
+# precisely what allows the trace to be randomized again, and randomization
+# is the only thing that can produce fresh evidence. It re-earns its place
+# when the experiment answers for it a second time. This horizon is
+# therefore the RENEWAL PERIOD of the working set. The default is
+# deliberately generous -- long enough that a genuinely stable lesson is
+# not churned, short enough that no fleet's system prompt carries a claim
+# nobody has checked in half a year.
+# The value lives in commontrace/decay.py, which is also what the value
+# ledger's own horizon reads. Two constants that must agree is drift
+# waiting to happen, and the two surfaces disagreeing about whether the
+# same evidence is current is precisely the defect the ledger horizon
+# was added to close.
+DEFAULT_EVIDENCE_HORIZON_DAYS = decay.DEFAULT_HORIZON_DAYS
+MAX_EVIDENCE_HORIZON_DAYS = 36500
+# Enough of a solution to act on without fetching the trace. A caller that
+# needs the whole thing has the id and `get_trace`.
+_WORKING_SET_ENTRY_CHARS = 320
+
+
+def _evidence_age_days(last_measured_at: str, now: datetime) -> float | None:
+    """Days since the last resolved observation behind an effect estimate.
+
+    `None` when the estimate carries no date at all, which the caller treats
+    exactly as it treats an expired one: an effect whose evidence cannot be
+    dated cannot be shown to be current, and a block that every future
+    session inherits is the wrong place to assume in its favour.
+    """
+    if not last_measured_at:
+        return None
+    # Clamped at zero: `now` is this replica's clock and the timestamp is the
+    # database's, so a few seconds of skew between them is ordinary and must
+    # not surface as a negative age.
+    return max(0.0, (now - datetime.fromisoformat(last_measured_at)).total_seconds() / 86400.0)
+
+
+def _working_set_entry(title: str, solution: str, trace_id: str, effect: float, n: int) -> str:
+    """One line of the block: what to do, how well it is known to work."""
+    body = " ".join((solution or "").split())
+    if len(body) > _WORKING_SET_ENTRY_CHARS:
+        body = body[:_WORKING_SET_ENTRY_CHARS].rsplit(" ", 1)[0] + "…"
+    head = " ".join((title or "").split())
+    return f"- {head} → {body} ({effect:+.0%} resolution over {n} measured occasions) [{trace_id}]"
+
+
+async def working_set(
+    session: AsyncSession,
+    org_id: str,
+    budget_chars: int = DEFAULT_WORKING_SET_CHARS,
+    evidence_horizon_days: int = DEFAULT_EVIDENCE_HORIZON_DAYS,
+) -> dict:
+    """The fleet's proven memory, small enough to pin to a system prompt.
+
+    Returns a block to paste ONCE at session start and leave unchanged, so
+    it costs its tokens a single time and rides the provider's prefix cache
+    for the rest of the session, instead of being re-fetched per query.
+
+    Membership is earned, not curated: only traces the running holdout has
+    established as HELPS appear here, ranked by how many occasions each one
+    actually improved (effect x times injected -- `commontrace/value.py`'s
+    quantity, not a popularity count). A trace still under test is
+    deliberately absent, because pinning it would inject it on every
+    occasion and destroy the control arm that is still measuring it.
+
+    Degrades honestly rather than inventing a block. With no established
+    effects yet -- a fleet in its first weeks, or one with no experiment
+    running -- this returns `established: false` and an empty block, and
+    says which it was, instead of silently falling back to a
+    most-retrieved list that would look identical to a measured one while
+    carrying no evidence at all. `search_traces` is the right tool until
+    the experiment has an answer.
+    """
+    budget_chars = _clamp_int(
+        budget_chars, 1, MAX_WORKING_SET_CHARS, DEFAULT_WORKING_SET_CHARS
+    )
+    evidence_horizon_days = _clamp_int(
+        evidence_horizon_days, 1, MAX_EVIDENCE_HORIZON_DAYS, DEFAULT_EVIDENCE_HORIZON_DAYS
+    )
+    causal = await causal_effects(session, org_id)
+    audit = causal.get("integrity") or {}
+
+    # A compromised experiment yields no block, for the same reason it
+    # yields no value figure (commontrace/value.py): if a named mechanism
+    # is biasing the effects, it biases the selection made from them, and
+    # a prompt that every future session inherits is the worst possible
+    # place to bake in a biased choice.
+    if not audit.get("effects_readable", True):
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "The experiment these effects came from is COMPROMISED, so nothing has been "
+                "promoted. Read `fleet_outcomes.causal.integrity` and fix what it names; a "
+                "working set chosen from biased effects would carry that bias into every "
+                "future session's prompt."
+            ),
+            "note": "",
+        }
+
+    helps = [
+        e for e in causal.get("effects", [])
+        if e.get("verdict") == experiment.VERDICT_HELPS
+    ]
+    helps.sort(key=lambda e: (e.get("effect") or 0.0) * (e.get("n_injected") or 0), reverse=True)
+
+    if not helps:
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "No trace has an established causal effect yet, so nothing has earned a place "
+                "in an always-on block. This is a statement about evidence, not about the "
+                "corpus: keep using `search_traces` (which reaches everything), keep reporting "
+                "outcomes with `record_occasion_outcome`, and traces will be promoted here as "
+                "the experiment answers for them."
+            ),
+            "note": "",
+        }
+
+    bodies = dict(
+        (
+            await session.execute(
+                select(Trace.id, Trace.solution_text).where(
+                    Trace.org_id == org_id,
+                    Trace.id.in_([e["trace_id"] for e in helps]),
+                    # A trace amend_trace has since superseded, or one an
+                    # operator has since purged (hub/manage.py:purge_trace),
+                    # is no longer this fleet's own current answer. The
+                    # effect above was measured against the TEXT that was
+                    # actually shown on each occasion, not against the
+                    # trace's identity -- so unlike search_traces/
+                    # commons_visible (hub/models.py:Trace.superseded_at),
+                    # there is no safe "resolve forward to the new head"
+                    # here: inheriting an old effect onto amended wording
+                    # would be evidence for content nobody ever tested.
+                    # Excluding it from this query, and therefore from
+                    # `helps` below, is the same "degrades honestly rather
+                    # than inventing a block" rule this function already
+                    # applies to a compromised experiment -- it drops out of
+                    # the pinned block entirely rather than being pinned
+                    # with stale or (pre-existing gap, closed by the same
+                    # filter) missing text.
+                    Trace.superseded_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    helps = [e for e in helps if e["trace_id"] in bodies]
+    if not helps:
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                "Every trace with an established causal effect has since been amended or "
+                "removed, so none of them are this fleet's current answer any more -- each "
+                "effect was measured against wording that no longer exists. `search_traces` "
+                "reaches the current versions; they earn a place here once the running "
+                "experiment establishes an effect for the new wording."
+            ),
+            "note": "",
+        }
+
+    # Graduation expires (DEFAULT_EVIDENCE_HORIZON_DAYS above has the full
+    # argument). An effect nobody has observed inside the horizon is not
+    # evidence that the lesson still works -- it is evidence that it worked,
+    # once. Dropping it here is what returns the trace to the randomizer,
+    # which is the only mechanism that can produce a fresh answer.
+    now = datetime.now(timezone.utc)
+    ages = {
+        e["trace_id"]: _evidence_age_days(e.get("last_measured_at") or "", now)
+        for e in helps
+    }
+    expired = [
+        e for e in helps
+        if ages[e["trace_id"]] is None or ages[e["trace_id"]] > evidence_horizon_days
+    ]
+    helps = [e for e in helps if e not in expired]
+    if not helps:
+        oldest = min(
+            (ages[e["trace_id"]] for e in expired if ages[e["trace_id"]] is not None),
+            default=None,
+        )
+        measured = f"{oldest:.0f} days ago" if oldest is not None else "at an unrecorded time"
+        return {
+            "block": "", "entries": [], "established": False,
+            "chars_used": 0, "budget_chars": budget_chars, "gauge": f"[0% — 0/{budget_chars} chars]",
+            "reason": (
+                f"Every established effect for this fleet was last measured {measured}, past "
+                f"the {evidence_horizon_days}-day evidence horizon, so nothing is pinned. This "
+                "is not a finding that those lessons stopped working -- it is that pinning a "
+                "trace stops it being withheld, which stops the experiment that measured it, "
+                "so the evidence has not moved since. Leaving the block is what returns them "
+                "to the randomizer: keep reporting outcomes with `record_occasion_outcome` and "
+                "each one is promoted again as soon as the experiment re-establishes it."
+            ),
+            "note": "",
+        }
+
+    lines: list[str] = []
+    entries: list[dict] = []
+    used = 0
+    for e in helps:
+        line = _working_set_entry(
+            e.get("title") or "", bodies.get(e["trace_id"], ""), e["trace_id"],
+            e.get("effect") or 0.0, e.get("n_injected") or 0,
+        )
+        if used + len(line) + 1 > budget_chars:
+            # Ranked by measured contribution, so the first thing that does
+            # not fit ends the block -- a smaller later entry squeezed in
+            # ahead of a larger, better-evidenced one would make the block's
+            # contents depend on their lengths rather than on the evidence.
+            break
+        lines.append(line)
+        used += len(line) + 1
+        entries.append({
+            "trace_id": e["trace_id"], "title": e.get("title"),
+            "effect": e.get("effect"), "n_injected": e.get("n_injected"),
+            "occasions_improved": round((e.get("effect") or 0.0) * (e.get("n_injected") or 0), 2),
+            # Structured metadata ONLY -- deliberately not rendered into
+            # `block`. The age changes every day, and a block whose text
+            # changes daily invalidates the provider's prefix cache on every
+            # session, which is the entire saving this function exists to
+            # produce (see the header above). A caller that wants to show the
+            # age reads it from here.
+            "last_measured_at": e.get("last_measured_at") or "",
+            "evidence_age_days": (
+                round(ages[e["trace_id"]], 1) if ages[e["trace_id"]] is not None else None
+            ),
+        })
+
+    pct = round(100 * used / budget_chars) if budget_chars else 0
+    gauge = f"[{pct}% — {used:,}/{budget_chars:,} chars]"
+    header = (
+        f"## Fleet memory — {len(entries)} lesson(s) with a measured effect\n"
+        f"{gauge}\n"
+    )
+    return {
+        "block": header + "\n".join(lines),
+        "entries": entries,
+        "established": True,
+        "chars_used": used,
+        "budget_chars": budget_chars,
+        "gauge": gauge,
+        "reason": "",
+        "note": (
+            "Paste this ONCE at session start and do not change it mid-session: an unchanged "
+            "system prompt keeps the provider's prefix cache valid, which is what makes this "
+            "memory cost its tokens once per session instead of once per query. Everything "
+            "here has an established causal effect; anything still being measured is "
+            "deliberately absent and reachable via `search_traces`. "
+            "PASS `entries[].trace_id` BACK as `pinned` on every search_traces and "
+            "holdout_assign call for the rest of this session: these traces are in your "
+            "prompt from now on, so the experiment must stop drawing them into its control "
+            "arm -- a trace cannot serve as its own control while the agent can still read it."
         ),
     }
 
@@ -2628,7 +4115,7 @@ async def submit_kb_entry(
     # deliberate, occasional action, not a bulk capture path, so it does
     # not need its own tuning -- but it gets its own bucket so a fleet
     # capturing traces at volume cannot starve its own ability to submit.
-    allowed, retry_after = rate_limiter.check(f"kb_submit:{org_id}")
+    allowed, retry_after = await rate_limiter.check(f"kb_submit:{org_id}")
     if not allowed:
         raise RateLimited(
             f"org {org_id} exceeded submit_kb_entry rate limit", retry_after=retry_after
@@ -2804,6 +4291,11 @@ async def review_kb_submission(
     )
     session.add(trace)
     await session.flush()
+    # Bypasses contribute_trace/_reserve_trace_slot entirely (an operator's
+    # own curation decision, not customer traffic -- see this function's
+    # lack of a plan check above), but it is still a real row landing in
+    # operator_org_id's own trace table and must be counted the same way.
+    await _adjust_trace_count(session, operator_org_id, +1)
 
     submission.status = "approved"
     submission.reviewed_at = now

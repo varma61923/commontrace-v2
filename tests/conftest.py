@@ -10,8 +10,10 @@ import yaml
 # no __init__.py -- it ships as package data). Tests import them directly, so put
 # their directory on the path.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# query.py and build_index.py live here too now -- they were moved out of
+# memory/attention/ so a pip install can reach semantic retrieval at all
+# (see memory/attention/README.md).
 sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
-sys.path.insert(0, os.path.join(REPO_ROOT, "memory", "attention"))
 
 
 def _write_frontmatter_file(path, fm, body):

@@ -5,9 +5,26 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, holdout_io, paths, retrieval
+from commontrace import (
+    frontmatter,
+    holdout_io,
+    lesson_cache,
+    paths,
+    retrieval,
+    retrieval_io,
+    store_state,
+)
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._shellout import has_attention_deps, run_script
+
+
+def _relevance_floor(raw: str) -> float:
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"--relevance-floor must be in [0.0, 1.0], got {value}"
+        )
+    return value
 
 
 def _positive_int(raw: str) -> int:
@@ -37,6 +54,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Force the pure-Python lexical fallback even if the attention extra is installed.",
     )
     p.add_argument("--agent-type", default=None)
+    p.add_argument(
+        "--relevance-floor", type=_relevance_floor, default=None,
+        help="Minimum relevance (0-1) a lesson must reach to be retrieved at all. "
+             "Defaults to this store's configured floor (`commontrace retrieval`). "
+             "Under --experiment this also decides which lessons are logged as "
+             "eligible, so lowering it admits weak matches into the causal estimate.",
+    )
     p.add_argument(
         "--experiment", action="store_true",
         help="Randomized holdout mode: deliberately withhold a fraction of otherwise-"
@@ -73,24 +97,29 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, dict]]:
-    ldir = paths.lessons_dir(root)
-    out = []
-    for path in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
-        if os.path.basename(path) == "lesson_template.md":
-            continue
-        result = read_or_warn(frontmatter.read, path)
-        if result is None:
-            continue
-        fm, _ = result
-        if fm.get("status") != "active":
-            continue
-        if agent_type and fm.get("agent_type") != agent_type:
-            continue
-        out.append((path, fm))
-    return out
+    """Active lessons as (path, frontmatter), in the store's own path order.
+
+    Served from `commontrace/lesson_cache.py`, which reparses only the files
+    whose (mtime, size) changed. This used to YAML-parse the whole store on
+    every query: at 6,400 lessons that was 7.3 s of parsing per query against
+    0.17 s of actual ranking, growing linearly (see that module's docstring for
+    the measurements and `commontrace/reference/measure_local_latency.py` to
+    reproduce them). Staleness is still detected per query by stat, so the
+    ranking always reflects the store as it is right now.
+    """
+    return lesson_cache.load_active(
+        root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
 
 
-def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set[str]:
+def _apply_holdout(
+    args: argparse.Namespace,
+    root: str,
+    slugs: list[str],
+    relevance: dict[str, float] | None = None,
+    scorer: str = "",
+    floor: float | None = None,
+) -> set[str]:
     """Thin wrapper over holdout_io.assign_and_log -- see that function.
 
     The body used to live here, which meant any second retriever (the MCP
@@ -102,6 +131,7 @@ def _apply_holdout(args: argparse.Namespace, root: str, slugs: list[str]) -> set
     rate, salt = _effective_holdout(args, root)
     return holdout_io.assign_and_log(
         root, slugs, occasion_id=args.occasion_id, rate=rate, salt=salt,
+        relevance=relevance, scorer=scorer, floor=floor,
     )
 
 
@@ -146,10 +176,40 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
 
 
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
-    lessons = _iter_active_lessons(root, args.agent_type)
-    ranked = retrieval.rank_lessons(args.task, lessons, top_k=args.top_k)
+    lessons, term_cache = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
+    config = retrieval_io.load_config(root)
+    floor = config.floor if args.relevance_floor is None else args.relevance_floor
+    ranked = retrieval.rank_lessons(
+        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        term_cache=term_cache,
+    )
+    # Only when the pin is an actual DOWNGRADE. A store already running the
+    # current scorer is also "pinned" (to what its own log says it uses), and
+    # saying so on every query would be noise nobody can act on -- and noise
+    # is how the one message that does need acting on gets ignored.
+    if config.pinned_for_running_experiment and config.scorer != retrieval.SCORER_IDF:
+        # Said once, where someone can act on it, rather than silently
+        # upgrading a store whose experiment is mid-flight.
+        print(
+            "[commontrace] note: this store has holdout assignments already recorded, so "
+            f"retrieval stays on the {config.scorer!r} scorer those assignments were made "
+            "under.\n"
+            "  Switching scorers changes which lessons are eligible, which would pool two "
+            "different treatments\n"
+            "  into one comparison. To adopt the field-robust scorer, finish or restart the "
+            "experiment:\n"
+            "    commontrace retrieval --scorer idf-v2 && commontrace experiment --configure "
+            "--rate <rate>",
+            file=sys.stderr,
+        )
     if not ranked:
-        print("[commontrace] no lexical matches. Try `commontrace lesson list` for a full view.")
+        # Which of the four "nothing came back" cases this is, and the one
+        # command that moves the caller forward -- see commontrace/store_state.py.
+        # The old message said "try lesson list" unconditionally, which shows
+        # an empty list in exactly the cases where the user is most lost.
+        print(store_state.why_no_results(root, searched="query"))
         return 0
 
     withheld: set[str] = set()
@@ -161,7 +221,12 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
                 file=sys.stderr,
             )
             return 1
-        withheld = _apply_holdout(args, root, [r.slug for r in ranked])
+        withheld = _apply_holdout(
+            args, root, [r.slug for r in ranked],
+            relevance={r.slug: r.relevance for r in ranked},
+            scorer=config.scorer,
+            floor=floor,
+        )
 
     for r in ranked:
         if r.slug in withheld:
@@ -169,7 +234,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             # experiment is running. An automated retriever should skip these.
             print(f"{r.slug:45s} [WITHHELD - holdout]")
             continue
-        print(f"{r.slug:45s} score={r.score:5.1f}  {r.description}")
+        print(f"{r.slug:45s} rel={r.relevance:4.2f}  {r.description}")
         print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
 
     if args.experiment:
@@ -182,8 +247,196 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     return 0
 
 
+
+def _semantic_slugs(args, root: str, missing_hint: str) -> tuple[int, list[str], str]:
+    """Run the semantic arm and return (rc, ranked slugs, raw stdout)."""
+    script_args = [args.task, "--top-k", str(args.top_k)]
+    if args.include_importance_floor is not None:
+        script_args.extend(
+            ["--include-importance-floor", str(args.include_importance_floor)])
+    if args.agent_type:
+        script_args.extend(["--agent-type", args.agent_type])
+    rc, stdout = run_script(
+        root, os.path.join("memory", "attention", "query.py"),
+        script_args, missing_hint, capture=True,
+    )
+    if rc != 0:
+        return rc, [], stdout
+    return 0, _slugs_from_semantic_output(stdout), stdout
+
+
+def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
+    """Both arms, fused by position (commontrace/retrieval.py).
+
+    WHY FUSE RATHER THAN CHOOSE. Until now this command picked ONE retriever:
+    semantic when the extra was installed and the index was fresh, lexical
+    otherwise. Whichever it picked, the other arm's signal was discarded
+    entirely -- so a store with the attention extra could not find a lesson
+    whose exact error string the user had pasted in, and a store without it
+    could not find one phrased differently from the task. They fail on
+    different queries, which is precisely the condition under which fusing
+    beats picking.
+
+    Fusion is by RANK, not score: the lexical arm returns an IDF relevance in
+    [0, 1] and the semantic arm a cosine similarity, and there is no honest
+    conversion between them. Position is the one thing both arms can state
+    comparably.
+
+    A lesson only one arm surfaced is not penalised for the other arm's
+    silence -- a lexical pass cannot be expected to find a paraphrase, and
+    treating its silence as a vote against would make adding an arm reduce
+    recall.
+    """
+    config = retrieval_io.load_config(root)
+    floor = config.floor if args.relevance_floor is None else args.relevance_floor
+
+    lessons, term_cache = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
+    )
+    lexical = retrieval.rank_lessons(
+        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        term_cache=term_cache,
+    )
+
+    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)
+    if rc != 0:
+        # The semantic arm failed outright. Serving the lexical half is
+        # strictly better than serving nothing, but the arm composition is
+        # then NOT what the config says -- and an assignment logged under the
+        # fused label would claim an arm that did not run. So fall back
+        # wholesale, which records the lexical label.
+        sys.stdout.write(stdout)
+        print(
+            "[commontrace] the semantic arm failed, so this query used lexical "
+            "retrieval alone. The holdout assignment records the lexical "
+            "configuration, not the fused one -- the two are different "
+            "treatments and must not be pooled.",
+            file=sys.stderr,
+        )
+        return _run_lexical(args, root)
+
+    fused = retrieval.reciprocal_rank_fusion(
+        {"lexical": [r.slug for r in lexical], "semantic": semantic},
+        k=config.rrf_k, top_k=args.top_k,
+    )
+    if not fused:
+        print(store_state.why_no_results(root, searched="query"))
+        return 0
+
+    by_slug = {r.slug: r for r in lexical}
+    described = {
+        str(fm.get("name", "")): (str(fm.get("description", "") or ""), path)
+        for path, fm in lessons
+    }
+
+    withheld: set[str] = set()
+    if args.experiment:
+        if not args.occasion_id:
+            print(
+                "[commontrace] --experiment requires --occasion-id: without it the holdout "
+                "assignment cannot be joined to an outcome, so nothing could be measured.",
+                file=sys.stderr,
+            )
+            return 1
+        withheld = _apply_holdout(
+            args, root, [slug for slug, _ in fused],
+            # The FUSED score, which is what actually decided the order --
+            # recording the lexical relevance would describe a ranking this
+            # query did not perform.
+            relevance={slug: score for slug, score in fused},
+            scorer=config.eligibility,
+            floor=floor,
+        )
+
+    for slug, score in fused:
+        if slug in withheld:
+            print(f"{slug:45s} [WITHHELD - holdout]")
+            continue
+        description, path = described.get(slug, ("", ""))
+        arms = []
+        if slug in by_slug:
+            arms.append("lexical")
+        if slug in semantic:
+            arms.append("semantic")
+        print(f"{slug:45s} rrf={score:5.3f}  {description}")
+        print(f"  arms: {'+'.join(arms) or 'none'}  ({path})")
+
+    if args.experiment:
+        print(
+            f"\n[commontrace] experiment: {len(fused) - len(withheld)} injected, "
+            f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
+            f"{args.occasion_id!r}. Record the outcome under that id, then run "
+            "`commontrace experiment`."
+        )
+    return 0
+
+
+def _index_is_unusable(root: str) -> str:
+    """Why the semantic index cannot be trusted right now, or "" if it can.
+
+    Deliberately cheap and dependency-free -- mtimes and file size, no numpy,
+    no model load. build_index.py's own check is stricter (it compares the
+    indexed slug SET and the embedding model), but it can only run after
+    importing numpy and is therefore not something `query` can consult on
+    every call. This catches the two cases that matter in practice: no index
+    was ever built, and a lesson changed since the last build.
+
+    Used to pick the retriever BEFORE paying for a model load, because the
+    alternative is worse than slow. `commontrace init` writes an EMPTY
+    index.npz, and nothing rebuilds it automatically, so a fleet that
+    approves lessons and queries -- the normal first hour with this product
+    -- ran semantic retrieval against an index containing nothing, got zero
+    results, and under `--experiment` logged NO assignment for the occasion.
+    The pilot silently lost the occasion and exited 0.
+    """
+    index_path = os.path.join(paths.memory_dir(root), "attention", "index.npz")
+    try:
+        index_mtime = os.path.getmtime(index_path)
+    except OSError:
+        return "no semantic index has been built yet"
+
+    newest_lesson = 0.0
+    newest_name = ""
+    for path in glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")):
+        if os.path.basename(path) == "lesson_template.md":
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime > newest_lesson:
+            newest_lesson, newest_name = mtime, os.path.basename(path)
+    if newest_lesson == 0.0:
+        # No lessons on disk but possibly a stale non-empty index (e.g. all
+        # lessons deleted after a build): trusting it would rank ghosts.
+        return "no active lessons on disk (a stale index would rank ghosts)"
+    if newest_lesson > index_mtime:
+        return f"{newest_name} changed after the index was last built"
+    # Deletions of 1-of-N advance no survivor's mtime, so this gate cannot
+    # see them without reading the index (which needs numpy); build_index.py
+    # performs the full slug-set comparison at build time, and `commontrace
+    # index` after deleting lessons is the supported refresh path.
+    return ""
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+
+    if not args.lexical and has_attention_deps():
+        reason = _index_is_unusable(root)
+        if reason:
+            # Fall back to the retriever that is correct right now rather than
+            # to silence. Lexical reads the lesson files themselves, so it
+            # cannot be stale, needs no index and no model -- and a fleet that
+            # keeps retrieving is strictly better than one that keeps
+            # returning nothing while its experiment quietly accrues no data.
+            print(
+                f"[commontrace] semantic index unusable ({reason}); using lexical "
+                "retrieval for this query.\n"
+                "  Rebuild it with `commontrace index` to use semantic retrieval.",
+                file=sys.stderr,
+            )
+            return _run_lexical(args, root)
 
     if args.lexical or not has_attention_deps():
         if not args.lexical:
@@ -195,23 +448,29 @@ def run(args: argparse.Namespace) -> int:
             )
         return _run_lexical(args, root)
 
-    if args.agent_type:
-        # The semantic script has no agent_type filter. Saying so beats
-        # silently returning unfiltered results that look filtered.
-        print(
-            "[commontrace] --agent-type is not supported by the semantic retriever and "
-            "was NOT applied. Use --lexical to filter by agent type.",
-            file=sys.stderr,
-        )
-
     missing_hint = (
-        "Retrieval requires the reference attention scripts from the commontrace-v2 "
-        "repo checkout (memory/attention/) plus `pip install commontrace[attention]`. "
+        "The reference attention scripts ship inside the package, so this means a "
+        "damaged install -- try `pip install --force-reinstall commontrace`. "
         "Falling back: `commontrace query --lexical`, or `commontrace lesson list` for a full view."
     )
+
+    # Both arms, fused -- but only when the store has opted in. Turning this
+    # on changes which lessons are eligible, which is the denominator of any
+    # running experiment, so it is a decision the store records rather than
+    # something a new release switches on underneath a pilot.
+    if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
+        return _run_hybrid(args, root, missing_hint)
+
     script_args = [args.task, "--top-k", str(args.top_k)]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
+    if args.agent_type:
+        # Forwarded now that the index carries an agent_types column. It used
+        # to be dropped with a warning, which meant one organisation running
+        # several fleets out of one store could scope lexical retrieval to a
+        # fleet and not semantic retrieval -- two retrievers answering
+        # different questions from the same store.
+        script_args.extend(["--agent-type", args.agent_type])
     script_path = os.path.join("memory", "attention", "query.py")
 
     if not args.experiment:

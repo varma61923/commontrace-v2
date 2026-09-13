@@ -107,7 +107,10 @@ def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliabili
             succeeded = False
         ev.append(
             reliability.Evidence(
-                occasion_id=str(inst.get("id", ""))[:12],
+                # Full trace id: truncating (e.g. [:12]) collides distinct
+                # prefixed ids like JIRA-...-4711 vs ...-4712 (cf. capture
+                # --occasion-id warning) and merges occasions in lift/verdicts.
+                occasion_id=str(inst.get("id", "")),
                 retrieved=retrieved,
                 hit=list(ext.get("lessons_hit") or []),
                 succeeded=succeeded if isinstance(succeeded, bool) else None,

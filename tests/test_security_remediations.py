@@ -189,7 +189,11 @@ class TestSubprocessScriptLookupIsolation:
         # Must NOT find the script from CWD
         assert resolved is None, f"Expected None, but resolved untrusted CWD script: {resolved}"
 
-    def test_find_reference_script_finds_script_in_repo_root(self, tmp_path):
+    def test_find_reference_script_finds_script_in_repo_root(self, tmp_path, monkeypatch):
+        # Store-root scripts run only with explicit opt-in
+        # (COMMONTRACE_ALLOW_STORE_SCRIPTS=1): by default an untrusted clone
+        # must not be able to plant an executable script the victim runs.
+        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
         clean_root = tmp_path / "repo_root"
         clean_root.mkdir()
         script_path = clean_root / "benchmark" / "my_script.py"
@@ -212,6 +216,42 @@ class TestSubprocessScriptLookupIsolation:
         assert resolved is not None
         assert os.path.exists(resolved)
         assert os.path.basename(resolved) == "measure_performance.py"
+
+    def test_find_reference_script_ignores_store_root_by_default(self, tmp_path, monkeypatch):
+        # Without opt-in, a store-root script must not resolve even when it
+        # exists -- this is the untrusted-clone RCE guard. Packaged scripts
+        # still resolve (previous test); only the store-root candidate is gated.
+        monkeypatch.delenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", raising=False)
+        clean_root = tmp_path / "repo_root"
+        clean_root.mkdir()
+        script_path = clean_root / "benchmark" / "my_script.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# Planted script\n", encoding="utf-8")
+
+        resolved = _shellout.find_reference_script(
+            str(clean_root), os.path.join("benchmark", "my_script.py")
+        )
+        assert resolved is None
+
+    def test_opted_in_store_copy_wins_over_an_existing_packaged_copy(self, tmp_path, monkeypatch):
+        # The opt-in exists specifically for a contributor iterating on a
+        # reference script that's ALSO shipped in the package (e.g.
+        # measure_performance.py) -- the case every real caller hits, since
+        # every basename they pass exists in commontrace/reference/. Checking
+        # the packaged copy first made this opt-in permanently unreachable:
+        # the packaged file always exists, so the loop always returned it
+        # before ever looking at the store root.
+        monkeypatch.setenv("COMMONTRACE_ALLOW_STORE_SCRIPTS", "1")
+        repo_root = tmp_path / "repo_root"
+        script_path = repo_root / "benchmark" / "measure_performance.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# Contributor's locally edited copy\n", encoding="utf-8")
+
+        resolved = _shellout.find_reference_script(
+            str(repo_root), os.path.join("benchmark", "measure_performance.py")
+        )
+        assert resolved is not None
+        assert os.path.abspath(resolved) == os.path.abspath(str(script_path))
 
 
 # ==============================================================================

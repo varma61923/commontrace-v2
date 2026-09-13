@@ -59,6 +59,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "to avoid process table exposure).",
     )
     p.add_argument("--dest", default=None)
+    p.add_argument(
+        "--fail-if-unconfigured", action="store_true",
+        help="Exit 2 (instead of 0) when no Hub is configured. For scripts "
+             "that must distinguish 'synced' from 'nothing configured'. "
+             "Also enabled by COMMONTRACE_SYNC_STRICT=1.",
+    )
+    p.add_argument(
+        "--quiet", action="store_true",
+        help="Suppress the unconfigured-Hub help text on stdout (the stderr "
+             "marker is still printed). For cron wrappers.",
+    )
     p.set_defaults(func=run)
 
 
@@ -80,8 +91,25 @@ def run(args: argparse.Namespace) -> int:
         )
 
     if not hub_url or not hub_api_key:
-        print(_MESSAGE)
-        return 0
+        # Exit 0 is preserved for compatibility (scripts/cron treat non-zero
+        # as failure; see tests/test_sync_cmd.py). The stderr marker lets
+        # wrappers distinguish "synced" from "nothing configured" without a
+        # breaking exit-code change; --fail-if-unconfigured (exit 2, distinct
+        # from 1 = Hub error) is the strict opt-in. getattr: hand-built
+        # Namespaces in tests predate these flags.
+        if not getattr(args, "quiet", False):
+            print(_MESSAGE)
+        print(
+            "[commontrace] sync: no Hub configured (COMMONTRACE_HUB_URL/API_KEY); "
+            "nothing pushed or pulled (exit 0 preserved for compatibility; "
+            "pass --fail-if-unconfigured for exit 2).",
+            file=sys.stderr,
+        )
+        env_strict = os.environ.get("COMMONTRACE_SYNC_STRICT", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        strict = getattr(args, "fail_if_unconfigured", False) or env_strict
+        return 2 if strict else 0
 
     from commontrace import hub_client
 

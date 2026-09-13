@@ -1,0 +1,200 @@
+{
+  "field": "legal",
+  "agent_type": "legal",
+  "lessons": [
+    {
+      "name": "nda_mutual_vs_oneway",
+      "description": "Counterparty requests mutual NDA instead of one-way",
+      "applies_when": "A counterparty asks to convert a standard one-way NDA to a mutual NDA, usually because both sides expect to share confidential information in the discussion (e.g. a partnership or joint pilot, not a pure sales evaluation).",
+      "do_not_apply_when": "Does not apply when only one side will actually share confidential information despite the request -- push back on mutual in that case.",
+      "tags": [
+        "nda",
+        "confidentiality",
+        "contract-review",
+        "legal"
+      ],
+      "domain": "nda",
+      "importance": 4
+    },
+    {
+      "name": "dpa_scc_version_mismatch",
+      "description": "DPA / GDPR Standard Contractual Clauses version mismatch",
+      "applies_when": "A customer or vendor's proposed Data Processing Addendum references an outdated set of GDPR Standard Contractual Clauses (e.g. the pre-2021 clauses, formally replaced), creating a version mismatch with the current modular 2021 SCCs used going forward.",
+      "do_not_apply_when": "Does not apply to jurisdictions using their own local-law equivalent instead of EU SCCs -- that's a different clause set entirely.",
+      "tags": [
+        "gdpr",
+        "dpa",
+        "data-processing",
+        "legal"
+      ],
+      "domain": "dpa",
+      "importance": 4
+    },
+    {
+      "name": "liability_cap_negotiation",
+      "description": "Limitation-of-liability cap negotiation on an MSA",
+      "applies_when": "A counterparty's redline requests raising the standard liability cap (commonly 12 months' fees) or carving out an uncapped exception for a specific risk category such as data breach or confidentiality breach.",
+      "do_not_apply_when": "Does not apply to statutorily non-limitable liability (e.g. gross negligence in some jurisdictions), which cannot be capped regardless of negotiating position.",
+      "tags": [
+        "liability-cap",
+        "msa",
+        "contract-negotiation",
+        "legal"
+      ],
+      "domain": "liability",
+      "importance": 4
+    },
+    {
+      "name": "trademark_comarketing_usage",
+      "description": "Trademark usage question for co-marketing materials",
+      "applies_when": "A partner or reseller wants to use the company's logo/trademark in co-marketing materials, and someone asks whether that's permitted and under what conditions.",
+      "do_not_apply_when": "Does not apply when no agreement exists yet -- there, the standard license addendum is required before any usage, not just a guidelines pointer.",
+      "tags": [
+        "trademark",
+        "co-marketing",
+        "brand-usage",
+        "legal"
+      ],
+      "domain": "trademark",
+      "importance": 4
+    },
+    {
+      "name": "contractor_vs_employee_classification",
+      "description": "Contractor vs. employee classification question",
+      "applies_when": "A hiring manager wants to engage someone as an independent contractor, but details of the proposed working arrangement (set hours, company equipment, ongoing exclusive engagement, managed like an employee) raise misclassification risk.",
+      "do_not_apply_when": "Does not apply to short, clearly project-scoped, non-exclusive engagements using the contractor's own equipment -- those clear the test easily.",
+      "tags": [
+        "worker-classification",
+        "contractor",
+        "employment-law",
+        "legal"
+      ],
+      "domain": "contractor",
+      "importance": 4
+    },
+    {
+      "name": "auto_renewal_optout_deadline",
+      "description": "Auto-renewal clause opt-out notice deadline tracking",
+      "applies_when": "A contract contains an auto-renewal clause requiring notice by a deadline (often 60-90 days before the term end) to opt out, and someone asks either how to track it or, worse, whether the deadline was already missed.",
+      "do_not_apply_when": "Does not apply to contracts with no auto-renewal clause, or where renewal is explicitly desired anyway.",
+      "tags": [
+        "auto-renewal",
+        "contract-management",
+        "deadlines",
+        "legal"
+      ],
+      "domain": "auto",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {
+      "query": "counterparty wants a mutual NDA, we normally send a one-way NDA",
+      "relevant": [
+        "nda_mutual_vs_oneway"
+      ]
+    },
+    {
+      "query": "vendor's legal team pushed back asking for mutual confidentiality obligations",
+      "relevant": [
+        "nda_mutual_vs_oneway"
+      ]
+    },
+    {
+      "query": "should we agree to convert the one-way NDA to mutual for this partner discussion",
+      "relevant": [
+        "nda_mutual_vs_oneway"
+      ]
+    },
+    {
+      "query": "customer's DPA references the old 2010 SCCs, we use the 2021 modular SCCs",
+      "relevant": [
+        "dpa_scc_version_mismatch"
+      ]
+    },
+    {
+      "query": "GDPR data processing addendum redline flags an outdated SCC version",
+      "relevant": [
+        "dpa_scc_version_mismatch"
+      ]
+    },
+    {
+      "query": "counterparty's data protection annex cites SCCs that were repealed",
+      "relevant": [
+        "dpa_scc_version_mismatch"
+      ]
+    },
+    {
+      "query": "customer wants to raise the liability cap above our standard 12-month-fees limit",
+      "relevant": [
+        "liability_cap_negotiation"
+      ]
+    },
+    {
+      "query": "counterparty pushing for uncapped liability on data breach specifically",
+      "relevant": [
+        "liability_cap_negotiation"
+      ]
+    },
+    {
+      "query": "MSA redline requests a higher liability cap than our standard template",
+      "relevant": [
+        "liability_cap_negotiation"
+      ]
+    },
+    {
+      "query": "partner wants to use our logo in their co-marketing deck, what are the usage rules",
+      "relevant": [
+        "trademark_comarketing_usage"
+      ]
+    },
+    {
+      "query": "can the reseller put our trademark on their landing page without a formal license",
+      "relevant": [
+        "trademark_comarketing_usage"
+      ]
+    },
+    {
+      "query": "co-marketing asset review flagged incorrect trademark usage/formatting",
+      "relevant": [
+        "trademark_comarketing_usage"
+      ]
+    },
+    {
+      "query": "hiring manager wants to bring someone on as a contractor but the role looks like an employee",
+      "relevant": [
+        "contractor_vs_employee_classification"
+      ]
+    },
+    {
+      "query": "worker classification question, contractor works set hours and uses company equipment",
+      "relevant": [
+        "contractor_vs_employee_classification"
+      ]
+    },
+    {
+      "query": "need to assess misclassification risk before signing a contractor agreement",
+      "relevant": [
+        "contractor_vs_employee_classification"
+      ]
+    },
+    {
+      "query": "customer contract auto-renews unless we give notice by a deadline, need to track it",
+      "relevant": [
+        "auto_renewal_optout_deadline"
+      ]
+    },
+    {
+      "query": "missed an auto-renewal opt-out window on a vendor contract, what are our options",
+      "relevant": [
+        "auto_renewal_optout_deadline"
+      ]
+    },
+    {
+      "query": "auto-renewal notice period is unusually long, need to flag it before it's too late",
+      "relevant": [
+        "auto_renewal_optout_deadline"
+      ]
+    }
+  ]
+}

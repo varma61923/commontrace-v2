@@ -23,33 +23,63 @@ def has_attention_deps() -> bool:
 def packaged_reference_dir() -> str:
     """Where reference scripts that ship inside the wheel live.
 
-    The benchmark scripts need nothing beyond PyYAML, so they are packaged
-    (see pyproject.toml's package-data) and a plain `pip install commontrace`
-    can run `commontrace bench` without a repo checkout. The attention
-    scripts are not packaged -- they need numpy + sentence-transformers.
+    Everything here is packaged (see pyproject.toml's package-data), so a
+    plain `pip install commontrace` can run `commontrace bench`, `commontrace
+    index` and semantic `commontrace query` without a repo checkout.
+
+    The attention scripts used to be excluded on the grounds that they "need
+    numpy + sentence-transformers". That conflated two different things: the
+    script FILES are plain text and cost nothing to ship, while their
+    DEPENDENCIES are a runtime question `has_attention_deps()` already
+    answers before anything is invoked. Excluding the files meant a user who
+    followed the README's own `pip install commontrace[attention]` got the
+    extra installed and semantic retrieval still unreachable -- `query` chose
+    the semantic path, failed to find the script, and exited non-zero.
     """
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reference")
+
+
+def _store_scripts_allowed() -> bool:
+    """Whether a reference script may be executed from the store root.
+
+    The store root is attacker-influenced (`--dest` > `$COMMONTRACE_ROOT` >
+    cwd): executing `<root>/memory/attention/query.py` by default means a
+    cloned/forked store can plant code that the victim runs with their own
+    permissions. The packaged copy is preferred; the store-root copy runs
+    only with explicit opt-in (`COMMONTRACE_ALLOW_STORE_SCRIPTS=1`), for a
+    contributor iterating on the reference scripts in their own checkout.
+    """
+    return os.environ.get("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def find_reference_script(root: str, relative: str) -> str | None:
     """Locate a reference-implementation script (attention/query.py, benchmark/...).
 
-    Checked in order: the store root, then the copy bundled in the installed
-    package. The first lets a repo checkout's edited copy win, which is what a
-    contributor expects; the second is what makes the command work for someone
-    who only ran `pip install commontrace`.
-
-    Scripts with heavy optional dependencies (memory/attention/*, needing the
-    `attention` extra) are deliberately not bundled, so they still resolve to
-    None here and callers report the install hint rather than a traceback.
+    Checked in order: with `COMMONTRACE_ALLOW_STORE_SCRIPTS=1`, the store
+    root first (that opt-in exists so a contributor's edited copy in their
+    own checkout is actually picked up -- checking it second, behind the
+    always-present packaged copy, made the opt-in permanently unreachable);
+    otherwise only the packaged copy is ever considered. The packaged copy
+    is what makes the command work for someone who only ran `pip install
+    commontrace`, and is the only candidate by default so an untrusted clone
+    cannot plant an executable script the victim runs by pointing `--dest`
+    (or cwd) at it.
     """
-    candidates = [
-        os.path.join(root, relative),
-        os.path.join(packaged_reference_dir(), os.path.basename(relative)),
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    if _store_scripts_allowed():
+        store_copy = os.path.join(root, relative)
+        if os.path.isfile(store_copy):
+            print(
+                "[commontrace] warning: running reference script from store root "
+                f"{store_copy} (COMMONTRACE_ALLOW_STORE_SCRIPTS=1); packaged copy "
+                "ignored. Only set this for a repo checkout you trust.",
+                file=sys.stderr,
+            )
+            return store_copy
+    packaged_copy = os.path.join(packaged_reference_dir(), os.path.basename(relative))
+    if os.path.isfile(packaged_copy):
+        return packaged_copy
     return None
 
 

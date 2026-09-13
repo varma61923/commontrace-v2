@@ -15,7 +15,8 @@ import pytest
 np = pytest.importorskip("numpy")
 pytest.importorskip("sentence_transformers")
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "attention"))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "commontrace", "reference"))
 import query as attn_query  # noqa: E402 -- must follow importorskip + sys.path.insert above
 
 

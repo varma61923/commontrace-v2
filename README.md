@@ -64,7 +64,8 @@ pip install -e ".[attention]"
 ### 2 — Bootstrap a store for your fleet
 
 ```bash
-commontrace init --agent-type support        # or: sales | hr | marketing | code | ops | custom
+commontrace init --agent-type support        # any field: code, sales, hr, marketing,
+                                             # ops, robotics, legal, ... (open taxonomy)
 commontrace doctor                            # sanity-check the environment
 ```
 
@@ -79,13 +80,66 @@ commontrace import export.jsonl --agent-type support \
 commontrace import export.csv --agent-type support --dry-run   # preview first
 ```
 
+**Coming from LangSmith, Langfuse, Braintrust or OpenTelemetry?** Pass
+`--source` and skip the field mapping entirely — those systems export
+*nested* rows (the text lives at `inputs.input`, or inside an OTel attribute
+list) that no `--context-field` can reach:
+
+```bash
+commontrace import runs.jsonl  --source langsmith  --agent-type support
+commontrace import traces.jsonl --source langfuse  --agent-type support
+commontrace import spans.jsonl  --source braintrust --agent-type support
+commontrace import spans.jsonl  --source otel      --agent-type support
+```
+
+Each adapter also picks up the outcome the source system *already knows*:
+LangSmith's `error`, Langfuse's `scores`, Braintrust's `expected` vs
+`output`, an OTel span's status. Those labelled failures are exactly what
+distillation clusters on, so a bulk import arrives with its outcomes intact
+rather than as undifferentiated text.
+
+Two things these adapters deliberately do **not** do. They never invent: a
+row missing its solution is skipped with a reason, never filled with a
+plausible placeholder, because one fabricated field repeated ten thousand
+times becomes a corpus this product then measures and bills against. And
+they never read as success from silence: an OTel `UNSET` status, a
+LangSmith run with no `error` field, a Langfuse trace with no recognised
+score — all of these import with *no* outcome rather than as a win, because
+scoring an uninstrumented fleet as 100% resolved is the most expensive wrong
+answer available here.
+
+They read a **file you already have**. No API key, no hostname, no network
+call — which means a security reviewer can diff exactly what crosses the
+boundary before it does, and it works in an air-gapped environment.
+
 Field names are configurable (`--title-field`/`--context-field`/
-`--solution-field`/`--tags-field`/`--id-field`) since a real export's column
-names are whatever the source system calls them. Rows missing a required
-field are skipped and reported, not silently dropped or a hard failure of
-the whole batch. `resolved`/`escalated`/`repeated_error`/
+`--solution-field`/`--tags-field`/`--id-field`) for a `generic` flat export,
+since a real export's column names are whatever the source system calls
+them. Rows missing a required field are skipped and reported, not silently
+dropped or a hard failure of the whole batch. `resolved`/`escalated`/`repeated_error`/
 `frustration_signal`/`tokens_used`/`llm_calls` columns, if present, populate
 `Trace.outcome` (§ [Outcome Metrics](#outcome-metrics)) automatically.
+
+**Already emitting OTel spans? Skip the file.** `pip install
+'commontrace[otel]'` and attach `CommonTraceSpanExporter` to a
+`TracerProvider` you already have — a completed GenAI span becomes a
+trace the moment it exports, through the identical parsing and
+schema-validated write path `--source otel` uses above:
+
+```python
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from commontrace.otel_exporter import CommonTraceSpanExporter
+
+provider.add_span_processor(BatchSpanProcessor(
+    CommonTraceSpanExporter(agent_type="support")
+))
+```
+
+This adds no instrumentation to your application — it consumes spans
+your own code or an existing vendor SDK already produces. A span with
+no GenAI attributes is skipped, never an exception: an exporter that
+raised into the application it's attached to would take it down for an
+unrelated telemetry side-channel.
 
 ### 3 — Wire it into your agent platform
 
@@ -120,6 +174,14 @@ output was inspected file-by-file for structural correctness. That inspection ca
 fixed a real bug: `commontrace.hub.mcp.json.example` was previously **not valid JSON** (an
 unescaped tool list leaked quotes into a JSON string field) for both `cursor` and
 `generic-mcp`.
+
+**Non-Python clients.** Any MCP-capable client already reaches the whole
+Hub tool surface without an SDK (that's what `generic-mcp` above
+configures). [`sdk/typescript`](sdk/typescript/) is the first dedicated
+non-Python client — a thin, typed wrapper (`@commontrace/hub-client`)
+over the official MCP TypeScript SDK — for a project that would rather
+have typed request/response shapes than hand-write raw tool calls.
+Mobile/JVM/.NET clients remain unbuilt.
 
 ### 4 — Capture experience and curate lessons
 
@@ -162,7 +224,50 @@ commontrace distill              # find repeated patterns across memory/traces/,
 commontrace lesson list --status review
 commontrace lesson approve lesson_candidate_20260101_1 --rationale "..."
 commontrace lesson reject lesson_candidate_20260101_2 --reason "..."
+commontrace release cut --reason "Q1 support set"   # a rollback point
 ```
+
+**A release is what the fleet is running, as one thing.** A lesson has a
+slug and its text has a revision; neither answers "what were we running on
+Monday", which is what rollback and attribution are actually about.
+`release cut` records the active set — content-addressed, append-only,
+pinned to each lesson's revision — and `release diff`/`release rollback`
+work from there. Cutting from a release the store has moved past is refused
+(two curators each approving a lesson would otherwise lose one of the
+decisions), and a rollback refuses to "restore" a lesson whose text has
+been rewritten since, because flipping a status back would put a *different*
+rule under the same name. Approving does not cut a release automatically:
+six approvals over an afternoon are usually one deployment, and only you
+know where that boundary is.
+
+**Named environments track which release each one is running.**
+
+```bash
+commontrace release promote <release_id> stage
+commontrace release promote <release_id> prod --at 2026-04-01T09:00:00Z  # scheduled
+commontrace release current prod
+commontrace release pending prod
+```
+
+`dev`/`stage`/`prod` are the closed set. `promote` needs no separate
+activation step for a scheduled promotion — it carries the moment it
+should take effect, and `current` simply starts returning it once that
+moment arrives. Promoting into `prod` goes through the same
+separation-of-duties check a single lesson's own approval already does
+(above), checked only against lessons **newly** entering the
+environment — one already running there isn't re-litigated on every
+promotion.
+
+**This is pure record-keeping, not a rollout mechanism.** Retrieval
+still reads a lesson's own `status`, exactly as before `environments.py`
+existed — there is no canary/ring *traffic* targeting between
+environments, and none is planned as a quick follow-up: a release pins
+a lesson to a content-addressed **hash**, not its actual text, and
+nothing in this store retains what a lesson used to say once it's been
+edited again (the same limit `release rollback` already lives with
+honestly, by refusing rather than fabricating). Serving "what prod is
+running" for an edited lesson needs a real revision *store*, which is
+separate, larger work.
 
 `distill` clusters traces by word-overlap similarity (pure Python, no LLM
 call, no API key) and never writes anything above `status: review` — a
@@ -373,7 +478,7 @@ The agent then has the whole protocol as tools:
 
 | Tool | What the agent does with it |
 | --- | --- |
-| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. |
+| `retrieve(task, occasion_id?)` | Find the lessons that apply, before acting. With an `occasion_id`, applies the randomized holdout and returns what to *not* use under `withheld`. Also returns `budget` (how much of the context allowance this retrieval spent), `core` (always-on lessons, injected whether or not they matched), and `not_injected` — what did not fit, named rather than silently dropped. |
 | `capture(...)` | Record what happened, with the outcome fields (`resolved`, `tokens_used`, …). Same `occasion_id` joins it back to the retrieval. |
 | `propose_lessons()` | Cluster repeated failures into candidates. |
 | `draft_lesson(slug, rule, why, …)` | Write a candidate's content, over as many calls as it takes. |
@@ -392,15 +497,36 @@ that launched it, which already had them. That is the opposite of the Hub,
 which is multi-tenant and network-reachable and therefore authenticated on
 every call.
 
-**An agent can approve its own lesson, but the gate is real.**
-`approve_lesson` refuses a lesson that still contains scaffolding (an active
-lesson is injected into every later retrieval *verbatim*, so a rule still
-reading `TODO:` teaches the fleet nothing and displaces a real one), and it
-records **who** approved it, so an agent-approved lesson stays distinguishable
-from a human-approved one. Where a person must be in the loop,
-`commontrace serve --no-approval` removes the tool entirely — absent from the
-listing, not present and refusing, so the agent never plans around a call it
-cannot make.
+**An agent can approve its own lesson by default, and the store can forbid
+it.** `approve_lesson` refuses a lesson that still contains scaffolding (an
+active lesson is injected into every later retrieval *verbatim*, so a rule
+still reading `TODO:` teaches the fleet nothing and displaces a real one),
+refuses one carrying a secret or a prompt-injection payload
+(`commontrace/memory_guard.py`), and records **who** approved it, so an
+agent-approved lesson stays distinguishable from a human-approved one.
+
+Those all check *what* is being activated. For *who*, write
+`memory/approval-policy.yaml`:
+
+```yaml
+mode: two-person      # the approver must not be among the lesson's recorded authors
+require_human: true   # an `mcp:` actor's approval does not satisfy the gate at all
+```
+
+With no such file the behaviour is unchanged — anyone may approve, including
+the author — so an existing store sees nothing new until it opts in.
+Authorship comes from the revision journal every content change already
+writes, and `--force` does not override it: that flag exists for an author
+who has judged a content warning a false positive, which is exactly the
+judgement a separation-of-duties policy says this person may not make. Where
+a person must be in the loop entirely, `commontrace serve --no-approval`
+removes the tool — absent from the listing, not present and refusing, so the
+agent never plans around a call it cannot make.
+
+None of this authenticates anybody: the local tier has no identity system,
+so an actor string is an attribution, not a proof. What the policy changes
+is the default path — the ordinary way to approve your own lesson stops
+silently working, which is what a control is for.
 
 Nothing here reimplements ranking, holdout assignment, or the approval guard —
 it calls the same functions `commontrace query` and `commontrace lesson
@@ -414,7 +540,7 @@ memory and land in the same experiment arms.
 ### 1 — Install
 
 ```bash
-git clone https://github.com/denemlabs/commontrace-v2 commontrace
+git clone https://github.com/varma61923/commontrace-v2 commontrace
 cd commontrace
 ./install.sh                        # installs to ~/.commontrace (default)
 # or
@@ -492,9 +618,11 @@ main session for speed.
 | **Lambda** | Validates lesson proposals (auto, no human needed) | 11 |
 | **Orchestrator** | Coordinates the pipeline, takes decisions at phase 6/8 | all |
 
-Plus an **attention layer** (`memory/attention/`) — a local numpy/sentence-transformers
-embedding index that pre-filters lessons for Alpha at scale (100+ lessons without latency
-degradation).
+Plus an **attention layer** — a local numpy/sentence-transformers embedding index that
+pre-filters lessons for Alpha at scale (100+ lessons without latency degradation). The
+scripts ship inside the package (`commontrace/reference/`) and are driven by `commontrace
+query` / `commontrace index`; each store keeps its own generated index at
+`memory/attention/index.npz`.
 
 Architecture diagrams: `assets/commontrace_overall.png`, `assets/agent_*.png`.
 
@@ -518,7 +646,7 @@ are running from a different location than the memory store).
 
 ```bash
 export COMMONTRACE_ROOT=/opt/commontrace
-python3 memory/attention/query.py "my task"
+commontrace query "my task"
 commontrace bench
 ```
 
@@ -534,10 +662,12 @@ memory/
   lessons/              — one .md file per validated procedural rule
   episodes/             — one .md file per /commontrace run (written by Omega)
   attention/
-    build_index.py      — builds embedding index from active lessons
-    query.py            — pre-filters lessons by cosine similarity (used by Alpha)
-    index.npz           — generated file (gitignored, rebuild with build_index.py)
+    index.npz           — generated embedding index (gitignored; rebuild with `commontrace index`)
 ```
+
+The scripts that build and read that index (`build_index.py`, `query.py`) live in
+`commontrace/reference/` and ship with the package, so semantic retrieval works from a
+plain `pip install` rather than only from a repo checkout.
 
 **Memory starts empty.** The example entries in `memory/lessons/` and `memory/episodes/`
 are illustrative templates — delete them once your own runs accumulate.
@@ -545,10 +675,14 @@ are illustrative templates — delete them once your own runs accumulate.
 **Rebuild the attention index** after adding or editing lessons:
 
 ```bash
-python3 memory/attention/build_index.py
-# or force-rebuild:
-python3 memory/attention/build_index.py --force
+commontrace index
+commontrace index --force      # rebuild even if it looks current
 ```
+
+Nothing rebuilds it automatically (it loads a ~420 MB model and can hit the network), so
+`commontrace query` checks freshness cheaply and **falls back to lexical retrieval** when
+the index is missing or stale, rather than returning nothing. Lexical reads the lesson
+files as they are and cannot go stale — it is also what the MCP server always uses.
 
 The embedding model (`multi-qa-mpnet-base-dot-v1`, ~420 MB) is downloaded once and
 cached under `~/.cache/huggingface/`.
@@ -612,6 +746,117 @@ first month answers "is it still helping?" a year in, and regressions show
 up as a metric moving the wrong way. For a *causal* rather than
 correlational answer on a specific lesson, see `commontrace experiment`
 (randomized holdout, § [Benchmark](#benchmark)).
+
+### Is retrieval as good in *your* field as in ours?
+
+`commontrace bench --pilot` measures your fleet. `commontrace bench --retrieval`
+measures the retriever itself, **per field**, against a labelled corpus that ships
+with the package (eight fields, 48 lessons, 144 queries):
+
+```bash
+commontrace bench --retrieval                                  # per-field table
+commontrace bench --retrieval --json                           # machine-readable
+commontrace bench --retrieval --max-pollution 1.5 --max-spread 2   # CI gate
+```
+
+It exists because a single aggregate number cannot show the failure it is
+looking for. Scoring used to be raw word overlap, which rewards whichever
+field writes more — so a threshold meant something different in a terse coding
+store than in a wordy legal one, and nothing would have caught a change that
+improved coding at legal's expense.
+
+The headline metric is **pollution**: assignments logged per assignment
+actually about the lesson. Under `query --experiment` every retrieved lesson
+is logged as an eligible holdout assignment, so a lesson retrieved into tasks
+it has nothing to do with absorbs those tasks' outcomes — which is how one
+lesson accrued 246 assignments against ~80 real occasions and was reported as
+significantly *hurting* outcomes when it was fine.
+
+The gate is deliberately two-sided (a ceiling on the worst field **and** the
+worst÷best spread): the historical scorer polluted at 1.89×–2.50× while its
+*spread* was 1.32×, so a spread-only gate would have called it acceptable.
+Methodology, thresholds and limitations: [`benchmark/STATUS.md`](benchmark/STATUS.md) §9.
+
+---
+
+## How much memory, and what was actually there
+
+Ranking answers *which* lessons match. Two other questions decide what an
+agent actually receives, and both used to go unanswered.
+
+**Which retriever.** Until recently `commontrace query` picked *one*:
+semantic when the attention extra was installed and the index was fresh,
+lexical otherwise. Whichever it picked, the other arm's signal was thrown
+away — so a store with the extra could not find a lesson whose exact error
+string you had pasted in, and a store without it could not find one phrased
+differently from the task. They fail on different queries, which is exactly
+when fusing beats picking:
+
+```bash
+commontrace retrieval --fusion rrf
+```
+
+Fusion is by **rank, not score**: the lexical arm returns an IDF relevance in
+[0,1] and the semantic arm a cosine similarity, and there is no honest
+conversion between them. A lesson only one arm surfaced is not penalised for
+the other's silence.
+
+It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
+eligibility is the denominator of every causal number this product reports —
+so the arm composition is recorded inside the label each holdout assignment
+carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
+reported as a compromised run rather than absorbed silently.
+
+**How much.** `top_k` bounds the count and says nothing about the size — ten
+terse lessons and ten pages of prose are the same `top_k=10`, and the second
+one displaces the task itself out of the context window. Retrieval admits
+against a budget in characters as well as count:
+
+```bash
+commontrace retrieval --max-lessons 10 --max-chars 8000
+commontrace retrieval          # show what this store is set to
+```
+
+Every `retrieve` reports what it spent (`"budget": "4/10 lessons, 3,140/8,000
+chars (39%)"`) and names what did not fit under `not_injected`, with the
+reason. Nothing is silently truncated: an agent given nine of ten lessons and
+told it was given ten will act on the missing one's absence as though it were
+the fleet's position.
+
+**Which is unconditional.** Some rules are not "relevant to this task" — they
+are how the fleet operates. Mark one `core: true` in its frontmatter and it is
+admitted ahead of the matched set, every time:
+
+```yaml
+name: always-use-idempotency-keys
+core: true
+importance: 5
+```
+
+Before this, the only way to make a rule reliable was to make it match
+everything, which is the same thing as making retrieval worse. Core lessons
+are still budgeted — they compete only with each other, by importance —
+because a fleet that marks forty lessons core has not thereby earned forty
+lessons' worth of context, and the unconditional reading's failure mode is
+that the always-on set crowds out every matched lesson and retrieval appears
+to stop working, with no error.
+
+**What was actually there.** Each retrieval with an `occasion_id` writes a
+*receipt* (`memory/retrieval_receipts.jsonl`): the candidate set that was
+**visible** — every active lesson, pinned to its revision, with a digest over
+the set — the subset **admitted**, and, written later as its own line, which
+of those the agent says it **used**.
+
+The holdout log records eligibility and arm, which starts one step too late. A
+lesson that was never a candidate does not appear in it at all, so *"the
+memory did not help"* and *"the memory was never offered"* are
+indistinguishable afterwards — and they have opposite remedies. The
+injected-versus-used split is the other thing receipts make possible: every
+"lessons reused" figure before them was counting injections.
+
+Because receipts store revisions rather than names, a dispute six months later
+about what the agent had in front of it is answerable to the exact text, not
+to a slug whose contents have moved since.
 
 ---
 
@@ -1100,6 +1345,28 @@ existed, carrying the confidence interval through. On the Hub it is the
 currency to anything. You say what one resolved occasion is worth to your
 organisation; nothing about that is stored.
 
+**And evidence expires.** An effect estimate is a statement about the world
+*at the time it was measured*. Six months later the API the lesson described
+is deprecated and the policy it encoded has changed — but the estimate is
+unchanged, because nothing re-ran it. Past a 180-day horizon a memory stops
+being billed, and `value_delivered` tells you which memories to re-run the
+holdout for, oldest first.
+
+The rule is deliberately **not symmetric**, and the asymmetry is the point. A
+memory measured as *harmful* contributes a negative number and reduces the
+figure. If staleness simply expired every old verdict, a stale harm would
+stop counting and the invoice would go **up** — a vendor deleting its own
+harms by waiting long enough. So:
+
+| Stale verdict | What happens | Effect on the invoice |
+|---|---|---|
+| HELPS | stops counting — you cannot bill for value you can no longer show is current | down |
+| HURTS | **keeps** counting until re-measured — a harm you stopped looking at is not a harm that went away | down |
+
+Both move the figure down. That is the rule, not a coincidence: when evidence
+decays, it resolves against the party who benefits from the doubt. Evidence
+carrying no date at all is treated exactly as expired.
+
 Three rules, and the third is the one that makes the number worth quoting:
 
 - **A compromised experiment produces no figure at all** — not a hedged one.
@@ -1381,7 +1648,18 @@ tests, not left to convention:
 | Observability | Structured JSON logs with a per-request correlation id; CI fails the build if an API key or DB password ever appears in log output. |
 | Audit trail | Every mutation and every operator action writes a content-free audit row that survives the data it describes. |
 | Data deletion | Self-service via an org's own API key (`delete_trace`; `request_account_deletion`/`confirm_account_deletion` for a whole org, two calls with a mandatory delay between them), or operator-CLI (`manage.py purge-trace`/`purge-org`). All four perform hard deletes and follow amendment chains. See [`DATA_RETENTION.md`](DATA_RETENTION.md). |
+| Data retention | Per-org policies by object type and status, a purge plan you read before anything happens, and legal holds that outrank every policy. `manage.py set-retention` / `retention-plan` / `retention-apply` / `legal-hold`. See [`DATA_RETENTION.md`](DATA_RETENTION.md) §2. |
+| Event export | Signed, at-least-once webhooks carrying ids, counts and verdicts — **never trace content**, enforced by a per-event-type field whitelist. `manage.py webhook-add`. See `hub/README.md` "Event export". |
 | Rate limiting | Per-org token bucket. **Known limitation:** it is process-local, so N replicas allow roughly N× the configured rate — see `hub/DEPLOYMENT.md` §6 for the mitigations. |
+
+**What this does *not* have** is as important as the table above, and is
+written down rather than left to be discovered: no legal entity, no SOC 2,
+no penetration test, no SAML or browser-based login (OIDC, SCIM and human
+user accounts do exist), no residency commitment and no support SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
+full weight; [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) answers a third-party
+readiness audit finding by finding, marking each one done, partial, not
+applicable, or *requires business action* — with the rule that the last
+category is never quietly downgraded by building something adjacent to it.
 
 Before putting a client's data on it, work through the security checklist in
 `hub/DEPLOYMENT.md` §10 and the deliberately-documented limitations in §11.

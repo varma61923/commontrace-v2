@@ -558,3 +558,172 @@ tool for it in this repo, and Phase 3 intentionally did not add one.
   none of the 3 main metrics' reported values changed as a result of Phase 3 -- the new
   report sections (`operational_cost`, `semantic_duplicates`) and `alerts`/`schema_version`
   bump are strictly additive JSON keys.
+
+---
+
+## 9. Phase 4 — Cross-field retrieval (implemented 2026-09-06)
+
+`commontrace bench --retrieval`. Read this before quoting the pollution number.
+
+### 9.1 The question it answers
+
+Everything above §8 measures ONE store's memory health. This measures something
+different and previously unmeasured: **is retrieval as good in your field as in
+ours?**
+
+The product's claim is that one loop works for a coding fleet, an HR fleet, a
+legal fleet, a robotics fleet, or a field nobody has thought of yet. Retrieval
+was where that quietly failed. Scoring was raw weighted word overlap
+(`score += weight * len(hits)`) keeping anything above zero, which is not
+comparable across fields: legal and robotics lessons are wordier and share more
+boilerplate than coding ones, so an unnormalized sum rewards whichever field
+writes more, and the hardcoded English stopword list in `commontrace/_lexical.py`
+strips "the" but not `pursuant` or `node` — each of which is its own field's
+stopword.
+
+Nothing measured any field but coding, so nothing would have caught a change
+that improved coding at legal's expense.
+
+### 9.2 The corpus, and what it is not
+
+`commontrace/fixtures/fields/*.json` — eight fields (coding, HR, sales,
+marketing, robotics, legal, clinical, finance), 48 lessons, 144 labelled
+queries (`query → relevant slugs`).
+
+`clinical` and `finance` were added after the fact, to answer §9.5's own
+"six fields is not 'any field'" with fields rather than with an argument.
+Both were chosen to stress axes the original six did not:
+
+- **`finance` is deliberately the wordiest field in the corpus** (48.7 mean
+  words per `applies_when`, against legal's 32.5), because verbosity bias is
+  what this benchmark exists to catch. It pollutes at 2.11× — *below* legal's
+  2.33× despite being half again as wordy, which is the clearest single
+  data point that the IDF scorer is not rewarding whichever field writes
+  more.
+- **Both collide with existing fields' vocabulary on purpose.** `clinical`
+  owns `escalation` (support's word), `compliance` (legal's and HR's),
+  `follow-up` (sales') and `appeal`/`denial` (finance's); `finance` owns
+  `policy` (HR's) and `contract`/`obligation` (legal's). Queries that only
+  ever match their own field would make a benchmark that proves nothing, so
+  the collisions are the point rather than an oversight.
+
+**It is hand-authored, not sampled from production traffic.** The lessons and
+queries were written to be realistic for each field — a legal store's lessons
+really are wordier and more boilerplate-heavy than a coding store's, which is
+the property under test — but they are not a random sample of any real fleet's
+work, and no claim here transfers automatically to a customer's own store. What
+it establishes is a *relative* fact that does transfer: retrieval no longer
+depends on how verbose a field happens to be.
+
+It ships inside the wheel rather than living under `tests/`, so a customer on a
+plain `pip install` can re-run the claim rather than taking it on trust.
+
+### 9.3 Metrics
+
+Standard precision@1 / recall@k / MRR, plus two that exist because of how this
+product uses retrieval:
+
+- **collateral@k** — retrieved lessons NOT relevant to the query. Not cosmetic:
+  under `query --experiment` every retrieved lesson is logged as an eligible
+  holdout assignment, so each collateral retrieval attributes an unrelated
+  task's outcome to a lesson that had nothing to do with it.
+- **pollution_ratio** — assignments a fleet would log ÷ the ones actually about
+  the lesson. This is the quantity that turns retrieval imprecision into a
+  wrong causal verdict. The failure that motivated it: one lesson accrued
+  **246 assignments against ~80 occasions actually about it**, and was reported
+  as significantly HURTING outcomes (−14.5pp, 95% CI [−26.3, −2.7], p=0.018)
+  after Benjamini-Hochberg. The lesson was fine.
+
+### 9.4 The gate is two-sided, and that is not belt-and-braces
+
+`--max-pollution` (absolute ceiling on the worst field) AND `--max-spread`
+(worst ÷ best). Building this proved both are needed:
+
+Measured across all eight fields:
+
+| Scorer | Per-field pollution | Spread |
+|---|---|---|
+| `count-v1` (historical) | 1.72× – 2.50× | 1.45× |
+| `idf-v2`, floor=0.10 (single-corpus tuning) | 1.00× – 1.39× | 1.39× |
+| `idf-v2`, floor=0.04 (current — see §9.6) | 1.72× – 2.33× | 1.35× |
+
+Retrieval noise did not halve as cleanly as the single-corpus tuning first
+suggested — §9.6 explains why the floor was lowered from 0.10 to 0.04 after
+shipping. The spread stayed bounded either way, which is the point of gating
+on it separately from the ceiling: a spread-only gate would have called the
+single-corpus tuning's regression-free-looking numbers acceptable on their
+own, and a ceiling-only gate would pass a change that fixes five fields and
+abandons the sixth.
+
+CI thresholds are `--max-pollution 2.4 --max-spread 2`
+(`tests/test_cross_field_retrieval.py`), chosen with headroom over the
+current worst field (legal, 2.33×) so ordinary tuning does not fail the build
+while the historical scorer (legal, 2.50×) still does.
+`TestTheGateActuallyCatchesTheRegressionItExistsFor` asserts that the old
+scorer fails the ceiling — if that test ever passes, the gate has stopped
+measuring, not the scorer improved.
+
+### 9.5 Known limitations
+
+- **Eight fields is still not "any field".** The gate demonstrates the scorer
+  is not verbosity-biased across a deliberately varied set; it cannot prove
+  the next field will behave. Adding a field is adding one JSON file, and is
+  the right response to a fleet whose retrieval underperforms.
+- **Adding a field widens regression coverage; it does not automatically add
+  verbosity-bias signal.** Worth stating, because it is the trap in growing
+  this corpus. `clinical` pollutes at **1.72× under both the historical and
+  the current scorer — a delta of exactly zero** — so it discriminates
+  nothing on the axis this benchmark was built for, even though it does
+  broaden the "did this change regress some field?" check and contributes
+  cross-field vocabulary collisions. `finance` moved only 2.28× → 2.11×. The
+  fields that actually exercise verbosity bias are still the wordy,
+  boilerplate-heavy ones (HR −0.50, sales −0.28, legal −0.17). A corpus can
+  therefore grow in field count while getting no better at catching the
+  regression it exists for, so the per-field delta is worth checking when a
+  field is added rather than assumed.
+- **Lexical only.** The semantic retriever needs an embedding model and a built
+  index, so it is not exercised here. The lexical path is what MCP always uses
+  and what the CLI falls back to whenever the index is stale, so it is the path
+  most fleets actually run — but a semantic regression would not show up in
+  this number.
+- **Single-label queries.** Each query names exactly one relevant lesson, so
+  recall@k is a coarse instrument and precision@1 carries most of the signal. A
+  corpus with genuinely multi-lesson tasks would measure ranking quality better.
+
+### 9.6 The floor was tuned on one corpus, and that was not enough (2026-09-07)
+
+`DEFAULT_FLOOR` originally shipped at 0.10, chosen entirely from §9.2's
+six-field corpus — it looked free: 84% fewer collateral retrievals, no cost to
+recall or top-1 on any of the 108 labelled queries. It was not free on
+`commons/eval/` (a second, independently-authored, 46-lesson corpus with
+longer and more naturalistic query text — see `commons/eval/retrieval_tiers.py`
+and `hub/tests/test_commons.py::TestRetrievalTiersDiffer`, which pin specific
+thresholds against it). At floor=0.10, `recall_anywhere` on that corpus fell
+under the pinned >90% bar and near-vanished for negative-control probes — a
+real regression on real, already-committed test coverage, just not the
+coverage this file's own corpus exercises.
+
+`DEFAULT_FLOOR` moved from 0.10 to 0.04: the largest value that keeps both
+corpora's existing thresholds intact. Measured jointly:
+
+| floor | `commons/eval` recall_anywhere | six-field fixture worst-field pollution |
+|---|---|---|
+| 0.00 | ~93% | 2.50× (legal) |
+| 0.04 (current) | 91.3% | 2.33× (legal) |
+| 0.10 (original) | ~83% | 1.22× (marketing) |
+
+This is a real tension, not a tuning mistake corrected for free: 0.04 buys
+noticeably less pollution reduction on this file's corpus than 0.10 did (worst
+field 2.50× → 2.33×, versus 0.10's 2.50× → 1.22×). Recall was prioritized —
+a lesson that never reaches the agent cannot help it — on the strength of a
+second layer of defense that does not depend on the floor being tight:
+`commontrace/integrity.py`'s `check_marginal_eligibility` and
+`check_assignment_concentration` flag a lesson whose assignments are
+disproportionately marginal-relevance or concentrated, so residual pollution
+at this floor is caught downstream rather than silently pooled into the
+causal estimate.
+
+**The lesson for the next scoring change:** tune against both corpora, not
+just this file's. A change validated only here can look like a strict
+improvement and still regress `commons/eval`'s pinned thresholds, exactly as
+0.10 did.

@@ -24,10 +24,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -49,10 +49,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -77,6 +77,71 @@ jobs:
       # just to satisfy an import this test doesn't use.
       - name: Hub server image allowlist stays in sync with hub/'s imports
         run: python -m pytest hub/tests/test_image_contents.py -q --noconftest
+
+  perf-gate:
+    # Every benchmark in this repo (hub/bench_scaling.py, bench_retrieval.py,
+    # this one) used to be run by hand and quoted in a doc -- nothing failed
+    # the build if a later change silently regressed it. commontrace/lesson_
+    # cache.py replaced an O(N)-YAML-reparse-per-query local-tier retrieval
+    # path (measured: 8.1s at 6,400 lessons) with an incremental, mostly-O(1)
+    # cache (249ms at the same size, ~33x) -- --max-total-ms is what would
+    # catch that cache silently regressing back to a full reparse; alpha
+    # alone would NOT, because even the correct cached path is still
+    # asymptotically O(N) in lesson count (it must `stat` every file to
+    # detect changes) -- what differs between cached and uncached is the
+    # CONSTANT per lesson, which only an absolute ceiling can gate on.
+    # --max-alpha is a looser backstop against a genuinely worse-than-linear
+    # regression (e.g. an accidental O(N^2)), not the primary gate here.
+    name: perf gate (local-tier retrieval latency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install commontrace (core, no extras)
+        run: python -m pip install -e .
+
+      # Measured on a dedicated dev box: ~250ms at 6,400 lessons. CI runners
+      # are slower and noisier, so this ceiling has real headroom above
+      # that -- it exists to catch a regression of ORDERS of magnitude
+      # (back toward the ~8s the uncached path measured at the same size),
+      # not to chase this specific machine's number.
+      - name: Local-tier retrieval must not regress back to O(N) YAML re-parsing
+        run: |
+          python -m commontrace.reference.measure_local_latency \
+            --sizes 100,400,1600,6400 --runs 3 \
+            --max-total-ms 2000 --max-alpha 1.5
+
+  sdk-typescript:
+    # audit 6.4: "a TypeScript client is the first [non-Python SDK] worth
+    # building" (sdk/typescript). Built and tested against a real install
+    # of the official @modelcontextprotocol/sdk, the same way test-core
+    # above installs the Python package for real rather than trusting
+    # that its own source compiles.
+    name: sdk (typescript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install (from the committed lockfile)
+        run: npm ci
+
+      - name: Build and run the test suite
+        run: npm test
 
   test-hub:
     # The Hub server (hub/) has a much heavier dependency footprint (SQLAlchemy,
@@ -106,13 +171,13 @@ jobs:
     env:
       HUB_TEST_DATABASE_URL: postgresql+asyncpg://commontrace:commontrace@localhost:5432/commontrace_hub_test
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install postgres client (for createdb)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -176,10 +241,10 @@ jobs:
     name: security scan (bandit, pip-audit, mypy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -250,7 +315,7 @@ jobs:
     name: docker image builds and starts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build the Hub image
         run: docker build -t commontrace-hub:ci .
@@ -302,7 +367,7 @@ jobs:
     name: docker compose stack serves real MCP traffic
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Bring up the documented stack
         env:
@@ -324,6 +389,17 @@ jobs:
           HUB_AUTH_ATTEMPTS_BURST: "200"
           HUB_READ_RATE_LIMIT_PER_MINUTE: "3000"
           HUB_READ_RATE_LIMIT_BURST: "600"
+          # Widened here only, same reasoning as the rate limits above: an
+          # operator running a plain `docker compose up` still gets both
+          # routes absent by default (docker-compose.yml's own ${VAR:-...}
+          # defaults). Set here so this job proves the customer console and
+          # self-serve signup are actually wired up in the real built
+          # image, over real HTTP through the published port -- something
+          # the in-process ASGI tests cannot: they never exercise uvicorn,
+          # the real TCP/HTTP stack, or the middleware exactly as
+          # build_app() assembles it at process startup.
+          HUB_CONSOLE_SECRET: "ci-test-console-secret-not-for-production"
+          HUB_SIGNUP_ENABLED: "true"
         run: |
           docker compose up -d --build
           echo "--- services ---"
@@ -371,6 +447,44 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
           test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
           echo "unauthenticated -> 401"
+
+      - name: Self-serve signup and console sign-in work over real HTTP
+        run: |
+          set -euo pipefail
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8420/signup)
+          test "$code" = "200" || { echo "GET /signup: expected 200, got $code"; exit 1; }
+
+          # A real signup creates an org and hands back a usable key --
+          # not a 500, not a form that silently does nothing.
+          body=$(curl -s -X POST http://127.0.0.1:8420/signup --data-urlencode "org_name=CI Signup Org")
+          raw_key=$(echo "$body" | grep -oE 'ct_live_[A-Za-z0-9_-]+' | head -1)
+          test -n "$raw_key" || { echo "signup response carried no api key:"; echo "$body"; exit 1; }
+          echo "::add-mask::$raw_key"
+          echo "self-serve signup issued a key"
+
+          # /app with no session redirects to sign-in -- the console route
+          # is really registered in the running container, not only in the
+          # in-process test client.
+          resp=$(curl -s -D - -o /dev/null http://127.0.0.1:8420/app)
+          echo "$resp" | grep -qi '^HTTP/[0-9.]* 303' \
+            || { echo "GET /app with no session: expected 303"; echo "$resp"; exit 1; }
+          echo "$resp" | grep -qi '^location:.*/app/signin' \
+            || { echo "GET /app with no session: expected a redirect to /app/signin"; echo "$resp"; exit 1; }
+
+          # The key signup just issued actually signs in to the console --
+          # proving the two newest customer-facing surfaces work together,
+          # not just each in isolation.
+          cookie_jar=$(mktemp)
+          signin_code=$(curl -s -o /dev/null -w '%{http_code}' -c "$cookie_jar" \
+            http://127.0.0.1:8420/app/signin -X POST --data-urlencode "api_key=$raw_key")
+          test "$signin_code" = "303" || { echo "POST /app/signin: expected 303, got $signin_code"; exit 1; }
+          grep -q ct_console "$cookie_jar" || { echo "sign-in set no session cookie"; exit 1; }
+
+          overview_code=$(curl -s -o /dev/null -w '%{http_code}' -b "$cookie_jar" http://127.0.0.1:8420/app)
+          test "$overview_code" = "200" || { echo "GET /app with a session: expected 200, got $overview_code"; exit 1; }
+          rm -f "$cookie_jar"
+          echo "self-serve signup -> console sign-in works end to end, over real HTTP"
 
       - name: Smoke check the live stack over MCP
         env:

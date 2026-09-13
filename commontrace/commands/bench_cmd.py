@@ -58,11 +58,52 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "baseline vs. current. See protocol/PROTOCOL.md#11-pilot-outcome-metrics.",
     )
     p.add_argument("--agent-type", default=None, help="--pilot only: filter to one agent_type")
+    p.add_argument(
+        "--retrieval", action="store_true",
+        help="Measure retrieval quality PER FIELD against the labelled cross-field "
+             "corpus (commontrace/fixtures/fields/): precision@1, recall@k, MRR, and the "
+             "pollution ratio that turns retrieval imprecision into a wrong causal "
+             "verdict. This is what keeps 'works for any agent type' a tested property "
+             "rather than a claim -- see benchmark/STATUS.md.",
+    )
+    p.add_argument(
+        "--max-pollution", type=float, default=None,
+        help="--retrieval only: fail if any field's pollution ratio exceeds this.",
+    )
+    p.add_argument(
+        "--max-spread", type=float, default=None,
+        help="--retrieval only: fail if the worst field's pollution exceeds the best "
+             "field's by more than this multiple.",
+    )
     p.set_defaults(func=run)
 
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.retrieval:
+        if args.pilot:
+            print(
+                "[commontrace] --retrieval and --pilot measure different things "
+                "(retrieval quality per field vs. this fleet's business outcomes). "
+                "Run them separately.",
+                file=sys.stderr,
+            )
+            return 2
+        extra = []
+        if args.json:
+            extra.append("--json")
+        if args.max_pollution is not None:
+            extra += ["--max-pollution", str(args.max_pollution)]
+        if args.max_spread is not None:
+            extra += ["--max-spread", str(args.max_spread)]
+        return run_script(
+            root,
+            "benchmark/measure_retrieval.py",
+            extra,
+            "measure_retrieval.py ships inside the commontrace package, so this "
+            "usually means a damaged install -- try `pip install --force-reinstall "
+            "commontrace`. It needs nothing beyond PyYAML.",
+        )
     if args.pilot:
         if args.strict:
             # pilot_metrics.py has no --strict flag and implements no

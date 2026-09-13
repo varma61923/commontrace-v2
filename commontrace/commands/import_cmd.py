@@ -7,7 +7,9 @@ import re
 import sys
 import uuid
 
-from commontrace import frontmatter, import_data, paths, templates, validate
+from commontrace import adapters, frontmatter, import_data, paths, templates, validate
+from commontrace.commands import _validators
+from commontrace.commands.capture_cmd import _id_suffix
 
 _SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -20,7 +22,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("file", help="Path to a .jsonl or .csv export.")
     p.add_argument("--format", choices=["jsonl", "csv"], default=None, help="Default: infer from the file extension.")
-    p.add_argument("--agent-type", choices=paths.AGENT_TYPES, required=True)
+    p.add_argument(
+        "--source", choices=list(adapters.SOURCES), default=adapters.GENERIC,
+        help=(
+            "Which system produced this export. Anything but `generic` reads "
+            "the vendor's own nested shape, so --title-field and friends are "
+            "not needed (and are ignored): "
+            + "; ".join(f"{a.name} = {a.describe}" for a in adapters.ADAPTERS.values()
+                        if a.name != adapters.GENERIC)
+            + ". These read a FILE you already have -- no API key, no network "
+            "call, nothing leaves your machine."
+        ),
+    )
+    p.add_argument(
+        "--agent-type", type=_validators.agent_type, required=True,
+        help="Kind of fleet these traces came from, as a lowercase slug. Any "
+             "field works -- e.g. code, support, hr, robotics, legal.",
+    )
     p.add_argument("--profile", default="")
     p.add_argument("--title-field", default="title")
     p.add_argument("--context-field", default="context")
@@ -55,11 +73,31 @@ def _slugify(title: str) -> str:
 # many bad rows would otherwise accumulate a string per row indefinitely.
 _MAX_DETAILS = 20
 
+# `import_data.iter_csv`/`iter_jsonl` stream row by row (no OOM risk the way
+# failure_import.py's fully-materializing read has), but "streamed" is not
+# "unbounded": a multi-gigabyte file handed in by mistake still costs the
+# CPU/IO time to walk the whole thing with no progress signal until it's
+# done. This is a fail-fast bound, generous relative to failure_import.py's
+# 50 MiB (which exists for a stricter reason) precisely because streaming
+# tolerates a much larger file safely.
+_MAX_IMPORT_FILE_BYTES = 500 * 1024 * 1024
+
 
 def run(args: argparse.Namespace) -> int:
     if not os.path.isfile(args.file):
         print(f"[commontrace] no such file: {args.file}", file=sys.stderr)
         return 1
+    try:
+        if os.path.getsize(args.file) > _MAX_IMPORT_FILE_BYTES:
+            print(
+                f"[commontrace] {args.file} is larger than "
+                f"{_MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB; split the export "
+                "or pass a smaller file",
+                file=sys.stderr,
+            )
+            return 1
+    except OSError:
+        pass
 
     mapping = import_data.FieldMapping(
         title=args.title_field,
@@ -67,9 +105,12 @@ def run(args: argparse.Namespace) -> int:
         solution=args.solution_field,
         tags=args.tags_field,
         id=args.id_field,
+        source=getattr(args, "source", adapters.GENERIC),
     )
     fmt = _infer_format(args.file, args.format)
 
+    if not args.dry_run:
+        paths.warn_if_implicit_cwd_store(args.dest)
     root = paths.resolve_root(args.dest)
     tdir = paths.traces_dir(root)
     date = datetime.date.today().isoformat()
@@ -153,7 +194,15 @@ def run(args: argparse.Namespace) -> int:
             # a row when two imports run at once, which is exactly what a
             # migration looks like when someone parallelizes it by splitting
             # the file.
-            out_path = os.path.join(tdir, f"{date}_{slug}_{trace_id[:8]}.md")
+            #
+            # capture_cmd._id_suffix rather than `trace_id[:8]`, for the same
+            # injectivity reason -- and it matters more here, not less. There
+            # is no existence check on this path at all (by design, per the
+            # comment above), and an import is where volume lives: 8 hex
+            # characters is 32 bits, so a 100k-row migration expects a
+            # collision, and a collision here is a silently dropped row in
+            # the bulk load someone is trusting to move their history.
+            out_path = os.path.join(tdir, f"{date}_{slug}_{_id_suffix(trace_id)}.md")
 
             body = templates.trace_body(row.context_text, row.solution_text)
             if row.source_id:

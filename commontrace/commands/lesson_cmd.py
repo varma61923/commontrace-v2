@@ -6,7 +6,16 @@ import glob
 import os
 import sys
 
-from commontrace import frontmatter, lesson_io, paths, templates, validate
+from commontrace import (
+    approval,
+    frontmatter,
+    lesson_io,
+    memory_guard,
+    paths,
+    templates,
+    validate,
+)
+from commontrace.commands import _validators
 from commontrace.commands._format import cell, read_or_warn
 
 
@@ -34,8 +43,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     new.add_argument("--slug", required=True, help="e.g. lesson_my_rule")
     new.add_argument("--description", required=True)
     new.add_argument(
-        "--agent-type", choices=paths.AGENT_TYPES, default=None,
-        help="Defaults to the agent_type this store was initialized with.",
+        "--agent-type", type=_validators.agent_type, default=None,
+        help="Any lowercase slug (the taxonomy is open -- e.g. code, hr, robotics, "
+             "legal). Defaults to the agent_type this store was initialized with.",
     )
     new.add_argument("--domain", required=True)
     new.add_argument("--tags", default="")
@@ -67,8 +77,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ap.add_argument(
         "--force",
         action="store_true",
-        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding. "
-             "Refused by default -- an active lesson is injected into agents verbatim.",
+        help="Approve even if the lesson still contains unedited 'TODO:' scaffolding, "
+             "or a high-confidence secret/prompt-injection pattern the content-safety scan "
+             "flagged. Refused by default -- an active lesson is injected into agents verbatim.",
     )
     ap.add_argument("--dest", default=None)
     ap.set_defaults(func=run_approve)
@@ -108,43 +119,56 @@ def run_new(args: argparse.Namespace) -> int:
 
     root = paths.resolve_root(args.dest)
     ldir = paths.lessons_dir(root)
+    paths.warn_if_implicit_cwd_store(args.dest)
+    if not _validators.check_text_size(
+        {"description": args.description, "applies_when": args.applies_when,
+         "do_not_apply_when": args.do_not_apply_when,
+         "importance_rationale": args.importance_rationale},
+        what="lesson",
+    ):
+        return 1
     os.makedirs(ldir, exist_ok=True)
     filename = f"{args.slug}.md" if args.slug.startswith("lesson_") else f"lesson_{args.slug}.md"
     out_path = os.path.join(ldir, filename)
-    if os.path.exists(out_path):
-        print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
-        return 1
+    # Locked check-then-act: two concurrent `lesson new --slug same` both
+    # passed the exists check and the last writer won silently. Hold the
+    # file lock across the check and the write so the loser gets exit 1,
+    # matching run_approve/run_reject's locked RMW pattern.
+    with frontmatter.locked(out_path):
+        if os.path.exists(out_path):
+            print(f"[commontrace] {out_path} already exists - aborting.", file=sys.stderr)
+            return 1
 
-    fm = templates.lesson_frontmatter(
-        slug=args.slug,
-        description=args.description,
-        agent_type=args.agent_type or paths.store_agent_type(root),
-        domain=args.domain,
-        tags=[t.strip() for t in args.tags.split(",") if t.strip()],
-        applies_when=args.applies_when,
-        do_not_apply_when=args.do_not_apply_when,
-        importance=args.importance,
-        importance_rationale=args.importance_rationale,
-        source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
-        # Scaffolded at `review`, not `active`.
-        #
-        # `lesson new` writes a body that is entirely template text
-        # ("## Rule\n[1 actionable sentence]"). Creating that at status
-        # `active` made it live the instant it was scaffolded: retrievable by
-        # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
-        # published to the whole fleet by `sync --push` -- all before a single
-        # word of it had been written.
-        #
-        # It also bypassed the one control the protocol defines for exactly
-        # this: run_approve's own docstring says a lesson "is only ever
-        # activated by an explicit human/Validator call to this command,
-        # never automatically by whatever proposed it". `commontrace distill`
-        # already honours that by writing candidates at `review`; this path
-        # was the inconsistent one.
-        status="review",
-    )
-    lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
-                           actor=_actor(), reason="scaffolded by `lesson new`")
+        fm = templates.lesson_frontmatter(
+            slug=args.slug,
+            description=args.description,
+            agent_type=args.agent_type or paths.store_agent_type(root),
+            domain=args.domain,
+            tags=[t.strip() for t in args.tags.split(",") if t.strip()],
+            applies_when=args.applies_when,
+            do_not_apply_when=args.do_not_apply_when,
+            importance=args.importance,
+            importance_rationale=args.importance_rationale,
+            source_traces=[t.strip() for t in args.source_traces.split(",") if t.strip()],
+            # Scaffolded at `review`, not `active`.
+            #
+            # `lesson new` writes a body that is entirely template text
+            # ("## Rule\n[1 actionable sentence]"). Creating that at status
+            # `active` made it live the instant it was scaffolded: retrievable by
+            # `commontrace query`, counted as coverage by `taxonomy`/`pilot`, and
+            # published to the whole fleet by `sync --push` -- all before a single
+            # word of it had been written.
+            #
+            # It also bypassed the one control the protocol defines for exactly
+            # this: run_approve's own docstring says a lesson "is only ever
+            # activated by an explicit human/Validator call to this command,
+            # never automatically by whatever proposed it". `commontrace distill`
+            # already honours that by writing candidates at `review`; this path
+            # was the inconsistent one.
+            status="review",
+        )
+        lesson_io.write_lesson(out_path, fm, templates.lesson_body(), root=root,
+                               actor=_actor(), reason="scaffolded by `lesson new`")
     print(f"[commontrace] created {out_path}")
     print(
         f"  Written at status=review. Fill in the Rule/Why/How-to-apply sections, then:\n"
@@ -217,6 +241,22 @@ def _append_body_note(body: str, heading: str, text: str) -> str:
     return body.rstrip("\n") + f"\n\n## {heading}\n{date}: {text}\n"
 
 
+def _guard_fields(fm: dict, body: str) -> dict:
+    """Every free-text field a Lesson carries, for `memory_guard.scan_fields`
+    at the approval gate. `body` alone covers Rule/Why/How-to-apply/
+    Counter-examples -- scanned as one string rather than split by section,
+    since a secret or an injection payload is exactly as dangerous in any
+    one of them and splitting buys nothing a caller here needs."""
+    return {
+        "description": fm.get("description", ""),
+        "applies_when": fm.get("applies_when", ""),
+        "do_not_apply_when": fm.get("do_not_apply_when", ""),
+        "importance_rationale": fm.get("importance_rationale", ""),
+        "domain": fm.get("domain", ""),
+        "body": body,
+    }
+
+
 def run_approve(args: argparse.Namespace) -> int:
     """The generic-pipeline Validator step (protocol/PROTOCOL.md §6's
     "Validator" role, e.g. the code-review profile's Lambda): a candidate
@@ -255,6 +295,50 @@ def run_approve(args: argparse.Namespace) -> int:
             )
             return 1
 
+        # Separation of duties, if the store asks for it
+        # (memory/approval-policy.yaml). No policy file means today's
+        # behaviour exactly: anyone may approve, including the author.
+        # Checked BEFORE the content scan below only because a "you may not
+        # approve this at all" answer makes the finding list moot; both
+        # refuse before any state changes.
+        #
+        # Deliberately NOT overridable by --force: --force exists for an
+        # author who has looked at their own lesson and judged the warning
+        # a false positive, which is precisely the judgement a
+        # separation-of-duties policy says this person may not make.
+        try:
+            policy = approval.load_policy(root)
+            approval.check(
+                policy, slug=args.slug, approver=_actor(),
+                authors=approval.authors_of(root, args.slug),
+            )
+        except (approval.ApprovalDenied, approval.PolicyError) as exc:
+            print(f"[commontrace] refusing to approve {args.slug}: {exc}", file=sys.stderr)
+            return 1
+
+        # OWASP ASI06 (Memory & Context Poisoning): an active lesson is
+        # injected into every later retrieval verbatim, same reasoning as
+        # the scaffolding check above. Only HIGH-confidence secret/injection
+        # findings refuse here (`GuardReport.should_block`) -- PII and
+        # medium-confidence matches are not surfaced as a refusal at all,
+        # by commontrace/memory_guard.py's own design.
+        guard = memory_guard.scan_fields(_guard_fields(fm, body))
+        if guard.should_block and not args.force:
+            print(
+                f"[commontrace] refusing to approve {args.slug}: the content-safety scan "
+                f"flagged this lesson -- {guard.summary()}.\n"
+                "  Approving activates a lesson for retrieval and injection -- an agent\n"
+                "  injects whatever it is given, so a credential or a prompt-injection\n"
+                "  payload here would be replayed into every later decision this lesson\n"
+                "  matches. If this is a false positive (e.g. a lesson that legitimately\n"
+                f"  documents an example credential pattern), review {path} and pass\n"
+                "  --force if this really is the intended content.",
+                file=sys.stderr,
+            )
+            for f in guard.blocking_findings:
+                print(f"    - [{f.category}] {f.label} in {f.field}: {f.excerpt!r}", file=sys.stderr)
+            return 1
+
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
@@ -266,7 +350,21 @@ def run_approve(args: argparse.Namespace) -> int:
             f"{', '.join(unfilled)} still contain unedited scaffolding.",
             file=sys.stderr,
         )
+    if guard.should_block:
+        print(
+            f"[commontrace] warning: approved {args.slug} with --force while the "
+            f"content-safety scan still flagged it -- {guard.summary()}.",
+            file=sys.stderr,
+        )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")
+    # Point at the release machinery rather than cutting one automatically.
+    # Approving is one lesson changing state; a release is a decision about
+    # the SET the fleet runs, and silently cutting one per approval would
+    # make the history a log of individual edits -- which is what the
+    # revision journal already is -- instead of a record of deployments
+    # somebody chose. Six approvals over an afternoon are usually one
+    # deployment, and only the operator knows where that boundary is.
+    print("  `commontrace release cut` records the active set as a rollback point.")
     return 0
 
 

@@ -162,15 +162,18 @@ def trace_body(context_text: str, solution_text: str) -> str:
     return f"## Context\n{context_text}\n\n## Solution\n{solution_text}\n"
 
 
-def index_md(agent_type: str) -> str:
+def index_md(agent_type: str, has_episodes: bool = False) -> str:
     domains = STARTER_DOMAINS.get(agent_type, STARTER_DOMAINS["custom"])
-    # "code" scaffolds memory/episodes/ alongside memory/traces/ (init_cmd.py),
-    # and code's own STARTER_DOMAINS entries are the only ones with episodes
-    # to index -- everything below the "### <Domain>" heading was previously
-    # unconditionally "#### Traces", so a code-type store's own index told
-    # the reader to look in a directory ("Traces") that isn't where its
-    # capture output actually lives.
-    second = "Episodes" if agent_type == "code" else "Traces"
+    # Everything below the "### <Domain>" heading was previously
+    # unconditionally "#### Traces", so a store that captures into
+    # memory/episodes/ told the reader to look in a directory that isn't
+    # where its capture output actually lives.
+    #
+    # Keyed on whether the store HAS an episodes/ directory, not on
+    # `agent_type == "code"`: episodes come from the code-review profile
+    # (init_cmd.EPISODE_PROFILES), and any fleet may run that profile, while
+    # a `code` fleet that doesn't run it has no episodes to index.
+    second = "Episodes" if has_episodes else "Traces"
     sections = "\n\n".join(
         f"### {d.replace('-', ' ').title()}\n\n#### Lessons\n\n#### {second}\n" for d in domains
     )

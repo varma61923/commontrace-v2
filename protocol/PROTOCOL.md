@@ -125,6 +125,12 @@ surface falls into five groups:
   which eligible traces to inject and which to deliberately withhold and
   records the decision; the second reports how the occasion concluded so
   the two arms — injected vs. withheld — can later be compared.
+  `working_set` returns only the memories whose effect that holdout has
+  already *established*, rendered as one block an agent pins to its system
+  prompt for a whole session rather than paying for on every query. A trace
+  still under test is never included: a pinned trace is injected on every
+  occasion, which would destroy its own control arm — a memory is either
+  being randomized or graduated, never both.
 - **Org deletion** — `request_account_deletion` and
   `confirm_account_deletion` together erase an org's entire Hub presence
   (every trace, vote, and credential) irreversibly; `cancel_account_deletion`

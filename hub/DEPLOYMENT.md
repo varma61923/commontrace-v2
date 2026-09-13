@@ -4,8 +4,8 @@ What an operator needs to run the Hub for real, as opposed to the
 local-checkout instructions in [`hub/README.md`](README.md).
 
 > **Verification status, stated up front.** The application is exercised
-> against a real PostgreSQL 16 instance by `hub/tests/` (767 tests, tenant
-> isolation among them) on Python 3.10/3.11/3.12, alongside 939 client-side
+> against a real PostgreSQL 16 instance by `hub/tests/` (1,051 tests, tenant
+> isolation among them) on Python 3.10/3.11/3.12, alongside 1,334 client-side
 > tests. CI additionally applies every migration to an empty database, runs
 > `alembic check` for drift, and proves an interrupted `CONCURRENTLY` index
 > migration can be retried.
@@ -25,7 +25,7 @@ local-checkout instructions in [`hub/README.md`](README.md).
 >
 > | Rehearsed | Result |
 > |---|---|
-> | Migrations onto an empty database, then `alembic check` | 13 revisions applied, no drift |
+> | Migrations onto an empty database, then `alembic check` | 17 revisions applied, no drift |
 > | Image built and run directly | Serves `/healthz`, `/readyz`, `/metrics`; runs as uid 10001, not root |
 > | Container `HEALTHCHECK` | Reports healthy, and honours a non-default `HUB_PORT` |
 > | Container restart | Data intact; logs JSON with no key or password in them |
@@ -53,9 +53,66 @@ local-checkout instructions in [`hub/README.md`](README.md).
 | A secret store | For `HUB_DATABASE_URL` and issued API keys. Not a `.env` file in your repo. |
 | TLS termination | The Hub speaks plain HTTP. Put it behind your load balancer / ingress — API keys travel in an `Authorization` header and must not cross the network in cleartext. |
 | `HUB_ALLOW_INSECURE_HTTP=true` if `HUB_HOST` isn't loopback | The Hub refuses to start bound to a non-loopback interface (e.g. `0.0.0.0`, needed for container/pod networking) unless this is set — a deliberate acknowledgment that a proxy in front is terminating TLS, not a guess the Hub makes about your network. Never set it because the Hub itself is meant to be reached directly without a proxy. |
+| **Two database roles** | One owner for migrations, one non-superuser runtime role for serving. See §2.1 — the Hub refuses to start if it finds itself serving as a role that silently bypasses the tenant-isolation policies. |
 
 No Redis, no message broker, no object storage. State lives entirely in
 Postgres.
+
+### 2.1 Two database roles, and why the Hub refuses to start without them
+
+Postgres skips **every** row-level-security policy for a superuser or a role
+holding `BYPASSRLS` — silently. No error, no warning, no log line. The
+policies still exist, `pg_policies` still lists them, an audit still finds
+them, and they do nothing.
+
+That is worse than not having RLS at all, because it is a guarantee an
+operator believes in and does not have. It is also not hypothetical: the
+official Postgres image makes `POSTGRES_USER` the cluster superuser, and
+this repo's own `docker-compose.yml` pointed `HUB_DATABASE_URL` at exactly
+that role — so the shipped evaluation stack installed migration
+`d5c8b3a91e77`'s tenant-isolation policies and bypassed all of them.
+
+So the deployment has two roles with different jobs:
+
+| Role | Used by | Rights |
+|---|---|---|
+| **owner** (`commontrace`) | `alembic upgrade head`, one-shot, never serving | owns the schema, full DDL |
+| **runtime** (`commontrace_app`) | the Hub process, every request | `SELECT/INSERT/UPDATE/DELETE` only; `NOSUPERUSER`, `NOBYPASSRLS`, no `CREATE` on the schema |
+
+`docker compose up` creates both: `hub/postgres-init/10-runtime-role.sql`
+runs once at first initialisation, before any table exists, and uses
+`ALTER DEFAULT PRIVILEGES` so every table alembic creates afterwards — and
+every table a future migration adds — grants the runtime role its DML
+rights automatically. There is nothing to keep in sync by hand.
+
+**On a managed Postgres** (RDS/Cloud SQL/Neon), run the same statements once
+as the owner; the script's own header carries them, including the one-off
+`GRANT ... ON ALL TABLES` an existing database with tables already in it
+needs. Then point `HUB_DATABASE_URL` at the runtime role and keep the
+owner's credentials for migrations only.
+
+`hub/db.py:check_row_level_security` verifies this at startup:
+
+- **Policies exist and the role bypasses them** → the Hub **refuses to
+  start**, naming both remedies. Set `HUB_ALLOW_RLS_BYPASS=true` to
+  acknowledge a deployment that intends to serve as owner/superuser and
+  accept that tenant isolation rests on `hub/crud.py`'s own `org_id`
+  predicates alone.
+- **`HUB_REQUIRE_RLS=true`** (opt-in) → additionally refuses unless the
+  policies are affirmatively installed *and* enforced, so a database nobody
+  migrated, or one somebody dropped the policies from, is refused too.
+- **Undeterminable** (the database is unreachable at boot) → warns and
+  continues, always. "Cannot determine" is not "determined to be unsafe",
+  and a diagnostic that turns a transient blip into a crash-loop is worse
+  than the thing it diagnoses — `/readyz` already reports the process
+  unready in that case.
+
+One consequence worth knowing: with `HUB_RATE_LIMIT_BACKEND=postgres`, the
+`hub_rate_limit_buckets` table is created by the **owner** (the init script
+does it), not by the app at runtime. A role with no `CREATE` on the schema
+cannot run `CREATE TABLE IF NOT EXISTS` *even when the table already
+exists* — Postgres checks the schema privilege before the existence check —
+so on a hand-built database, create that table as the owner too.
 
 ## 2. Configuration
 
@@ -119,6 +176,33 @@ times slower** than its occasion count suggests.
 at that org's observed volume. It still starts — your decision stands — but
 it is said at the only moment the rate can be changed for free.
 
+### Pre-registration, and handing over the rows
+
+`start-experiment <org_id> [rate] [outcome] [notes]` **pre-registers** the
+run: the primary outcome, the smallest effect worth acting on, the holdout
+rate, the planned size, and the stopping rule, fingerprinted and stored
+against the salt it was minted with. `causal_effects` and `value_delivered`
+then diff the run against it and report every difference — a moved endpoint,
+a changed detectable effect, a different randomization, a registration
+written after the data started arriving. An experiment with no registration
+is reported as unregistered rather than passing silently: settling what a
+run measured once the results are visible is not a test of a hypothesis, and
+the absence is itself the finding.
+
+```bash
+python -m hub.manage start-experiment <org_id> 0.2 resolved "Q1 support pilot"
+python -m hub.manage export-assignments <org_id> assignments.csv
+```
+
+`export-assignments` writes **every arm decision** — including the occasions
+that were assigned an arm and never reported, because those are the
+attrition question and an export without them hands over a record with the
+evidence already removed. It prints a digest over the canonical sorted rows,
+and that digest is inside what `HUB_LEDGER_SIGNING_KEY` signs. So a customer
+holding an invoice, an export and a signature can establish that all three
+describe the same experiment — which is the difference between "our system
+says you owe us this" and a number they can re-derive and disagree with.
+
 ### The customer console
 
 Set `HUB_CONSOLE_SECRET` and the Hub serves a console at `/app` for your
@@ -134,10 +218,16 @@ HUB_CONSOLE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))
 
 Operationally, four things to know:
 
-- **It is read-only.** Nothing on it changes state, which is why it carries
-  no CSRF token — there is no state-changing request for a forged one to
-  trigger. Everything a customer can change goes through MCP or the CLI,
-  where it is authenticated and audited.
+- **It is read-only over this Hub's own data.** Nothing a browser does here
+  writes to `Organization`, `Trace`, or any other row directly, which is why
+  it carries no CSRF token — its session cookie is `SameSite=Strict`, so a
+  forged cross-site request arrives with no session and is turned back at
+  sign-in. Everything a customer can change in their own trace store still
+  goes through MCP or the CLI, where it is authenticated and audited. The
+  one exception carries its own trust boundary rather than weakening this
+  one: with Stripe configured (below), an "Upgrade" click sends the browser
+  to a Stripe-hosted page, and `Organization.plan` only ever changes later,
+  from Stripe's own signed webhook call — never from the browser request.
 - **Revoking a key ends the browser sessions it opened**, checked on every
   request. `revoke-key` is a working emergency stop for the console too.
 - **Rotating `HUB_CONSOLE_SECRET` signs every customer out.** That is the
@@ -231,17 +321,140 @@ readinessProbe:
   periodSeconds: 10
 ```
 
+### Self-serve signup
+
+Set `HUB_SIGNUP_ENABLED=true` and the Hub also serves a public,
+unauthenticated `POST /signup`: a visitor creates their own free-plan org
+and first API key with no operator involved (unset — the default — means
+the route does not exist, same posture as `/admin` and `/app`).
+
+```bash
+HUB_SIGNUP_ENABLED=true
+```
+
+Two things to know before enabling it on a public ingress:
+
+- **No email verification.** This Hub has no outbound email integration to
+  build one on. The blast radius of an uncontactable or fraudulent signup
+  is bounded by the free plan's own limits (`hub/plans.py`) either way —
+  the same ceiling every evaluator gets, verified or not.
+- **No CAPTCHA.** The only abuse controls are a tight per-address rate
+  limit and a honeypot field (`hub/signup.py`). That is enough for an
+  unauthenticated route that mints a usable credential to not be a fully
+  open oracle, but it is not CAPTCHA-strength — for a public-facing
+  deployment expecting real traffic, put it behind whatever bot mitigation
+  (a WAF, a CAPTCHA) you already run in front of other public signup forms,
+  the same way you would for any other account-creation endpoint.
+
+### Self-serve billing
+
+Set `HUB_STRIPE_SECRET_KEY`, `HUB_STRIPE_WEBHOOK_SECRET`, and at least one
+of `HUB_STRIPE_PRICE_TEAM`/`HUB_STRIPE_PRICE_SCALE` and a signed-in customer
+can upgrade themselves via Stripe Checkout; `Organization.plan` then stays
+in sync with what Stripe actually charged via `POST /billing/webhook` (also
+unregistered until the webhook secret is set).
+
+**All three or none.** `StripeSettings.checkout_configured` (`hub/billing.py`)
+requires the key, the webhook secret, and a price together — not just enough
+to sell an upgrade. The reason is specific: a deployment with a working key
+and price but no webhook secret would show a working "Upgrade" button, take
+a customer's real payment, and then have no route left to ever learn it
+happened, so the plan never moves off `free` — charged and never upgraded,
+silently. The same requirement gates Stripe's Billing Portal (where an
+already-subscribed customer manages or cancels), for the same reason in the
+other direction: a cancellation made there is also delivered only through
+the webhook, and without it a canceled customer keeps their paid entitlement
+indefinitely.
+
+```bash
+HUB_STRIPE_SECRET_KEY=sk_live_...
+HUB_STRIPE_WEBHOOK_SECRET=whsec_...      # from the endpoint you register in
+                                          # the Stripe dashboard, pointed at
+                                          # https://<this-hub>/billing/webhook
+HUB_STRIPE_PRICE_TEAM=price_...
+HUB_STRIPE_PRICE_SCALE=price_...
+```
+
+No Stripe SDK — `hub/billing.py` calls Stripe's REST API directly over
+`httpx` (already a Hub dependency) and verifies webhook signatures with one
+documented HMAC check, rather than adding a second pinned dependency for a
+handful of calls to one vendor.
+
+### Signing the value ledger
+
+`value_delivered`'s `ledger` (`commontrace/value.py`) is hash-chained: every
+line carries a SHA-256 over itself and the previous line's hash, so editing
+a figure, dropping the memory that measured as HURTING, or reordering to
+bury it all break the chain, and `commontrace.value.verify_ledger` proves
+it. That chain's genesis and algorithm are both public by design — the
+whole point is that a customer's finance team can reimplement the check
+independently — which means it only proves the ledger is *internally
+consistent*, not *who issued it*. Anyone with write access to wherever a
+ledger ends up stored (a compromised account, a malicious insider, an
+issuer understating its own invoice after the fact) could fabricate an
+entire replacement chain from different figures, and it would verify
+exactly as cleanly as the real one.
+
+Set `HUB_LEDGER_SIGNING_KEY` to close that gap. Every `value_delivered`
+response is then also signed with HMAC-SHA256
+(`commontrace.value.sign_ledger`) over the chain's root, bound to the org
+and the timestamp it was issued at, and returned as `signature` +
+`issued_at` alongside the ledger. A customer verifies it with
+`commontrace.value.verify_ledger_signature` against the same key — so a
+signature only validates for a ledger this deployment actually issued, not
+merely one that follows the public rules. Leave it unset and
+`value_delivered` still returns the hash-chained ledger, but `signature` is
+`null` and `signature_reason` says explicitly that this deployment has not
+opted into issuer authentication, rather than silently looking more audited
+than it is.
+
+```bash
+HUB_LEDGER_SIGNING_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+```
+
+**This key now has a second job, and rotating it breaks both.** Webhook
+signing secrets are *derived* from it rather than stored
+(`hub/events.py:derive_secret`), which is what keeps a database dump from
+yielding the ability to forge an event. The consequence an operator has to
+know before rotating: changing `HUB_LEDGER_SIGNING_KEY` silently changes
+every endpoint's signing secret, so every customer's webhook receiver starts
+rejecting deliveries as unsigned, and every previously issued ledger
+signature stops verifying. Neither failure announces itself at rotation
+time — the receiver just starts returning 401 and the queue starts
+retrying. If you must rotate it, re-issue every endpoint's secret
+(`webhook-rotate`) and tell every customer holding one, in the same
+maintenance window.
+
+Set it **identically across every replica**. Unlike `HUB_API_KEY_PEPPER`
+(which tolerates a per-process fallback, because a missing pepper only ever
+weakens one timing defense), a value ledger is meant to be verified by the
+customer *later*, against whichever replica happened to sign it at request
+time — a key that silently varied by process or by restart would make some
+invoices verify and others not, for no reason visible to the customer
+holding them. There is no key versioning here: rotating this value
+invalidates verification of every already-issued invoice unless you keep
+the retired key available out-of-band, specifically to still check
+signatures minted under it.
+
 ### Metrics
 
-`GET /metrics` serves Prometheus text format. Three counters:
+`GET /metrics` serves Prometheus text format:
 
 | Metric | Labels | What it answers |
 |---|---|---|
-| `commontrace_hub_requests_total` | `method`, `path`, `status` | Traffic and error rate per route. |
-| `commontrace_hub_request_duration_ms_total` | `path` | Summed latency; divide by the request count for a mean. |
-| `commontrace_hub_rate_limited_total` | `limiter` (`http`, `write`) | **How often you are refusing customers, and by which limiter.** |
+| `commontrace_hub_requests_total` (counter) | `method`, `path`, `status` | Traffic and error rate per route. |
+| `commontrace_hub_request_duration_ms` (histogram: `_bucket{le}`, `_sum`, `_count`) | `path` | Latency **distribution** per route -- feed it to PromQL's `histogram_quantile()` for p50/p95/p99, not just a mean. Bucket boundaries are `Metrics.BUCKETS_MS` in hub/observability.py. |
+| `commontrace_hub_rate_limited_total` (counter) | `limiter` (`http`, `write`) | **How often you are refusing customers, and by which limiter.** |
 
-The third is the one to alert on. Rate limiting is otherwise invisible
+Example p99 query for the `/mcp` route:
+
+```promql
+histogram_quantile(0.99,
+  sum(rate(commontrace_hub_request_duration_ms_bucket{path="/mcp"}[5m])) by (le)
+)
+```
+
+The rate-limited counter is the one to alert on unconditionally. Rate limiting is otherwise invisible
 until a customer complains, and a rising `limiter="write"` count is the
 signal that `HUB_RATE_LIMIT_PER_MINUTE` is set below what your customers'
 fleets actually do. The two limiters are counted separately because they
@@ -437,13 +650,130 @@ The corollary matters for incident response: restoring an older backup
 **resurrects keys revoked after that backup was taken**. If you restore
 across a revocation, re-revoke those key ids immediately.
 
+### 9b. RPO/RTO: what this drill measures, and what it deliberately does not
+
+Audit §7.5 named "no RPO/RTO, restore or deletion drills" as missing.
+The drill above is not hypothetical — it was run end to end (dump,
+restore into a fresh database, `alembic check`, and the full `hub.smoke`
+suite including tenant isolation) against a seeded database of 8,000
+traces across two orgs (~28 MB). Measured on that run, on this sandbox's
+hardware:
+
+| Step | Measured time |
+|---|---|
+| `pg_dump` (custom format) | 0.29s |
+| `pg_restore` into a fresh database | 2.78s |
+| `alembic check` (schema-currency verification) | 1.33s |
+| `hub.smoke` full suite (both orgs, tenant isolation included) | 4.78s |
+
+**What this does and does not establish, stated precisely so neither
+number is mistaken for a commitment:**
+
+- This is the *mechanism's* time cost — dump, restore, and verify against
+  a database of this specific size — not a promised production RTO. A
+  production database with more data restores slower; `pg_dump`/
+  `pg_restore` scale with data volume, so re-run this drill against a
+  copy of your actual production size to get a number that means
+  something for your deployment, not this test dataset's.
+- **RPO (how much data a restore could lose) is entirely a function of
+  backup *frequency*, which is an operator/hosting decision this
+  document cannot make.** A managed Postgres provider's continuous
+  WAL archiving can put RPO in the seconds; a nightly `pg_dump` cron
+  puts it at up to 24 hours. Pick a frequency, then your RPO is that
+  frequency's own interval — no code change alters this.
+- **Production RTO also includes time this local drill has none of**:
+  noticing the outage, deciding to restore, provisioning a database to
+  restore into, and DNS/traffic cutover. The table above is the
+  restore-and-verify slice alone — the part that is actually testable
+  independent of a specific production topology.
+- This drill is a rehearsal you can re-run, not a standing commitment.
+  Nothing here schedules it, alerts if it has gone stale, or promises a
+  cadence — that is the "staffed rota" half of §7.4/§7.6, which remains
+  a real operator/business decision, not a repository file.
+
+## 9a. Break-glass: every admin account is disabled or its IdP is unreachable
+
+Human sign-in (`hub/README.md` "Human users, roles, and OIDC SSO") has no
+password and no recovery email — a `User` row authenticates only through
+its linked OIDC identity, and there is no self-service anything. That is
+the right default (no secondary credential to leak, no password reset flow
+to phish), and it means the ordinary path to a `ROLE_SECURITY_ADMIN`/
+`ROLE_OWNER` account has exactly one dependency: the identity provider.
+This is what to do when that dependency fails — every such account is
+disabled, or the IdP itself is down/misconfigured, and nobody can sign in.
+
+**The recovery path is always the same one an operator already has**:
+direct database access, via `hub.manage`, run from wherever
+`HUB_DATABASE_URL` is reachable (a bastion host, a deploy box, `kubectl
+exec` into the Hub's own pod — whatever your topology already trusts with
+that connection string; this is not a new credential, it is the same one
+that runs every migration).
+
+```bash
+# 1. Confirm what's actually broken before changing anything.
+python -m hub.manage list-users <org_id>          # who exists, whose role, who is disabled
+
+# 2a. An account is disabled that should not be -- re-enable it.
+python -m hub.manage enable-user <user_id>
+
+# 2b. No working Security Admin/Owner exists at all -- mint a fresh one.
+#     This does NOT need the IdP to be reachable: create-user only writes
+#     a row, and role alone does not authenticate anybody.
+python -m hub.manage create-user <org_id> <email> owner
+
+# 3. The IdP is unreachable, but you need this person signed in NOW --
+#    link a DIFFERENT, reachable IdP's identity to the row instead of
+#    waiting for the original one to come back. (Standing configuration
+#    change: point HUB_OIDC_ISSUER/HUB_OIDC_JWKS_URI at the new IdP.)
+python -m hub.manage link-sso <user_id> <new_issuer> <new_external_subject>
+
+# 4. Verify: the recovered account can actually reach a tool, not just
+#    that the row looks right.
+python -m hub.manage audit-log <org_id> | head    # confirm what you just did, and by whom
+```
+
+**Every one of these steps is an audited action** (`hub/manage.py`'s own
+`audit.record` call on `create-user`/`enable-user`/`link-sso`), so a
+break-glass recovery leaves the same trail an ordinary one would — there
+is no "off the books" path here, only a faster one that does not depend on
+the thing that just broke.
+
+**An automatic alert fires when it is used.** Steps 2a/2b above
+(`enable-user`, `create-user`) queue a `user.privileged_role_granted`
+webhook event (`hub/events.py`) the instant they leave anyone holding
+`ROLE_SECURITY_ADMIN`/`ROLE_OWNER`, delivered through whatever endpoint an
+org has already subscribed (`webhook-add`). It fires identically for
+routine admin onboarding and for this exact recovery flow — nothing in the
+data model distinguishes the two — so subscribing to it is what gives an
+org the "someone just got Owner" signal this procedure alone cannot: the
+procedure produces an audit-log row after the fact, the event pushes to
+whoever is watching in real time.
+
+**Still a documented procedure, not fully built tooling.** There is no
+time-boxed emergency token and no requirement for a second person to
+witness the recovery, beyond what `hub.manage`, `audit-log`, and the alert
+above already give you. For a deployment that needs stronger guarantees
+than "whoever can reach `HUB_DATABASE_URL` can do this," that is the next
+thing to build, and it is listed as not done in `AUDIT_RESPONSE.md` §1.2
+rather than implied by this section existing.
+
 ## 10. Security checklist before a client's data lands
 
 - [ ] TLS terminated in front of the Hub (API keys are bearer credentials).
 - [ ] `HUB_DATABASE_URL` from a secret store, not a file in the repo.
+- [ ] `HUB_DATABASE_URL` points at the **runtime** role, not the owner — a
+      `NOSUPERUSER`/`NOBYPASSRLS` role with DML grants only, so the
+      tenant-isolation policies actually apply (§2.1). The Hub refuses to
+      start otherwise; if you had to set `HUB_ALLOW_RLS_BYPASS=true` to get
+      it up, that is a finding, not a fix.
 - [ ] Postgres not publicly reachable; Hub reaches it over a private network.
 - [ ] API keys issued with an expiry (`issue-key <org_id> <days>`) rather
       than never expiring.
+- [ ] API keys issued with the **narrowest scope** that does the job
+      (`issue-key <org_id> 90 read,write` for a production agent, `read`
+      for a dashboard). Omitting scopes grants `read,write,admin`, which
+      means that credential can also delete the organization. See
+      `hub/scopes.py`.
 - [ ] Rate limiting understood per §6 (or enforced at the ingress).
 - [ ] Backups on, and a restore actually rehearsed.
 - [ ] `HUB_ADMIN_TOKEN` either unset, or set to a real secret with `/admin`
@@ -453,6 +783,21 @@ across a revocation, re-revoke those key ids immediately.
 - [ ] `HUB_CONSOLE_SECRET` either unset, or set to a fresh random secret
       that is NOT `HUB_ADMIN_TOKEN`. `/app` is customer-reachable by design,
       so it belongs on your public ingress behind TLS — unlike `/admin`.
+- [ ] If `HUB_SIGNUP_ENABLED=true`, put whatever bot mitigation (WAF,
+      CAPTCHA) you already run in front of other public signup forms in
+      front of `/signup` too — its own abuse controls are a rate limit and
+      a honeypot, not CAPTCHA-strength. See §4, "Self-serve signup".
+- [ ] `HUB_STRIPE_SECRET_KEY`/`HUB_STRIPE_WEBHOOK_SECRET` from a secret
+      store, same as `HUB_DATABASE_URL`. Set all four Stripe variables
+      together or none — `checkout_configured` refuses to offer Checkout
+      or the Billing Portal on a partial configuration, because either one
+      without a registered webhook silently desyncs `Organization.plan`
+      from what Stripe actually charged. See §4, "Self-serve billing".
+- [ ] `HUB_LEDGER_SIGNING_KEY` set (from a secret store, identical across
+      every replica) if any customer is billed off `value_delivered` —
+      otherwise its ledger is only hash-chained, not signed by the issuer,
+      and `signature` in the response is `null`. See §4, "Signing the value
+      ledger".
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
@@ -493,15 +838,18 @@ across a revocation, re-revoke those key ids immediately.
 | Limitation | Where |
 |---|---|
 | Rate limiting is per-process | §6, `hub/abuse.py` |
-| Auth is API-key-only; no OAuth/JWT, no per-key scopes | `hub/README.md` |
+| No *browser* login: a person authenticates with a bearer JWT their IdP already issued (`hub/sso.py` verifies it), and the console signs in with an API key — there is no OAuth2 Authorization Code/PKCE redirect flow and no SAML, so nothing here can start a login from a browser on its own | `hub/sso.py`, `hub/console.py`, `AUDIT_RESPONSE.md` §1.2 |
 | No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
 | No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |
 | `fleet_outcomes` is observational (a before/after window), not a randomized experiment — it cannot separate this product's effect from anything else that changed | `hub/outcomes.py`, `commontrace/experiment.py` |
+| Causal verdicts are read from a *running* experiment, so they use an anytime-valid boundary — trustworthy under continuous peeking, but slower to establish a small effect than a fixed threshold would be (measured: 95%→69% power at a +10pp effect within 1,000 occasions, against a false-positive rate of 28%→1.3%) | `commontrace/experiment.py:analyze` |
+| Per-trace value contributions cannot be summed when traces share occasions, which is the normal case here — the policy-level comparison is reported instead | `commontrace/value.py` |
 | A holdout's assignments depend on the org's `holdout_salt`; restarting an experiment starts a new one and earlier observations are no longer pooled | `hub/models.py:Organization.holdout_salt` |
 | The CommonTrace Knowledge Base is lexical-match only; recall against paraphrased failures is ~11% (floor, not estimate) | `commons/eval/RESULTS.md` |
 | `CO_RETRIEVED` trace relations not computed | `hub/README.md` |
-| No payment/billing integration — `hub/plans.py` enforces entitlements, no invoicing | §13 |
+| Self-serve billing covers Checkout + the Billing Portal only — no dunning, tax handling, or invoicing UI beyond what Stripe's own hosted pages provide | §4, `hub/billing.py` |
+| Self-serve signup has no email verification and no CAPTCHA (a rate limit + honeypot only) | §4, `hub/signup.py` |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
 
 ---

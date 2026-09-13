@@ -18,6 +18,8 @@ commontrace/commands/lesson_cmd.py's run_approve/run_reject).
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 from commontrace._lexical import STOPWORDS as _STOPWORDS
@@ -29,6 +31,24 @@ from commontrace.paths import STARTER_DOMAINS
 # pair, so `distill` reported "no repeated patterns" on a corpus full of
 # them. Shared with retrieval.py via commontrace/_lexical.py rather than a
 # second local copy -- these two had already drifted from each other once.
+
+
+_DOMAIN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _domain_slug(value: str) -> str:
+    """A tag or shared term, reduced to something usable as a `domain`.
+
+    lesson.schema.json leaves `domain` an open string, but it is compared
+    for equality across lessons (taxonomy coverage, retrieval's domain
+    field), so a label that differs only by case or punctuation would split
+    one domain into several. Returns "" for anything that survives as empty
+    or as a pure number, which the caller reads as "try the next candidate".
+    """
+    slug = _DOMAIN_SLUG_RE.sub("-", value.strip().lower()).strip("-")
+    if not slug or slug.isdigit():
+        return ""
+    return slug[:48]
 
 
 def _tokenize(text: str) -> set[str]:
@@ -147,12 +167,42 @@ def find_clusters(
 
 
 def propose_domain(cluster: Cluster, agent_type: str) -> str:
-    starter = STARTER_DOMAINS.get(agent_type, STARTER_DOMAINS["custom"])
-    cluster_tags = {t for trace in cluster.traces for t in trace.tags}
+    """A domain label for this candidate, from the cluster's own vocabulary.
+
+    STARTER_DOMAINS only has starter vocabularies for the handful of fleets
+    that shipped with one. The taxonomy itself is open
+    (protocol/PROTOCOL.md#7), so a robotics or legal fleet has no starter
+    list -- and the previous fallback chain (`STARTER_DOMAINS["custom"]`,
+    then `starter[-1]`) labelled EVERY candidate that fleet ever produced
+    `other`, collapsing a whole field's taxonomy into one bucket and making
+    `commontrace taxonomy`'s coverage report meaningless for it.
+
+    The same fallback misfired for listed fleets too: an unmatched `support`
+    cluster was labelled `known-issues` purely because that happens to be the
+    last entry in support's starter list.
+
+    So: prefer a starter domain when one is actually present in the cluster's
+    tags (unchanged), then fall back to the cluster's OWN most common tag --
+    curated vocabulary, and a far better label than `other` -- then to its
+    strongest shared term, and only then to `other`.
+    """
+    starter = STARTER_DOMAINS.get(agent_type, [])
+    cluster_tags = [t for trace in cluster.traces for t in trace.tags]
+    tag_set = set(cluster_tags)
     for domain in starter:
-        if domain in cluster_tags:
+        if domain in tag_set:
             return domain
-    return starter[-1] if starter else "other"
+
+    # Counter preserves first-seen order on ties, so this is deterministic.
+    for candidate, _count in Counter(cluster_tags).most_common():
+        slug = _domain_slug(candidate)
+        if slug:
+            return slug
+    for term in cluster.shared_terms:
+        slug = _domain_slug(term)
+        if slug:
+            return slug
+    return "other"
 
 
 def propose_tags(cluster: Cluster, max_tags: int = 8) -> list[str]:

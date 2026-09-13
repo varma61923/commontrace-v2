@@ -428,6 +428,83 @@ class TestConfirmOrgDeletion:
         assert "irreversible" in rows[0].summary
 
 
+class TestConfirmOrgDeletionCancelsALiveStripeSubscriptionFirst:
+    """An org row deleted out from under an active Stripe subscription
+    keeps charging that customer's card every billing cycle with no
+    CommonTrace account left to ever notice -- see
+    billing.cancel_subscription's own docstring. cancel_subscription is
+    monkeypatched here at the name crud.py imports it under, the same
+    seam hub/tests/test_billing.py patches billing._post at."""
+
+    async def _requested_and_ready(self, session_factory, org_id):
+        async with session_scope(session_factory) as session:
+            result = await crud.request_org_deletion(session, org_id)
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.deletion_requested_at = datetime.now(timezone.utc) - timedelta(
+                seconds=crud.DELETION_GRACE_SECONDS + 10
+            )
+        return result["confirmation_token"]
+
+    async def test_no_subscription_never_calls_stripe(self, session_factory, orgs, monkeypatch):
+        async def must_not_be_called(*a, **kw):
+            raise AssertionError("cancel_subscription must not run when there is nothing to cancel")
+
+        monkeypatch.setattr(crud, "cancel_subscription", must_not_be_called)
+        token = await self._requested_and_ready(session_factory, orgs["a"])
+        async with session_scope(session_factory) as session:
+            result = await crud.confirm_org_deletion(session, orgs["a"], token)
+        assert result is True
+
+    async def test_a_live_subscription_is_cancelled_before_the_org_is_deleted(
+        self, session_factory, orgs, monkeypatch
+    ):
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, orgs["a"])
+            org.stripe_customer_id = "cus_1"
+            org.stripe_subscription_id = "sub_1"
+
+        cancelled = {}
+
+        async def fake_cancel(settings, *, subscription_id):
+            cancelled["subscription_id"] = subscription_id
+
+        monkeypatch.setattr(crud, "cancel_subscription", fake_cancel)
+        token = await self._requested_and_ready(session_factory, orgs["a"])
+        async with session_scope(session_factory) as session:
+            result = await crud.confirm_org_deletion(session, orgs["a"], token)
+        assert result is True
+        assert cancelled["subscription_id"] == "sub_1"
+        async with session_scope(session_factory) as session:
+            assert await session.get(Organization, orgs["a"]) is None
+
+    async def test_a_failed_cancellation_blocks_deletion_entirely(
+        self, session_factory, orgs, monkeypatch
+    ):
+        """The org must survive intact -- traces, keys, everything -- so
+        the deletion can simply be retried once Stripe is reachable
+        again, rather than leaving a half-deleted account behind."""
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, orgs["a"])
+            org.stripe_customer_id = "cus_1"
+            org.stripe_subscription_id = "sub_1"
+
+        from hub.billing import StripeError
+
+        async def failing_cancel(settings, *, subscription_id):
+            raise StripeError("Stripe 500")
+
+        monkeypatch.setattr(crud, "cancel_subscription", failing_cancel)
+        token = await self._requested_and_ready(session_factory, orgs["a"])
+        with pytest.raises(crud.SubscriptionCancellationFailed):
+            async with session_scope(session_factory) as session:
+                await crud.confirm_org_deletion(session, orgs["a"], token)
+        async with session_scope(session_factory) as session:
+            surviving = await session.get(Organization, orgs["a"])
+            assert surviving is not None
+            assert surviving.stripe_subscription_id == "sub_1"
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 class TestDeletionNotReadyErrorShape:
     """DeletionNotReady is a ValueError subclass but must not collapse into
@@ -443,3 +520,24 @@ class TestDeletionNotReadyErrorShape:
 
     def test_still_a_value_error_for_callers_that_only_check_that(self):
         assert isinstance(crud.DeletionNotReady("x"), ValueError)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestSubscriptionCancellationFailedErrorShape:
+    """Also its own error code, distinct from deletion_not_ready -- the
+    token and timing were fine here, an external dependency (Stripe) is
+    what blocked the request, so a client should retry rather than treat
+    this as a malformed request."""
+
+    def test_maps_to_its_own_error_code(self):
+        from hub.server import _error_response
+
+        body = _error_response(crud.SubscriptionCancellationFailed("could not reach Stripe"))
+        assert body["error"] == "deletion_blocked"
+        assert body["error"] not in ("deletion_not_ready", "invalid_request")
+
+    def test_is_not_a_value_error(self):
+        """Deliberately RuntimeError, not ValueError -- unlike
+        DeletionNotReady, this is never about a malformed request."""
+        assert isinstance(crud.SubscriptionCancellationFailed("x"), RuntimeError)
+        assert not isinstance(crud.SubscriptionCancellationFailed("x"), ValueError)

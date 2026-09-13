@@ -109,9 +109,36 @@ class TestProposalHelpers:
         cluster = distill.Cluster(traces=[_trace("t1", "x", "y", tags=["refunds", "other-tag"])])
         assert distill.propose_domain(cluster, "support") == "refunds"
 
-    def test_propose_domain_falls_back_when_no_starter_tag_present(self):
+    def test_propose_domain_falls_back_to_the_clusters_own_tag(self):
+        """No starter domain matched, so the cluster's own vocabulary wins.
+
+        This used to return `starter[-1]` -- for `support`, the literal
+        string "known-issues", chosen for no reason beyond being last in the
+        list. A cluster tagged `nonstandard-tag` is not about known issues,
+        and labelling it that way puts it in a domain bucket it does not
+        belong to.
+        """
         cluster = distill.Cluster(traces=[_trace("t1", "x", "y", tags=["nonstandard-tag"])])
-        assert distill.propose_domain(cluster, "support") in distill.STARTER_DOMAINS["support"]
+        assert distill.propose_domain(cluster, "support") == "nonstandard-tag"
+
+    def test_propose_domain_uses_cluster_tags_for_a_field_with_no_starter_list(self):
+        """The open-taxonomy case: `robotics` has no STARTER_DOMAINS entry.
+
+        Every candidate such a fleet produced used to be labelled `other`,
+        collapsing its entire taxonomy into one bucket and making
+        `commontrace taxonomy`'s coverage report useless for it.
+        """
+        cluster = distill.Cluster(
+            traces=[
+                _trace("t1", "x", "y", tags=["calibration", "thermal-drift"]),
+                _trace("t2", "x", "y", tags=["calibration"]),
+            ]
+        )
+        assert distill.propose_domain(cluster, "robotics") == "calibration"
+
+    def test_propose_domain_falls_back_to_other_only_when_nothing_is_available(self):
+        cluster = distill.Cluster(traces=[_trace("t1", "x", "y", tags=[])])
+        assert distill.propose_domain(cluster, "robotics") == "other"
 
     def test_propose_tags_dedupes_preserving_order(self):
         cluster = distill.Cluster(

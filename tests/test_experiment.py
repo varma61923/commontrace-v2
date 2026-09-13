@@ -661,6 +661,12 @@ class TestSemanticPathRunsTheExperiment:
     def semantic(self, monkeypatch):
         from commontrace.commands import query_cmd
         monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
+        # A usable index as well as the deps. `query` falls back to lexical
+        # when the semantic index is missing or stale -- which is what a bare
+        # install has, since `init` can only write index.npz when numpy is
+        # present -- and without this these tests would exercise the fallback
+        # rather than the semantic path they exist to pin.
+        monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
         monkeypatch.setattr(
             query_cmd, "run_script",
             lambda root, rel, args, hint, capture=False: (
@@ -727,13 +733,34 @@ class TestSemanticPathRunsTheExperiment:
         assert main(["query", "q", "--dest", str(store)]) == 0
         assert calls == [False]
 
-    def test_an_unsupported_agent_type_filter_is_announced(self, store, semantic, capsys):
-        """The semantic script has no agent_type filter. Silently returning
-        unfiltered results that look filtered is the worse failure."""
+    def test_the_agent_type_filter_reaches_the_semantic_script(self, store, monkeypatch):
+        """One organisation can run several fleets out of one store -- its
+        coding agents, its HR agents, its legal agents -- and must be able to
+        scope retrieval to the fleet asking.
+
+        This flag used to be dropped with a "not supported by the semantic
+        retriever" warning, because the index carried no agent_type. The index
+        now has an agent_types column (commontrace/reference/build_index.py),
+        so the filter is forwarded rather than announced as missing: the
+        lexical and semantic retrievers answer the same question again.
+        """
+        from commontrace.commands import query_cmd
+
+        seen: dict = {}
+
+        def _fake_run_script(root, rel, script_args, hint, capture=False):
+            seen["args"] = script_args
+            return (0, self.SEMANTIC_STDOUT) if capture else 0
+
+        monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
+        monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
+        monkeypatch.setattr(query_cmd, "run_script", _fake_run_script)
+
         main(["init", "--agent-type", "code", "--dest", str(store)])
-        capsys.readouterr()
         main(["query", "q", "--agent-type", "support", "--dest", str(store)])
-        assert "not supported by the semantic retriever" in capsys.readouterr().err
+
+        assert "--agent-type" in seen["args"]
+        assert seen["args"][seen["args"].index("--agent-type") + 1] == "support"
 
 
 

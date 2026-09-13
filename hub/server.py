@@ -16,6 +16,11 @@ example.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import functools
+import ipaddress
+import json
 import logging
 import math
 
@@ -27,7 +32,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from commontrace import __version__ as _COMMONTRACE_VERSION
-from hub import auth, commons, crud, observability, plans
+from hub import auth, collab, commons, crud, observability, plans, scheduler, scopes
 from hub.abuse import (
     RateLimited,
     RateLimiter,
@@ -35,14 +40,19 @@ from hub.abuse import (
     make_auth_rate_limiter,
     make_rate_limiter,
     make_read_rate_limiter,
+    make_scim_auth_rate_limiter,
     resolve_client_key,
 )
 from hub.admin import add_admin_routes
+from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
-from hub.console import add_console_routes
-from hub.db import session_scope
+from hub.console import CONSOLE_PATH, add_console_routes
+from hub.db import check_row_level_security, session_scope
+from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
+from hub.scim import add_scim_routes
+from hub.signup import add_signup_routes
 
 logger = logging.getLogger("commontrace.hub")
 
@@ -63,13 +73,15 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     hub/crud.py's own per-write-op limiter does further in:
 
       - `auth_rate_limiter`, keyed by client address, checked BEFORE
-        Argon2 verification runs. Verification is deliberately expensive
-        CPU work (hub/auth.py), performed for every candidate key sharing a
-        presented key's prefix, on every request carrying an Authorization
-        header regardless of whether it turns out valid -- without this, a
-        remote attacker can flood the endpoint with credentials sharing a
-        known/guessed prefix to exhaust the process's to_thread worker
-        pool. This bounds CPU spent per source rather than only reacting
+        verification runs. hub/auth.py resolves most requests through an
+        indexed `key_hmac` lookup now (cheap, ~O(1)), but any key issued
+        before that existed -- or not yet backfilled -- still falls back to
+        the original prefix-scan-plus-Argon2 path, which is deliberately
+        expensive CPU work performed for every candidate key sharing a
+        presented key's prefix. Without this limiter, a remote attacker can
+        flood the endpoint with credentials sharing a known/guessed prefix
+        to exhaust the process's to_thread worker pool on that fallback
+        path. This bounds CPU spent per source rather than only reacting
         after paying for it.
       - `read_rate_limiter`, keyed by org_id, checked once a request is
         authenticated. hub/crud.py's rate_limiter only ever gated
@@ -88,6 +100,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         auth_rate_limiter: RateLimiter,
         read_rate_limiter: RateLimiter,
         trusted_proxy_hops: int = 0,
+        identity_provider=None,
     ):
         super().__init__(app)
         self._session_factory = session_factory
@@ -98,6 +111,35 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # "trust only request.client.host", identical to this middleware's
         # behavior before this parameter existed.
         self._trusted_proxy_hops = trusted_proxy_hops
+        # None when this deployment has not configured SSO at all
+        # (HubConfig.identity_provider()) -- in which case a JWT-shaped
+        # bearer token is refused with the same message an invalid API key
+        # gets, rather than this middleware attempting verification against
+        # a provider that does not exist.
+        self._identity_provider = identity_provider
+        # Built ONCE, held for the middleware's lifetime -- see
+        # hub/sso.py:JWKSCache's own docstring for why a per-request cache
+        # would defeat its entire purpose. Only constructed when a provider
+        # is configured, so a deployment with no SSO pays nothing for it.
+        self._jwks_cache = None
+        if identity_provider is not None and identity_provider.jwks_uri:
+            from hub.sso import JWKSCache
+
+            self._jwks_cache = JWKSCache(self._fetch_jwks)
+
+    @staticmethod
+    def _fetch_jwks(uri: str) -> dict:
+        # A short, blocking-safe HTTP fetch -- httpx is already a direct
+        # dependency (hub/requirements.txt) for other outbound calls
+        # (webhook delivery), so this adds no new one. Timeout deliberately
+        # tight: this only ever runs on a JWKS TTL miss, never per request,
+        # so a slow or unreachable IdP fails one verification rather than
+        # hanging the request that happened to trigger the refetch.
+        import httpx
+
+        response = httpx.get(uri, timeout=5.0)
+        response.raise_for_status()
+        return response.json()
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -111,7 +153,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_key = resolve_client_key(request, self._trusted_proxy_hops)
-        allowed, retry_after = self._auth_rate_limiter.check(client_key)
+        allowed, retry_after = await self._auth_rate_limiter.check(client_key)
         if not allowed:
             return _rate_limited_response("too many auth attempts", retry_after)
 
@@ -120,10 +162,62 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "missing or malformed Authorization: Bearer <api-key> header"}, status_code=401
             )
-        raw_key = header[len("bearer ") :].strip()
+        raw_token = header[len("bearer ") :].strip()
+
+        # Distinguished by SHAPE (three non-empty dot-separated segments),
+        # not by attempting one parse and catching its exception -- an API
+        # key (`ct_live_...`) never has that shape, so this is a clean
+        # either/or rather than a fallback chain. A JWT-shaped token is
+        # tried ONLY as a person; it is never also hashed and looked up as
+        # an API key, which would be wasted Argon2/HMAC work on bytes that
+        # cannot possibly match.
+        from hub.sso import looks_like_jwt
+
+        if looks_like_jwt(raw_token) and self._identity_provider is not None:
+            person = None
+            async with self._session_factory() as session:
+                person = await auth.verify_user_token(
+                    session, raw_token, self._identity_provider,
+                    jwks_cache=self._jwks_cache,
+                )
+                await session.commit()  # persists last_login_at touch
+            if person is None:
+                # One message for "not verifiable", "no linked user", and
+                # "deprovisioned" alike -- for the same reason
+                # verify_api_key collapses invalid/revoked/expired: telling
+                # a caller which one they hit is a probe they should not
+                # get for free.
+                return JSONResponse(
+                    {"error": "invalid, expired, or unlinked identity token"}, status_code=401
+                )
+            self._auth_rate_limiter.refund(client_key)
+            if request.method != "DELETE":
+                allowed, retry_after = await self._read_rate_limiter.check(person.org_id)
+                if not allowed:
+                    return _rate_limited_response("too many requests", retry_after)
+
+            from hub import rbac
+
+            org_token = auth.current_org_id.set(person.org_id)
+            # Non-secret, and distinguishable from an API key's "api-key:
+            # <prefix>" actor string at a glance in an audit-log row.
+            actor_token = auth.current_actor.set(f"user:{person.id}")
+            # Derived from the role (hub/rbac.py:ROLE_SCOPES) so the
+            # existing scope-based enforcement point stays meaningful for a
+            # person too; auth.require_capability is the ADDITIONAL,
+            # finer-grained gate this identity actually goes through.
+            scope_token = auth.current_scopes.set(rbac.scopes_of(person.role))
+            user_token = auth.current_user.set(person)
+            try:
+                return await call_next(request)
+            finally:
+                auth.current_org_id.reset(org_token)
+                auth.current_actor.reset(actor_token)
+                auth.current_scopes.reset(scope_token)
+                auth.current_user.reset(user_token)
 
         async with self._session_factory() as session:
-            authenticated = await auth.verify_api_key(session, raw_key)
+            authenticated = await auth.verify_api_key(session, raw_token)
             await session.commit()  # persists last_used_at touch
 
         if authenticated is None:
@@ -155,17 +249,143 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # hole: only a caller holding a valid key for this org can reach it,
         # and it cannot be used to do any work.
         if request.method != "DELETE":
-            allowed, retry_after = self._read_rate_limiter.check(authenticated.org_id)
+            allowed, retry_after = await self._read_rate_limiter.check(authenticated.org_id)
             if not allowed:
                 return _rate_limited_response("too many requests", retry_after)
 
         org_token = auth.current_org_id.set(authenticated.org_id)
         actor_token = auth.current_actor.set(authenticated.key_prefix)
+        # What this particular credential may do, as distinct from which org
+        # it speaks for (hub/scopes.py). Set here, beside the org, because
+        # this is the only place that has seen the key row; every tool then
+        # reads it through auth.require_scope with nothing to pass around.
+        scope_token = auth.current_scopes.set(authenticated.scopes)
         try:
             return await call_next(request)
         finally:
             auth.current_org_id.reset(org_token)
             auth.current_actor.reset(actor_token)
+            auth.current_scopes.reset(scope_token)
+
+
+class LoadShedMiddleware:
+    """Bound how much work one replica accepts, and how long any of it runs.
+
+    hub/bench_concurrency.py measured what this replaces. At 128 concurrent
+    clients against an EMPTY handler, p99 reached 1.3s and throughput was
+    flat from 8 clients upward -- every additional client became queue, and
+    nothing anywhere stopped that queue growing. A slow database makes it
+    worse in the way that is hardest to diagnose: requests pile onto a 10+5
+    connection pool with a 30s pool_timeout until they all fail at once, so
+    the first symptom is total failure rather than degradation.
+
+    Two bounds, doing different jobs:
+
+    `max_concurrent` sheds load. Past N requests in flight the next one is
+    refused immediately with 503 and a Retry-After instead of joining the
+    queue. Refusing fast is kinder than queueing: the caller learns now and
+    can back off rather than waiting out a timeout to be told the same
+    thing, and the requests already admitted keep the latency they were
+    promised instead of everyone degrading together. That is why the
+    semaphore is *tested* and never *waited on* -- acquiring with a timeout
+    would reintroduce the queue this exists to prevent.
+
+    `timeout` bounds one request: not too many requests, but one that will
+    not finish.
+
+    RAW ASGI, deliberately, and this is the whole reason the class is not a
+    BaseHTTPMiddleware like its neighbours. Under BaseHTTPMiddleware the
+    timeout does not work -- measured, not assumed: with a 1s timeout over
+    a handler that sleeps 4s, the client gets its 504 after 4.01s. Wrapping
+    `call_next` in wait_for cancels the middleware's own side of the
+    plumbing, but the downstream handler keeps running to completion, so
+    the bound relabels a slow response instead of stopping it and buys
+    exactly nothing. Driving the child app as a task this class owns is
+    what makes cancellation actually reach the handler.
+
+    Both bounds default to on; hub/config.py's `max_concurrent_requests=0`
+    disables the cap and `request_timeout_seconds=0` the timeout, for a
+    deployment that does this at its edge proxy and does not want two
+    layers disagreeing about which one refused a request.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_concurrent: int, timeout_seconds: int):
+        self.app = app
+        self._timeout = timeout_seconds if timeout_seconds > 0 else None
+        self._semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+
+    async def __call__(self, scope, receive, send) -> None:
+        # Only HTTP is bounded. A websocket has no meaningful "request
+        # duration", and cancelling `lifespan` would take down startup.
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        if self._semaphore is not None:
+            if self._semaphore.locked():
+                await _send_json(send, 503, _OVERLOADED_BODY, [(b"retry-after", b"1")])
+                return
+            async with self._semaphore:
+                await self._run(scope, receive, send)
+            return
+        await self._run(scope, receive, send)
+
+    async def _run(self, scope, receive, send) -> None:
+        if self._timeout is None:
+            await self.app(scope, receive, send)
+            return
+
+        # Whether any bytes are already committed to the wire. Past that
+        # point a 504 is not available -- the status line has been sent --
+        # so the only honest thing left is to stop writing.
+        started = False
+
+        async def tracking_send(message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        task = asyncio.create_task(self.app(scope, receive, tracking_send))
+        try:
+            await asyncio.wait_for(task, timeout=self._timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "request exceeded %ss and was cancelled: %s %s",
+                self._timeout, scope.get("method", "?"), scope.get("path", "?"),
+            )
+            if not started:
+                # 504, not 500: nothing is known to be broken. The request
+                # ran out of time, which is a different thing to tell a
+                # client, and the only one of the two worth retrying.
+                await _send_json(send, 504, _timeout_body(self._timeout))
+
+
+_OVERLOADED_BODY = {"error": "overloaded", "detail": "too many concurrent requests"}
+
+
+def _timeout_body(seconds: int) -> dict:
+    return {"error": "timeout", "detail": f"request exceeded {seconds}s"}
+
+
+async def _send_json(send, status: int, body: dict, extra_headers=()) -> None:
+    """Emit a JSON response through the raw ASGI `send`.
+
+    LoadShedMiddleware refuses and times out below Starlette's Response
+    machinery, so it writes the two messages itself. `Retry-After` is here
+    for the same reason _rate_limited_response carries it: a refused client
+    that is not told when to come back can only guess, and guessing short
+    against an overloaded replica turns one burst into a sustained one. One
+    second is the honest floor -- unlike a rate limiter this cap has no
+    bucket to compute a real refill time from, and capacity may free up
+    immediately.
+    """
+    payload = json.dumps(body).encode()
+    headers = [(b"content-type", b"application/json"),
+               (b"content-length", str(len(payload)).encode())]
+    headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": payload})
 
 
 def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
@@ -192,6 +412,36 @@ def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
 
 
 def _error_response(exc: Exception) -> dict:
+    # Before the generic PermissionError branch below, and deliberately a
+    # different label. "unauthorized" invites a client to re-authenticate,
+    # and for a scope denial that is a lie: the credential is valid, it is
+    # this action it may not take, and retrying with the same key will fail
+    # identically forever. The two extra fields let a caller render "this
+    # token needs the write scope" instead of a generic failure, without
+    # parsing the prose.
+    if isinstance(exc, auth.ScopeDenied):
+        return {
+            "error": "forbidden",
+            "detail": str(exc),
+            "required_scope": exc.required,
+            "granted_scopes": list(exc.granted) if exc.granted is not None else None,
+        }
+    if isinstance(exc, auth.CapabilityDenied):
+        # Distinct from ScopeDenied for the same reason it exists: the
+        # credential is valid, and the remedy is re-roling a PERSON
+        # (hub.manage set-user-role), not reissuing a key.
+        return {
+            "error": "forbidden",
+            "detail": str(exc),
+            "required_capability": exc.required,
+            "role": exc.role,
+        }
+    if isinstance(exc, auth.PersonRequiredError):
+        # Distinct from ScopeDenied/CapabilityDenied: the API key itself is
+        # perfectly valid, there is just no PERSON in context for a tool
+        # that only means something for one (whose inbox, who authored a
+        # comment, who is being assigned work).
+        return {"error": "person_required", "detail": str(exc)}
     if isinstance(exc, PermissionError):
         return {"error": "unauthorized", "detail": str(exc)}
     if isinstance(exc, RateLimited):
@@ -236,14 +486,98 @@ def _error_response(exc: Exception) -> dict:
         # should surface this to a human, not treat it as a bug to fix and
         # retry immediately.
         return {"error": "deletion_not_ready", "detail": str(exc)}
+    if isinstance(exc, crud.SubscriptionCancellationFailed):
+        # Distinct from deletion_not_ready: the token and timing were fine,
+        # but nothing was deleted -- an external dependency (Stripe) has to
+        # actually confirm the subscription is cancelled first, so a client
+        # should retry rather than treat this as a bug in the request.
+        return {"error": "deletion_blocked", "detail": str(exc)}
+    if isinstance(exc, collab.CollabNotFound):
+        return {"error": "not_found", "detail": str(exc)}
     if isinstance(exc, (TraceRejected, SchemaValidationError, ValueError)):
         return {"error": "invalid_request", "detail": str(exc)}
     logger.exception("unexpected error in Hub tool")
     return {"error": "internal_error", "detail": "an unexpected error occurred"}
 
 
+class IpAllowlistMiddleware(BaseHTTPMiddleware):
+    """Application-level source-address restriction -- the code-only half
+    of audit 1.6's "no IP allowlisting / private networking" (see
+    HubConfig.ip_allowlist's own docstring for why the OTHER half, actual
+    private networking, is a deployment-topology decision this middleware
+    does not and cannot make).
+
+    Only mounted when `HUB_IP_ALLOWLIST` is set (see `build_app`) -- a
+    deployment that never configures it pays nothing extra per request,
+    same "absent, not merely permissive" posture as `/admin`/`/app` being
+    unregistered when their own secrets are unset.
+
+    `/healthz` and `/readyz` are exempt for the same reason
+    `ApiKeyAuthMiddleware` exempts `/healthz`: an orchestrator's own
+    liveness/readiness probes are a different population than the
+    external traffic this restricts, arriving from the platform's
+    internal network rather than wherever this allowlist is meant to
+    keep out -- refusing them would turn a security control into a
+    self-inflicted outage.
+
+    `/disclosure` (hub/disclosure.py) is exempt for the opposite reason:
+    it exists specifically so an external party with no relationship to
+    this deployment's own network -- a customer's procurement or security
+    reviewer -- can read it. An IP allowlist meant to keep general traffic
+    out would make the one page built for outside reach unreachable from
+    outside, which is the one thing it must never do.
+    """
+
+    def __init__(self, app: ASGIApp, networks, trusted_proxy_hops: int = 0):
+        super().__init__(app)
+        self._networks = networks
+        self._trusted_proxy_hops = trusted_proxy_hops
+
+    async def dispatch(self, request: Request, call_next):
+        # Defensive, not load-bearing: build_app never mounts this
+        # middleware at all when config.ip_allowlist is empty. Checked
+        # again here so the class's own behavior matches its docstring
+        # ("no restriction when unconfigured") independent of how a
+        # future caller constructs it.
+        if not self._networks:
+            return await call_next(request)
+        if request.url.path in ("/healthz", "/readyz", "/disclosure"):
+            return await call_next(request)
+        client_ip_raw = resolve_client_key(request, self._trusted_proxy_hops)
+        try:
+            client_ip = ipaddress.ip_address(client_ip_raw)
+        except ValueError:
+            # "unknown" (no request.client at all) or a malformed
+            # X-Forwarded-For entry -- either way, a source address this
+            # deployment cannot verify is allowlisted is refused, not
+            # let through by default.
+            return JSONResponse(
+                {"error": "forbidden", "detail": "source address could not be determined"},
+                status_code=403,
+            )
+        if not any(client_ip in network for network in self._networks):
+            return JSONResponse(
+                {"error": "forbidden", "detail": "source address not allowlisted"}, status_code=403
+            )
+        return await call_next(request)
+
+
 def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rate_limiter: RateLimiter):
     from mcp.server.mcpserver import MCPServer
+
+    # Only for confirm_account_deletion, to cancel a live Stripe
+    # subscription before an org's row (and with it, its
+    # stripe_subscription_id) is gone for good -- see
+    # crud.confirm_org_deletion's own docstring. Unconfigured
+    # (StripeSettings() equivalent) on any deployment that never set the
+    # Stripe env vars, which is a no-op there since no org can hold a
+    # subscription id in the first place.
+    stripe_settings = StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
 
     mcp = MCPServer(
         name="commontrace",
@@ -278,13 +612,62 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         ),
     )
 
-    @mcp.tool()
+    # Which scope each tool needs, recorded as the tool is registered.
+    # hub/tests/test_api_key_scopes.py asserts this covers every registered
+    # tool, so a new tool cannot be added without a scope decision: the
+    # failure mode being designed out is a tool that silently defaults to
+    # "any authenticated key may call this", which is exactly the state the
+    # whole surface was in before scopes existed.
+    tool_scopes: dict[str, str] = {}
+
+    def scoped_tool(scope: str):
+        """Register an MCP tool that requires `scope` (hub/scopes.py).
+
+        One enforcement point rather than a check inside each of the twenty
+        handlers: a check an author must remember to write is a check that
+        is eventually missing from exactly the one tool where it mattered.
+        Written at the registration site so the required capability reads
+        directly above the function it guards.
+
+        `functools.wraps` matters structurally here, not cosmetically: the
+        MCP SDK derives each tool's name, description and input schema by
+        introspecting the callable it is handed, so the wrapper must carry
+        the wrapped function's identity or every tool would arrive on the
+        wire as an undocumented `guarded(*args, **kwargs)`.
+        """
+        if scope not in scopes.ALL_SCOPES:
+            raise ValueError(f"unknown scope for tool registration: {scope!r}")
+
+        def decorator(fn):
+            @functools.wraps(fn)
+            async def guarded(*args, **kwargs):
+                try:
+                    auth.require_scope(scope)
+                    # A no-op when the caller is a bare API key (no
+                    # verified person in context) -- see
+                    # auth.require_capability's own docstring. When a
+                    # person IS in context this is the gate that actually
+                    # distinguishes them; the scope check above is the
+                    # coarser one their role also derives (hub/rbac.py).
+                    auth.require_capability(fn.__name__)
+                except Exception as exc:  # noqa: BLE001 - rendered, not raised
+                    return _error_response(exc)
+                return await fn(*args, **kwargs)
+
+            tool_scopes[fn.__name__] = scope
+            return mcp.tool()(guarded)
+
+        return decorator
+
+    @scoped_tool(scopes.SCOPE_READ)
     async def search_traces(
         query: str = "",
         tags: list[str] | None = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
         offset: int = 0,
         occasion_id: str = "",
+        brief: bool = False,
+        pinned: list[str] | None = None,
     ) -> dict:
         """Search this org's traces by full-text query and/or tags.
 
@@ -297,6 +680,14 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         Returns {"traces": [...], "limit", "offset", "has_more", "terms",
         "terms_ignored"}. Page by re-calling with offset += limit while
         has_more is true.
+
+        `context_text`/`solution_text` are each allowed up to 20,000
+        characters, so a full page of results can be large. Pass
+        `brief=True` to get a short preview of both instead (marked
+        `"brief": true` per result) when you are scanning many candidates to
+        pick one -- then call `get_trace(id)` for the one you decide to use.
+        Everything else on each result (id, title, tags, agent_type) is
+        unaffected either way.
 
         `terms` is what your query reduced to after stemming and stopword
         removal, and `terms_ignored` lists the terms that were NOT used
@@ -325,23 +716,31 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         withheld trace anyway does not fail loudly, it moves that occasion
         into the treated arm without the record saying so, which biases the
         measured effect toward zero.
+
+        `pinned` is how you avoid doing exactly that by accident. If you
+        pasted a `working_set` block into your system prompt, pass its
+        `entries[].trace_id` here on every call for the rest of the session.
+        Those traces are excluded from the randomization instead of being
+        drawn into the control arm, because a trace sitting in your prompt
+        cannot serve as its own control -- it is being used on every
+        occasion whether or not the experiment says so.
         """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 result = await crud.search_traces(
-                    session, org_id, query=query, tags=tags, limit=limit, offset=offset
+                    session, org_id, query=query, tags=tags, limit=limit, offset=offset, brief=brief
                 )
                 if occasion_id:
                     result["holdout"] = await crud.holdout_for_results(
                         session, org_id, result["traces"], occasion_id,
-                        actor=auth.get_current_actor(),
+                        actor=auth.get_current_actor(), pinned=pinned,
                     )
                 return result
         except Exception as exc:  # noqa: BLE001 - converted to a structured tool error below
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def contribute_trace(
         title: str,
         context_text: str,
@@ -353,7 +752,11 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         outcome: dict | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
-        """Contribute a new trace. Returns its id and quarantine status.
+        """Contribute a new trace. Returns its id, quarantine status, and
+        `possible_duplicates` -- ids of other live traces in this org a
+        bounded heuristic thinks may be the same thing as this one.
+        Informational only; nothing is merged or blocked automatically.
+        Call `amend_trace` yourself if one of them should be superseded.
 
         Pass a client-generated `idempotency_key` (e.g. a UUID minted once
         per logical contribution) to make retries after a lost/timed-out
@@ -411,7 +814,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def get_trace(id: str) -> dict:
         """Fetch a single trace by id. Not found (including a trace id that
         belongs to another org) reports not_found, never a permission error."""
@@ -425,7 +828,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def vote_trace(id: str, vote: str, feedback_tag: str = "", feedback_text: str = "") -> dict:
         """Cast (or update) this org's vote ('up'/'down') on a trace: your
         own, or any other org's trace currently shared to the commons."""
@@ -442,7 +845,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def amend_trace(
         id: str,
         title: str | None = None,
@@ -494,7 +897,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def list_tags() -> dict:
         """List every distinct tag used across this org's non-quarantined traces."""
         try:
@@ -505,7 +908,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
     async def fleet_outcomes(agent_type: str = "") -> dict:
         """Has your fleet's agent performance changed since your baseline
         window? Compares the outcomes recorded on your own traces
@@ -554,8 +957,57 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
-    async def value_delivered(value_per_occasion: float = 0.0) -> dict:
+    @scoped_tool(scopes.SCOPE_READ)
+    async def working_set(budget_chars: int = crud.DEFAULT_WORKING_SET_CHARS) -> dict:
+        """Your fleet's proven memory, small enough to pin to a system prompt.
+
+        Call this ONCE at session start, paste `block` into your system
+        prompt, and leave it there unchanged. That is the whole point: an
+        unchanged system prompt keeps the model provider's prefix cache
+        valid, so this memory costs its tokens once for the session rather
+        than once per query. Re-fetching it mid-session, or editing it,
+        throws away the saving.
+
+        It is not a replacement for `search_traces`, and using it that way
+        would make your fleet worse. This block holds only what has already
+        been PROVEN to help; `search_traces` reaches your entire corpus,
+        including everything still being measured and everything relevant
+        to a task nobody has hit before. Pin this, then search as normal.
+
+        What earns a place here is the part worth understanding.
+        Membership is not curated, not most-recent, and not most-retrieved
+        -- it is decided by your own randomized holdout. A trace appears
+        only once the experiment has ESTABLISHED that injecting it
+        improves outcomes, ranked by how many occasions it actually
+        improved. Anything still under test is deliberately absent, and
+        that absence is doing real work: a trace pinned into every
+        session would be injected on every occasion, which would destroy
+        the control arm still measuring it. A trace is either being
+        randomized or it has graduated -- never both.
+
+        So an empty block is a statement about EVIDENCE, not about your
+        corpus: `established: false` means nothing has been proven yet,
+        not that nothing is stored. Keep searching, keep reporting
+        outcomes with `record_occasion_outcome`, and entries appear here
+        as the experiment answers for them. A COMPROMISED experiment
+        yields no block at all, for the same reason it yields no value
+        figure.
+
+        `gauge` reports how much of the character budget is spent, so you
+        can see at a glance whether the block is near its ceiling.
+
+        Reads only your own data. Not metered."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return await crud.working_set(session, org_id, budget_chars=budget_chars)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def value_delivered(
+        value_per_occasion: float = 0.0, rate_tiers: list[dict] | None = None
+    ) -> dict:
         """What your fleet's memory has been worth, causally, in occasions.
 
         Not a usage number and not a correlational one. For each memory whose
@@ -580,6 +1032,30 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         nothing and you get the count. No price is stored anywhere -- this
         product ships the quantity and takes the rate from you.
 
+        `rate_tiers` is that rate stated properly, for organisations where one
+        flat number prices a password reset and an averted outage the same way.
+        Pass `[{"name": "L1", "share": 0.55, "cost_per_occasion": 8.0}, ...]`
+        with shares summing to 1. Both are your inputs, echoed back in the
+        response as inputs: nothing here measures which tier an occasion
+        belonged to, and only `occasions_improved` was measured at all.
+
+        When a rate is given and the run is readable you also get `ledger` --
+        one line per counted memory, each carrying a SHA-256 over the previous
+        line, so editing a figure, deleting the memory that HURT, or
+        reordering to bury it all break the chain. Recompute it with
+        `commontrace.value.verify_ledger`, or reimplement it: the hash is over
+        the printed fields in a fixed order, on purpose.
+
+        That chain proves the ledger is internally consistent, not who issued
+        it -- its genesis and algorithm are public, so a wholesale
+        replacement chain would verify just as cleanly as the real one. If
+        this deployment has HUB_LEDGER_SIGNING_KEY configured, the response
+        also carries `signature` and `issued_at`: an HMAC-SHA256 over the
+        chain's root, checkable with `commontrace.value.
+        verify_ledger_signature`, that only verifies for a ledger this
+        deployment actually issued. Otherwise `signature` is null and
+        `signature_reason` says the deployment has not opted in.
+
         Reads only your own data. Not metered."""
         try:
             org_id = auth.get_current_org_id()
@@ -587,12 +1063,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
                 return await crud.value_delivered(
                     session, org_id,
                     value_per_occasion=(value_per_occasion or None),
+                    rate_tiers=rate_tiers,
+                    signing_key=config.ledger_signing_key,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
-    async def holdout_assign(trace_ids: list, occasion_id: str) -> dict:
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def holdout_assign(
+        trace_ids: list, occasion_id: str, pinned: list[str] | None = None
+    ) -> dict:
         """Randomized holdout: for each trace eligible on this occasion,
         decide whether to inject it or deliberately withhold it, and record
         the decision so the two arms can later be compared.
@@ -613,18 +1093,25 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         occasion into the treated arm without the record saying so, which
         biases the measured effect toward zero.
 
+        `pinned` -- the `entries[].trace_id` of any `working_set` block you
+        pasted into your system prompt -- are excluded from the
+        randomization and returned under `pinned` rather than assigned an
+        arm. Pass them: a trace in your prompt is used on every occasion, so
+        letting it be drawn into the control arm records a treated occasion
+        as a control and biases its own measured effect toward zero.
+
         Requires an operator to have started an experiment for your org."""
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 return await crud.holdout_assign(
                     session, org_id, list(trace_ids), occasion_id,
-                    actor=auth.get_current_actor(),
+                    actor=auth.get_current_actor(), pinned=pinned,
                 )
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
     async def record_occasion_outcome(occasion_id: str, succeeded: bool) -> dict:
         """Report how an occasion went, closing the loop on every holdout
         decision made for it.
@@ -651,7 +1138,94 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # call here would let one compromised API key wipe an org's entire
     # history irreversibly with no window for anyone to notice.
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_READ)
+    async def search_trace_content(pattern: str, regex: bool = False, limit: int = 100) -> dict:
+        """Locate traces (INCLUDING quarantined ones) whose title, context,
+        or solution text literally contain `pattern` -- a name, an email
+        address, a ticket number, whatever a subject-erasure request names.
+
+        Distinct from `search_traces`: that tool ranks by full-text
+        relevance and can miss or mangle an exact identifier through
+        stemming. This one does a literal (or, with `regex=True`, POSIX
+        regular expression) scan with no ranking -- every match, oldest
+        first.
+
+        NOT a completeness guarantee: a match proves the text is present;
+        a non-match is not proof of absence (free text can misspell,
+        abbreviate, or split an identifier this cannot reassemble). Use
+        this to FIND candidates for manual review, then `delete_trace`
+        the ones that actually need to go.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                results = await crud.search_trace_content(
+                    session, org_id, pattern, regex=regex, limit=limit,
+                )
+            return {"results": results}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def tag_trace_subjects(id: str, subject_ids: list) -> dict:
+        """Set (REPLACING any previous tags, not appending) which end
+        user(s)/customer(s) this trace's content concerns -- pass `[]` to
+        clear a mistaken tag. Optional and explicit: nothing populates
+        this automatically.
+
+        This is what makes `find_traces_by_subject`/`purge_traces_by_subject`
+        an exact, provably-complete match instead of the free-text scan
+        `search_trace_content` already offers -- see that tool's own
+        docstring for what it can and cannot guarantee. Untagged content
+        still needs the free-text search; tagging it here is what upgrades
+        it to a certainty.
+        """
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.tag_trace_subjects(
+                    session, org_id, id, subject_ids, actor=auth.get_current_actor(),
+                )
+            if result is None:
+                return {"error": "not_found", "detail": f"no trace with id {id}"}
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def find_traces_by_subject(subject_id: str) -> dict:
+        """Every trace THIS ORG explicitly tagged (`tag_trace_subjects`)
+        with `subject_id`, exactly matched -- not a scan, and not stemmed
+        the way `search_traces`' full-text index is. Untagged content
+        naming the same subject in free text is not returned here; use
+        `search_trace_content` for that."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                results = await crud.find_traces_by_subject(session, org_id, subject_id)
+            return {"results": results}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_ADMIN)
+    async def purge_traces_by_subject(subject_id: str) -> dict:
+        """Permanently delete every trace this org tagged with
+        `subject_id` (`tag_trace_subjects`), including each one's full
+        amendment chain -- the actual erasure step
+        `find_traces_by_subject` only ever located candidates for.
+        Irreversible. A `subject_id` nothing was tagged with returns
+        `purged: 0`, not an error."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                result = await crud.purge_traces_by_subject(
+                    session, org_id, subject_id, actor=auth.get_current_actor(),
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def delete_trace(id: str) -> dict:
         """Permanently delete one of your own traces, and every trace in
         its amendment chain (so an amended-and-superseded copy of the same
@@ -668,7 +1242,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def request_account_deletion() -> dict:
         """Start permanently deleting YOUR ENTIRE ORGANIZATION -- every
         trace, vote, api key, and Knowledge Base submission. Deletes
@@ -687,7 +1261,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def cancel_account_deletion() -> dict:
         """Cancel a pending request_account_deletion request. Needs no
         token -- any valid API key for this org may call it, since
@@ -700,19 +1274,25 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_ADMIN)
     async def confirm_account_deletion(confirmation_token: str) -> dict:
         """The second call: permanently deletes this organization and
         everything scoped to it. Irreversible. Fails with
         'deletion_not_ready' if called too soon after
         request_account_deletion, with an expired or mismatched token, or
-        with no pending request at all.
+        with no pending request at all. Fails with 'deletion_blocked',
+        and deletes nothing, if this org has a paid Stripe subscription
+        that could not be cancelled -- retry once whatever is stopping
+        Stripe from reaching us clears, since deleting the account while
+        leaving the subscription active would keep charging the card on
+        file with no account left to ever notice.
         """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
                 await crud.confirm_org_deletion(
                     session, org_id, confirmation_token, actor=auth.get_current_actor(),
+                    stripe=stripe_settings,
                 )
             return {"deleted": True}
         except Exception as exc:  # noqa: BLE001
@@ -745,7 +1325,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     # hub/models.py:KnowledgeBaseSubmission.
     if config.commons_enabled:
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def commons_overlap(
             failures: list[dict] | None = None,
             threshold: float = commons.DEFAULT_COMMONS_THRESHOLD,
@@ -775,7 +1355,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def commons_search(
             query_signature: list[int] | None = None,
             limit: int = commons.DEFAULT_SEARCH_CANDIDATES,
@@ -813,7 +1393,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_WRITE)
         async def submit_kb_entry(
             title: str,
             context_text: str,
@@ -852,7 +1432,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-        @mcp.tool()
+        @scoped_tool(scopes.SCOPE_READ)
         async def list_my_kb_submissions(limit: int = 50) -> dict:
             """Your org's own Knowledge Base submissions and their review
             status ('pending', 'approved', or 'rejected'). Never shows
@@ -867,7 +1447,97 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
-    @mcp.tool()
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def add_comment(trace_id: str, body: str) -> dict:
+        """Leave a remark on one of your org's own traces, visible to your
+        whole team. Requires a signed-in PERSON (an OIDC bearer token
+        linked via `hub.manage link-sso`), not just an API key -- there is
+        no meaningful author for a shared workload credential. If the
+        trace is currently assigned to someone else, they get a
+        notification (`list_my_notifications`)."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                return await collab.add_comment(session, org_id, person, trace_id, body)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def list_comments(trace_id: str) -> dict:
+        """Every comment left on one of your org's own traces, oldest first."""
+        try:
+            org_id = auth.get_current_org_id()
+            async with session_scope(session_factory) as session:
+                return {"comments": await collab.list_comments(session, org_id, trace_id)}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def assign_trace(trace_id: str, user_id: str) -> dict:
+        """Make `user_id` (one of your org's own `hub.manage list-users`
+        rows) the one person responsible for following up on this trace.
+        Re-assigning replaces whoever held it before -- one owner at a
+        time. Requires a signed-in PERSON."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                return await collab.assign(session, org_id, person, trace_id, user_id)
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_WRITE)
+    async def unassign_trace(trace_id: str) -> dict:
+        """Clear whoever this trace is currently assigned to, if anyone.
+        Requires a signed-in PERSON."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                cleared = await collab.unassign(session, org_id, person, trace_id)
+            return {"cleared": cleared}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def list_my_notifications(unread_only: bool = False) -> dict:
+        """Your own inbox: 'you were assigned a trace' / 'someone commented
+        on a trace assigned to you'. Requires a signed-in PERSON -- there
+        is no per-person inbox for a shared API key. Mark one read with
+        `mark_notification_read`."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                notifications = await collab.list_my_notifications(
+                    session, org_id, person, unread_only=unread_only,
+                )
+            return {"notifications": notifications}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
+    async def mark_notification_read(notification_id: str) -> dict:
+        """Mark one of YOUR OWN inbox entries read. Never affects, or even
+        confirms the existence of, another person's notification.
+
+        Scoped `read`, not `write`: this only ever bookkeeps YOUR OWN
+        inbox and adds nothing to the org's corpus (hub/scopes.py's
+        `write` is reserved for that), so a read-only key held by a
+        signed-in Viewer can still clear their own notifications."""
+        try:
+            org_id = auth.get_current_org_id()
+            person = auth.get_current_user()
+            async with session_scope(session_factory) as session:
+                found = await collab.mark_notification_read(session, org_id, person, notification_id)
+            if not found:
+                return {"error": "not_found", "detail": f"no notification with id {notification_id}"}
+            return {"id": notification_id, "read": True}
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(exc)
+
+    @scoped_tool(scopes.SCOPE_READ)
     async def account_usage() -> dict:
         """What your plan entitles you to, and what you have used this period.
 
@@ -882,11 +1552,28 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         except Exception as exc:  # noqa: BLE001
             return _error_response(exc)
 
+    # Published on the server object so a test can assert every registered
+    # tool declared a scope (hub/tests/test_api_key_scopes.py). Attached
+    # rather than returned separately so no caller of build_mcp_server has
+    # to change shape, and so the mapping is discoverable from the object
+    # that actually owns the tools.
+    mcp.commontrace_tool_scopes = dict(tool_scopes)
     return mcp
 
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
     rate_limiter = make_rate_limiter(config)
+    if config.rate_limit_backend == "memory":
+        # In-process buckets reset on restart and N replicas allow ~N× the
+        # configured rate. Warning only: memory is the correct default for
+        # single-process eval/test (postgres would add a DB round-trip per
+        # request). Multi-replica deployments want
+        # HUB_RATE_LIMIT_BACKEND=postgres (hub/DEPLOYMENT.md §6).
+        logger.warning(
+            "rate limiting is in-process (HUB_RATE_LIMIT_BACKEND=memory): "
+            "limits reset on restart and do not coordinate across replicas; "
+            "set HUB_RATE_LIMIT_BACKEND=postgres for shared enforcement"
+        )
     mcp = build_mcp_server(config, session_factory, rate_limiter)
     inner_app = mcp.streamable_http_app(
         streamable_http_path=config.streamable_http_path,
@@ -911,6 +1598,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     # operator console above in audience, auth and blast radius: that one is
     # cross-tenant and moderates; this one is scoped to a single org by a
     # signed session and cannot change any state at all.
+    stripe_settings = StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
     if config.console_secret:
         add_console_routes(
             inner_app,
@@ -918,7 +1611,33 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             console_secret=config.console_secret,
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
+            stripe=stripe_settings,
         )
+
+    # Public, unauthenticated org creation -- opt-in only (hub/signup.py's
+    # own docstring covers why this defaults off and what it doesn't do,
+    # namely email verification).
+    if config.signup_enabled:
+        add_signup_routes(
+            inner_app, session_factory,
+            trusted_proxy_hops=config.trusted_proxy_hops, console_path=CONSOLE_PATH,
+        )
+
+    # Stripe calls this, not a signed-in browser -- registered independently
+    # of the console above, and only once a webhook signing secret exists to
+    # verify a delivery actually came from Stripe.
+    if config.stripe_webhook_secret:
+        add_billing_webhook_route(inner_app, session_factory, stripe=stripe_settings)
+
+    # An IdP calls this, authenticated per-org via a dedicated `scim`-scoped
+    # ApiKey (hub/scopes.py), not a shared deployment-wide secret -- so
+    # unlike /admin, /app and /signup this is always mounted; see
+    # hub/scim.py's own docstring for why that is safe.
+    add_scim_routes(
+        inner_app, session_factory,
+        auth_rate_limiter=make_scim_auth_rate_limiter(config),
+        trusted_proxy_hops=config.trusted_proxy_hops,
+    )
 
     add_health_routes(
         inner_app,
@@ -928,6 +1647,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
     )
+    add_disclosure_route(inner_app, config)
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
         session_factory=session_factory,
@@ -935,8 +1655,81 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         auth_rate_limiter=make_auth_rate_limiter(config),
         read_rate_limiter=make_read_rate_limiter(config),
         trusted_proxy_hops=config.trusted_proxy_hops,
+        # None when HUB_OIDC_ISSUER/HUB_OIDC_AUDIENCE are unset -- see
+        # HubConfig.identity_provider(). Built once, here, so a malformed
+        # HUB_OIDC_JWKS fails this deployment at startup rather than on
+        # whichever request happens to send the first JWT.
+        identity_provider=config.identity_provider(),
     )
+    # Startup, not per-request: one diagnostic query, and the answer cannot
+    # change without an operator changing the role or the migrations. See
+    # hub/db.py:check_row_level_security for why a silently-bypassed policy
+    # is worth REFUSING to start over rather than merely logging about --
+    # and why an undeterminable answer (unreachable database) still never
+    # blocks startup.
+    #
+    # Chained onto the existing lifespan rather than registered with
+    # `add_event_handler`, which Starlette removed (1.6 has no such
+    # attribute) -- and which no test caught, because nothing exercised
+    # build_app's startup. The MCP app installs its own lifespan for the
+    # session manager, so this composes with it exactly as hub/main.py
+    # does for engine disposal rather than replacing it.
+    _previous_lifespan = inner_app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def _lifespan_with_rls_check(app):
+        async with _previous_lifespan(app):
+            await check_row_level_security(
+                session_factory,
+                allow_bypass=config.allow_rls_bypass,
+                require=config.require_rls,
+            )
+            yield
+
+    @contextlib.asynccontextmanager
+    async def _lifespan_with_scheduler(app):
+        async with _lifespan_with_rls_check(app):
+            if not config.alert_scheduler_enabled:
+                yield
+                return
+            # See hub/scheduler.py's own docstring: off unless explicitly
+            # enabled, so a deployment relying on `hub.manage check-alerts`
+            # via its own cron is unaffected either way.
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(
+                scheduler.run(
+                    session_factory,
+                    interval_seconds=config.alert_scheduler_interval_seconds,
+                    stop_event=stop_event,
+                )
+            )
+            try:
+                yield
+            finally:
+                stop_event.set()
+                await task
+
+    inner_app.router.lifespan_context = _lifespan_with_scheduler
+    inner_app.add_middleware(
+        LoadShedMiddleware,
+        max_concurrent=config.max_concurrent_requests,
+        timeout_seconds=config.request_timeout_seconds,
+    )
+    # Only mounted when configured -- see HubConfig.ip_allowlist's own
+    # docstring. Added AFTER LoadShedMiddleware (so it runs BEFORE it,
+    # Starlette applies middleware outer-to-inner in reverse registration
+    # order): a source this deployment has decided should never reach it
+    # at all shouldn't spend a slot in the concurrency/timeout budget
+    # either, the same reasoning ApiKeyAuthMiddleware's own rate limiter
+    # runs before any cryptographic verification work.
+    if config.ip_allowlist:
+        inner_app.add_middleware(
+            IpAllowlistMiddleware,
+            networks=tuple(ipaddress.ip_network(c, strict=False) for c in config.ip_allowlist),
+            trusted_proxy_hops=config.trusted_proxy_hops,
+        )
     # Added last => outermost: a request id exists (and the request gets
-    # logged) even for calls the auth middleware rejects with a 401.
+    # logged) even for calls the auth middleware rejects with a 401, and
+    # for one LoadShedMiddleware sheds or times out.
     inner_app.add_middleware(RequestContextMiddleware)
     return inner_app

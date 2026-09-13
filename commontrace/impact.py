@@ -232,7 +232,7 @@ def render_html_fragment(r: ImpactReport) -> str:
         report_html.stat_card("Value generated + saved", "N/A", "pass a rate flag to estimate")
         if r.dollar_value_total is None
         else report_html.stat_card(
-            "Value generated + saved", html.escape(_fmt_money(r.dollar_value_total)), "estimate — see below"
+            "Value generated + saved", _fmt_money(r.dollar_value_total), "estimate — see below"
         )
     )
     cards = "".join([
@@ -245,10 +245,12 @@ def render_html_fragment(r: ImpactReport) -> str:
         parts = []
         if r.dollar_value_tokens is not None:
             money = html.escape(_fmt_money(r.dollar_value_tokens))
-            parts.append(f"<li>From token savings, at ${r.cost_per_1k_tokens}/1k tokens: {money}</li>")
+            rate = html.escape(str(r.cost_per_1k_tokens))
+            parts.append(f"<li>From token savings, at ${rate}/1k tokens: {money}</li>")
         if r.dollar_value_errors is not None:
             money = html.escape(_fmt_money(r.dollar_value_errors))
-            parts.append(f"<li>From errors avoided, at ${r.value_per_error_avoided}/error: {money}</li>")
+            rate = html.escape(str(r.value_per_error_avoided))
+            parts.append(f"<li>From errors avoided, at ${rate}/error: {money}</li>")
         dollar_detail = f"<ul>{''.join(parts)}</ul>"
     else:
         dollar_detail = (

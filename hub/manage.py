@@ -2,11 +2,42 @@
 `python -m hub.manage <command>`.
 
     create-org <name>               -> prints the new org's id
-    issue-key <org_id> [days]       -> prints the raw key ONCE (see warning below);
-                                        optional expiry in days (default: never expires)
+    issue-key <org_id> [days] [scopes]
+                                    -> prints the raw key ONCE (see warning below);
+                                        optional expiry in days (default: never expires);
+                                        optional comma-separated scopes from
+                                        read,write,admin (default: all three, matching
+                                        what a key could do before scopes existed).
+                                        A production agent wants `read,write`; a
+                                        dashboard wants `read`; `admin` is what gates
+                                        deleting a trace or the whole organization.
+                                        Scopes do not imply each other -- see
+                                        hub/scopes.py.
     rotate-key <key_id>             -> revokes <key_id>, issues + prints a new raw key for the same org
     revoke-key <key_id>             -> revokes a key immediately
     list-orgs                       -> id, name, created_at, active_keys
+    create-user <org_id> <email> <role> [display_name]
+                                    -> a PERSON, distinct from the org's shared API
+                                        key. role is one of viewer, analyst, curator,
+                                        validator, deployer, security_admin,
+                                        billing_admin, owner (hub/rbac.py). No SSO is
+                                        linked yet -- this user cannot sign in until
+                                        `link-sso`
+    list-users <org_id>            -> every user, their role, SSO link state, last login
+    set-user-role <user_id> <role> -> change what a person may do. Takes effect on
+                                        their NEXT request; there is no session to
+                                        invalidate
+    disable-user <user_id>         -> deprovision. Blocks access on the very next
+                                        authenticated call, not merely at the token's
+                                        natural expiry
+    enable-user <user_id>          -> reverse of disable-user
+    link-sso <user_id> <issuer> <external_subject>
+                                    -> link this user to one verified OIDC identity.
+                                        ALWAYS explicit -- there is no automatic
+                                        just-in-time provisioning from a verified token
+                                        alone (hub/sso.py)
+    unlink-sso <user_id>           -> remove the SSO link; the user row and role are
+                                        kept, only the ability to sign in is removed
     audit-log [org_id]              -> 100 most recent audited actions
 
     stats                          -> aggregate counts: orgs, active keys, traces
@@ -52,17 +83,32 @@
                                        is the churn about to happen. No query text is
                                        stored -- three integers per org per month
     revenue                        -> orgs on billable plans and what they consumed
+    value <org_id> [value_per_occasion]
+                                   -> what one org's memory was worth, causally: occasions
+                                       improved, and a priced figure only if you pass a rate
+                                       -- taken fresh each call, never stored (hub/crud.py:
+                                       value_delivered). The operator-CLI path to the same
+                                       numbers hub/console.py's Proof page shows a customer.
     plan-experiment <org_id> [detect] [occasions]
                                    -> what holdout rate this org's OWN volume can answer
                                        with. Run before start-experiment: at a 10% holdout
                                        only one occasion in ten lands in the control arm,
                                        so a run answers ~10x slower than it looks
-    start-experiment <org_id> [rate]
+    start-experiment <org_id> [rate] [outcome] [notes]
                                    -> begin a randomized holdout: withhold [rate] of
                                        eligible memory injections (default 0.2) so the
                                        fleet generates its own control arm. The only
-                                       design here that supports a CAUSAL claim
+                                       design here that supports a CAUSAL claim.
+                                       Pre-registers what the run commits to
+                                       measuring ([outcome], default "resolved") so a
+                                       later report can be checked against it
     stop-experiment <org_id>       -> stop withholding. Observations are kept
+    export-assignments <org_id> [file]
+                                   -> every arm decision, as CSV, for a customer's own
+                                       analyst to re-run the comparison from. Includes
+                                       the assigned-but-never-reported rows, which are
+                                       the attrition question. Prints the digest the
+                                       value ledger's signature commits to
     experiment <org_id>            -> what the holdout established, per trace: effect,
                                        95% CI, p-value, and an explicit UNDERPOWERED
                                        verdict so "cannot answer yet" never reads as
@@ -77,6 +123,108 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
+    search-content <org_id> <pattern> [literal|regex]
+                                   -> locate traces (including quarantined ones) whose
+                                       title/context/solution text literally contain
+                                       <pattern> -- a name, an email, a ticket number.
+                                       For a support-ticket-driven erasure request; a
+                                       customer's own signed-in team has the equivalent
+                                       search_trace_content MCP tool directly. Finds
+                                       candidates only -- purge-trace still does the
+                                       deleting. Not a completeness guarantee: a match
+                                       proves the text is present, a non-match is not
+                                       proof of absence
+    tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]
+                                   -> REPLACE which end user(s)/customer(s) a trace's
+                                       content concerns. Omit subject_ids_csv (or pass "")
+                                       to clear. Optional and explicit -- nothing tags a
+                                       trace automatically.
+    find-subject-traces <org_id> <subject_id>
+                                   -> exact match against traces tagged with subject_id
+                                       (tag-trace-subjects), not a scan. Untagged content
+                                       needs search-content instead.
+    purge-subject-traces <org_id> <subject_id>
+                                   -> permanently delete every trace tagged with
+                                       subject_id, full amendment chain included.
+                                       Irreversible.
+    webhook-add <org_id> <https_url> [events]
+                                   -> tell this org's own systems what happens here.
+                                       [events] is a comma-separated subset of
+                                       the event types (default: all). Prints the
+                                       signing secret ONCE -- it is derived from this
+                                       deployment's signing key, never stored, so it
+                                       cannot be read back out of the database (or out
+                                       of a dump of it). Events carry ids, counts and
+                                       verdicts and NEVER trace content: a receiver
+                                       that needs the text asks for it over the
+                                       tenant-scoped API
+    webhook-list <org_id>          -> this org's endpoints, how many deliveries are
+                                       pending, and the ones that gave up
+    webhook-rotate <endpoint_id>   -> new signing secret; the old one stops verifying
+                                       immediately
+    webhook-disable <endpoint_id>  -> stop delivering to it
+    webhook-deliver [limit]        -> drain the queue once. Safe to run on a schedule;
+                                       delivery is AT-LEAST-ONCE and every envelope
+                                       carries a stable event_id, so receivers must
+                                       deduplicate on it
+    create-alert-rule <org_id> <metric> <gt|lt> <threshold> [cooldown_minutes]
+                                   -> fire when <metric> crosses <threshold>. metric is
+                                       one of quarantine_rate, commons_queries_used_pct,
+                                       traces_used_pct (hub/alerts.py). Delivered as
+                                       alert.triggered through the org's existing
+                                       webhook endpoint(s) -- not a second delivery
+                                       mechanism. cooldown_minutes (default 60) is how
+                                       long a rule stays quiet after firing even if the
+                                       condition still holds
+    list-alert-rules <org_id>      -> this org's rules, state, and when each last fired
+    delete-alert-rule <rule_id>    -> remove a rule
+    check-alerts [org_id]          -> evaluate rules (all orgs, or one) and fire any
+                                       past their threshold and cooldown. Safe to run
+                                       on a schedule -- each rule's own cooldown
+                                       prevents re-firing on every tick
+    generate-report <org_id>       -> emit one usage summary (traces, commons queries
+                                       used/allowance) as report.generated, over the
+                                       same billing period account_usage reports by.
+                                       Safe to run on a schedule for a periodic push
+    set-retention <org_id> <object_type> <days> [status]
+                                   -> how long this org keeps one kind of object.
+                                       object_type: trace | vote |
+                                       holdout_observation | kb_submission |
+                                       audit_log. Optional status narrows it
+                                       further (trace: active/quarantined/retracted;
+                                       holdout_observation: reported/unreported;
+                                       kb_submission: pending/approved/rejected),
+                                       so "keep quarantined traces two years and
+                                       ordinary ones ninety days" is expressible.
+                                       A request below the type's floor is REFUSED,
+                                       not clamped -- see hub/retention.py
+    clear-retention <org_id> <object_type> [status]
+                                   -> remove a policy; that object type stops expiring
+    retention-plan <org_id>        -> what the policies WOULD delete, per type and
+                                       status, what a legal hold has frozen, and what
+                                       is blocked outright. Reads only, deletes
+                                       nothing, and prints the digest that
+                                       retention-apply requires
+    retention-apply <org_id> <digest>
+                                   -> delete exactly what the plan with that digest
+                                       described. The digest is the approval: it names
+                                       one specific set of rows, and if anything moved
+                                       since the plan was printed this refuses and
+                                       shows the new digest rather than deleting a set
+                                       nobody read. Safe to schedule (plan, then apply
+                                       its digest) -- irreversible
+    legal-hold <org_id> <reason> [object_type] [target_id]
+                                   -> freeze data against every retention policy until
+                                       released. No object_type holds everything the
+                                       org has. A reason is required: a hold nobody can
+                                       explain later is one nobody dares release, and
+                                       unreleased holds quietly become the indefinite
+                                       retention this exists to end
+    release-hold <hold_id> [reason]
+                                   -> lift a hold. The row is kept, so "frozen March to
+                                       July, by whom and why" stays answerable
+    holds <org_id>                 -> this org's retention policies and the holds in
+                                       force against them
     purge-trace <trace_id> [--yes] -> permanently deletes the trace AND every trace in
                                        its amendment chain (+ their votes and any relation
                                        edges referencing them). Irreversible. Prompts for
@@ -105,17 +253,19 @@ session_factory instead of monkeypatching module globals.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from commontrace import experiment
-from hub import audit, auth, commons, crud, outcomes, plans
+from commontrace import experiment, prereg, raw_export
+from hub import alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
+from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
 from hub.models import (
@@ -126,12 +276,24 @@ from hub.models import (
     Trace,
     TraceRelation,
     UsageCounter,
+    User,
     Vote,
+    WebhookEndpoint,
 )
 
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
     return make_session_factory(make_engine(HubConfig.from_env()))
+
+
+def _default_stripe_settings() -> StripeSettings:
+    config = HubConfig.from_env()
+    return StripeSettings(
+        secret_key=config.stripe_secret_key,
+        webhook_secret=config.stripe_webhook_secret,
+        price_team=config.stripe_price_team,
+        price_scale=config.stripe_price_scale,
+    )
 
 
 async def create_org(name: str, session_factory=None) -> None:
@@ -167,21 +329,50 @@ async def create_org(name: str, session_factory=None) -> None:
         print(f"org_id: {org.id}")
 
 
-async def issue_key(org_id: str, expires_days: str | None = None, session_factory=None) -> None:
+async def issue_key(
+    org_id: str, expires_days: str | None = None, scope_list: str | None = None,
+    session_factory=None,
+) -> None:
+    """`issue-key <org_id> [days] [scopes]`.
+
+    `scopes` is a comma-separated subset of read,write,admin,scim
+    (hub/scopes.py). Omitted, the key gets read+write+admin -- what a key
+    could do before scopes existed, so the documented onboarding one-liner
+    is unchanged. A production agent wants `read,write`; a dashboard wants
+    `read`; only an operator's own key needs `admin`, which is what gates
+    deleting a trace and deleting the organization. `scim` is never
+    included by default even with no `scopes` argument at all -- it grants
+    nothing over trace data and everything over this org's `User` rows
+    (hub/scim.py), so an IdP integration always asks for it explicitly:
+    `issue-key <org_id> [days] scim`.
+
+    Scopes do NOT imply each other: `admin` alone cannot read. That is what
+    makes "this key cannot escalate" answerable by reading one row.
+    """
     days = int(expires_days) if expires_days is not None else None
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
-        issued = await auth.issue_api_key(session, org_id, expires_days=days)
+        issued = await auth.issue_api_key(
+            session, org_id, expires_days=days, scopes=scope_list
+        )
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="issue_key",
             org_id=org_id, target_type="api_key", target_id=issued.key_id,
-            summary=f"prefix={issued.key_prefix} expires_days={days if days is not None else 'never'}",
+            summary=(
+                f"prefix={issued.key_prefix} "
+                f"expires_days={days if days is not None else 'never'} "
+                f"scopes={','.join(issued.scopes)}"
+            ),
         )
     print(f"key_id: {issued.key_id}")
     if days is None:
         print("expires: never  (pass a day count, e.g. `issue-key <org_id> 90`, for a client-facing key)")
     else:
         print(f"expires: in {days} day(s)")
+    print(f"scopes: {','.join(issued.scopes)}")
+    if scope_list is None:
+        print("  (every scope, the pre-scopes default. For a least-privilege workload")
+        print("   token pass a subset: `issue-key <org_id> 90 read,write`)")
     print(f"api_key (shown once, store it now): {issued.raw_key}")
 
 
@@ -245,6 +436,236 @@ async def list_orgs(session_factory=None) -> None:
         for org in orgs:
             n_keys = keys_by_org.get(org.id, 0)
             print(f"{org.id}  {org.name!r}  created={org.created_at.isoformat()}  active_keys={n_keys}")
+
+
+async def create_user(
+    org_id: str, email: str, role: str, display_name: str = "",
+    session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
+    """`create-user <org_id> <email> <role> [display_name]`.
+
+    A PERSON, distinct from the org's shared workload API key
+    (hub/models.py:User). No SSO is linked by this alone -- the row
+    authenticates no one until `link-sso` attaches an OIDC identity to it,
+    or it stays purely a record you assign no login to.
+    """
+    try:
+        rbac.check_role(role)
+    except rbac.RoleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        user = User(
+            org_id=org_id, email=email, role=role, display_name=display_name,
+            created_by=actor,
+        )
+        session.add(user)
+        try:
+            await session.flush()
+        except IntegrityError:
+            # Roll back BEFORE returning: session_scope commits on a normal
+            # exit, and committing a session whose flush already failed
+            # raises a second, uglier error that would escape this function
+            # entirely instead of the clean `return False` below.
+            await session.rollback()
+            print(
+                f"error: {org_id} already has a user with email {email!r}",
+                file=sys.stderr,
+            )
+            return False
+        user_id = user.id
+        await audit.record(
+            session, actor=actor, action="create_user",
+            org_id=org_id, target_type="user", target_id=user_id,
+            summary=f"email={email} role={role}",
+        )
+        if role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": role, "actor": actor,
+            })
+    print(f"user_id: {user_id}")
+    print(f"  {email}  role={role}  org={org_id}")
+    print("  No SSO identity is linked yet -- this user cannot sign in until "
+          "you run `link-sso`.")
+    return True
+
+
+async def list_users(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        users = (
+            await session.execute(
+                select(User).where(User.org_id == org_id).order_by(User.created_at)
+            )
+        ).scalars().all()
+    if not users:
+        print(f"No users for {org_id}. (An org's API key still works independently "
+              "of any of this -- users are an additional, per-person identity.)")
+        return True
+    for u in users:
+        state = "disabled" if u.disabled_at is not None else "active"
+        linked = f"{u.issuer} / {u.external_subject}" if u.external_subject else "no SSO linked"
+        last = u.last_login_at.isoformat() if u.last_login_at else "never"
+        print(f"{u.id}  {u.email}  role={u.role}  {state}")
+        print(f"    {linked}  last_login={last}")
+    return True
+
+
+async def set_user_role(
+    user_id: str, role: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
+    """Change what a person may do. Takes effect on their NEXT request --
+    there is no session to invalidate, since every call re-reads the role
+    from this row (hub/auth.py:verify_user_token)."""
+    try:
+        rbac.check_role(role)
+    except rbac.RoleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        previous = user.role
+        user.role = role
+        await audit.record(
+            session, actor=actor, action="set_user_role",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"{previous} -> {role}",
+        )
+        if role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, user.org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": role, "actor": actor,
+            })
+    print(f"{user_id}: role changed {previous} -> {role}")
+    return True
+
+
+async def disable_user(
+    user_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
+    """Deprovision. Blocks access on this user's VERY NEXT authenticated
+    call, not merely at their token's next natural expiry
+    (hub/auth.py:verify_user_token checks `disabled_at` on every call) --
+    this is the literal exit criterion an audit of this Hub asked for."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if user.disabled_at is not None:
+            print(f"{user_id} is already disabled (since {user.disabled_at.isoformat()}).",
+                  file=sys.stderr)
+            return False
+        user.disabled_at = datetime.now(timezone.utc)
+        await audit.record(
+            session, actor=actor, action="disable_user",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+        )
+    print(f"{user_id} disabled. Access is blocked immediately, independent of any "
+          "token this person is still holding.")
+    return True
+
+
+async def enable_user(
+    user_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if user.disabled_at is None:
+            print(f"{user_id} is not disabled.", file=sys.stderr)
+            return False
+        user.disabled_at = None
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="enable_user",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+        )
+        if user.role in rbac.PRIVILEGED_ROLES:
+            await events.emit(session, user.org_id, "user.privileged_role_granted", {
+                "user_id": user_id, "role": user.role, "actor": audit.ACTOR_OPERATOR_CLI,
+            })
+    print(f"{user_id} re-enabled.")
+    return True
+
+
+async def link_sso(
+    user_id: str, issuer: str, external_subject: str, session_factory=None,
+) -> bool:
+    """Link a `User` row to one OIDC identity.
+
+    ALWAYS explicit, never automatic. A subject a trusted IdP will happily
+    verify is proof the IdP vouches for that person, not proof they should
+    have an account here -- see hub/sso.py's module docstring for the
+    reasoning this command exists to enforce. There is no just-in-time
+    provisioning path that bypasses it.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        user.issuer = issuer
+        user.external_subject = external_subject
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            print(
+                f"error: {issuer!r}/{external_subject!r} is already linked to a "
+                "different user -- an IdP subject belongs to exactly one account",
+                file=sys.stderr,
+            )
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="link_sso",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"issuer={issuer}",
+        )
+    print(f"{user_id} linked to {issuer} / {external_subject}.")
+    print("  This user can now authenticate with a bearer JWT verified against "
+        "that issuer.")
+    return True
+
+
+async def unlink_sso(user_id: str, session_factory=None) -> bool:
+    """Reverse of `link-sso`. The row and its role are kept -- only the
+    ability to sign in with that identity is removed."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            print(f"error: no such user: {user_id}", file=sys.stderr)
+            return False
+        if not user.external_subject:
+            print(f"{user_id} has no SSO identity linked.", file=sys.stderr)
+            return False
+        previous = f"{user.issuer}/{user.external_subject}"
+        user.issuer = ""
+        user.external_subject = ""
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="unlink_sso",
+            org_id=user.org_id, target_type="user", target_id=user_id,
+            summary=f"was {previous}",
+        )
+    print(f"{user_id} unlinked. They can no longer authenticate until relinked.")
+    return True
 
 
 async def stats(session_factory=None) -> None:
@@ -409,6 +830,11 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
             session.add(trace)
             added += 1
         await session.flush()
+        # One batched adjustment for the whole file, not one call per row:
+        # this loop can add hundreds of traces in a single seed, and the
+        # counter only needs to be correct once the transaction commits,
+        # not after every individual insert within it.
+        await crud._adjust_trace_count(session, org_id, added)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="commons_seed",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -649,7 +1075,11 @@ async def plan_experiment(
     return design.verdict != "infeasible"
 
 
-async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), session_factory=None) -> bool:
+async def start_experiment(
+    org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE),
+    outcome: str = "resolved", notes: str = "",
+    session_factory=None,
+) -> bool:
     """Begin a randomized holdout for one org: withhold `rate` of eligible
     memory injections so the fleet generates its own control arm.
 
@@ -694,17 +1124,51 @@ async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), s
         previous = org.holdout_salt
         org.holdout_rate = value
         org.holdout_salt = uuid.uuid4().hex[:16]
+
+        # Registered HERE, at the start, because that is the only moment a
+        # registration means anything: written afterwards it records what
+        # the results turned out to be, not what the run set out to find.
+        # Tied to the new salt, since a new salt is a new experiment and
+        # must not inherit the last one's credibility
+        # (commontrace/prereg.py).
+        searches_now, baseline_now = await _observed_volume_and_baseline(session, org_id)
+        planned = experiment.plan(
+            effect=experiment.DEFAULT_PRACTICAL_EFFECT,
+            baseline=baseline_now if baseline_now is not None else 0.5,
+            rate=value, occasions_budget=searches_now or None,
+        )
+        registration = prereg.register(
+            primary_outcome=outcome,
+            minimum_practical_effect=experiment.DEFAULT_PRACTICAL_EFFECT,
+            holdout_rate=value,
+            planned_occasions=max(1, planned.occasions_needed),
+            stopping_rule=prereg.STOP_SEQUENTIAL,
+            salt=org.holdout_salt,
+            notes=notes,
+        )
+        org.holdout_prereg = registration.to_dict()
         await session.flush()
+        with contextlib.suppress(events.EventError):
+            await events.emit(session, org_id, "experiment.started", {
+                "rate": value, "salt": org.holdout_salt, "outcome": outcome,
+            })
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="start_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
-            summary=f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'}",
+            summary=(
+                f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'} "
+                f"prereg={registration.fingerprint()[:16]} outcome={outcome}"
+            ),
         )
         salt = org.holdout_salt
 
     print(f"experiment started for {org_id}")
     print(f"  holdout rate: {value:.0%} of eligible injections will be withheld")
     print(f"  salt:         {salt}")
+    print(f"  primary outcome: {registration.primary_outcome}")
+    print(f"  pre-registered:  {registration.fingerprint()[:16]}... "
+          f"({registration.planned_occasions:,} occasions planned, "
+          f"{registration.stopping_rule} stopping)")
     if previous:
         print(f"  NOTE: this replaces experiment {previous}. Its observations are kept but")
         print("        are no longer pooled -- they came from a different randomization.")
@@ -736,6 +1200,52 @@ async def start_experiment(org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE), s
     return True
 
 
+async def export_assignments(
+    org_id: str, path: str | None = None, session_factory=None
+) -> bool:
+    """Every arm decision for this org's current experiment, as CSV.
+
+    The artifact a customer's own analyst re-runs the comparison from. Every
+    number this product bills on is computed by this product; the signed
+    ledger proves the issuer's arithmetic was not altered afterwards, and
+    this is the only thing that lets anyone disagree with the arithmetic
+    itself.
+
+    Includes the rows the estimate DROPS -- occasions assigned an arm and
+    never reported. Those are the attrition question, and an export without
+    them hands over a record with the evidence already removed.
+
+    Prints the digest (`commontrace/raw_export.py`), which is what the value
+    ledger's signature commits to: it is how a customer checks that the
+    export they are holding is the one the invoice was computed from.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        assignments = await crud.holdout_assignments(session, org_id)
+
+    result = raw_export.export(assignments)
+    if path:
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(result.csv_text)
+        print(f"wrote {path}")
+    else:
+        print(result.csv_text, end="")
+
+    print(f"# {result.summary}", file=sys.stderr)
+    print(f"# digest: {result.digest}", file=sys.stderr)
+    print(
+        "# Verify with commontrace.raw_export.verify(csv_text, digest), or "
+        "reimplement it:\n"
+        "#   sha256 over the canonical rows, sorted, joined -- see raw_export.digest_of.",
+        file=sys.stderr,
+    )
+    return True
+
+
 async def stop_experiment(org_id: str, session_factory=None) -> bool:
     """End the holdout. Observations are kept; nothing further is withheld.
 
@@ -753,6 +1263,9 @@ async def stop_experiment(org_id: str, session_factory=None) -> bool:
             return False
         org.holdout_rate = 0.0
         await session.flush()
+        with contextlib.suppress(events.EventError):
+            await events.emit(session, org_id, "experiment.stopped",
+                              {"salt": org.holdout_salt})
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="stop_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
@@ -1160,6 +1673,108 @@ async def release_quarantine(trace_id: str, session_factory=None) -> bool:
     return True
 
 
+async def search_content(
+    org_id: str, pattern: str, mode: str = "literal", session_factory=None,
+) -> bool:
+    """Operator-assisted counterpart to the `search_trace_content` MCP
+    tool -- for a support-ticket-driven erasure request where the
+    requester is not the org's own signed-in team. See
+    `crud.search_trace_content`'s docstring for what this can and cannot
+    prove."""
+    if mode not in ("literal", "regex"):
+        print(f"error: mode must be 'literal' or 'regex', got {mode!r}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            results = await crud.search_trace_content(
+                session, org_id, pattern, regex=(mode == "regex"),
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    if not results:
+        print(f"no traces in {org_id} match {pattern!r}.")
+        return True
+    for r in results:
+        state = " [quarantined]" if r["quarantined"] else ""
+        print(f"{r['id']}  created={r['created_at']}{state}")
+        print(f"    {r['title']!r}  (matched {r['matched_field']})")
+        print(f"    {r['snippet']}")
+    print(f"\n{len(results)} match(es). This locates candidates -- it deletes nothing. "
+          "Review each, then `purge-trace <id>` the ones that need to go.")
+    return True
+
+
+async def tag_trace_subjects(
+    org_id: str, trace_id: str, subject_ids_csv: str = "", session_factory=None,
+) -> bool:
+    """`tag-trace-subjects <org_id> <trace_id> [subject_ids_csv]`.
+
+    Operator-assisted counterpart to the `tag_trace_subjects` MCP tool --
+    for tagging a trace on behalf of an org whose own team is not doing
+    it themselves. REPLACES any previous tags; omit `subject_ids_csv` (or
+    pass an empty string) to clear a mistaken tag entirely.
+    """
+    subject_ids = [s.strip() for s in subject_ids_csv.split(",") if s.strip()]
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            result = await crud.tag_trace_subjects(
+                session, org_id, trace_id, subject_ids, actor=audit.ACTOR_OPERATOR_CLI,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    if result is None:
+        print(f"error: no trace {trace_id} in {org_id}", file=sys.stderr)
+        return False
+    print(f"{trace_id}: tagged with {len(result['subject_ids'])} subject id(s)")
+    return True
+
+
+async def find_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
+    """`find-subject-traces <org_id> <subject_id>`.
+
+    Operator-assisted counterpart to the `find_traces_by_subject` MCP
+    tool -- an EXACT match against traces this org explicitly tagged
+    (`tag-trace-subjects`), not a scan. For untagged content, use
+    `search-content` instead."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        results = await crud.find_traces_by_subject(session, org_id, subject_id)
+    if not results:
+        print(f"no traces in {org_id} are tagged with subject {subject_id!r}.")
+        return True
+    for r in results:
+        state = " [quarantined]" if r["quarantined"] else ""
+        print(f"{r['id']}  created={r['created_at']}{state}")
+        print(f"    {r['title']!r}  subject_ids={r['subject_ids']}")
+    print(f"\n{len(results)} exact match(es). `purge-subject-traces {org_id} {subject_id}` "
+          "deletes them all.")
+    return True
+
+
+async def purge_subject_traces(org_id: str, subject_id: str, session_factory=None) -> bool:
+    """`purge-subject-traces <org_id> <subject_id>`.
+
+    Permanently deletes every trace in `org_id` tagged with `subject_id`
+    (`crud.purge_traces_by_subject` -- each deletion includes its full
+    amendment chain, same as `purge-trace`). Irreversible. A subject_id
+    nothing was tagged with is not an error -- it purges zero traces."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        result = await crud.purge_traces_by_subject(
+            session, org_id, subject_id, actor=audit.ACTOR_OPERATOR_CLI,
+        )
+    print(f"purged {result['purged']} trace(s) in {org_id} tagged with subject {subject_id!r}.")
+    return True
+
+
 async def purge_trace(trace_id: str, session_factory=None) -> bool:
     """Permanently deletes one trace AND every trace in its amendment chain
     (see crud.amendment_chain -- shared with the self-service delete_trace
@@ -1180,6 +1795,11 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
         await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(chain_ids)))
         org_id = trace.org_id
         await session.execute(delete(Trace).where(Trace.id.in_(chain_ids)))
+        # amend_trace can never produce a chain spanning two orgs (see
+        # crud.delete_trace's identical reasoning), so every id in
+        # chain_ids belongs to org_id -- one adjustment covers the whole
+        # chain, not one call per row.
+        await crud._adjust_trace_count(session, org_id, -len(chain_ids))
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_trace",
             org_id=org_id, target_type="trace", target_id=trace_id,
@@ -1191,22 +1811,50 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
     return True
 
 
-async def purge_org(org_id: str, session_factory=None) -> bool:
+async def purge_org(org_id: str, session_factory=None, stripe: StripeSettings | None = None) -> bool:
     """Permanently deletes an org and everything scoped to it (api_keys,
     traces, and traces' votes/trace_relations all cascade via FK
-    ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3."""
+    ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3.
+
+    If this org has a live Stripe subscription, it is cancelled FIRST --
+    see hub.billing.cancel_subscription's docstring for why an org row
+    deleted out from under an active subscription is worse than a
+    deletion that has to be retried: the customer's card keeps being
+    charged every billing cycle with no CommonTrace account left to ever
+    notice. On a cancellation failure, nothing is deleted and this prints
+    an error and returns False, the same as an org id that doesn't exist.
+    `stripe` defaults to this deployment's real HUB_STRIPE_* settings,
+    read lazily via HubConfig.from_env() -- and ONLY if this org actually
+    has a subscription to cancel, so a test that seeds an org with no
+    subscription never needs to pass one. A test that DOES seed a
+    subscription must pass its own `stripe=` (even an unconfigured one is
+    fine) to reach that code at all in a process with no
+    HUB_DATABASE_URL/HUB_STRIPE_* set.
+    """
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         org = await session.get(Organization, org_id)
         if org is None:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
             return False
+        if org.stripe_subscription_id:
+            active_stripe = stripe or _default_stripe_settings()
+            try:
+                await cancel_subscription(active_stripe, subscription_id=org.stripe_subscription_id)
+            except StripeError as exc:
+                print(
+                    f"error: could not cancel the active Stripe subscription for org {org_id}; "
+                    f"account was NOT deleted: {exc}",
+                    file=sys.stderr,
+                )
+                return False
         trace_ids = (await session.execute(select(Trace.id).where(Trace.org_id == org_id))).scalars().all()
         if trace_ids:
             # Same dangling-reference cleanup as purge_trace, batched for every
             # trace this org owns, before the cascade deletes them.
             await session.execute(delete(TraceRelation).where(TraceRelation.related_trace_id.in_(trace_ids)))
         org_name = org.name
+        had_subscription = bool(org.stripe_subscription_id)
         await session.delete(org)
         # Recorded AFTER the delete and deliberately NOT cascaded away with
         # it -- see AuditLogEntry's docstring: the purge is exactly the event
@@ -1214,7 +1862,8 @@ async def purge_org(org_id: str, session_factory=None) -> bool:
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_org",
             org_id=org_id, target_type="org", target_id=org_id,
-            summary=f"name={org_name!r} n_traces={len(trace_ids)} irreversible",
+            summary=f"name={org_name!r} n_traces={len(trace_ids)} "
+                    f"stripe_subscription_cancelled={had_subscription} irreversible",
         )
     print(f"permanently deleted organization {org_id} and all its api_keys/traces/votes.")
     return True
@@ -1436,12 +2085,500 @@ async def revenue(session_factory=None) -> None:
     print("and this is the denominator to attach it to.")
 
 
+async def value(org_id: str, value_per_occasion: str | None = None, session_factory=None) -> bool:
+    """What one org's memory was worth, causally -- crud.value_delivered,
+    from the operator CLI.
+
+    Fills a real gap: value_delivered was reachable from a customer's own
+    browser session (hub/console.py's Proof page) and from an
+    authenticated agent (hub/server.py's `value_delivered` MCP tool), but
+    an operator investigating one account -- ahead of a renewal
+    conversation, before deciding whether a plan change is justified --
+    had no CLI path to the same numbers at all, and no reason to have a
+    customer's own API key to get them.
+
+    `value_per_occasion` is optional and, exactly like the console's own
+    `?per_occasion=` query parameter and crud.value_delivered's own
+    docstring, is taken fresh from THIS invocation and never stored --
+    the same discipline `revenue` above prints no currency to preserve.
+    Omit it to see the occasion count on its own.
+    """
+    session_factory = session_factory or _default_session_factory()
+    rate = None
+    if value_per_occasion is not None:
+        try:
+            rate = float(value_per_occasion)
+        except ValueError:
+            print(f"error: value_per_occasion must be a number, got {value_per_occasion!r}",
+                  file=sys.stderr)
+            return False
+
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        report = await crud.value_delivered(session, org_id, value_per_occasion=rate)
+
+    print(f"{org.name} ({org_id})  plan={org.plan}")
+    if not report["readable"]:
+        print(f"not readable: {report['reason']}")
+        return True
+
+    print(f"occasions improved: {report['occasions_improved']:,.1f} "
+          f"(95% CI {report['ci_95'][0]:,.1f} .. {report['ci_95'][1]:,.1f})")
+    print(f"memories counted: {report['n_counted']}  excluded: {report['n_excluded']}")
+    evidence = report.get("evidence")
+    if evidence and evidence["n_stale"]:
+        # An action, not a footnote: a figure that silently shrank is a
+        # support ticket, and the fix is always the same one command.
+        print(
+            f"evidence: {evidence['n_stale']} memory/memories are past the "
+            f"{evidence['horizon_days']}-day horizon, "
+            f"{evidence['n_withheld']} of them no longer billed."
+        )
+        print("  re-measure (oldest first): "
+              + ", ".join(evidence["due_for_remeasurement"][:5]))
+    if rate is not None and report["money"] is not None:
+        low, high = report["money_range"] or (report["money"], report["money"])
+        billable = report["money"] * plans.VALUE_CAPTURE_SHARE
+        print(f"at {rate:,.2f}/occasion: {report['money']:,.2f} total "
+              f"({low:,.2f} .. {high:,.2f}); {plans.VALUE_CAPTURE_SHARE:.0%} share = {billable:,.2f}")
+    else:
+        print("(pass a value-per-occasion rate as a second argument for a priced figure -- "
+              "taken fresh each time, never stored)")
+    for m in report["memories"]:
+        if m["counted"]:
+            print(f"  + {m['title'] or m['trace_id']}: {m['occasions_improved']:,.1f} occasions "
+                  f"({m['verdict']})")
+        else:
+            print(f"  - {m['title'] or m['trace_id']}: excluded ({m['why_not']})")
+    return True
+
+
+# --- retention, legal holds and scheduled purge ------------------------------
+
+async def set_retention(
+    org_id: str, object_type: str, days: str, status: str = retention.STATUS_ANY,
+    session_factory=None,
+) -> bool:
+    """Configure how long one org keeps one kind of object."""
+    session_factory = session_factory or _default_session_factory()
+    try:
+        max_age_days = int(days)
+    except ValueError:
+        print(f"error: days must be a whole number, got {days!r}", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            await retention.set_policy(
+                session, org_id, object_type, max_age_days, status=status
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.set_policy",
+            org_id=org_id, target_type="retention_policy",
+            target_id=f"{object_type}/{status}",
+            summary=f"keep {max_age_days}d",
+        )
+    print(f"{object_type} [{status}] for {org_id}: keep {max_age_days} days.")
+    print("  Nothing is deleted until you run `retention-plan` and then "
+          "`retention-apply` with the plan's digest.")
+    return True
+
+
+async def clear_retention(
+    org_id: str, object_type: str, status: str = retention.STATUS_ANY,
+    session_factory=None,
+) -> bool:
+    """Remove a policy, so that object type stops expiring."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            removed = await retention.remove_policy(
+                session, org_id, object_type, status=status
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        if not removed:
+            print(f"No {object_type} [{status}] policy for {org_id}.", file=sys.stderr)
+            return False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.clear_policy",
+            org_id=org_id, target_type="retention_policy",
+            target_id=f"{object_type}/{status}", summary="removed",
+        )
+    print(f"{object_type} [{status}] for {org_id}: policy removed; it no longer expires.")
+    return True
+
+
+async def retention_plan(org_id: str, session_factory=None) -> bool:
+    """What the org's policies WOULD delete. Reads only; deletes nothing."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        plan = await retention.plan(session, org_id)
+        held = await retention.counts(session, org_id)
+    print(plan.render())
+    print()
+    print("Currently held: " + ", ".join(f"{n:,} {t}" for t, n in sorted(held.items())))
+    return True
+
+
+async def retention_apply(org_id: str, digest: str, session_factory=None) -> bool:
+    """Delete exactly what the plan with this digest described.
+
+    The digest is required and is not a formality: it is what makes this an
+    approval of one specific set of rows rather than of the phrase "apply
+    retention". If anything moved since the plan was printed, this refuses
+    and prints the new digest.
+    """
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        fresh = await retention.plan(session, org_id)
+        # The operator pastes the short form the plan printed; compare on
+        # whatever prefix they gave rather than making them copy 64 hex
+        # characters accurately under time pressure.
+        if not fresh.digest.startswith(digest):
+            print(
+                f"error: the store changed since that plan was computed, so "
+                f"nothing was deleted.\n"
+                f"  you approved: {digest}\n"
+                f"  current plan: {fresh.digest[:16]}\n"
+                f"Re-run `retention-plan {org_id}` and read it before applying.",
+                file=sys.stderr,
+            )
+            return False
+        applied = await retention.apply(session, org_id, fresh.digest)
+    print(applied.render())
+    print()
+    print(f"APPLIED. {applied.n_doomed} rows deleted.")
+    return True
+
+
+async def place_legal_hold(
+    org_id: str, reason: str, object_type: str = "", target_id: str = "",
+    session_factory=None,
+) -> bool:
+    """Freeze data against every retention policy, until released."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            hold = await retention.place_hold(
+                session, org_id, reason=reason,
+                placed_by=audit.ACTOR_OPERATOR_CLI,
+                object_type=object_type, target_id=target_id,
+            )
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        await session.flush()
+        hold_id = hold.id
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.place_hold",
+            org_id=org_id, target_type="legal_hold", target_id=hold_id,
+            summary=f"{object_type or 'everything'}: {reason[:200]}",
+        )
+    scope = object_type or "everything this org has"
+    if target_id:
+        scope = f"{object_type} {target_id}"
+    print(f"legal hold {hold_id} placed on {scope}.")
+    print("  It outranks every retention policy until released. Retention plans "
+          "will report the frozen rows rather than silently skipping them.")
+    return True
+
+
+async def release_legal_hold(hold_id: str, reason: str = "", session_factory=None) -> bool:
+    """Lift a hold. The row is kept, so the freeze stays auditable."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            hold = await retention.release_hold(session, hold_id, reason=reason)
+        except retention.RetentionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        org_id = hold.org_id
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="retention.release_hold",
+            org_id=org_id, target_type="legal_hold", target_id=hold_id,
+            summary=reason[:200] or "released",
+        )
+    print(f"legal hold {hold_id} released. The rows it froze are subject to "
+          "retention again from the next plan.")
+    return True
+
+
+async def list_legal_holds(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        holds = await retention.active_holds(session, org_id)
+        policies = await retention.policies_for(session, org_id)
+    if policies:
+        print("Retention policies:")
+        for p in policies:
+            print(f"  {p.object_type} [{p.status}]: keep {p.max_age_days}d"
+                  + (f"  -- {p.note}" if p.note else ""))
+    else:
+        print("No retention policy: nothing expires on its own.")
+    print()
+    if not holds:
+        print("No legal holds in force.")
+        return True
+    print("Legal holds in force:")
+    for h in holds:
+        scope = h.object_type or "everything"
+        if h.target_id:
+            scope = f"{h.object_type}/{h.target_id}"
+        print(f"  {h.id}  {scope}  placed {h.placed_at:%Y-%m-%d} by {h.placed_by}")
+        print(f"      {h.reason}")
+    return True
+
+
+
+# --- webhook event export ----------------------------------------------------
+
+def _config_signing_key() -> str:
+    return HubConfig.from_env().ledger_signing_key
+
+
+async def webhook_add(
+    org_id: str, url: str, event_names: str = "", session_factory=None,
+) -> bool:
+    """Register a URL to be told what happens, and print its secret once."""
+    session_factory = session_factory or _default_session_factory()
+    subscribed = [e.strip() for e in event_names.split(",") if e.strip()] or None
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            endpoint, secret = await events.add_endpoint(
+                session, org_id, url, events=subscribed,
+                signing_key=_config_signing_key(),
+            )
+        except events.EventError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        endpoint_id, subscribed_to = endpoint.id, list(endpoint.events)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.add",
+            org_id=org_id, target_type="webhook_endpoint", target_id=endpoint_id,
+            # The URL, not the secret. Never the secret.
+            summary=f"{url} ({len(subscribed_to)} event types)",
+        )
+    print(f"endpoint {endpoint_id} -> {url}")
+    print(f"  events: {', '.join(subscribed_to)}")
+    print(f"  signing secret: {secret}")
+    print("  This secret is shown ONCE and is not stored -- it is derived from")
+    print("  this deployment's signing key. Re-derive it with `webhook-rotate`,")
+    print("  which also invalidates the one above.")
+    return True
+
+
+async def webhook_list(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        endpoints = await events.endpoints_for(session, org_id)
+        pending = await events.pending_count(session, org_id)
+        failed = await events.failed_deliveries(session, org_id, limit=10)
+    if not endpoints:
+        print(f"No webhook endpoints for {org_id}. Nothing is told anything.")
+        return True
+    for e in endpoints:
+        state = "enabled" if e.enabled else "DISABLED"
+        print(f"{e.id}  {state}  {e.url}")
+        print(f"    events: {', '.join(e.events)}  (key v{e.key_version})")
+    print()
+    print(f"{pending} delivery/deliveries pending.")
+    if failed:
+        # The dead-letter view: a queue that gives up silently is a queue
+        # that lies about delivery.
+        print(f"{len(failed)} gave up (most recent first):")
+        for d in failed:
+            print(f"  {d.created_at:%Y-%m-%d %H:%M}  {d.event_type}  {d.last_error}")
+    return True
+
+
+async def webhook_rotate(endpoint_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            secret = await events.rotate_secret(
+                session, endpoint_id, signing_key=_config_signing_key())
+        except events.EventError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        endpoint = await session.get(WebhookEndpoint, endpoint_id)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.rotate",
+            org_id=endpoint.org_id, target_type="webhook_endpoint",
+            target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
+        )
+    print(f"endpoint {endpoint_id} new signing secret: {secret}")
+    print("  The previous secret stops verifying immediately.")
+    return True
+
+
+async def webhook_disable(endpoint_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        endpoint = await session.get(WebhookEndpoint, endpoint_id)
+        if endpoint is None:
+            print(f"error: no such endpoint: {endpoint_id}", file=sys.stderr)
+            return False
+        endpoint.enabled = False
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.disable",
+            org_id=endpoint.org_id, target_type="webhook_endpoint",
+            target_id=endpoint_id, summary=endpoint.url,
+        )
+    print(f"endpoint {endpoint_id} disabled. Queued deliveries to it will be "
+          "marked failed rather than retried forever.")
+    return True
+
+
+async def webhook_deliver(limit: str = "100", session_factory=None) -> bool:
+    """Drain the queue once. Safe to run on a schedule."""
+    session_factory = session_factory or _default_session_factory()
+    try:
+        batch = int(limit)
+    except ValueError:
+        print(f"error: limit must be a whole number, got {limit!r}", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        result = await events.deliver_pending(
+            session, events.http_transport(),
+            signing_key=_config_signing_key(), limit=batch,
+        )
+    print(f"attempted {result.attempted}: {result.delivered} delivered, "
+          f"{result.retrying} will retry, {result.gave_up} gave up.")
+    return True
+
+
+async def create_alert_rule(
+    org_id: str, metric: str, comparator: str, threshold: str,
+    cooldown_minutes: str = str(alerts.DEFAULT_COOLDOWN_MINUTES),
+    session_factory=None,
+) -> bool:
+    try:
+        threshold_val = float(threshold)
+        cooldown_val = int(cooldown_minutes)
+    except ValueError:
+        print(f"error: threshold must be a number and cooldown_minutes a whole "
+              f"number, got {threshold!r} / {cooldown_minutes!r}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            rule = await alerts.create_rule(
+                session, org_id, metric, comparator, threshold_val,
+                cooldown_minutes=cooldown_val, created_by=audit.ACTOR_OPERATOR_CLI,
+            )
+        except alerts.AlertError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        rule_id = rule.id
+    print(f"rule_id: {rule_id}")
+    print(f"  fires when {metric} {comparator} {threshold_val} "
+          f"(cooldown {cooldown_val}m), delivered as alert.triggered "
+          "to this org's webhook endpoint(s).")
+    return True
+
+
+async def list_alert_rules(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        rules = await alerts.list_rules(session, org_id)
+    if not rules:
+        print(f"No alert rules for {org_id}.")
+        return True
+    for r in rules:
+        state = "enabled" if r.enabled else "disabled"
+        last = r.last_triggered_at.isoformat() if r.last_triggered_at else "never"
+        print(f"{r.id}  {r.metric} {r.comparator} {r.threshold}  {state}  "
+              f"cooldown={r.cooldown_minutes}m  last_triggered={last}")
+    return True
+
+
+async def delete_alert_rule(rule_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        deleted = await alerts.delete_rule(session, rule_id)
+    if not deleted:
+        print(f"error: no such alert rule: {rule_id}", file=sys.stderr)
+        return False
+    print(f"{rule_id} deleted.")
+    return True
+
+
+async def check_alerts(org_id: str | None = None, session_factory=None) -> bool:
+    """Evaluate rules and fire due alerts. Safe to run on a schedule --
+    each rule's own cooldown prevents re-firing on every tick."""
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        fired = await alerts.check_rules(session, org_id)
+    if not fired:
+        print("No alert crossed its threshold.")
+        return True
+    for f in fired:
+        print(f"[FIRED] {f['rule_id']} ({f['org_id']}): {f['metric']} "
+              f"{f['comparator']} {f['threshold']} -- value={f['value']}")
+    print(f"{len(fired)} alert(s) fired, queued as alert.triggered.")
+    return True
+
+
+async def generate_report(org_id: str, session_factory=None) -> bool:
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        try:
+            report = await alerts.generate_report(session, org_id)
+        except alerts.AlertError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    print(f"report.generated for {org_id} ({report['period']}, plan={report['plan']}):")
+    print(f"  traces={report['traces_total']}  "
+          f"commons_queries={report['commons_queries_used']}/"
+          f"{report['commons_queries_allowance']}")
+    print("  Queued to this org's webhook endpoint(s).")
+    return True
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
-    "issue-key": (issue_key, 1, 2),
+    "issue-key": (issue_key, 1, 3),
     "rotate-key": (rotate_key, 1, 1),
     "revoke-key": (revoke_key, 1, 1),
     "list-orgs": (list_orgs, 0, 0),
+    "create-user": (create_user, 3, 4),
+    "list-users": (list_users, 1, 1),
+    "set-user-role": (set_user_role, 2, 2),
+    "disable-user": (disable_user, 1, 1),
+    "enable-user": (enable_user, 1, 1),
+    "link-sso": (link_sso, 3, 3),
+    "unlink-sso": (unlink_sso, 1, 1),
     "audit-log": (audit_log, 0, 1),
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),
@@ -1456,15 +2593,38 @@ _COMMANDS = {
     "usage": (usage, 0, 1),
     "retrieval": (retrieval, 0, 1),
     "revenue": (revenue, 0, 0),
+    "value": (value, 1, 2),
     "outcomes": (fleet_outcomes, 0, 1),
     "plan-experiment": (plan_experiment, 1, 3),
-    "start-experiment": (start_experiment, 1, 2),
+    "start-experiment": (start_experiment, 1, 4),
     "stop-experiment": (stop_experiment, 1, 1),
+    "export-assignments": (export_assignments, 1, 2),
     "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
+    "search-content": (search_content, 2, 3),
+    "tag-trace-subjects": (tag_trace_subjects, 2, 3),
+    "find-subject-traces": (find_subject_traces, 2, 2),
+    "purge-subject-traces": (purge_subject_traces, 2, 2),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
+    "webhook-add": (webhook_add, 2, 3),
+    "webhook-list": (webhook_list, 1, 1),
+    "webhook-rotate": (webhook_rotate, 1, 1),
+    "webhook-disable": (webhook_disable, 1, 1),
+    "webhook-deliver": (webhook_deliver, 0, 1),
+    "create-alert-rule": (create_alert_rule, 4, 5),
+    "list-alert-rules": (list_alert_rules, 1, 1),
+    "delete-alert-rule": (delete_alert_rule, 1, 1),
+    "check-alerts": (check_alerts, 0, 1),
+    "generate-report": (generate_report, 1, 1),
+    "set-retention": (set_retention, 3, 4),
+    "clear-retention": (clear_retention, 2, 3),
+    "retention-plan": (retention_plan, 1, 1),
+    "retention-apply": (retention_apply, 2, 2),
+    "legal-hold": (place_legal_hold, 2, 4),
+    "release-hold": (release_legal_hold, 1, 2),
+    "holds": (list_legal_holds, 1, 1),
     "purge-trace": (purge_trace, 1, 2),
     "purge-org": (purge_org, 1, 2),
 }
@@ -1477,6 +2637,13 @@ _COMMANDS = {
 # extra Enter in a terminal session doesn't silently delete a customer's
 # data; --yes bypasses it for scripted/automated use, which must ask for
 # this explicitly rather than get it by default.
+#
+# `retention-apply` is deliberately NOT here despite deleting rows. Its
+# confirmation is the plan digest, which is strictly stronger than a y/n
+# prompt: it names the exact set of rows the operator read, and refuses if
+# anything moved since. An interactive prompt on top of that would add no
+# safety and would make the scheduled purge -- the whole point of having a
+# retention policy rather than a delete button -- impossible to automate.
 _DESTRUCTIVE_COMMANDS: dict[str, str] = {
     "purge-trace": "permanently delete this trace and its full amendment chain",
     "purge-org": "permanently delete this organization and everything scoped to it "

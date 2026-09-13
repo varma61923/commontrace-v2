@@ -225,7 +225,7 @@ The complete pipeline, phase by phase. Each phase indicates its main input, its 
 
 **Phase 0 (Alpha retrieval)**: runs by default at the start of a run. Autonomous brief copiable verbatim from SKILL.md. Alpha workflow enriched in v2.3 with a semantic attention pre-filter at step 0:
 
-0. **Attention pre-filter (v2.3)**: Alpha launches `memory/attention/query.py "[verbatim invocation]" --top-k=10 --include-importance-floor=4` which returns ~10 candidates by cosine similarity + all lessons with `importance >= 4` (safety override). The cosine score is a complement to the qualitative sorting, not a replacement.
+0. **Attention pre-filter (v2.3)**: Alpha launches `commontrace query "[verbatim invocation]" --top-k 10 --include-importance-floor 4` which returns ~10 candidates by cosine similarity + all lessons with `importance >= 4` (safety override). The cosine score is a complement to the qualitative sorting, not a replacement.
 1. Read `memory/INDEX.md` to verify the relevance of pre-filter candidates and supplement by domain if needed.
 2. Select 3-7 candidates — priority to the top-K cosine from step 0, supplemented by `importance >= 4` candidates not covered (quality > quantity).
 3. Read each candidate (frontmatter + body).
@@ -617,7 +617,7 @@ The `index.npz` format (cf. §4.6) was designed as a stable reusable contract. T
 - **No formal B reviewer** for Dreamer code/doc modifications: the interactive section-by-section user dialogue PLAYS the role of B reviewer (human validation is the review). Lambda audits memory proposals (existing Phase 11 mechanism, unchanged).
 - **Exclusivity lock**: 1 single active Dreamer per project (marker `dreamer_workspace/<session>/IN_PROGRESS`, deleted at the end), refusal if `/commontrace` is active on the repo (best-effort detection V1).
 - **Git discipline of the Dreamer sub-agent** (read-only on git, inherited from `lesson_brief_b_strict_no_git_ops`): FORBIDDEN `git stash`, `git checkout --`, `git reset --hard`, `git clean` (even to compare baseline). ALLOWED `git status`, `git log`, `git show`, `git diff` (read-only). The `git add` + `git commit` are done by the orchestrator after user validation, never by the Dreamer sub-agent directly.
-- **Reuse of existing infra**: attention layer (`memory/attention/query.py`) consumed for semantic pre-filter + fusion detection; Lambda Phase 11 `/commontrace` consumed for memory proposal audit. Dreamer reinvents none of these mechanics.
+- **Reuse of existing infra**: attention layer (`commontrace/reference/query.py`, driven by `commontrace query`) consumed for semantic pre-filter + fusion detection; Lambda Phase 11 `/commontrace` consumed for memory proposal audit. Dreamer reinvents none of these mechanics.
 - **Phase 1 reading sources**: specs (`recherche/<project>/docs/`), complete code, project docs, `/commontrace` memory base filtered by `project:<project>`, user memory under the agent platform's project config, web search / web fetch capabilities if relevant, recent benchmark.
 
 #### Snippet Reused by Dreamer for Fusion Candidate Detection (role 1)
@@ -887,8 +887,8 @@ Cf. RETEX 7.5 — no cases at the low end of the scale (1-2) in the seeds. If fu
 | `$COMMONTRACE_ROOT/../dreamer/SKILL.md` | Companion skill Dreamer (v0.1, 2026-05-27) — canonical source of the 6-phase Dreamer workflow, verbatim sub-agent brief, SESSION.md format, Git discipline, exclusivity lock |
 | `$COMMONTRACE_ROOT/../dreamer/README.md` | Short overview of the /dreamer skill |
 | `recherche/<project>/dreamer_workspace/<session>/` | Dreamer workspace per session (committed in the project repo) — SESSION.md, experiments/, memory_proposals.md |
-| `memory/attention/build_index.py` | Encodes all active lessons → `index.npz` (v2.3) |
-| `memory/attention/query.py` | Query top-K + importance ≥ 4 safety override (v2.3) |
+| `commontrace/reference/build_index.py` | Encodes all active lessons → `index.npz`; run via `commontrace index` (v2.3) |
+| `commontrace/reference/query.py` | Query top-K + importance ≥ 4 safety override; run via `commontrace query` (v2.3) |
 | `memory/attention/index.npz` | Numpy embeddings index (v2.3, generated, never manually edited) |
 | `memory/lessons/README.md` | Lesson format documentation + write/update/revision workflow |
 | `memory/lessons/lesson_template.md` | Empty template for creating a new lesson |
@@ -967,4 +967,4 @@ module-a (10) — first real use of the skill outside meta on a real project:
 
 | Path | Role |
 |---|---|
-| `https://github.com/denemlabs/commontrace-v2` | CommonTrace repository — /commontrace v2 is the protocol's reference implementation |
+| `https://github.com/varma61923/commontrace-v2` | CommonTrace repository — /commontrace v2 is the protocol's reference implementation |

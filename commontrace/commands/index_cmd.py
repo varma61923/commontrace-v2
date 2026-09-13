@@ -28,6 +28,6 @@ def run(args: argparse.Namespace) -> int:
         root,
         "memory/attention/build_index.py",
         extra,
-        "The attention index requires the reference scripts from the commontrace-v2 "
-        "repo checkout (memory/attention/) plus `pip install commontrace[attention]`.",
+        "The reference attention scripts ship inside the package, so this means a "
+        "damaged install -- try `pip install --force-reinstall commontrace`.",
     )

@@ -7,7 +7,1294 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Two more fields in the cross-field retrieval corpus** —
+  `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
+  six fields to eight (48 lessons, 144 labelled queries). This answers
+  `benchmark/STATUS.md` §9.5's own "six fields is not 'any field'" with
+  fields rather than with an argument. Both were picked to stress axes the
+  original six did not: `finance` is deliberately the **wordiest** field in
+  the corpus (48.7 mean words per `applies_when`, against legal's 32.5), and
+  both collide on purpose with existing fields' vocabulary — `clinical` owns
+  `escalation` (support's word), `compliance` (legal's and HR's), `follow-up`
+  (sales') and `appeal`/`denial` (finance's); `finance` owns `policy` (HR's)
+  and `contract`/`obligation` (legal's). A corpus whose queries only ever
+  match their own field would prove nothing.
+
+  Both pass the existing gate unchanged — **no threshold was moved**:
+  `finance` pollutes at 2.11× and `clinical` at 1.72×, against the untouched
+  ceiling of 2.4× and spread limit of 2.0×. The corpus-wide spread is
+  unchanged at 1.35× and the worst field is still `legal` at 2.33×. That
+  `finance` pollutes *below* legal while being half again as wordy is the
+  clearest single data point that the IDF scorer is not rewarding whichever
+  field writes more. The regression detector still fires: `count-v1` reaches
+  2.50× across the eight fields, over the ceiling.
+
+  Recorded as a limitation in the same pass (§9.5): **adding a field widens
+  regression coverage without automatically adding verbosity-bias signal.**
+  `clinical` scores 1.72× under *both* scorers — a delta of exactly zero — so
+  it discriminates nothing on the axis this benchmark was built for. The
+  fields that genuinely exercise it remain the boilerplate-heavy ones
+  (HR −0.50, sales −0.28, legal −0.17).
+
 ### Fixed
+
+- **A stale scorer claim in `commontrace/reference/measure_retrieval.py`.**
+  Its module docstring said the current scorer pollutes at 1.00×–1.28×, which
+  is the superseded single-corpus tuning at `floor=0.10`, not the shipped
+  `floor=0.04` default (1.72×–2.33×) that `benchmark/STATUS.md` §9.6 records
+  the reason for. Re-measured across all eight fields, along with the §9.4
+  table and the "six fields, 36 lessons, 108 queries" counts in `README.md`,
+  `tests/test_cross_field_retrieval.py` and `benchmark/STATUS.md` §9.2.
+
+- **Three stale "what this does not have" claims corrected** (`TRUST.md`
+  §6, `README.md`, `hub/DEPLOYMENT.md` §11). All three still said the Hub
+  has no SSO, no SCIM and no human user accounts, and `TRUST.md` added
+  that there is therefore "no person in this system, which is also why
+  subject-level deletion and any collaboration surface are absent" —
+  every part of which this codebase has since disproved (`hub/sso.py`,
+  `hub/scim.py`, `hub/rbac.py`, `hub/collab.py`, `User`, and the
+  `/scim/v2/*` routes that mount in `build_app`). `TRUST.md` also still
+  claimed no subprocessor list exists, which `SUBPROCESSORS.md`
+  contradicts, and its §6 preamble asserted that none of its gaps was
+  "partially satisfied by code that exists", which two of them now are.
+  Each bullet is narrowed to what is *genuinely* still missing — SAML and
+  a browser-based Authorization Code/PKCE login, a DPA, a residency
+  commitment from the project itself — rather than deleted, so the
+  document keeps naming the real gap instead of quietly shrinking. This is
+  the same understating-drift already fixed once in `hub/README.md`'s
+  "Auth follow-ups" section; a trust document that is wrong in the
+  *conservative* direction still teaches a reader not to trust it.
+
+### Added
+
+- **SSRF protection for webhook endpoints** (`hub/events.py`, audit §6.3):
+  `add_endpoint` previously validated only that a URL was `https://`, never
+  where it actually pointed. `_reject_private_target` now resolves the
+  hostname and refuses one that resolves to loopback, an RFC 1918 private
+  range, link-local (including the `169.254.169.254` cloud metadata
+  address), or other reserved/multicast/unspecified space — checked both
+  at registration (`add_endpoint`) and again in `http_transport.send`
+  immediately before every delivery, since DNS can change in between. Not
+  from the original audit document — a gap found through this session's
+  own adversarial review, closed the same way any other SSRF-shaped
+  "customer-supplied URL" finding would be. Tests:
+  `hub/tests/test_events.py::TestSsrfProtection` (15 new; 54 total in the
+  file).
+
+- **`GET /disclosure`** (`hub/disclosure.py`, audit §2.3, §4.4): an
+  always-mounted, unauthenticated endpoint reporting an operator's own
+  configured data region, legal name, and support contact
+  (`HUB_DATA_REGION`/`HUB_OPERATOR_LEGAL_NAME`/
+  `HUB_OPERATOR_SUPPORT_CONTACT`) — or, for any field left unset, the
+  honest `"not disclosed by this deployment's operator"` rather than
+  silence or a guess. This codebase still asserts no region, entity, or
+  certification on its own behalf — that remains a genuine business
+  decision — but a deployment that HAS made those decisions now has
+  somewhere a procurement reviewer can actually find them, exempted from
+  `HUB_IP_ALLOWLIST` the same way `/healthz` is (for the opposite
+  reason: built specifically for reach from outside this deployment's
+  own network). Tests: `hub/tests/test_disclosure.py` (11).
+
+- **`SUBPROCESSORS.md` and `SOC2_READINESS.md`** (audit §2.4, §7.1). Not
+  a DPA and not a SOC 2 attestation — both stay correctly out of scope,
+  needing a registered legal entity and an accredited audit firm
+  respectively, neither of which a repository file can substitute for.
+  What these are: an honest, evidence-cited inventory. `SUBPROCESSORS.md`
+  names the one third party this code actually sends data to (Stripe,
+  for billing) and states exactly what would change the list. 
+  `SOC2_READINESS.md` maps the Trust Services Criteria to the specific
+  controls already implemented and tested in this repo (RLS, RBAC,
+  SCIM, audit logging, the measured backup/restore drill, subject
+  erasure, and more), and names precisely what a real Type II engagement
+  still needs that no document can provide.
+
+- **A measured backup/restore drill and a continuous deletion drill**
+  (audit §7.5). The restore rehearsal documented in `hub/DEPLOYMENT.md`
+  §9 was actually run end to end — dump, restore into a fresh database,
+  `alembic check`, full `hub.smoke` including tenant isolation — against
+  a seeded 8,000-trace, two-org database, with real measured timings
+  (§9b: dump 0.29s, restore 2.78s, schema check 1.33s, smoke suite
+  4.78s), not estimates. Precisely scoped: this measures the restore
+  *mechanism's* cost on this dataset, not a promised production RTO —
+  RPO remains a function of an operator's own backup-frequency choice,
+  and production RTO also includes detection/decision/provisioning time
+  no local drill can measure. The deletion half already runs on every
+  CI push (`hub/tests/test_manage.py::test_purge_org_cascades_to_its_traces`).
+
+- **Accessibility pass on the console and operator console** (audit
+  §7.8): every visible form control across `hub/console.py` and
+  `hub/admin.py` now has a programmatically-associated name
+  (`<label for>`/`aria-labelledby`, replacing several placeholder-only
+  inputs), and the API-key scope checkboxes are grouped under a
+  `<fieldset><legend>`. Self-conducted, not a certified audit — that
+  still needs a real auditor and stays out of scope for the same reason
+  this document never asserts an attestation it can't back. Tests:
+  `hub/tests/test_console.py::TestAccessibleFormControls` (6).
+
+- **Users & roles and API keys are now manageable from the customer
+  console** (`hub/console.py`, `/app/users`, `/app/keys`), not only the
+  CLI — the one deliberate exception to that console's otherwise
+  read-only design. Gated behind `admin` scope on the signed-in
+  session's own API key, checked fresh on every request (a key narrowed
+  from admin to read-only loses console-mutation access on its very
+  next request, not just at the session's own TTL). Every mutation
+  calls the same `hub/manage.py`/`hub/auth.py` functions the CLI does —
+  no second implementation — audited with the session's actual
+  credential rather than a borrowed `operator-cli` label, and an
+  explicit org-ownership check on every id-addressed mutation (`auth.
+  revoke_api_key`/`rotate_api_key` take only a bare id and trust a
+  cross-tenant operator caller to have already scoped it, which a
+  customer's browser session has not). Alert rules (audit §8.3) get the
+  same treatment at `/app/alerts` — create/list/delete calling
+  `hub/alerts.py`'s own functions directly, with the same explicit
+  org-ownership check before delete — plus a "Generate now" button for a
+  one-off usage report, POST-only since it queues a real
+  `report.generated` webhook delivery and must never fire from a page
+  load. Tests: `hub/tests/test_console.py::TestAdminScopeGatesMutation`/
+  `TestUserManagement`/`TestApiKeyManagement`/`TestUsersAndKeysAreEscaped`/
+  `TestAlertRuleManagement`/`TestUsageReportFromTheConsole` (27).
+
+- **SCIM Groups (`/scim/v2/Groups`, `hub/models.py:ScimGroup`/
+  `ScimGroupMembership`).** Audit §1.2 named "SCIM Groups" as a declined
+  gap: a real Groups API needs many-to-many membership, which this Hub's
+  one-role-per-user model (`hub/rbac.py`) has no room for. This closes
+  the data-model half honestly instead of inventing a second
+  authorization system: a group is a label plus a membership list an IdP
+  keeps in sync, and adding or removing someone from one changes nothing
+  about what they can do — nothing in `hub/rbac.py` or the MCP tool
+  gating ever reads either table. Full create/get/list/PUT/PATCH/DELETE,
+  `displayName eq` filtering, and `members` add/remove including the
+  single-member `members[value eq "<id>"]` filtered-path shape real IdPs
+  (Okta among them) send. `DELETE` really deletes the group row (unlike
+  a `User`, a group confers no access, so there is no deprovisioning
+  history a delete could falsify) without touching members' own `User`
+  rows. New tables + RLS (migration `c9a1e73d5f02`, verified upgrade/
+  `alembic check`/downgrade round-trip against real Postgres). Tests:
+  `hub/tests/test_scim.py::TestGroupsAreMembershipOnly`/
+  `TestGroupsRoutesEndToEnd` (23).
+
+- **Automatic webhook alert on a privileged role grant
+  (`user.privileged_role_granted`, `hub/events.py`).** Audit §1.2 named
+  "an automatic alert on use" as a missing piece of break-glass recovery.
+  `hub.manage create-user`/`set-user-role`/`enable-user` now fire this
+  event through the existing webhook pipeline the moment anyone ends up
+  holding `ROLE_SECURITY_ADMIN` or `ROLE_OWNER`. It fires identically for
+  routine onboarding and an actual break-glass recovery — nothing in the
+  data model distinguishes the two, since both go through the same
+  audited `hub.manage` path — so an org gets an eyes-on signal either way.
+  Tests: `hub/tests/test_manage.py::TestPrivilegedRoleGrantAlert` (8).
+
+- **Structured subject tagging for exact-match erasure (`Trace.subject_ids`,
+  `tag_trace_subjects`/`find_traces_by_subject`/`purge_traces_by_subject`).**
+  Audit §2.2's remaining line: `search_trace_content` could locate
+  candidates via free text but could never honestly certify "this subject
+  has no data here" (a match proves presence, never absence). A curator
+  can now explicitly tag a trace with the subject(s) it concerns; once
+  tagged, finding and purging by that subject is an exact array-membership
+  match, not a scan. Opt-in and explicit throughout: nothing populates a
+  tag automatically, and untagged content still needs the free-text scan.
+  Tagging replaces rather than appends (a retried call can't accumulate
+  duplicates); purge deletes each matched trace's full amendment chain,
+  reporting the actual expanded set rather than just the directly-tagged
+  subset. New column + GIN index (migration `f3a8c6d92e14`, verified
+  upgrade/`alembic check`/downgrade round-trip against real Postgres).
+  Tests: `hub/tests/test_subject_tagging.py` (20), plus CLI coverage in
+  `hub/tests/test_manage.py`.
+
+- **Application-level IP allowlisting (`hub/server.py:IpAllowlistMiddleware`,
+  `HUB_IP_ALLOWLIST`).** Audit §1.6 named "no IP allowlisting / private
+  networking" as a single gap; it's really two things, and only one of
+  them is code. This closes the code-only half: a comma-separated CIDR
+  list, checked through the same trusted-proxy-aware client-address
+  resolution the rate limiters already use, refuses every other source
+  with 403 on every route except `/healthz`/`/readyz`. Off by default
+  (the middleware isn't even mounted with nothing configured). Private
+  networking itself — a VPC, peering, a topology unreachable from outside
+  at all — stays a deployment-topology decision for whoever operates the
+  Hub, not something this change claims to close. Tests:
+  `hub/tests/test_ip_allowlist.py` (9), plus config and boot coverage.
+
+- **SCIM 2.0 user provisioning (`hub/scim.py`, `/scim/v2/Users`).** Audit
+  §1.2 named "SCIM auto-provisioning" as still open. An IdP can now create
+  and, critically, immediately deactivate `User` rows itself, through a
+  dedicated `scim`-scoped API key (`hub.manage issue-key <org_id> [days]
+  scim`) rather than a wider read/write/admin credential. Manages the row
+  only — a SCIM-created account still has no OIDC identity linked and
+  cannot authenticate until a separate `hub.manage link-sso`, by design
+  (see the module's own docstring for why conflating provisioning with
+  login would undo `hub/sso.py`'s "no auto-provisioning" stance). `DELETE`
+  deactivates, never removes, matching every other deprovisioning path in
+  this Hub. `filter`/`PATCH` cover a narrow, named subset (`userName eq`,
+  `active` replace) rather than the full RFC 7644 grammar. Shipped
+  alongside a fix to `hub/scopes.py`: a scope added after a key's
+  issuance (like `scim`) is no longer implied by a legacy (pre-`scopes`-
+  column) key, which previously held every scope that existed at
+  verification time rather than at issuance time — a real, if narrow,
+  privilege-creep bug this change closes for every already-issued
+  production key. Tests: `hub/tests/test_scim.py` (27), plus new
+  scope-boundary tests in `hub/tests/test_api_key_scopes.py`.
+
+- **An opt-in in-process scheduler for alert checks (`hub/scheduler.py`,
+  `HUB_ALERT_SCHEDULER_ENABLED`).** Audit §8.3 named "no in-process
+  scheduler" as the remaining gap once alerting and reports existed:
+  `check-alerts` and `generate-report` were pure operator-CLI commands
+  meant for external cron. `hub/scheduler.py` now runs `check_rules`
+  itself, on a timer, inside the Hub server process — for an operator who
+  would rather not wire up cron next to it. Off by default, so a
+  deployment already using cron sees no change; enabling it on more than
+  one replica is safe for the same reason overlapping cron entries
+  already were (see the module's own docstring). `generate-report` stays
+  cron-only: its natural cadence (daily/monthly, aligned to a billing
+  period) doesn't fit the same short interval alert checking wants.
+  Tests: `hub/tests/test_scheduler.py` (5), plus boot coverage in
+  `hub/tests/test_build_app_startup.py`.
+
+- **A live OpenTelemetry span exporter (`commontrace/otel_exporter.py`,
+  `commontrace[otel]`).** Audit §6.2: "Not done: auto-instrumentation,
+  runtime wrappers, or a collector — CommonTrace consumes OTel, it does
+  not emit it." `CommonTraceSpanExporter` is a real
+  `opentelemetry.sdk.trace.export.SpanExporter`: attach it to a
+  `TracerProvider` your application already has (from your own
+  instrumentation or an existing vendor SDK — this adds none) and a
+  completed GenAI-semantic-convention span becomes a CommonTrace trace
+  the moment it exports, through the exact same parsing
+  (`adapters._otel`) and schema-validated, atomically-written path
+  `commontrace import --source otel` uses — not a second implementation
+  with its own idea of what a valid trace is. A span with no GenAI
+  content is skipped, never an exception, since an exporter that raises
+  into the application it's attached to would take it down for an
+  unrelated telemetry side-channel. Optional install; importing the
+  module costs nothing, only constructing the exporter needs the SDK.
+  Tests: `tests/test_otel_exporter.py` (10), through a real
+  `TracerProvider`.
+
+- **Named environments and scheduled release promotion
+  (`commontrace/environments.py`, `commontrace release promote|current|
+  pending`).** dev/stage/prod each track which release (`commontrace
+  release cut`) they are running. Scheduled activation needs no separate
+  flip step — a promotion carries the moment it should take effect, and
+  `current` starts returning it once that moment arrives by comparing
+  against `now` on every call, the same read-time trick this release's
+  Hub-side alerting and legal holds already use. Promoting into `prod`
+  reuses `commontrace/approval.py`'s exact separation-of-duties/
+  require-human logic — checked only against lessons newly entering the
+  environment, so an unrelated promotion is never blocked by a lesson
+  that was already there. **Deliberately does not gate retrieval**: this
+  is pure record-keeping, the same way releases themselves were before
+  this existed. A `Release` pins a lesson to a content-addressed
+  fingerprint, not its actual text, and this codebase does not retain a
+  past revision's text once a lesson is edited again — so there is no
+  canary/ring traffic-splitting here, and this is not a stopgap toward
+  one; that would need a real revision store, named as separate, larger
+  work rather than implied to already exist. Tests:
+  `tests/test_environments.py` (20).
+
+- **Locating traces for a subject-erasure request (`search_trace_content`,
+  `hub.manage search-content`).** Audit §2.2: "a customer who needs
+  subject-level erasure over trace content must locate the traces
+  themselves; there is no field this system could search on to do it for
+  them." This is that tool: a literal (default) or POSIX-regex exact-match
+  scan of title/context/solution text, including quarantined traces
+  (`search_traces` deliberately excludes both substring matching and
+  quarantined traces — the wrong choices here, right ones there). Only one
+  regex engine is ever consulted — Postgres's own, end to end, never a
+  second pass through Python's `re`, whose different grammar would either
+  reject patterns Postgres accepts or accept ones it rejects; an invalid
+  pattern surfaces as Postgres's own error, converted to a clean refusal
+  rather than a 500. Finds candidates only — `delete_trace`/`purge-trace`
+  still does the deleting — and is explicit that a match proves presence
+  while a non-match is not proof of absence, since this is not, and does
+  not claim to be, the automated "subject has no data here" certification
+  this schema cannot support without a structured subject-id column.
+  Tests: `hub/tests/test_search_content.py` (15) plus CLI coverage in
+  `hub/tests/test_manage.py` (6).
+
+- **A TypeScript client SDK (`sdk/typescript`, `@commontrace/hub-client`)** —
+  audit §6.4's first named non-Python client. Any MCP-capable client
+  already reaches the whole Hub tool surface without an SDK; this is a
+  thin, typed convenience layer over the official
+  `@modelcontextprotocol/sdk`, not a new capability. Typed methods exist
+  for the tools an integration reaches for first (`search_traces`,
+  `contribute_trace`, `get_trace`, `vote_trace`, `amend_trace`,
+  `list_tags`, `account_usage`); every other tool is reachable through a
+  generic `call(name, args)`. Retries a `rate_limited` tool-level
+  refusal by default (honoring the server's own `retry_after`) — the
+  same behavior `commontrace/hub_client.py`'s own module history says is
+  worth having, for the same documented reason (a bulk write otherwise
+  reads a limiter's "come back in two seconds" as a permanent failure).
+  Deliberately thinner than the Python client (no bulk-sync
+  reconciliation or adaptive pacing). Built and tested in CI
+  (`sdk-typescript` job) against a real install of the official MCP SDK.
+  8 tests, `HubClient.withCaller` as the no-network test seam.
+
+- **Threshold alerts and scheduled reports (`hub/alerts.py`).** Webhooks
+  (6.3) already tell a receiver *when* something happened; this adds
+  *whether* a number an operator cares about has crossed a line, and a
+  periodic usage summary — both delivered through the same signed,
+  at-least-once webhook queue rather than a second delivery mechanism.
+  `create-alert-rule <org_id> <metric> <gt|lt> <threshold>` defines a
+  rule against a closed, named set of metrics (`quarantine_rate`,
+  `commons_queries_used_pct`, `traces_used_pct`) — an unknown metric is
+  refused at creation time, never silently skipped later. `check-alerts`
+  evaluates rules and fires `alert.triggered` for any that cross their
+  threshold, respecting a per-rule cooldown so a metric that stays past
+  its line doesn't refire on every check; a metric that cannot be
+  computed yet (no traces, an unlimited plan) never fires. `generate-report
+  <org_id>` emits one `report.generated` usage summary over the same
+  billing period `account_usage` reports by. No in-process scheduler:
+  both commands are meant for an operator's own cron, the same shape as
+  `webhook-deliver`'s existing redelivery sweep. Tests:
+  `hub/tests/test_alerts.py` (23) plus CLI coverage in
+  `hub/tests/test_manage.py` (13).
+
+- **Collaboration on traces: comments, assignment, and a notification
+  inbox (`hub/collab.py`).** `hub/manage.py`'s Knowledge Base review queue
+  is an operator surface across every tenant; this is the missing piece
+  for a customer's *own* team working on their own traces. `add_comment`/
+  `list_comments` let a team discuss a trace; `assign_trace`/
+  `unassign_trace` give it one owner at a time (re-assigning replaces
+  whoever held it); `list_my_notifications`/`mark_notification_read` are
+  a per-person inbox ("you were assigned a trace", "someone commented on
+  one assigned to you"), with no delivery beyond the table itself — no
+  email, no push, no webhook. All six tools require a signed-in person
+  (the human identity below) and are refused as `person_required` for an
+  API-key-only caller — there is no meaningful author for a shared
+  workload credential, and no per-person inbox for one either. Gated by
+  the same scope+capability layers as every other tool: `CAP_CURATE` to
+  write, `CAP_VIEW` to read. New tables (`comments`, `assignments`,
+  `notifications`) carry the same row-level security as every other
+  org-scoped table. Tests: `hub/tests/test_collab.py` (28).
+
+- **Human user identity, RBAC, and OIDC SSO for the Hub.** An API key
+  authenticates a workload (a CI job, an agent fleet); until now there was
+  no way to authenticate a *person*, or to tell two people who share an
+  org's key apart. A `User` row (`hub/models.py`) now names a person, with
+  a role — Viewer, Analyst, Curator, Validator, Deployer, Security Admin,
+  Billing Admin, Owner — checked as a second, purely additive gate
+  alongside the existing API-key scopes (`hub/rbac.py`; every real MCP
+  tool maps to exactly one required capability, verified against the
+  live tool registry so an unmapped new tool fails closed rather than
+  silently inheriting access). A person signs in with an OIDC bearer JWT
+  (`hub/sso.py`): only asymmetric algorithms (RS/ES families) are ever
+  accepted, closing the classic attack of HMAC-signing a forged token
+  with the issuer's own public key; JWKS keys resolve strictly by the
+  token's `kid`, with no fallback to "the only key available." There is
+  no auto-provisioning — `hub.manage link-sso` is always an explicit
+  operator action — and `hub.manage disable-user` blocks a person's
+  access on their very next call, not at their token's next natural
+  expiry. New CLI: `create-user | list-users | set-user-role |
+  disable-user | enable-user | link-sso | unlink-sso`. Configured via
+  `HUB_OIDC_ISSUER`/`HUB_OIDC_AUDIENCE`/`HUB_OIDC_JWKS`/
+  `HUB_OIDC_JWKS_URI`; leaving issuer/audience unset disables SSO
+  entirely and the Hub behaves exactly as before. SAML, SCIM
+  auto-provisioning, and a login UI remain out of scope.
+
+- **Evidence decay: a measured effect stops being billed when nobody has
+  re-measured it.** This product's argument is that a memory earns its place
+  by measured effect. Nothing in that sentence had a date in it, and every
+  part of it should — six months on, the API the lesson described is
+  deprecated and the policy it encoded has changed, but the estimate is
+  unchanged because nothing re-ran it. The lesson stayed `active`, injected,
+  counted and **billed**.
+
+  The Hub already expired graduation from the pinned working-set block at a
+  180-day horizon. The value ledger — the surface attached to money — had no
+  horizon at all, so the two surfaces disagreed about whether the same
+  evidence was current and the one that disagreed was the one the customer
+  pays on. `commontrace/decay.py` closes that, and both surfaces now read one
+  constant instead of two that must agree.
+
+  **The asymmetry is the whole design.** Expiring every stale verdict is the
+  obvious implementation and is wrong in the vendor's favour: `value.py`
+  counts HELPS *and* HURTS deliberately ("dropping the second would make this
+  a brochure"), and a HURTS contributes a negative figure. So a stale HURTS
+  that stopped counting would *raise* the invoice — a vendor deleting its own
+  harms by waiting long enough. Therefore: a stale **HELPS stops counting**
+  (you cannot bill for value you can no longer show is current); a stale
+  **HURTS keeps counting** until it is re-measured (a harm you stopped
+  looking at is not a harm that went away). Both rules move the figure down,
+  which is the rule: when evidence decays, it resolves against the party who
+  benefits from the doubt.
+
+  **Undated is treated exactly as expired.** "We cannot tell when this was
+  measured" and "this was measured too long ago" have the same standing in an
+  argument about whether a number is current, and assuming in the vendor's
+  favour because a timestamp is missing is how missing timestamps become
+  convenient.
+
+  `value_delivered` now reports an `evidence` block — how many memories are
+  past the horizon, how many that actually cost, and which to re-measure
+  oldest first — and `hub.manage value` prints it. A figure that silently
+  shrank is a support ticket; a figure that shrank with a list of memories to
+  re-run is an action. `evidence_horizon_days=None` restores the historical
+  behaviour for reconstructing what was billed before the horizon existed.
+
+- **Hybrid retrieval: both arms, fused, instead of picking one.**
+  `commontrace query` chose ONE retriever — semantic when the attention extra
+  was installed and the index was fresh, lexical otherwise — and discarded
+  the other arm's signal entirely. So a store with the extra could not find a
+  lesson whose exact error string the user had pasted in, and a store without
+  it could not find one phrased differently from the task. They fail on
+  different queries, which is precisely when fusing beats picking.
+
+  `commontrace retrieval --fusion rrf` runs both and fuses them with
+  Reciprocal Rank Fusion. By **rank, not score**: the lexical arm returns an
+  IDF relevance in [0,1] and the semantic arm a cosine similarity, and there
+  is no honest conversion between them. A lesson only one arm surfaced is not
+  penalised for the other's silence — a lexical pass cannot be expected to
+  find a paraphrase, and treating that as a vote against would make adding an
+  arm reduce recall. This also makes
+  `commontrace.retrieval.reciprocal_rank_fusion` reachable from the product
+  rather than only from the offline benchmark that tunes it.
+
+  **Turning fusion on changes which lessons are eligible**, and eligibility
+  is the denominator of every causal number this product sells. The arm
+  composition is therefore recorded *inside* the scorer label an assignment
+  carries (`rrf(idf-v2+semantic)`), so the existing
+  `integrity.check_scorer_drift` invalidates a run whose arms changed
+  mid-flight — no second column an older reader would ignore, and no second
+  check that could disagree with the first about the same fact. A store
+  pinned from its log restores both halves. A semantic arm that fails falls
+  back to lexical *and logs the lexical label*, because logging the fused one
+  would claim an arm that did not run.
+
+  The MCP `retrieve` surface stays lexical by design (the semantic arm needs
+  a model load per call and an index nothing rebuilds automatically) and now
+  says so in a `fusion_note` when the store configures fusion — the two
+  surfaces disagreeing silently about eligibility is two treatments pooled
+  into one experiment.
+
+- **`commontrace retrieval` can set the context budget** (`--max-lessons`,
+  `--max-chars`) and shows `fusion`, the budget, and the exact label
+  assignments will be logged under.
+
+- **`TRUST.md` and `AUDIT_RESPONSE.md`: the boundary, and the gaps at full
+  weight.** `TRUST.md` answers the question that actually decides adoption —
+  *which bytes leave the machine this runs on* — exhaustively, per path, and
+  gives the commands to verify each claim without trusting the document.
+  (The load-bearing one: `commontrace/hub_client.py` is the only
+  network-capable module in the client, checkable with one `grep`.)
+
+  `AUDIT_RESPONSE.md` answers a third-party readiness audit finding by
+  finding. Every row is **done**, **partial**, **not applicable**, or
+  **requires business action**, under two rules the document holds itself
+  to: no "done" without a module and a test file a reader can run, and
+  "requires business action" is never downgraded to "partial" by building
+  something adjacent — shipping an audit log is not progress toward SOC 2,
+  and shipping retention controls is not progress toward a DPA.
+
+  Both list what does not exist at full weight: no legal entity, no SOC 2,
+  no penetration test, no SSO/SCIM/human users, no residency commitment, no
+  signed artifacts or SBOM, no support SLA. A buyer who finds those after a
+  reassuring answer is worse off than one who reads them first.
+
+- **`commons/eval/sequential_error_rates.py`.** The sequential-testing unit
+  tests pin the mechanics and cannot answer the question a buyer asks — *how
+  often does this call a useless memory a winner?* That needs simulation,
+  which is too slow for the test suite and too important to leave as an
+  unchecked claim in a document. It measures, at 500 occasions/arm looking
+  every 25 and stopping on the first significant look: false positives under
+  the null **14.7% → 0.7%**, and states the cost rather than omitting it —
+  power at a real +10pp effect is **65.3%**.
+
+- **Import adapters for LangSmith, Langfuse, Braintrust and OpenTelemetry.**
+  `commontrace import` could read JSONL and CSV with `--title-field` and
+  friends, which works for a spreadsheet and works for none of the four
+  systems a customer is most likely to be coming from: those export *nested*
+  rows, where the text lives at `inputs.input` or inside an OTel attribute
+  list and no `--context-field` reaches it. A customer with two years of
+  LangSmith history had to write a transform script before this product
+  could read one of their traces, and the cost of that script is the cost of
+  not adopting.
+
+  `--source langsmith|langfuse|braintrust|otel` (`commontrace/adapters.py`)
+  flattens the vendor's shape into the one `import_data` already
+  understands, so every adapter shares the existing streaming, skip reasons
+  and schema validation rather than bringing its own write path. Each also
+  picks up the outcome the source system *already knows* — LangSmith's
+  `error`, Langfuse's `scores`, Braintrust's `expected` vs `output`, an OTel
+  span's status — which is exactly the label distillation clusters on.
+
+  Two deliberate non-behaviours. They never invent: a row missing its
+  solution is skipped with a reason rather than filled with a placeholder.
+  And silence is never success: an OTel `UNSET` status, a LangSmith run with
+  no `error` key, a Langfuse trace with no recognised score all import with
+  *no* outcome, because scoring an uninstrumented fleet as 100% resolved is
+  the most expensive wrong answer available here. They read a file you
+  already have — no API key, no hostname, no network call.
+
+- **Webhook event export from the Hub.** Everything the Hub knew was
+  readable only by polling it, so reacting to a quarantine or an experiment
+  verdict meant a cron job diffing `hub/manage.py` output against last time.
+  `hub/events.py` adds a versioned event set, a durable delivery queue and
+  `webhook-add`/`webhook-list`/`webhook-rotate`/`webhook-disable`/
+  `webhook-deliver`.
+
+  **Events carry no trace content.** Every event type declares its exact
+  fields and `emit` refuses a payload with any other key — a whitelist,
+  because a denylist fails the moment somebody adds a field nobody thought
+  to ban, and a webhook is egress to a third party that is configured once
+  and then forgotten.
+
+  **The signing secret is never stored.** Unlike an API key, which is only
+  verified and so can be a hash, a webhook secret must be used on every
+  delivery. It is derived per endpoint from the deployment's signing key
+  plus the endpoint id and key version, so a full dump of
+  `webhook_endpoints` yields no ability to forge one event; rotation bumps
+  an integer.
+
+  The signature covers `"{timestamp}.{body}"`, so a captured delivery cannot
+  be replayed once the tolerance passes. Delivery is at-least-once with a
+  stable `event_id` for deduplication, backoff, and a bounded give-up that
+  shows up in `webhook-list` — a queue that gives up quietly is a queue that
+  lies about delivery.
+
+- **Retention policies, legal holds, and a purge you read before it runs.**
+  The Hub could delete one trace or one whole organization, both by hand and
+  both immediately. Nothing expired on its own, so the answer to "what
+  happens to a trace nobody touches for three years" was "nothing, ever" —
+  which is not a retention policy but the absence of one, and it is the
+  shape that turns an ordinary breach into a breach of everything the
+  product has ever seen.
+
+  `hub/retention.py` adds per-org policies by **object type and status**
+  (`trace`, `vote`, `holdout_observation`, `kb_submission`, `audit_log`),
+  because "keep quarantined traces two years and ordinary ones ninety days"
+  is the shape a real policy takes and an operator forced to pick one number
+  per org picks the longer one. Driven by `set-retention`,
+  `clear-retention`, `retention-plan`, `retention-apply`, `legal-hold`,
+  `release-hold` and `holds` in `hub/manage.py`.
+
+  **A plan deletes nothing, and applying one requires its digest.** The
+  digest is over the exact row ids, so approving it approves one specific
+  set of rows; if the store moved in between, the apply is refused and the
+  new digest printed. A purge is the one operation whose mistakes cannot be
+  inspected afterwards — the evidence is what it deleted — so the approval
+  has to name the consequences rather than the action. That also makes a
+  scheduled purge safe to automate, which is why `retention-apply` is
+  deliberately not behind an interactive prompt.
+
+  **A legal hold outranks every policy, visibly.** Held rows are counted and
+  named in the plan rather than quietly skipped: an operator reading "purge
+  complete" must not believe data is gone that is frozen. Releasing sets
+  `released_at` rather than deleting the row, so "frozen March to July, by
+  whom and why" stays answerable.
+
+  **A running experiment blocks deletion of its own arms.** While an org's
+  randomized holdout is running, its observations are not purgeable by any
+  policy. Deleting some of them mid-run is differential attrition, not data
+  hygiene — it biases the causal estimate invisibly, because the analysis
+  just sees a smaller, apparently clean dataset. Once stopped they become
+  purgeable, with a warning that the value ledger's signature commits to an
+  export digest that cannot be recomputed from deleted rows.
+
+  **Floors are refused, not clamped.** The audit log's is the longest (365
+  days) because it is what proves the purges happened; a policy deleting it
+  soon after would let data and the record of its deletion both disappear in
+  two individually legitimate steps. An operator who asked for 7 days and
+  silently got 365 would believe the store honours a number it does not.
+
+  Both new tables carry `org_id` and get the same row-level security the
+  other org-scoped tables got in `d5c8b3a91e77`, with a test that now fails
+  on *any* future org-scoped table that skips it.
+
+- **Dosage, always-on lessons, and retrieval receipts.** Retrieval answered
+  "which lessons match, best first" and stopped there, which left two
+  questions that actually decide what an agent receives unanswered.
+
+  **How much.** `top_k` bounds the COUNT and says nothing about the size: ten
+  terse lessons and ten pages of prose were the same `top_k=10`, and the
+  second displaces the task itself out of the context window.
+  `commontrace/dosage.py` admits against a budget in characters as well as
+  count (`max_lessons`/`max_chars` in `retrieval.json`), and `retrieve` now
+  returns a `budget` gauge and a `not_injected` list naming what did not fit
+  and why. Nothing is silently truncated -- an agent given nine of ten
+  lessons and told it was given ten acts on the missing one's absence as
+  though it were the fleet's position.
+
+  **Which is unconditional.** A lesson may set `core: true`, which admits it
+  ahead of the matched set whether or not it shares vocabulary with today's
+  request. Before this, the only way to make a rule reliable was to make it
+  match everything, which is the same thing as making retrieval worse. Core
+  lessons are still budgeted -- they compete only with each other, by
+  importance -- because a fleet that marks forty lessons core has not thereby
+  earned forty lessons of context, and the unconditional reading's failure
+  mode is that the always-on set crowds out every matched lesson and
+  retrieval appears to stop working with no error.
+
+  **What was actually there.** `commontrace/receipts.py` records, per
+  occasion, the candidate set that was VISIBLE (every active lesson, pinned
+  to its revision, with a digest over the set), the subset ADMITTED (with
+  rank, relevance and the budget that shaped it), and -- written later as its
+  own line -- which of those the agent says it USED. The holdout log records
+  eligibility and arm, which starts one step too late: a lesson that was
+  never a candidate does not appear in it at all, so "the memory did not
+  help" and "the memory was never offered" were indistinguishable
+  afterwards, and they have opposite remedies. The injected/used split is
+  the other one it makes possible; every reuse number before it was counting
+  injections.
+
+- **Immutable releases: what the fleet was running, as one named thing.**
+  This product had two of the three identities a deployable change needs --
+  a lesson (a mutable slug) and a revision (content identity for one
+  lesson's text) -- and was missing the third. Nothing answered "what was
+  the fleet running on Monday", which is the question rollback, attribution
+  and atomic promotion all turn out to be: `status: active` is a property of
+  each file NOW, carrying no memory of when the set changed or what from,
+  and approving six lessons one at a time means the fleet runs five
+  intermediate combinations nobody chose and nobody measured.
+
+  `commontrace/release.py` adds a content-addressed, append-only snapshot of
+  exactly which (lesson, revision) pairs were active together, what it
+  replaced, and who cut it. It stores revisions rather than text, so it can
+  never disagree with the lessons themselves. `commontrace release
+  cut|list|show|diff|rollback` drives it.
+
+  Three properties do the work. **Stale-base rejection**: cutting from a
+  release the store has moved past is refused, because two curators each
+  approving a lesson and cutting from what they saw loses a deployment
+  decision, not a text edit. **A rewritten lesson is its own diff category**,
+  not a remove plus an add -- "we changed what this rule says" and "we
+  swapped one rule for another" are different deployments. And **a rollback
+  refuses to restore a lesson whose text has changed since**: the target
+  release pinned a revision the store no longer holds, so flipping a status
+  would put back a different rule under the same name; `--allow-partial`
+  proceeds once the operator has seen which ones. Rolling back appends
+  rather than rewinds, because returning to an earlier state is itself a
+  deployment and is the single fact everyone asks about afterwards.
+
+  Deliberately does NOT gate retrieval yet: a release records the active set
+  rather than deciding it, so a store that never cuts one behaves exactly as
+  it does today. Making retrieval resolve through a release (so a fleet can
+  run an older set without editing files, and canary/ring targeting has
+  something to target) changes what every agent reads and belongs behind its
+  own decision.
+
+- **Pre-registration, and a raw export the customer can re-run the
+  arithmetic from.** `experiment.plan` already worked out what it takes to
+  answer the question before a run starts; nothing recorded that plan, and a
+  plan nobody wrote down is a recollection formed after the result is known,
+  by the party the result benefits. `commontrace/prereg.py` stores the
+  commitments -- primary outcome, minimum practical effect, holdout rate,
+  planned size, stopping rule, salt -- fingerprints them, and then DIFFS the
+  run against them afterwards, which is the part that makes it more than a
+  comment: a moved endpoint, a changed detectable effect, a different
+  randomization, a fixed-n design stopped early, or a registration written
+  after the data started arriving are each reported as a named deviation. An
+  unregistered run says so rather than passing silently.
+
+  `commontrace/raw_export.py` exports every arm decision -- including the
+  assigned-but-never-reported ones, because those ARE the attrition question
+  -- as CSV with a digest taken over canonical sorted rows, so it identifies
+  the data set rather than the byte order a database happened to return. The
+  digest and the pre-registration fingerprint are now part of the signed
+  ledger's payload, which is what makes them anchored rather than merely
+  available: an issuer cannot hand over a validly signed invoice alongside a
+  data export that has nothing to do with it, because the signature commits
+  to both.
+
+  Wired through the Hub, not left as library code: `hub.manage
+  start-experiment <org> [rate] [outcome] [notes]` registers the design at
+  the moment the salt is minted (a new salt is a new experiment and does not
+  inherit the last one's credibility), `causal_effects` and `value_delivered`
+  carry the registration check and the evidence digest, and `hub.manage
+  export-assignments <org> [file]` writes the rows out. `crud.holdout_
+  assignments` is now the single definition of that query, because a second
+  copy is a second chance for the invoice and the rows justifying it to
+  describe different data.
+
+- **A verdict read from a running experiment now survives having been
+  watched.** Every surface here reads a LIVE holdout -- `experiment_status`,
+  the console Proof page, `causal_effects` on every call, `working_set`
+  promoting a trace the moment it clears significance -- which is repeated
+  significance testing on accumulating data, the oldest way to manufacture a
+  result. Measured on this estimator, in a world where the memory does
+  nothing at all, the fixed 5% threshold declared HELPS or HURTS in **28% of
+  runs**. That verdict promotes a memory into every later retrieval and
+  feeds an invoice.
+
+  `experiment.anytime_confidence_interval` is a Robbins-style normal-mixture
+  confidence sequence: valid at every sample size simultaneously, so there
+  is no stopping rule to violate and "peeked until it looked good" is not a
+  way in. `analyze(sequential=True)` requires a result to clear both it and
+  the existing multiplicity correction, and `hub/crud.py:causal_effects`
+  passes it, because that is the surface being peeked. An alpha-spending
+  schedule (`experiment.alpha_spent`, O'Brien-Fleming and Pocock) is also
+  implemented and documented as insufficient on its own here -- it assumes
+  the experiment stops at a planned size, and measured, it left 12.7%.
+
+  The cost is stated rather than hidden, and was measured both ways: false
+  positives 28% → 1.3% (nominal 5%), power within 1,000 occasions 95% → 69%
+  at a +10pp effect and unchanged at 100% for +25pp and above. The sequence
+  is tuned to where a memory worth promoting concludes rather than to where
+  the design would exhaust itself -- without that, 60 occasions per arm
+  showing a 50-point effect read as "cannot say", which is a miscalibrated
+  instrument rather than a careful one. The default stays non-sequential for
+  a one-shot analysis of a finished run, where the penalty would buy nothing.
+
+- **The value aggregate no longer double-attributes occasions, no longer
+  sums interval endpoints, and reports what its own selection is worth.**
+  Three separate defects sat in the arithmetic that turned per-memory
+  effects into the figure an invoice is computed from, and each one made a
+  number that looked like a measurement.
+
+  *Double attribution.* Summing `effect x n_injected` across memories is a
+  count of occasions only if no occasion was counted twice -- and nothing
+  guaranteed that. One support contact matching three traces, all injected,
+  resolving once, was three improved occasions in the total, then three
+  times the money. On the Hub this is the NORMAL case, not an edge one:
+  `holdout_assign` takes a list of traces for a single occasion.
+  `value.OccasionOverlap` (built from the assignment log the validity audit
+  already reads) answers whether the sum is a count at all, and when it is
+  not there is no total, no money and no ledger -- the same rule this module
+  already applied to a compromised experiment, one level up. The per-memory
+  effects are untouched: the addition was unsound, not the estimates.
+
+  *And an aggregate that survives it.* Refusing a total would be the answer
+  for nearly every real fleet, so `value.policy_effect` supplies the one
+  that stays valid: occasions that received ANY memory against occasions
+  that received none -- one row per occasion by construction, so
+  double-counting cannot arise. It attributes nothing to an individual
+  memory, which is the trade. Validated by simulation against a known
+  ground truth: bias -0.003 on a true +0.15 lift, and 95% interval coverage
+  of 95% over 40 runs.
+
+  *The interval.* Summing the per-memory 95% ENDPOINTS is not a 95%
+  interval for the sum under any assumption -- too wide for independent
+  estimates, whose errors partly cancel, and undefined for dependent ones
+  without the covariance. Now combined in quadrature, with the independence
+  that requires being exactly what the overlap gate establishes.
+
+  *The selection.* Counting only memories that cleared significance selects
+  on the same data it then reports, biasing the total's magnitude away from
+  zero. `occasions_improved_unselected` reports the same total without that
+  selection, so the size of the winner's curse is a figure beside the
+  billable one rather than a caveat nobody reads.
+
+- **A store can require that the approver of a lesson is not its author.**
+  Activating a lesson is the one action with fleet-wide blast radius -- an
+  `active` lesson is injected into every later retrieval verbatim -- and
+  the gate enforced everything about WHAT was being activated (no
+  scaffolding, valid schema, no secrets or injection payloads) while
+  leaving WHO entirely open: the same actor could draft a lesson and
+  approve it a second later, so the independent second judgement the
+  Validator role exists to supply was available rather than required,
+  in exactly the case where it matters most -- an agent curating its own
+  output unattended at machine speed. `commontrace/approval.py` makes that
+  a policy the store states in `memory/approval-policy.yaml`:
+  `mode: two-person` refuses an approver who appears among the lesson's
+  recorded authors (read from the revision journal every content change
+  already writes), and `require_human: true` refuses an `mcp:` actor's
+  approval outright. Enforced on both approval paths -- the CLI's
+  `lesson approve` and the MCP `approve_lesson` tool -- and `--force` does
+  not override it, because that flag exists for an author judging a content
+  warning a false positive, which is precisely the judgement this policy
+  says that person may not make. With no policy file the behaviour is
+  exactly as before. A malformed policy raises rather than falling back to
+  the permissive default, since a security setting that silently disables
+  itself is the one failure mode it must not have.
+
+- **API keys carry scopes, so a credential minted for one job cannot do
+  every job.** There was one identity per org and one privilege level: hold
+  a key and you could search the corpus, contribute to it, delete a trace
+  outright, and schedule the organization's own deletion. Least privilege
+  is not a posture you can adopt with a credential that has no notion of
+  less. `hub/scopes.py` defines three -- `read`, `write`, `admin` -- mapped
+  to the three jobs a credential actually holds in a fleet (a dashboard
+  reads; a production agent reads and writes; only an operator's key needs
+  the destructive tools). They deliberately do NOT imply each other, which
+  is what makes "can this key escalate?" answerable by reading one row
+  instead of simulating a hierarchy. Every MCP tool declares its scope at
+  the registration site via `scoped_tool`, and a test asserts no tool can
+  be registered without that decision -- the failure mode designed out is a
+  tool silently inheriting "any authenticated key may call this", which is
+  what the whole surface did before. A denial returns
+  `{"error": "forbidden", "required_scope": …, "granted_scopes": …}` rather
+  than `unauthorized`, because the credential is valid and inviting a
+  client to re-authenticate would turn a configuration error into an
+  infinite retry loop. `issue-key <org_id> [days] [scopes]` takes the grant;
+  omitted, it grants all three, so every existing key and the documented
+  onboarding one-liner behave exactly as before (the column's server
+  default backfills existing rows the same way).
+
+- **The Hub now refuses to start when row-level security is installed but
+  cannot bite, and the shipped stack serves as a role that cannot bypass
+  it.** Postgres skips every RLS policy for a superuser or a `BYPASSRLS`
+  role silently -- no error, no log line -- so "installed but inert" is a
+  worse state than "not installed": a guarantee an operator believes in and
+  does not have. This repo shipped exactly that, because the Postgres image
+  makes `POSTGRES_USER` the cluster superuser and `docker-compose.yml`
+  pointed `HUB_DATABASE_URL` at it, and the only response was one warning
+  line at startup. Two halves now close it. `hub/postgres-init/
+  10-runtime-role.sql` creates `commontrace_app` -- `NOSUPERUSER`,
+  `NOBYPASSRLS`, owning nothing, holding DML grants only, with
+  `ALTER DEFAULT PRIVILEGES` so every table a future migration adds is
+  covered automatically -- and the compose `hub` service serves as it while
+  `migrate` keeps the owner. `hub/db.py:check_row_level_security` (renamed
+  from `warn_if_rls_is_inert`, because it can now refuse) raises unless
+  `HUB_ALLOW_RLS_BYPASS=true` acknowledges the unsafe shape, with
+  `HUB_REQUIRE_RLS=true` as the stronger opt-in form that also rejects
+  policies being absent entirely. An unreachable database at boot still only
+  warns: "cannot determine" is not "determined to be unsafe", and a
+  diagnostic that crash-loops a process on a transient blip is worse than
+  what it diagnoses. `hub/abuse.py`'s Postgres rate limiter now checks
+  whether its table exists before issuing DDL, because Postgres refuses
+  `CREATE TABLE IF NOT EXISTS` to a role without schema `CREATE` *even when
+  the table already exists* -- without that, the database-backed limiter and
+  the non-bypassing role would have been mutually exclusive.
+
+- **Content-safety screening for lesson/trace text, closing the OWASP
+  ASI06 (Memory & Context Poisoning) gap: nothing previously inspected
+  what a captured trace or an activated lesson actually said before
+  storing or injecting it verbatim.** New `commontrace/memory_guard.py`
+  scans free text for three independent things: HIGH-confidence secrets
+  (AWS/GitHub/Slack/Stripe/Google/Anthropic tokens, PEM private key
+  blocks, JWTs -- structured shapes vanishingly unlikely to occur by
+  chance), prompt-injection patterns (instruction-override phrasing,
+  forged system-role blocks, jailbreak personas, hidden zero-width/bidi-
+  override Unicode), and PII (email, phone, SSN-shaped numbers, Luhn-
+  validated card numbers) -- the last of which never blocks anything on
+  its own, only secrets and injection findings do. Wired into two gates
+  that already existed: `hub/abuse.py:suspicion_reason` now also quarantines
+  a `contribute_trace`/`amend_trace` submission that trips a blocking
+  finding (excluded from `search_traces`, same as its existing spam
+  heuristic); `commontrace lesson approve` and the MCP `approve_lesson`
+  tool now refuse to activate a lesson that trips one -- an active lesson
+  is injected into every later retrieval verbatim, so this is the one gate
+  between drafted text and a live agent decision. The CLI path accepts
+  `--force` for a human to override a false positive (e.g. a lesson that
+  legitimately documents an example credential pattern); the MCP tool does
+  not, since an agent approving its own draft has no interactive human to
+  confirm one. See SECURITY.md's scope section.
+
+- **Issuer signatures for the value ledger, so a hash chain nobody can
+  forge a replacement for is now also a hash chain nobody can fabricate in
+  the first place.** `verify_ledger` proves a ledger is internally
+  consistent -- each entry follows from the one before it back to a fixed
+  genesis -- but that genesis and the hashing algorithm are both
+  deliberately public (the whole point is that a customer can reimplement
+  the check), so anyone with write access to wherever a ledger is stored
+  could regenerate an entire replacement chain from different figures and
+  it would verify exactly as cleanly as the real one. `commontrace/value.py`
+  adds `sign_ledger`/`verify_ledger_signature`: an HMAC-SHA256 over the
+  chain's root, bound to the org and the issuance timestamp so a signature
+  cannot be replayed onto a different org's ledger or re-presented later as
+  fresher than it is. `hub/crud.py`'s `value_delivered` signs every
+  response when the new `HUB_LEDGER_SIGNING_KEY` is configured, returning
+  `signature`/`issued_at`/`signature_algorithm`; left unset, `signature` is
+  `null` and `signature_reason` says explicitly that this deployment has
+  not opted into issuer authentication, rather than letting an unsigned
+  ledger silently look more audited than it is. See hub/DEPLOYMENT.md
+  "Signing the value ledger".
+
+- **A survival-analysis censoring check, so a lesson that works faster no
+  longer looks like it is losing data.** `check_differential_attrition`
+  compared terminal outcome-recording rates with no notion of time, and a
+  lesson that helps concludes its occasions SOONER — so mid-run, the
+  treated arm always has more outcomes on the books purely because it got
+  there first. The check read that head start as attrition and returned
+  `INVALIDATES`: effect unquotable, more data won't fix it. Measured on a
+  fleet where treated reports in 5 minutes, control in 90, and nothing is
+  ever lost: old reading `INVALIDATES` (96.7% vs 50%), new reading `OK`.
+  `commontrace/survival.py` adds Kaplan-Meier and the log-rank test
+  (stdlib only, same reasoning as this package's own two-proportion test
+  and normal CDF), and an occasion now counts toward attrition only once
+  it is older than the point by which the SLOWER arm's own outcomes had
+  mostly arrived — the horizon is per-arm, not pooled, so a fast arm can't
+  set the clock the slow arm gets judged against. The speed difference
+  itself is reported by a new `censoring_hazard` check that can reach
+  `WEAKENS` ("re-read later") and structurally cannot reach `INVALIDATES`,
+  because timing is not bias.
+
+- **A rate card and a hash-chained audit ledger for `value_delivered`.**
+  A flat per-occasion rate prices a password reset and an averted SLA
+  breach identically, which is the first thing a finance function
+  rejects. `commontrace/value.py`'s new `RateCard` states the mix
+  explicitly — named tiers, each a share of occasions and a cost per
+  occasion — and refuses a card whose shares don't sum to one occasion.
+  Every tier is echoed back on the wire as an INPUT, never a finding: none
+  of it is measured, only `occasions_improved` is. When a rate is agreed
+  and the run is readable, the response also carries a ledger — one line
+  per counted memory, each entry's SHA-256 covering the previous entry's
+  hash — so editing a figure, dropping the memory that `HURTS` before
+  invoicing, or reordering to bury it all break the chain.
+  `value.verify_ledger` recomputes it from the printed fields in a fixed
+  order, so a customer's own auditor can reimplement it independently
+  rather than trusting this codebase. The ledger inherits every refusal
+  the number already had — no rate, an unaudited run, or a `COMPROMISED`
+  experiment all yield an empty ledger, because a verifiable chain over a
+  biased sample would make an unsupportable figure look audited, which is
+  worse than no ledger at all.
+
+- **A trivial-prompt gate, so an acknowledgement never pays for a
+  retrieval.** A meaningful share of an agent's turns — "ok", "thanks",
+  "lgtm", "go ahead" — carry no content to match a lesson against; ranking
+  the corpus against them returns noise, and injecting that noise on an
+  occasion it had nothing to do with is exactly the marginal-eligibility
+  contamination `integrity.check_marginal_eligibility` exists to catch.
+  `commontrace/cache_gate.py` (adapted from Nous Hermes Agent's
+  `TRIVIAL_PROMPT_RE`) skips retrieval before the corpus is even read.
+  Anchored at both ends so it never swallows a real query sharing a first
+  word with an acknowledgement ("no results come back..." is not "no"),
+  and — the property that makes it safe rather than merely fast — it runs
+  BEFORE randomization: a skipped turn reads no store and is assigned no
+  arm, so it never becomes an occasion at all. The same filter applied
+  after assignment would drop occasions once their arm was known, which is
+  the one thing a holdout cannot survive.
+
+- **`working_set` — memory that costs its tokens once per session instead
+  of once per query, and earns its contents.** Retrieval is not free:
+  measured on a live Hub, one `search_traces` page costs ~231 tokens and
+  is paid again on every call. The simplest design in the field, Nous
+  Research's Hermes Agent (MIT), avoids that entirely by reading two small
+  files into the system prompt once at session start and never changing
+  them mid-session, deliberately, so the provider's prefix cache is never
+  invalidated — roughly 1,300 tokens for a whole session and zero marginal
+  cost per query.
+
+  What Hermes cannot do is decide what belongs in those tokens; it asks
+  the agent to curate its own notes. Mem0, Zep and Letta fill their
+  equivalents by automatic extraction and grade themselves on recall
+  benchmarks (LoCoMo, LongMemEval) — "did you remember the fact", never
+  "did remembering it make the work go better". This Hub already answers
+  the second question per trace, so `working_set` selects by MEASURED
+  CAUSAL EFFECT: a trace is pinned only once the fleet's own randomized
+  holdout has established it as HELPS, ranked by occasions actually
+  improved. The experiment stops being only a report and becomes the
+  promotion mechanism.
+
+  That rule also resolves what would otherwise be a methodological hole. A
+  trace pinned into every session is injected on every occasion, which
+  would destroy the control arm still measuring it — so restricting the
+  block to established effects means nothing under test is ever pinned. A
+  trace is either being randomized or it has graduated, never both. A
+  COMPROMISED experiment yields no block at all, for the same reason it
+  yields no value figure, and a fleet with no established effects yet gets
+  an empty block that says so rather than a most-retrieved list that would
+  look identical while carrying no evidence.
+
+  Measured live, end to end: a trace promoted after its effect was
+  established at +51% over 63 occasions produced a 112-token block against
+  231 tokens per search — **41x cheaper at 20 lookups per session, 103x at
+  50** — while remaining strictly additive, since `search_traces` still
+  reaches the entire corpus including everything still under test.
+
+- **Graduation into `working_set` now expires, so a pinned lesson cannot
+  outlive the evidence for it.** The promotion rule above creates its own
+  blind spot: a pinned trace is injected on every occasion, so it is never
+  withheld, so it stops accumulating the withheld arm its effect was
+  computed from. Graduation *freezes* the measurement. Left alone, "has a
+  measured causal effect" quietly decays into "had one once, against a
+  world that has since moved on" — and the upstream fix, API change or
+  dependency bump that made the lesson obsolete are all invisible to it.
+
+  Every competing system addresses the same staleness with a **proxy for**
+  usefulness rather than a measurement of it. Mem0 scales retrieval rank by
+  an Ebbinghaus-style recency/access curve (~0.3x–1.5x, a soft rerank, not
+  a delete); the 2026 survey literature converges on "differential
+  exponential decay keyed to relevance, access frequency and temporal
+  pattern". All of them can only see whether a memory was recently *read*.
+  A lesson nobody happened to retrieve decays; an obsolete lesson everyone
+  keeps retrieving does not.
+
+  This Hub measures the thing itself, so it does not have to guess — and it
+  deliberately does not claim what it cannot see. `causal_effects` now
+  dates every estimate (`last_measured_at`, from the last resolved
+  observation the estimate was actually computed from), and `working_set`
+  drops any entry whose evidence is older than a configurable horizon
+  (`evidence_horizon_days`, default 180). The reason string is explicit
+  that this is **not** a finding that the lesson stopped working: it is
+  that nobody has checked. Leaving the block is precisely what returns the
+  trace to the randomizer, which is the only mechanism that can produce a
+  fresh answer, so the horizon acts as the working set's *renewal period*
+  rather than a punishment — the trace is promoted again as soon as the
+  experiment re-establishes it.
+
+  Each entry also carries `evidence_age_days`, and both new fields are
+  structured metadata only: they are deliberately kept **out** of the
+  pinned `block` text, because an age changes daily and a block whose text
+  changes daily invalidates the prefix cache the whole feature exists to
+  preserve. Pinned by a test.
+
+### Fixed
+
+- **`commontrace retrieval` no longer erases settings it was not asked to
+  change.** `configure()` wrote only the fields it was given, so a store that
+  had set a context budget lost it the next time anyone touched the floor —
+  the budget silently reverted to the default, meaning an operator tightening
+  precision by one flag also tripled how much text their agents received,
+  with nothing printed. It now carries every setting through, and the same
+  applied to `note`.
+
+- **A lesson the budget crowds out is no longer logged as treated.** Holdout
+  arms are now assigned AFTER the dose is computed and only over lessons
+  that will actually be administered. Assigning first would log a
+  crowded-out lesson as treated on an occasion it was never present for, and
+  an occasion counted as treated where no memory was injected pulls the
+  measured effect toward zero -- silently, and worse the tighter the budget
+  is. A withheld lesson's slot is deliberately not backfilled with the
+  next-ranked lesson: substituting one would make the control arm "a
+  different lesson" rather than "no lesson".
+
+- **`core` is carried in the lesson cache projection** (`FORMAT_VERSION` 2).
+  Always-on lessons are selected from the projected frontmatter, so a
+  missing `core` there did not degrade gracefully -- it read False for every
+  lesson in the store and the always-on set was silently empty.
+
+- **One Reciprocal Rank Fusion implementation, not two.**
+  `commons/eval/hybrid_fusion.py` had its own copy of the formula while
+  sweeping for the `k` and arm weights the product should run with, so it
+  could have tuned one implementation and shipped another. It now calls
+  `commontrace.retrieval.reciprocal_rank_fusion`, which gained the optional
+  per-arm `weights` that sweep needs.
+
+- **A pinned `working_set` trace could be drawn into its own control arm,
+  silently biasing the effect it was promoted for.** `working_set`'s
+  contract says a trace is "either being randomized or it has graduated,
+  never both", and nothing enforced it. The block goes into the system
+  prompt for a whole session; `search_traces` (via `holdout_for_results`)
+  then assigns arms to every result it returns, promoted traces included.
+  When one drew the WITHHELD arm, the occasion was recorded as a control
+  while the trace was still sitting in the agent's prompt — a treated
+  occasion counted as untreated. `holdout_assign`'s own note already
+  described the consequence precisely: it "does not fail loudly — it biases
+  the measured effect toward zero". Nothing in `integrity.audit` could see
+  it either, because the arms remain balanced and deterministic; only the
+  *content of the prompt* was wrong, and the Hub never saw that.
+
+  Left alone this is self-defeating: promotion contaminates the estimate
+  that justified the promotion, eroding it until the trace is demoted
+  again, and the fleet's headline `value_delivered` figure is biased down
+  with it.
+
+  Only the caller knows what it actually pasted, so `search_traces` and
+  `holdout_assign` now take `pinned` — the `entries[].trace_id` a
+  `working_set` block handed back. Those ids are excluded from the
+  randomization entirely and reported as `inject` with **no observation
+  recorded**, so they contribute to neither arm. They are dropped *before*
+  near-duplicate clustering, not after: `_cluster_representatives` can
+  elect a pinned trace as a cluster's representative, and the whole cluster
+  would otherwise inherit an arm from a trace that has none. Strictly
+  additive — omitting `pinned` behaves exactly as before.
+
+- **`working_set` kept pinning a promoted trace's text after that trace was
+  corrected or deleted.** The block is pasted into a system prompt once and
+  never re-fetched mid-session, so unlike `search_traces` nothing ever
+  re-reads it to notice staleness — which made this the one surface where
+  the bi-temporal supersession gap below would never have been spotted.
+  Amending a promoted trace (`amend_trace` writes a NEW row) left its
+  *pre-correction* wording pinned indefinitely: the effect was real, but
+  the text backing it had been superseded. Purging one
+  (`hub/manage.py:purge_trace`) was worse — the block went on pinning a
+  `"(deleted trace)"` placeholder title with an empty solution body, so the
+  prompt carried a lesson with nothing in it to read.
+
+  Both now drop out of the block entirely, following the same "degrades
+  honestly rather than inventing a block" rule the function already applied
+  to a compromised experiment. There is deliberately no "resolve forward to
+  the amended version" here, unlike `search_traces`/`commons_visible`: the
+  effect was measured against the specific text shown on each occasion, so
+  inheriting it onto rewritten wording would be presenting evidence for
+  content nobody ever tested.
+
+- **A relevance tie returned a fleet's own re-tellings of a lesson ahead
+  of the lesson itself, and the near-duplicate clustering could not hold
+  a stable randomization unit because of it.** Exact `ts_rank` ties are
+  the signature of near-duplicate text, and a fleet generates those
+  constantly: it resolves an occasion using a lesson, then contributes a
+  trace describing what happened in the same words. `search_traces` broke
+  those ties newest-first, so as occasions accumulated the original fell
+  off page one entirely and every result was a re-telling. That is the
+  worse of the two results to hand an agent, and it also left the
+  clustering with no fixed member to anchor to: `holdout_for_results`
+  only ever sees ONE PAGE, so a representative chosen from page members
+  drifted as the page composition shifted, re-creating the very
+  fragmentation the clustering exists to remove. Measured live over 20
+  occasions of one lesson: **8** distinct randomization units, with only
+  4 injections on the best-measured one. Ties now break oldest-first
+  (recency still orders the no-query browse path, which is what that path
+  is for), and a cluster's representative is its oldest member rather
+  than `distill.representative`'s page-dependent medoid. Same scenario,
+  same seed, after the fix: **1** unit, **15** injections on it -- ~3.75x
+  the evidence accumulated per occasion, and 21x versus the unclustered
+  behavior the deployment audit originally measured.
+
+- **The Hub's own randomized holdout fragmented a fleet's statistical
+  power across near-duplicate traces.** Every occasion a fleet resolved
+  and then contributed a trace of -- the exact pattern `commontrace
+  capture` encourages locally -- became a new, independent randomization
+  unit in `holdout_assign`, so instead of one lesson's injections
+  accumulating on one id, they split across dozens of near-identical
+  traces that individually never cleared the power threshold. A real,
+  deployed audit measured this at ~19x: 56-59 tracked "memories" per
+  vertical against 3 lessons actually seeded, with two of four verticals
+  showing $0.00 in `value_delivered` despite real, large effects (+62%,
+  +56%) that simply never accumulated enough injections on one id to
+  reach significance. `hub/crud.py:holdout_for_results` now clusters
+  near-duplicate search results with `commontrace.distill` (the same
+  clustering the local tier's own `commontrace distill` uses) before
+  assignment, preferring a cluster member with no recorded failed
+  outcome as the representative; the wire response is unchanged; a
+  re-run of the same audit against the fix measured the tracked-memory
+  count dropping from 21 to 8 for one 20-occasion vertical.
+- **A trace's own recorded failure could outrank a working solution for
+  the same query.** `search_traces` ranked purely on text relevance, so
+  an agent's unresolved, escalated occasion log and a hand-written,
+  working lesson describing the same failure ranked on equal footing --
+  text relevance cannot tell them apart, since both describe the same
+  failure in the same words. A live spot-check found the canonical
+  lesson missing from the top 5 results entirely in 2 of 3 real queries,
+  buried behind its own low-quality duplicates. Traces with
+  `outcome.resolved: false` now sort after every other result at the
+  same relevance -- a ranking floor, not a filter, so a failed attempt
+  stays findable, just never ahead of a better-standing result. Re-run
+  against the fix: the same previously-buried lesson now ranks #1.
+- **`search_traces(brief=True)` shipped ~14 always-present metadata
+  fields even at their empty/default value**, so the docstring's own
+  recommended "browse many with brief, then `get_trace` the one you
+  want" pattern measured *worse* than a single non-brief call, not
+  better, on a real corpus. Brief mode now omits an operational field
+  (`agent_id`, `extensions`, `votes`, `outcome`, ten more) when it holds
+  its default value; a field that actually holds something still ships.
+  Full mode is unchanged. Measured: brief-mode payload savings on a
+  5-result page went from 16% to 37%.
+- **`value_delivered` returning $0.00 read as "this doesn't work" rather
+  than "not enough data yet"** when every memory was UNDERPOWERED --
+  `reason` stayed empty in exactly that case, with no top-level signal
+  distinguishing a correct measurement from a null result. It now names
+  the strongest (unestablished) trend and its current injection count
+  directly, e.g. "the strongest trend so far is `X` at +62% on 11
+  injection(s)."
+- **`pytest`'s dev-extra range still permitted a known-vulnerable version,
+  and fixing it broke `pytest-asyncio` collection.** `pyproject.toml`'s
+  `[dev]` extra capped `pytest` at `<9.0`, whose newest release (8.4.2)
+  carries PYSEC-2026-1845, fixed in 9.0.3. CI's own `pip-audit` job flags
+  any version a range specifier *permits*, not just the one actually
+  installed, so the cap was making that job fail regardless of what a
+  contributor's environment happened to resolve. Raised the floor to
+  `>=9.0.3` (not just the ceiling) so the vulnerable range is
+  unreachable — which then surfaced a second, real incompatibility:
+  `pytest-asyncio`'s old `<1.0` cap resolved 0.23.3, whose
+  `pytest_collectstart` hook breaks under `pytest>=9`
+  (`AttributeError: 'Package' object has no attribute 'obj'`). Raised its
+  floor to `>=1.0` too, matching the unpinned `pytest-asyncio` CI's own
+  `hub tests` job already resolves. The full suite (client + hub) is
+  verified green on pytest 9.1.1 / pytest-asyncio 1.4.0, including the
+  exact three-step CI job (`pytest tests/`, `ruff check .`,
+  `pytest hub/tests/test_image_contents.py --noconftest`) that first
+  caught the collection break.
+
+- **A non-finite `rank` in a holdout log line crashed the entire read.**
+  `json.loads` accepts the bare `Infinity`/`-Infinity`/`NaN` tokens by
+  default, and `holdout_io._opt_int` converted with `int(value)`, which
+  raises `OverflowError` on an infinite float — uncaught, since the append
+  that used it sits outside the per-line corrupt-line guard. One such line
+  took down `read_log` for the whole file, violating its own documented
+  contract that "one torn write must not make the rest of an experiment
+  unreadable." `_opt_int` now catches `OverflowError` alongside
+  `TypeError`/`ValueError`, matching the non-finite guard `_opt_float`
+  already had.
+
+- **`COMMONTRACE_ALLOW_STORE_SCRIPTS=1` never actually did anything.**
+  `find_reference_script` checked the packaged copy of a reference script
+  first and returned on the first match — but every real reference script
+  (`query.py`, `build_index.py`, `measure_performance.py`,
+  `pilot_metrics.py`) ships inside the package, so the packaged candidate
+  was always a hit and the store-root candidate was never reached, even
+  with the opt-in set. A contributor editing a reference script in their
+  own checkout got the stale packaged copy every time, silently. Now,
+  when opted in, the store-root copy is checked first (and wins).
+
+- **A malformed `tags` argument to the `capture`/`draft_lesson` MCP tools
+  was silently dropped.** `_coerce_tags` returned `None` for anything that
+  wasn't a string, list, or tuple, and both call sites treated that the
+  same as "no tags were given" — the write succeeded, `ok` was `true`, and
+  nothing in the response said the tags never landed. It now raises
+  instead, so a malformed value surfaces as a clear tool error.
+
+- **`draft_lesson` had no size guard on the text it writes.** The
+  CLI write paths (`capture`, `lesson new`, ...) all refuse an oversized
+  write via `_validators.check_text_size`, but `draft_lesson` — the
+  primary way an agent puts free-text content into a lesson over MCP —
+  called `lesson_io.write_lesson` directly with no size check at all. It
+  now runs the same guard before writing.
+
+- **A cache entry with a corrupt `terms` field never self-healed on disk.**
+  `lesson_cache`'s write-decision (`_stamps_differ`) compares only
+  `mtime_ns`/`size`/`fm`, deliberately not `terms` (a pure function of
+  `fm`). But a `terms` field that was corrupt for some other reason (a
+  hand-edited or format-drifted cache file) got correctly recomputed in
+  memory on every call — and then never written back, since the stamps it
+  compares hadn't moved. That lesson paid a full reparse on every single
+  future call, forever, silently defeating the module's own "an edit
+  costs one parse, not N" guarantee for that entry. The repair is now
+  flagged explicitly and forces a cache rewrite.
+
+- **`failure_import.read_failures`'s fallback size cap counted characters,
+  not bytes.** If `os.path.getsize` failed while `open()` still succeeded,
+  the fallback opened the file in text mode and capped `len(raw)` —
+  decoded characters — letting up to ~4x `MAX_IMPORT_BYTES` of real data
+  through on multi-byte UTF-8 content. The fallback now reads bytes
+  directly and decodes after the cap is enforced.
+
+- **`commontrace import`'s size cap and implicit-store warning had gaps.**
+  `import_data.py` never received the total-file-size cap
+  `failure_import.py` got (only the per-field CSV limit was duplicated);
+  `import_cmd.py` now checks the file size up front. Separately,
+  `warn_if_implicit_cwd_store` used `explicit is not None` where
+  `resolve_root` uses a truthy check, so `--dest ""` suppressed the
+  warning while still hitting the same cwd fallback as no `--dest` at all
+  — now consistent. The warning is also wired into `commontrace import`
+  and `commontrace distill`, which create a store the same way
+  `capture`/`lesson new` do but had no warning at all.
+
+- **Checkout could mint a second Stripe subscription on an already-subscribed
+  org.** The Overview page hid the "Upgrade" button once an org had a live
+  subscription, but the `billing_checkout` route itself never checked —
+  a stale page, a browser back-button resubmit, or a direct POST reached
+  `create_checkout_session` regardless. Checkout always creates a NEW
+  subscription (an already-subscribed org is supposed to go through
+  Stripe's Billing Portal instead); minting a second one on the same
+  customer is silent double billing, not a cosmetic bug. Now refused at
+  the same point every other invalid state in that handler already is.
+
+- **Deleting an org with a live Stripe subscription never cancelled it.**
+  Both `confirm_org_deletion` (self-service, reachable by any org's own
+  API key) and `hub.manage purge_org` (operator CLI) deleted the org row
+  — and with it, `stripe_subscription_id` — without telling Stripe.
+  A deleted account with an uncancelled subscription keeps being charged
+  every billing cycle with no CommonTrace account left to ever notice.
+  Both paths now cancel a live subscription first; if that fails, nothing
+  is deleted (a new `deletion_blocked` MCP error code on the self-service
+  path, an error message and `False` on the CLI path) rather than
+  deleting the account and stranding the subscription.
+
+- **Self-serve billing could be partially configured into a paid-and-never-
+  upgraded state.** `StripeSettings.checkout_configured` checked for a
+  secret key and a price, but not `HUB_STRIPE_WEBHOOK_SECRET` — a
+  deployment missing only that variable would show a working "Upgrade"
+  button, take a customer's real payment via Stripe Checkout, and have no
+  route left to ever learn it happened, since `Organization.plan` only
+  ever updates from the webhook. The same gap existed on the Billing
+  Portal route (`stripe.secret_key` checked, `webhook_secret` not),
+  where an already-subscribed customer could cancel and keep their paid
+  entitlement forever with nothing to notice the cancellation. Both
+  routes now require the full, working round trip before ever redirecting
+  to Stripe.
+
+- **`retrieve()` (the local MCP tool) shipped a withheld lesson's full body
+  over the wire.** The control arm of the tool's own randomized holdout is
+  the half an agent is explicitly told never to act on — but every
+  withheld lesson's complete instructional text was still being sent on
+  every `retrieve()` call made while an experiment runs, which is exactly
+  the traffic pattern of a customer rigorously proving this product's own
+  causal claim. `commontrace query` (the CLI path to the same holdout) has
+  never printed a withheld lesson's body; `retrieve()` was the one surface
+  that disagreed with its own documented contract. Metadata (slug,
+  description, tags, score) still ships — only the body is withheld along
+  with the lesson itself.
 
 - **`experiment_status` (the MCP tool) reintroduced a bug this file already
   recorded as fixed once.** The CLI's `commontrace experiment` scopes its
@@ -167,6 +1454,62 @@ regression tests covering each fix, and a security review of the complete
 diff found no newly-introduced vulnerability.
 
 ### Added
+
+- **Shareable, read-only Proof links.** Until now the Proof page — the one
+  place this product's central claim (a causal, honestly-caveated
+  measurement of whether the memory changed outcomes) is actually shown —
+  only ever rendered behind an authenticated console session. A signed-in
+  user can now mint a time-limited (14 day), org-scoped share token from
+  the Proof page; the resulting link needs no session and re-runs the same
+  live queries the authenticated page does, so it can never go stale into
+  something misleading. Kind-separated from session tokens in both
+  directions, uniform 404s on an invalid/expired link, and rate-limited
+  per-org rather than per-address.
+
+- **Self-serve org signup (`HUB_SIGNUP_ENABLED`).** Every account before
+  this was sales- or support-assisted by construction: the only way to get
+  an org and a first API key was an operator running `hub.manage
+  create-org`. A public, opt-in `/signup` route now lets a visitor create
+  their own free-plan org with nobody involved — no email verification
+  (this Hub has no outbound email integration), bounded by the free plan's
+  own limits either way, with a tight per-address rate limit and a
+  honeypot as the actual abuse controls.
+
+- **Self-serve billing (`hub/billing.py`).** A signed-in customer can now
+  upgrade to a paid plan via Stripe Checkout, and `Organization.plan`
+  stays in sync with what Stripe actually charged via a signed webhook —
+  no operator, no manual row edit. An already-subscribed org is routed to
+  Stripe's Billing Portal instead of through Checkout again. No Stripe
+  SDK: REST calls over `httpx` (already a dependency) and one documented
+  HMAC check for webhook verification.
+
+- **`python -m hub.manage value <org_id> [value_per_occasion]`.**
+  `crud.value_delivered` (occasions improved, causally, priced only when a
+  rate is supplied and never stored) was reachable from a customer's own
+  console session and from an authenticated agent's MCP tool call, but an
+  operator investigating one account had no CLI path to the same numbers
+  without holding a customer's own API key. Also the first caller of
+  `plans.billable_value()`/`VALUE_CAPTURE_SHARE` from anywhere reachable
+  by an operator.
+
+- **`search_traces(brief=True)`.** `context_text`/`solution_text` are each
+  allowed up to 20,000 characters, and a search page can hold up to 200
+  results — a full page can legitimately run to millions of characters,
+  enough to blow a calling agent's own context budget while it is still
+  deciding which result to use. `brief=True` (off by default) previews
+  both fields instead, word-boundary-safe and always marked `"brief":
+  true`; everything else on each result is untouched, matching the
+  local tier's existing `list_lessons`/`get_lesson` "browse then get"
+  split.
+
+- **CI now proves self-serve signup and console sign-in over real HTTP.**
+  The `compose-stack` job builds and runs the actual container image —
+  the only CI job that catches what only shows up when "the pieces
+  compose" — but never enabled or exercised either surface above; a
+  route-registration mistake or an env var not reaching the container
+  could have shipped invisibly. A new step drives the real HTTP surface
+  end to end: signup issues a key, and that exact key signs in to the
+  console.
 
 - **`SECURITY.md`.** This Hub is multi-tenant, stores customer trace data,
   and holds an Argon2-hashed API key per organization — and had no
@@ -2054,5 +3397,5 @@ dependency audit.")
   by the open taxonomy in PROTOCOL.md §7 (see "Changed" above; not a schema
   removal, since no schema file in this repo ever encoded that enum).
 
-[Unreleased]: https://github.com/denemlabs/commontrace-v2/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/denemlabs/commontrace-v2/releases/tag/v2.0.0
+[Unreleased]: https://github.com/varma61923/commontrace-v2/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/varma61923/commontrace-v2/releases/tag/v2.0.0

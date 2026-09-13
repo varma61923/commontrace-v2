@@ -127,6 +127,8 @@ _CSS = """
   --ok:#4EA878; --warn:#D2A149; --bad:#D86F5B; --code:#101820;
 }}
 *{box-sizing:border-box}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
 body{margin:0;background:var(--paper);color:var(--ink);
   font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 a{color:var(--accent)}
@@ -726,7 +728,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                 f'<input type="hidden" name="decision" value="reject">'
                 f'<input type="hidden" name="csrf" '
                 f'value="{h(_csrf_token(admin_token, "reject", sid))}">'
-                f'<input type="text" name="reason" maxlength="200" placeholder="reason (optional)">'
+                f'<label for="reason-{h(sid)}" class="sr-only">Reason for declining</label>'
+                f'<input type="text" id="reason-{h(sid)}" name="reason" maxlength="200" '
+                f'placeholder="reason (optional)">'
                 f'<button type="submit" class="btn">Decline</button></form>'
             )
             tags = " ".join(f'<span class="pill mute">{h(t)}</span>' for t in (s.get("tags") or []))
@@ -765,7 +769,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                 f'<input type="hidden" name="trace_id" value="{h(tid)}">'
                 f'<input type="hidden" name="csrf" '
                 f'value="{h(_csrf_token(admin_token, "retract", str(tid)))}">'
-                f'<input type="text" name="reason" maxlength="200" placeholder="reason">'
+                f'<label for="retract-reason-{h(tid)}" class="sr-only">Reason for retracting</label>'
+                f'<input type="text" id="retract-reason-{h(tid)}" name="reason" maxlength="200" '
+                f'placeholder="reason">'
                 f'<button type="submit" class="btn warn">Retract</button></form></td></tr>'
             )
         queue_html = ('<div class="scroll"><table><thead><tr><th>Entry</th>'
@@ -848,13 +854,13 @@ def add_admin_routes(
 
     limiter = rate_limiter or RateLimiter(per_minute=120, burst=30)
 
-    def _guard(request: Request) -> Response | None:
+    async def _guard(request: Request) -> Response | None:
         # Rate limited BEFORE the credential check, keyed by client address,
         # for the same reason hub/server.py limits auth attempts: the compare
         # is cheap here, but an unauthenticated endpoint that hits Postgres on
         # every request is a lever without one.
         client_key = resolve_client_key(request, trusted_proxy_hops)
-        allowed, retry_after = limiter.check(client_key)
+        allowed, retry_after = await limiter.check(client_key)
         if not allowed:
             import math
             seconds = str(max(1, math.ceil(retry_after)))
@@ -865,7 +871,7 @@ def add_admin_routes(
         return None
 
     async def overview(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         async with session_scope(session_factory) as session:
@@ -873,7 +879,7 @@ def add_admin_routes(
         return _page("Overview", _render_overview(data))
 
     async def org_detail(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         org_id = request.path_params["org_id"]
@@ -905,7 +911,7 @@ def add_admin_routes(
     )
 
     async def kb(request: Request) -> Response:
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return denied
         if not commons_enabled:
@@ -929,7 +935,7 @@ def add_admin_routes(
 
         Returns (form, target, None) to proceed, or (None, None, response).
         """
-        denied = _guard(request)
+        denied = await _guard(request)
         if denied is not None:
             return None, None, denied
         if not commons_enabled:

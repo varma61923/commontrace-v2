@@ -55,7 +55,7 @@ attention = [
 # hub/requirements.txt's own header explains.
 hub-sync = [
     "mcp>=2.0,<3.0",
-    "httpx>=0.27.0",
+    "httpx>=0.27.0,<1.0",
 ]
 # `commontrace serve` -- the LOCAL store over MCP stdio
 # (commontrace/mcp_server.py), for agents that cannot run a shell.
@@ -69,8 +69,32 @@ hub-sync = [
 serve = [
     "mcp>=2.0,<3.0",
 ]
+# `commontrace/otel_exporter.py`'s CommonTraceSpanExporter -- a live
+# opentelemetry.sdk.trace.export.SpanExporter that turns completed GenAI
+# spans into traces as your own application runs, instead of via
+# `commontrace import --source otel <file>`. Optional for the same
+# reason hub-sync/serve are: most users never attach an OTel exporter,
+# and importing commontrace/otel_exporter.py itself costs nothing --
+# only constructing CommonTraceSpanExporter needs the SDK installed.
+#
+# >=1.20,<2.0: the SDK's export interface (SpanExporter, SpanExportResult,
+# Status/StatusCode) has been stable since well before 1.20; the floor is
+# a recent-enough release to avoid resolving into pre-stable API
+# variants, and the ceiling follows this repo's own "no unbounded pin"
+# convention rather than any known incompatibility with a 2.x that does
+# not exist yet.
+otel = [
+    "opentelemetry-sdk>=1.20,<2.0",
+]
 dev = [
-    "pytest>=7.0",
+    # >=9.0.3, not the previous >=7.0: every release below 9.0.3, including
+    # the newest 8.x (8.4.2), carries a known vulnerability
+    # (PYSEC-2026-1845). A wider floor (e.g. >=7.0) still lets a resolver
+    # land on 8.4.2, which is exactly what tripped CI's own pip-audit job --
+    # it flags any version the specifier permits, not just the one actually
+    # installed. The full suite (client + hub) is verified green on
+    # pytest 9.1.1.
+    "pytest>=9.0.3,<10.0",
     "ruff>=0.4,<1.0",
     # hub/tests/ uses @pytest_asyncio.fixture / async def test_* throughout
     # (hub/tests/conftest.py). CI's hub-tests job already installs this
@@ -78,7 +102,17 @@ dev = [
     # `pip install -e ".[dev]"` and then `pytest hub/tests/` -- the natural
     # thing to try -- got an immediate collection failure with nothing in
     # this extra explaining why.
-    "pytest-asyncio>=0.23",
+    #
+    # >=1.0, not the previous >=0.23,<1.0: 0.23.3 (the newest, and only
+    # resolvable, release under that old ceiling) breaks collection under
+    # pytest>=9 with `AttributeError: 'Package' object has no attribute
+    # 'obj'` in its own pytest_collectstart hook -- a real incompatibility
+    # this same change surfaced by raising the pytest floor above 9.0.3 for
+    # the PYSEC-2026-1845 fix above. hub/requirements.txt already installs
+    # pytest-asyncio unpinned in CI and resolves 1.4.0 there without issue,
+    # so the floor is raised (not just the ceiling widened) to make sure a
+    # resolver can't land back on the broken 0.23.3.
+    "pytest-asyncio>=1.0,<2.0",
     # tests/test_mcp_server.py drives the local MCP server, including one test
     # that spawns `commontrace serve` as a real subprocess and speaks MCP to
     # it -- the only thing that proves stdout stays clean enough to carry the
@@ -86,6 +120,11 @@ dev = [
     # behaviour for a bare install and the wrong one for a contributor who
     # just ran `pip install -e ".[dev]"` and believes the suite is green.
     "mcp>=2.0,<3.0",
+    # tests/test_otel_exporter.py drives a real
+    # opentelemetry.sdk.trace.TracerProvider + CommonTraceSpanExporter,
+    # same "don't let the suite silently skip the real thing" reasoning
+    # as the mcp entry above.
+    "opentelemetry-sdk>=1.20,<2.0",
 ]
 
 [project.urls]
@@ -104,7 +143,12 @@ include = ["commontrace*"]
 # (reference/ deliberately has no __init__.py). Without this the benchmark
 # commands only worked from a repo checkout -- a plain `pip install`
 # customer could not compute their own pilot metrics.
-commontrace = ["schemas/*.json", "reference/*.py"]
+# fixtures/fields/*.json is the labelled cross-field corpus
+# `commontrace bench --retrieval` measures against. It ships for the same
+# reason the scripts do: the claim it checks is "retrieval works as well in
+# your field as in ours", and a claim a customer cannot re-run on their own
+# install is a claim they have to take on trust.
+commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json"]
 
 [tool.ruff]
 line-length = 120

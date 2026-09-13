@@ -232,6 +232,27 @@ CORE_TOOLS = [
     # effect turned into a quantity a price can attach to, which STRATEGY.md
     # 11.5 names as this product's pricing basis. Org-scoped and unmetered.
     "value_delivered",
+    # the graduated subset of that instrument (hub/crud.py:working_set) --
+    # the memories whose effect is already established, rendered once per
+    # session as a pinnable block instead of paid for on every query.
+    # Org-scoped and unmetered like the rest of this list.
+    "working_set",
+    # collaboration on a trace (hub/collab.py) -- comments, assignment,
+    # and a notification inbox for a customer's own team. Org-scoped and
+    # unmetered like the rest of this list; unaffected by
+    # HUB_COMMONS_ENABLED, which only toggles cross-org sharing.
+    "add_comment", "list_comments", "assign_trace", "unassign_trace",
+    "list_my_notifications", "mark_notification_read",
+    # locating traces for a subject-erasure request (hub/crud.py:
+    # search_trace_content) -- org-scoped and unmetered like the rest of
+    # this list; unaffected by HUB_COMMONS_ENABLED.
+    "search_trace_content",
+    # structured subject tagging + exact-match find/purge (hub/crud.py:
+    # tag_trace_subjects/find_traces_by_subject/purge_traces_by_subject) --
+    # the other half of subject-erasure support, for content a curator
+    # explicitly tagged. Org-scoped and unmetered like the rest of this
+    # list; unaffected by HUB_COMMONS_ENABLED.
+    "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests

@@ -4,15 +4,32 @@ the deletion path DATA_RETENTION.md previously documented as
 unimplemented)."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import auth, crud, manage
+from hub import audit, auth, crud, events, manage, rbac
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
-from hub.models import Organization, Trace, TraceRelation
+from hub.models import Organization, Trace, TraceRelation, User
+
+
+async def _fake_public_resolve(hostname: str) -> list:
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_dns_for_webhook_hosts(monkeypatch):
+    """TestPrivilegedRoleGrantAlert registers a webhook endpoint at
+    ``example.invalid`` -- non-resolving by RFC 2606 design, which is
+    exactly what hub/events.py's SSRF check (`_reject_private_target`) now
+    requires resolving. Faking a genuinely public answer keeps that
+    guarantee; the check itself is exercised in
+    hub/tests/test_events.py::TestSsrfProtection."""
+    monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 pytestmark = pytest.mark.asyncio
 
@@ -417,6 +434,73 @@ async def test_purge_org_unknown_id_reports_error(session_factory, capsys):
     assert result is False
 
 
+async def test_purge_org_cancels_a_live_stripe_subscription_first(
+    session_factory, two_orgs, monkeypatch
+):
+    """An org row deleted out from under an active Stripe subscription
+    keeps charging that customer's card every billing cycle with no
+    CommonTrace account left to ever notice -- see
+    billing.cancel_subscription's own docstring."""
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, two_orgs["org_a"])
+        org.stripe_customer_id = "cus_1"
+        org.stripe_subscription_id = "sub_1"
+
+    cancelled = {}
+
+    async def fake_cancel(settings, *, subscription_id):
+        cancelled["subscription_id"] = subscription_id
+
+    from hub.billing import StripeSettings
+
+    monkeypatch.setattr(manage, "cancel_subscription", fake_cancel)
+    result = await manage.purge_org(
+        two_orgs["org_a"], session_factory=session_factory, stripe=StripeSettings(secret_key="sk_test")
+    )
+    assert result is True
+    assert cancelled["subscription_id"] == "sub_1"
+    async with session_scope(session_factory) as session:
+        assert await session.get(Organization, two_orgs["org_a"]) is None
+
+
+async def test_purge_org_a_failed_cancellation_blocks_deletion(
+    session_factory, two_orgs, monkeypatch, capsys
+):
+    """The org must survive intact so the operator can retry once
+    whatever is stopping Stripe from being reachable clears."""
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, two_orgs["org_a"])
+        org.stripe_customer_id = "cus_1"
+        org.stripe_subscription_id = "sub_1"
+
+    from hub.billing import StripeError, StripeSettings
+
+    async def failing_cancel(settings, *, subscription_id):
+        raise StripeError("Stripe 500")
+
+    monkeypatch.setattr(manage, "cancel_subscription", failing_cancel)
+    result = await manage.purge_org(
+        two_orgs["org_a"], session_factory=session_factory, stripe=StripeSettings(secret_key="sk_test")
+    )
+    assert result is False
+    assert "could not cancel" in capsys.readouterr().err
+    async with session_scope(session_factory) as session:
+        surviving = await session.get(Organization, two_orgs["org_a"])
+        assert surviving is not None
+        assert surviving.stripe_subscription_id == "sub_1"
+
+
+async def test_purge_org_with_no_subscription_never_calls_stripe(
+    session_factory, two_orgs, monkeypatch
+):
+    async def must_not_be_called(*a, **kw):
+        raise AssertionError("cancel_subscription must not run when there is nothing to cancel")
+
+    monkeypatch.setattr(manage, "cancel_subscription", must_not_be_called)
+    result = await manage.purge_org(two_orgs["org_a"], session_factory=session_factory)
+    assert result is True
+
+
 async def _submit_via_cli_path(session_factory, config, org_id, title="t"):
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:
@@ -488,7 +572,12 @@ class TestSubmissionReviewCommands:
         await manage.approve_submission(s["id"], two_orgs["org_b"], "-50", session_factory=session_factory)
         out = capsys.readouterr().out
         assert "credited 0 bonus" in out
-        assert "-50" not in out
+        # Not a bare "-50" not in out: the org ids under test are random
+        # UUIDs, and a UUID coincidentally containing the substring "-50"
+        # (e.g. "...cb-50c2...") would fail this assertion for a reason
+        # that has nothing to do with the raw credit leaking. Anchor to the
+        # exact phrase the raw value would appear in if it leaked.
+        assert "credited -50" not in out
         async with session_scope(session_factory) as session:
             org = await session.get(Organization, two_orgs["org_a"])
         assert org.bonus_commons_queries == 0
@@ -893,3 +982,1024 @@ class TestStartExperimentWarnsAboutAnUnanswerableRate:
         capsys.readouterr()
         assert await manage.start_experiment(org_id, "0.2", session_factory=session_factory)
         assert "WARNING" not in capsys.readouterr().out
+
+
+# --- retention, legal holds and scheduled purge ------------------------------
+
+@pytest_asyncio.fixture
+async def aged_org(session_factory):
+    """One org with two traces old enough for any sane policy, and one new."""
+    from datetime import datetime, timedelta, timezone
+
+    from hub.models import Trace
+
+    now = datetime.now(timezone.utc)
+    async with session_scope(session_factory) as session:
+        org = Organization(name="retention-fleet")
+        session.add(org)
+        await session.flush()
+        for i, age in enumerate((400, 400, 1)):
+            session.add(Trace(
+                org_id=org.id, title=f"t{i}", context_text="c", solution_text="s",
+                agent_type="support", created_at=now - timedelta(days=age),
+            ))
+        return org.id
+
+
+def _digest_from(out: str) -> str:
+    """The short plan digest, as an operator would copy it off the screen."""
+    for line in out.splitlines():
+        if line.startswith("plan "):
+            return line.split()[1]
+    raise AssertionError(f"no plan digest in output:\n{out}")
+
+
+class TestRetentionCLI:
+    async def test_setting_a_policy_says_nothing_is_deleted_yet(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert ok
+        out = capsys.readouterr().out
+        assert "keep 90 days" in out
+        # The single most important thing to say at this moment: configuring
+        # a policy is not the same act as applying it.
+        assert "Nothing is deleted until" in out
+
+    async def test_a_sub_floor_policy_is_refused_with_the_reason(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "audit_log", "7", session_factory=session_factory)
+        assert not ok
+        assert "365" in capsys.readouterr().err
+
+    async def test_a_non_numeric_age_is_an_operator_mistake_not_a_traceback(
+        self, session_factory, aged_org, capsys
+    ):
+        ok = await manage.set_retention(
+            aged_org, "trace", "ninety", session_factory=session_factory)
+        assert not ok
+        assert "whole number" in capsys.readouterr().err
+
+    async def test_plan_prints_what_would_go_and_deletes_nothing(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.retention_plan(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "2 to delete" in out
+        assert "Nothing has been deleted" in out
+
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 3
+
+    async def test_apply_with_the_printed_digest_deletes(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        digest = _digest_from(capsys.readouterr().out)
+
+        assert await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        assert "APPLIED. 2 rows deleted." in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 1
+
+    async def test_a_stale_digest_is_refused_and_shows_the_new_one(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        stale = _digest_from(capsys.readouterr().out)
+
+        # The world moves between reading the plan and approving it: another
+        # old trace arrives, so the approved set is no longer the real one.
+        from datetime import datetime, timedelta, timezone
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=aged_org, title="late arrival", context_text="c",
+                solution_text="s", agent_type="support",
+                created_at=datetime.now(timezone.utc) - timedelta(days=500),
+            ))
+        capsys.readouterr()
+
+        assert not await manage.retention_apply(
+            aged_org, stale, session_factory=session_factory)
+        err = capsys.readouterr().err
+        assert "nothing was deleted" in err
+        assert "you approved" in err and "current plan" in err
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 4
+
+    async def test_the_digest_commits_to_rows_not_to_the_policy_text(
+        self, session_factory, aged_org, capsys
+    ):
+        """Tightening 90d to 30d dooms the same two 400-day-old traces, so
+        the approval is still accurate and the apply proceeds. The digest
+        deliberately commits to the CONSEQUENCES an operator read, not to
+        the configuration that produced them -- a change that does not move
+        a single row has not invalidated their approval, and refusing it
+        would train operators to re-approve reflexively."""
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        digest = _digest_from(capsys.readouterr().out)
+
+        await manage.set_retention(
+            aged_org, "trace", "30", session_factory=session_factory)
+        capsys.readouterr()
+
+        assert await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        capsys.readouterr()
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 1
+
+    async def test_a_legal_hold_survives_an_apply(
+        self, session_factory, aged_org, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub.models import Trace
+
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert await manage.place_legal_hold(
+            aged_org, "Ohio subpoena 2026-44", session_factory=session_factory)
+        capsys.readouterr()
+
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        digest = _digest_from(out)
+        assert "Ohio subpoena 2026-44" in out
+
+        await manage.retention_apply(
+            aged_org, digest, session_factory=session_factory)
+        capsys.readouterr()
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(Trace)) == 3
+
+    async def test_a_hold_without_a_reason_is_refused(
+        self, session_factory, aged_org, capsys
+    ):
+        assert not await manage.place_legal_hold(
+            aged_org, "  ", session_factory=session_factory)
+        assert "reason" in capsys.readouterr().err
+
+    async def test_holds_lists_policies_and_freezes(
+        self, session_factory, aged_org, capsys
+    ):
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        await manage.place_legal_hold(
+            aged_org, "investigation", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_legal_holds(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "trace [any]: keep 90d" in out
+        assert "investigation" in out
+
+    async def test_holds_says_plainly_when_nothing_expires(
+        self, session_factory, aged_org, capsys
+    ):
+        assert await manage.list_legal_holds(aged_org, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "nothing expires on its own" in out
+        assert "No legal holds in force" in out
+
+    async def test_clearing_a_policy_stops_expiry(
+        self, session_factory, aged_org, capsys
+    ):
+        await manage.set_retention(
+            aged_org, "trace", "90", session_factory=session_factory)
+        assert await manage.clear_retention(
+            aged_org, "trace", session_factory=session_factory)
+        capsys.readouterr()
+        await manage.retention_plan(aged_org, session_factory=session_factory)
+        assert "indefinitely" in capsys.readouterr().out
+
+    async def test_every_retention_command_rejects_an_unknown_org(
+        self, session_factory, capsys
+    ):
+        missing = "00000000-0000-0000-0000-000000000000"
+        assert not await manage.set_retention(
+            missing, "trace", "90", session_factory=session_factory)
+        assert not await manage.retention_plan(missing, session_factory=session_factory)
+        assert not await manage.place_legal_hold(
+            missing, "r", session_factory=session_factory)
+
+
+class TestRetentionCommandTable:
+    """The dispatch table and the module docstring are what an operator
+    actually reads; a command that exists but is unreachable or undocumented
+    is not shipped."""
+
+    async def test_every_retention_command_is_dispatchable(self):
+        for name in ("set-retention", "clear-retention", "retention-plan",
+                     "retention-apply", "legal-hold", "release-hold", "holds"):
+            assert name in manage._COMMANDS, name
+
+    async def test_every_retention_command_is_documented(self):
+        for name in ("set-retention", "clear-retention", "retention-plan",
+                     "retention-apply", "legal-hold", "release-hold", "holds"):
+            assert name in manage.__doc__, name
+
+    async def test_apply_is_not_gated_on_an_interactive_prompt(self):
+        """Its confirmation is the plan digest, which names the exact rows
+        and refuses if anything moved. A prompt on top would add no safety
+        and would make the scheduled purge impossible to automate -- which
+        is the whole point of a retention policy rather than a delete
+        button."""
+        assert "retention-apply" not in manage._DESTRUCTIVE_COMMANDS
+
+
+# --- webhook event export ----------------------------------------------------
+
+class TestWebhookCLI:
+    URL = "https://example.invalid/hooks/commontrace"
+
+    @pytest_asyncio.fixture
+    async def hooked(self, session_factory, monkeypatch, capsys):
+        """One org with one endpoint, and the secret the CLI printed."""
+        from hub import manage as manage_mod
+
+        monkeypatch.setattr(manage_mod, "_config_signing_key", lambda: "test-key")
+        async with session_scope(session_factory) as session:
+            org = Organization(name="hooked")
+            session.add(org)
+            await session.flush()
+            org_id = org.id
+        assert await manage.webhook_add(
+            org_id, self.URL, session_factory=session_factory)
+        out = capsys.readouterr().out
+        secret = next(
+            line.split(": ", 1)[1].strip()
+            for line in out.splitlines() if "signing secret" in line
+        )
+        endpoint_id = out.splitlines()[0].split()[1]
+        return {"org": org_id, "id": endpoint_id, "secret": secret, "out": out}
+
+    async def test_adding_prints_the_secret_once_and_says_it_is_not_stored(
+        self, hooked
+    ):
+        assert len(hooked["secret"]) == 64  # sha256 hex
+        # The operator has to be told they cannot read it back, at the one
+        # moment they could still copy it.
+        assert "shown ONCE" in hooked["out"]
+        assert "not stored" in hooked["out"]
+
+    async def test_the_secret_really_cannot_be_read_back(
+        self, session_factory, hooked
+    ):
+        """Not just "we do not print it again" -- it is not in the row."""
+        from hub.models import WebhookEndpoint
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, hooked["id"])
+            stored = " ".join(
+                str(getattr(row, c.name)) for c in row.__table__.columns
+            )
+        assert hooked["secret"] not in stored
+
+    async def test_plaintext_http_is_refused(self, session_factory, hooked, capsys):
+        assert not await manage.webhook_add(
+            hooked["org"], "http://example.invalid/h", session_factory=session_factory)
+        assert "https" in capsys.readouterr().err
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.webhook_add(
+            "00000000-0000-0000-0000-000000000000", self.URL,
+            session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_the_audit_row_records_the_url_and_never_the_secret(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import AuditLogEntry
+
+        async with session_scope(session_factory) as session:
+            entry = (await session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == "webhook.add")
+            )).scalar_one()
+        assert self.URL in entry.summary
+        assert hooked["secret"] not in entry.summary
+
+    async def test_listing_shows_the_endpoint_and_the_queue(
+        self, session_factory, hooked, capsys
+    ):
+        capsys.readouterr()
+        assert await manage.webhook_list(hooked["org"], session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert self.URL in out
+        assert "enabled" in out
+        assert "pending" in out
+
+    async def test_listing_an_org_with_nothing_says_so_plainly(
+        self, session_factory, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="quiet")
+            session.add(org)
+            await session.flush()
+            org_id = org.id
+        assert await manage.webhook_list(org_id, session_factory=session_factory)
+        assert "Nothing is told anything" in capsys.readouterr().out
+
+    async def test_rotating_prints_a_different_secret(
+        self, session_factory, hooked, capsys
+    ):
+        capsys.readouterr()
+        assert await manage.webhook_rotate(
+            hooked["id"], session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert hooked["secret"] not in out
+        assert "stops verifying immediately" in out
+
+    async def test_disabling_stops_future_queueing(
+        self, session_factory, hooked, capsys
+    ):
+        from sqlalchemy import func, select
+
+        from hub import events
+        from hub.models import WebhookDelivery
+
+        assert await manage.webhook_disable(
+            hooked["id"], session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            await events.emit(
+                session, hooked["org"], "trace.created", {"trace_id": "t1"})
+        async with session_scope(session_factory) as session:
+            assert await session.scalar(
+                select(func.count()).select_from(WebhookDelivery)) == 0
+
+    async def test_a_non_numeric_limit_is_an_operator_mistake(
+        self, session_factory, capsys
+    ):
+        assert not await manage.webhook_deliver(
+            "lots", session_factory=session_factory)
+        assert "whole number" in capsys.readouterr().err
+
+    async def test_starting_an_experiment_announces_it(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import WebhookDelivery
+
+        await manage.start_experiment(hooked["org"], "0.5", session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.event_type == "experiment.started")
+            )).scalars())
+        assert len(rows) == 1
+        assert rows[0].payload["rate"] == 0.5
+
+    async def test_stopping_an_experiment_announces_it(
+        self, session_factory, hooked
+    ):
+        from sqlalchemy import select
+
+        from hub.models import WebhookDelivery
+
+        await manage.start_experiment(hooked["org"], "0.5", session_factory=session_factory)
+        await manage.stop_experiment(hooked["org"], session_factory=session_factory)
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.event_type == "experiment.stopped")
+            )).scalars())
+        assert len(rows) == 1
+
+
+class TestWebhookCommandTable:
+    async def test_every_webhook_command_is_dispatchable_and_documented(self):
+        for name in ("webhook-add", "webhook-list", "webhook-rotate",
+                     "webhook-disable", "webhook-deliver"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name
+
+
+class TestUserCLI:
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="user-cli-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_creating_a_user_prints_the_id_and_says_sso_is_not_linked(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_ANALYST, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "ana@example.com" in out
+        assert "cannot sign in" in out
+
+    async def test_an_unknown_role_is_refused(self, session_factory, org_id, capsys):
+        assert not await manage.create_user(
+            org_id, "ana@example.com", "supreme-leader", session_factory=session_factory)
+        assert "supreme-leader" in capsys.readouterr().err
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.create_user(
+            "00000000-0000-0000-0000-000000000000", "ana@example.com",
+            rbac.ROLE_ANALYST, session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_a_second_user_with_the_same_email_in_the_same_org_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "dup@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        capsys.readouterr()
+        assert not await manage.create_user(
+            org_id, "dup@example.com", rbac.ROLE_ANALYST, session_factory=session_factory)
+        assert "already has a user" in capsys.readouterr().err
+
+    async def test_the_same_email_is_fine_in_a_different_org(
+        self, session_factory, org_id, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            other_org = Organization(name="other-org")
+            session.add(other_org)
+            await session.flush()
+            other_org_id = other_org.id
+        assert await manage.create_user(
+            org_id, "shared@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        assert await manage.create_user(
+            other_org_id, "shared@example.com", rbac.ROLE_VIEWER,
+            session_factory=session_factory)
+
+    async def test_listing_an_empty_org_says_so_plainly(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.list_users(org_id, session_factory=session_factory)
+        assert "No users for" in capsys.readouterr().out
+
+    async def test_listing_shows_role_state_and_sso_link_status(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_CURATOR, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_users(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "ana@example.com" in out
+        assert f"role={rbac.ROLE_CURATOR}" in out
+        assert "active" in out
+        assert "no SSO linked" in out
+
+    async def test_an_unknown_org_is_refused_when_listing(self, session_factory, capsys):
+        assert not await manage.list_users(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_setting_the_role_takes_effect_immediately(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_DEPLOYER, session_factory=session_factory)
+        assert "viewer -> deployer" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.role == rbac.ROLE_DEPLOYER
+
+    async def test_setting_an_unknown_role_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.set_user_role(
+            user_id, "supreme-leader", session_factory=session_factory)
+        assert "supreme-leader" in capsys.readouterr().err
+
+    async def test_setting_the_role_of_an_unknown_user_is_refused(
+        self, session_factory, capsys
+    ):
+        assert not await manage.set_user_role(
+            "00000000-0000-0000-0000-000000000000", rbac.ROLE_VIEWER,
+            session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_disabling_blocks_access_and_is_idempotent_refused_on_repeat(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.disable_user(user_id, session_factory=session_factory)
+        assert "disabled" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.disabled_at is not None
+        assert not await manage.disable_user(user_id, session_factory=session_factory)
+        assert "already disabled" in capsys.readouterr().err
+
+    async def test_disabling_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.disable_user(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_enabling_clears_the_disabled_flag(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        assert "re-enabled" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.disabled_at is None
+
+    async def test_enabling_a_user_that_is_not_disabled_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.enable_user(user_id, session_factory=session_factory)
+        assert "not disabled" in capsys.readouterr().err
+
+    async def test_enabling_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.enable_user(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_linking_sso_lets_the_user_authenticate(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.link_sso(
+            user_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        assert "idp.example.com" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.issuer == "https://idp.example.com"
+            assert row.external_subject == "sub-123"
+
+    async def test_the_same_issuer_and_subject_cannot_be_linked_to_two_users(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        first_id = out.splitlines()[0].split()[1]
+        await manage.create_user(
+            org_id, "bea@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        second_id = out.splitlines()[0].split()[1]
+
+        assert await manage.link_sso(
+            first_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        capsys.readouterr()
+        assert not await manage.link_sso(
+            second_id, "https://idp.example.com", "sub-123",
+            session_factory=session_factory)
+        assert "already linked" in capsys.readouterr().err
+
+    async def test_linking_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.link_sso(
+            "00000000-0000-0000-0000-000000000000", "https://idp.example.com",
+            "sub-123", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+    async def test_unlinking_removes_the_identity_but_keeps_the_row(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.link_sso(
+            user_id, "https://idp.example.com", "sub-123", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.unlink_sso(user_id, session_factory=session_factory)
+        assert "unlinked" in capsys.readouterr().out
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+            assert row.external_subject == ""
+            assert row.role == rbac.ROLE_VIEWER
+
+    async def test_unlinking_a_user_with_nothing_linked_is_refused(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert not await manage.unlink_sso(user_id, session_factory=session_factory)
+        assert "no SSO identity" in capsys.readouterr().err
+
+    async def test_unlinking_an_unknown_user_is_refused(self, session_factory, capsys):
+        assert not await manage.unlink_sso(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such user" in capsys.readouterr().err
+
+
+class TestUserCommandTable:
+    async def test_every_user_command_is_dispatchable_and_documented(self):
+        for name in ("create-user", "list-users", "set-user-role", "disable-user",
+                     "enable-user", "link-sso", "unlink-sso"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name
+
+
+class TestPrivilegedRoleGrantAlert:
+    """A webhook subscriber gets `user.privileged_role_granted` the moment
+    anyone ends up holding Security Admin or Owner -- whether that is
+    routine onboarding, a promotion, or a break-glass re-enablement of a
+    disabled account (hub/DEPLOYMENT.md Sec9a). Nothing distinguishes those
+    cases technically, so this fires on all of them rather than none."""
+
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="privileged-role-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    @pytest_asyncio.fixture
+    async def endpoint(self, session_factory, org_id):
+        from hub import events
+        async with session_scope(session_factory) as session:
+            ep, secret = await events.add_endpoint(
+                session, org_id, "https://example.invalid/hooks/commontrace",
+                signing_key="test-signing-key")
+            await session.flush()
+            return {"id": ep.id, "secret": secret}
+
+    async def _deliveries(self, session_factory, event_type):
+        from hub.models import WebhookDelivery
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(
+                select(WebhookDelivery).where(WebhookDelivery.event_type == event_type)
+            )).scalars().all()
+            return rows
+
+    async def test_creating_a_user_as_security_admin_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+        assert rows[0].payload["actor"] == audit.ACTOR_OPERATOR_CLI
+
+    async def test_creating_a_user_as_owner_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "owner@example.com", rbac.ROLE_OWNER,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["role"] == rbac.ROLE_OWNER
+
+    async def test_creating_a_non_privileged_user_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
+
+    async def test_promoting_a_user_into_a_privileged_role_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_SECURITY_ADMIN, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert len(rows) == 1
+        assert rows[0].payload["user_id"] == user_id
+        assert rows[0].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+
+    async def test_demoting_out_of_a_privileged_role_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.set_user_role(
+            user_id, rbac.ROLE_VIEWER, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        # Only the original creation fired -- the demotion itself must not.
+        assert len(rows) == 1
+
+    async def test_reenabling_a_disabled_security_admin_fires_the_event(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        # Once for the initial create, once for the break-glass re-enable.
+        assert len(rows) == 2
+        assert rows[1].payload["user_id"] == user_id
+        assert rows[1].payload["role"] == rbac.ROLE_SECURITY_ADMIN
+
+    async def test_reenabling_a_non_privileged_user_does_not_fire(
+        self, session_factory, org_id, endpoint, capsys
+    ):
+        await manage.create_user(
+            org_id, "ana@example.com", rbac.ROLE_VIEWER, session_factory=session_factory)
+        out = capsys.readouterr().out
+        user_id = out.splitlines()[0].split()[1]
+        await manage.disable_user(user_id, session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.enable_user(user_id, session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
+
+    async def test_with_no_subscribed_endpoint_nothing_is_queued(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.create_user(
+            org_id, "sec@example.com", rbac.ROLE_SECURITY_ADMIN,
+            session_factory=session_factory)
+        rows = await self._deliveries(session_factory, "user.privileged_role_granted")
+        assert rows == []
+
+
+class TestAlertCLI:
+    @pytest_asyncio.fixture
+    async def org_id(self, session_factory):
+        async with session_scope(session_factory) as session:
+            org = Organization(name="alert-cli-org")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_creating_a_rule_prints_its_id(self, session_factory, org_id, capsys):
+        assert await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "quarantine_rate gt 10.0" in out
+
+    async def test_a_non_numeric_threshold_is_an_operator_mistake(
+        self, session_factory, org_id, capsys
+    ):
+        assert not await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "lots", session_factory=session_factory)
+        assert "number" in capsys.readouterr().err
+
+    async def test_an_unknown_metric_is_refused(self, session_factory, org_id, capsys):
+        assert not await manage.create_alert_rule(
+            org_id, "vibes", "gt", "10", session_factory=session_factory)
+        assert "unknown metric" in capsys.readouterr().err
+
+    async def test_listing_an_empty_org_says_so_plainly(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.list_alert_rules(org_id, session_factory=session_factory)
+        assert "No alert rules" in capsys.readouterr().out
+
+    async def test_an_unknown_org_is_refused_when_listing(self, session_factory, capsys):
+        assert not await manage.list_alert_rules(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_listing_shows_metric_and_state(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.list_alert_rules(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "quarantine_rate gt 10.0" in out
+        assert "enabled" in out
+
+    async def test_deleting_a_rule(self, session_factory, org_id, capsys):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        out = capsys.readouterr().out
+        rule_id = out.splitlines()[0].split()[1]
+        capsys.readouterr()
+        assert await manage.delete_alert_rule(rule_id, session_factory=session_factory)
+        assert "deleted" in capsys.readouterr().out
+
+    async def test_deleting_an_unknown_rule_is_refused(self, session_factory, capsys):
+        assert not await manage.delete_alert_rule(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such alert rule" in capsys.readouterr().err
+
+    async def test_check_alerts_with_nothing_crossed_says_so(
+        self, session_factory, org_id, capsys
+    ):
+        await manage.create_alert_rule(
+            org_id, "quarantine_rate", "gt", "10", session_factory=session_factory)
+        capsys.readouterr()
+        assert await manage.check_alerts(org_id, session_factory=session_factory)
+        assert "No alert crossed" in capsys.readouterr().out
+
+    async def test_check_alerts_across_every_org_when_none_given(
+        self, session_factory, capsys
+    ):
+        assert await manage.check_alerts(session_factory=session_factory)
+        assert "No alert crossed" in capsys.readouterr().out
+
+    async def test_generate_report_prints_a_summary(
+        self, session_factory, org_id, capsys
+    ):
+        assert await manage.generate_report(org_id, session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "report.generated" in out
+        assert "traces=0" in out
+
+    async def test_generate_report_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.generate_report(
+            "00000000-0000-0000-0000-000000000000", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+
+class TestAlertCommandTable:
+    async def test_every_alert_command_is_dispatchable_and_documented(self):
+        for name in ("create-alert-rule", "list-alert-rules", "delete-alert-rule",
+                     "check-alerts", "generate-report"):
+            assert name in manage._COMMANDS, name
+            assert name in manage.__doc__, name
+
+
+class TestSearchContentCLI:
+    async def test_finds_a_match_and_says_it_deletes_nothing(
+        self, session_factory, two_orgs, capsys
+    ):
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="jane.smith@example.com",
+                solution_text="s", agent_type="support",
+            ))
+        assert await manage.search_content(
+            two_orgs["org_a"], "jane.smith@example.com", session_factory=session_factory)
+        out = capsys.readouterr().out
+        assert "jane.smith@example.com" in out
+        assert "deletes nothing" in out
+
+    async def test_no_match_says_so_plainly(self, session_factory, two_orgs, capsys):
+        assert await manage.search_content(
+            two_orgs["org_a"], "no-such-identifier", session_factory=session_factory)
+        assert "no traces" in capsys.readouterr().out
+
+    async def test_an_unknown_org_is_refused(self, session_factory, capsys):
+        assert not await manage.search_content(
+            "00000000-0000-0000-0000-000000000000", "x", session_factory=session_factory)
+        assert "no such organization" in capsys.readouterr().err
+
+    async def test_an_invalid_mode_is_an_operator_mistake(self, session_factory, two_orgs, capsys):
+        assert not await manage.search_content(
+            two_orgs["org_a"], "x", "fuzzy", session_factory=session_factory)
+        assert "literal" in capsys.readouterr().err
+
+    async def test_an_invalid_regex_is_refused_cleanly(self, session_factory, two_orgs, capsys):
+        assert not await manage.search_content(
+            two_orgs["org_a"], "(unbalanced(", "regex", session_factory=session_factory)
+        assert "not a valid regular expression" in capsys.readouterr().err
+
+    async def test_search_content_is_dispatchable_and_documented(self):
+        assert "search-content" in manage._COMMANDS
+        assert "search-content" in manage.__doc__
+
+
+class TestSubjectTaggingCLI:
+    async def test_tag_then_find_then_purge_round_trip(self, session_factory, two_orgs, capsys):
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="c", solution_text="s",
+                agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            trace_id = trace.id
+
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "user-42", session_factory=session_factory,
+        )
+        assert "tagged with 1 subject" in capsys.readouterr().out
+
+        assert await manage.find_subject_traces(
+            two_orgs["org_a"], "user-42", session_factory=session_factory,
+        )
+        out = capsys.readouterr().out
+        assert trace_id in out
+        assert "exact match" in out
+
+        assert await manage.purge_subject_traces(
+            two_orgs["org_a"], "user-42", session_factory=session_factory,
+        )
+        assert "purged 1 trace" in capsys.readouterr().out
+
+        async with session_factory() as session:
+            assert await session.get(Trace, trace_id) is None
+
+    async def test_find_with_no_match_says_so_plainly(self, session_factory, two_orgs, capsys):
+        assert await manage.find_subject_traces(
+            two_orgs["org_a"], "no-such-subject", session_factory=session_factory,
+        )
+        assert "no traces" in capsys.readouterr().out
+
+    async def test_purge_with_no_match_purges_zero_not_an_error(self, session_factory, two_orgs, capsys):
+        assert await manage.purge_subject_traces(
+            two_orgs["org_a"], "no-such-subject", session_factory=session_factory,
+        )
+        assert "purged 0 trace" in capsys.readouterr().out
+
+    async def test_tagging_an_unknown_trace_is_refused(self, session_factory, two_orgs, capsys):
+        assert not await manage.tag_trace_subjects(
+            two_orgs["org_a"], "00000000-0000-0000-0000-000000000000", "user-42",
+            session_factory=session_factory,
+        )
+        assert "no trace" in capsys.readouterr().err
+
+    async def test_empty_subject_ids_csv_clears_the_tag(self, session_factory, two_orgs, capsys):
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=two_orgs["org_a"], title="t", context_text="c", solution_text="s",
+                agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            trace_id = trace.id
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "user-42", session_factory=session_factory,
+        )
+        assert await manage.tag_trace_subjects(
+            two_orgs["org_a"], trace_id, "", session_factory=session_factory,
+        )
+        assert "tagged with 0 subject" in capsys.readouterr().out
+
+    async def test_subject_tagging_commands_are_dispatchable_and_documented(self):
+        for command in ("tag-trace-subjects", "find-subject-traces", "purge-subject-traces"):
+            assert command in manage._COMMANDS
+            assert command in manage.__doc__

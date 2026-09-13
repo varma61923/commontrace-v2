@@ -276,12 +276,12 @@ def _acquire_lock_fd(lock_path: str) -> int:
         # under a concurrent opener, so there is no analogous "did the path
         # get swapped to a new inode while I waited" race to recheck for
         # here -- open, lock, done.
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         _lock_exclusive(fd)
         return fd
 
     while True:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         _lock_exclusive(fd)
         try:
             fd_stat = os.fstat(fd)
@@ -377,7 +377,8 @@ def locked(path: str):
     synchronization at all rather than raising -- consistent with this
     module's existing policy that a robustness feature must never be the
     reason a capture/approve/write fails outright -- but that means the
-    race this function exists to close is NOT closed there. This is a
+    race this function exists to close is NOT closed there, so entering
+    the lock emits a RuntimeWarning there instead of staying silent. This is a
     known, real limitation, not a claim of full cross-platform
     correctness.
 
@@ -389,6 +390,13 @@ def locked(path: str):
     local filesystem `memory/` is expected to live on.
     """
     if fcntl is None and msvcrt is None:
+        import warnings
+
+        warnings.warn(
+            "frontmatter.locked: no fcntl/msvcrt on this platform; "
+            "the lock is a no-op and concurrent read-modify-write is unsafe",
+            RuntimeWarning, stacklevel=2,
+        )
         yield
         return
 

@@ -9,13 +9,15 @@ that should not take a dependency on the reference/ scripts (those ship
 standalone, runnable with nothing but PyYAML, and are meant to work without
 the rest of the package installed).
 
-Every value interpolated into a fragment built on top of this module must
-go through html.escape() at the call site -- trace titles, tags and lesson
-slugs are file content, not code, and are exactly as attacker-controllable
-as the frontmatter values measure_performance.py already escapes for the
-same reason.
+Escaping is done INSIDE this module (wrap_page title/timestamp, stat_card
+label/value/note): trace titles, tags and lesson slugs are file content,
+not code, and are exactly as attacker-controllable as the frontmatter
+values measure_performance.py already escapes. Callers must still escape
+values they interpolate into their own fragments directly.
 """
 from __future__ import annotations
+
+import html
 
 PAGE_CSS = """
 body {
@@ -53,11 +55,16 @@ code { background: #f4f6f9; padding: 1px 5px; border-radius: 4px; font-size: 0.9
 
 
 def wrap_page(title: str, body_html: str, timestamp: str) -> str:
+    # Escape by default: title/timestamp are often lesson/trace-derived file
+    # content, and a caller that forgets html.escape() would otherwise ship
+    # stored XSS in a saved report. body_html stays raw (it is this module's
+    # own fragments), so escape values before composing them into it -- or
+    # use stat_card/table helpers below, which escape their inputs.
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>{title} — {timestamp}</title>
+<title>{html.escape(title)} — {html.escape(timestamp)}</title>
 <style>{PAGE_CSS}</style>
 </head>
 <body>
@@ -68,9 +75,9 @@ def wrap_page(title: str, body_html: str, timestamp: str) -> str:
 
 
 def stat_card(label: str, value: str, note: str = "") -> str:
-    note_html = f'<div class="note">{note}</div>' if note else ""
+    note_html = f'<div class="note">{html.escape(note)}</div>' if note else ""
     return f"""<div class="card">
-  <div class="label">{label}</div>
-  <div class="value">{value}</div>
+  <div class="label">{html.escape(label)}</div>
+  <div class="value">{html.escape(value)}</div>
   {note_html}
 </div>"""

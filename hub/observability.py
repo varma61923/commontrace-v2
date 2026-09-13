@@ -191,12 +191,37 @@ class Metrics:
     Counters only, never gauges derived from the database: this must stay a
     cheap in-memory read, so that scraping it can never itself become load
     on Postgres the way /readyz can.
+
+    Duration is a proper Prometheus histogram (bucketed counts + _sum +
+    _count), not the summed-duration-only counter this used to be. A sum
+    alone cannot answer "is p99 acceptable" -- a stated SLO needs a
+    percentile, and a percentile needs a distribution, which a single
+    running total structurally cannot recover no matter how it is sliced.
+    Bucketed the same way `hub/bench_scaling.py`/`bench_retrieval.py`
+    report their own numbers is not required here; this is live production
+    traffic, not a benchmark run, so PromQL's own `histogram_quantile()` is
+    what turns these buckets into a percentile at query time.
     """
+
+    # Upper bounds in milliseconds, Prometheus's own `le` (less-or-equal)
+    # convention: BUCKETS_MS[i] counts every observation <= that value,
+    # cumulatively, so the last bucket before +Inf already holds "everything
+    # this fast or faster". Skewed toward the sub-100ms range because that
+    # is where this Hub's own budget lives -- hub/auth.py's fast path is
+    # ~1ms, hub/SCALING.md's sublinear read paths top out around 60-100ms at
+    # 64k traces -- with enough coarse buckets past 1s to still say something
+    # about a genuinely slow outlier instead of just lumping it into +Inf.
+    BUCKETS_MS: tuple[float, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests: dict[tuple[str, str, int], int] = {}
+        # path -> [count landing in BUCKETS_MS[0], ..., count in +Inf].
+        # One extra slot for +Inf beyond BUCKETS_MS's own length, matching
+        # Prometheus's requirement that the last bucket is always +Inf.
+        self._duration_buckets: dict[str, list[int]] = {}
         self._duration_sum_ms: dict[str, float] = {}
+        self._duration_count: dict[str, int] = {}
         self._rate_limited: dict[str, int] = {}
 
     def observe_request(self, method: str, path: str, status: int, duration_ms: float) -> None:
@@ -215,6 +240,17 @@ class Metrics:
             key = (method_bucket, bucket, status)
             self._requests[key] = self._requests.get(key, 0) + 1
             self._duration_sum_ms[bucket] = self._duration_sum_ms.get(bucket, 0.0) + duration_ms
+            self._duration_count[bucket] = self._duration_count.get(bucket, 0) + 1
+            counts = self._duration_buckets.setdefault(bucket, [0] * (len(self.BUCKETS_MS) + 1))
+            # Every bucket this observation is <= gets incremented, not just
+            # the tightest one -- that IS what "cumulative" means in a
+            # Prometheus histogram, and is what lets a query pick any `le`
+            # threshold after the fact without this class having guessed
+            # which ones an operator would care about.
+            for i, upper in enumerate(self.BUCKETS_MS):
+                if duration_ms <= upper:
+                    counts[i] += 1
+            counts[-1] += 1  # +Inf: every observation, unconditionally
 
     def observe_rate_limited(self, limiter: str) -> None:
         with self._lock:
@@ -223,7 +259,9 @@ class Metrics:
     def render(self) -> str:
         with self._lock:
             requests = dict(self._requests)
-            durations = dict(self._duration_sum_ms)
+            duration_buckets = {k: list(v) for k, v in self._duration_buckets.items()}
+            duration_sum = dict(self._duration_sum_ms)
+            duration_count = dict(self._duration_count)
             rate_limited = dict(self._rate_limited)
 
         lines = [
@@ -236,11 +274,24 @@ class Metrics:
                 f'status="{status}"}} {count}'
             )
         lines += [
-            "# HELP commontrace_hub_request_duration_ms_total Summed request duration, by route.",
-            "# TYPE commontrace_hub_request_duration_ms_total counter",
+            "# HELP commontrace_hub_request_duration_ms Request duration in milliseconds, by route.",
+            "# TYPE commontrace_hub_request_duration_ms histogram",
         ]
-        for path, total in sorted(durations.items()):
-            lines.append(f'commontrace_hub_request_duration_ms_total{{path="{path}"}} {total:.2f}')
+        for path in sorted(duration_buckets):
+            counts = duration_buckets[path]
+            for upper, cumulative in zip(self.BUCKETS_MS, counts):
+                lines.append(
+                    f'commontrace_hub_request_duration_ms_bucket{{path="{path}",le="{upper:g}"}} {cumulative}'
+                )
+            lines.append(
+                f'commontrace_hub_request_duration_ms_bucket{{path="{path}",le="+Inf"}} {counts[-1]}'
+            )
+            lines.append(
+                f'commontrace_hub_request_duration_ms_sum{{path="{path}"}} {duration_sum[path]:.2f}'
+            )
+            lines.append(
+                f'commontrace_hub_request_duration_ms_count{{path="{path}"}} {duration_count[path]}'
+            )
         lines += [
             "# HELP commontrace_hub_rate_limited_total Requests refused, by which limiter refused them.",
             "# TYPE commontrace_hub_rate_limited_total counter",
@@ -295,7 +346,7 @@ def add_health_routes(
 
     async def readyz(request: Request) -> JSONResponse:
         client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
-        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             # Retry-After for the same reason hub/server.py's 429s carry it:
             # an orchestrator that backs off by a known interval stops
@@ -332,7 +383,7 @@ def add_health_routes(
         -- which is exactly when you want to be able to read it.
         """
         client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
-        allowed, retry_after = readyz_rate_limiter.check(client_key)
+        allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             seconds = str(max(1, math.ceil(retry_after)))
             return JSONResponse(

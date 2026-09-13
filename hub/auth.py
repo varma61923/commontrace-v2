@@ -5,19 +5,56 @@ Design:
   - A raw key looks like `ct_live_<43 url-safe base64 chars>` (~32 bytes of
     entropy). It is shown to the operator exactly once, at issuance, and
     never stored or logged in recoverable form.
-  - Only an argon2id hash of the raw key is persisted (hub/models.py
-    ApiKey.key_hash), plus a non-secret `key_prefix` (first 12 chars of the
-    raw key) so an operator can identify *which* key a log line or DB row
-    refers to without ever being able to reconstruct the secret from it.
-  - Verification hashes the presented key and looks it up by prefix first
-    (indexed, cheap) then confirms the full hash with argon2's constant-time
-    verify -- never a linear scan comparing raw strings.
+  - Two independent digests of the raw key are persisted (hub/models.py
+    ApiKey), plus a non-secret `key_prefix` (first 12 chars of the raw key)
+    so an operator can identify *which* key a log line or DB row refers to
+    without ever being able to reconstruct the secret from it:
+
+      - `key_hmac`: HMAC-SHA256(pepper, raw_key), hex. THE VERIFICATION
+        PATH -- an indexed exact-match lookup, checked first on every
+        request.
+      - `key_hash`: an argon2id hash, kept as a fallback and break-glass
+        copy (see WHY ARGON2 IS STILL HERE, below), checked only when the
+        HMAC lookup misses.
+
+WHY HMAC, NOT ARGON2, FOR VERIFICATION. Argon2id exists to make guessing a
+LOW-ENTROPY human password expensive. `generate_raw_key` below mints 256
+bits from `secrets` -- there is nothing to brute-force, so Argon2's cost
+bought no security at all, on the product's highest-traffic code path.
+Measured on this machine, end to end including the DB round trip each way
+(argon2-cffi default params: t=3, m=64MiB, p=4):
+
+    legacy (Argon2) verify_api_key:  63.9 ms median
+    fast (key_hmac) verify_api_key:   1.1 ms median
+    speedup:                         56.5x
+
+which on a 4-core box is the difference between an authentication ceiling
+around 48 req/s (the whole Hub, since every authenticated request paid it)
+and one in the thousands/s -- at which point something else (the connection
+pool, the read-rate limiter) becomes the binding constraint instead. An
+HMAC lookup is also, being an ordinary indexed equality query, the same
+cost whether the row exists or not -- so it does not reopen the timing
+question below, it makes it moot for any key that has one.
+
+WHY ARGON2 IS STILL HERE. Raw keys are one-way hashed and never recoverable,
+so there is no way to compute `key_hmac` for a key that predates this
+column except by seeing that key presented again. `verify_api_key` therefore
+tries the fast HMAC path first and, on a miss, falls through to the ORIGINAL
+prefix-scan-plus-Argon2 verification unchanged -- so an existing key keeps
+working with no migration window -- and backfills `key_hmac` the moment that
+legacy path succeeds, so the fast path covers it from then on. `key_hash`
+itself is never deleted: it is the only fallback if `HUB_API_KEY_PEPPER` is
+ever lost or rotated, since a lost pepper makes every `key_hmac` unverifiable
+at once (rotate by re-peppering and letting the fallback path re-backfill).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
+import hmac
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,24 +64,52 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from hub.models import ApiKey, Organization
+from hub import scopes as scopes_module
+from hub.models import ApiKey, Organization, User
 
 _KEY_PREFIX = "ct_live_"
 _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking useful entropy
 
 _hasher = PasswordHasher()
 
-# A valid argon2id hash of a value that is never a real key. verify_api_key
-# runs this through the same verify() call a real candidate would get
-# whenever no key_prefix matches the presented key at all -- without it,
-# "no such prefix" returns instantly while "prefix exists but the rest of
-# the key is wrong" pays for a full argon2id computation (tens of
-# milliseconds). That timing gap lets a remote attacker distinguish the two
-# cases without ever guessing a real key: enough responses timed against
-# enough presented prefixes reveals which key_prefix values exist in the
-# database at all, i.e. which orgs/keys exist, before any brute-forcing of
-# the actual secret begins.
+# A valid argon2id hash of a value that is never a real key. The LEGACY
+# fallback path (only reached when the HMAC lookup below misses) runs this
+# through the same verify() call a real candidate would get whenever no
+# key_prefix matches the presented key at all -- without it, "no such
+# prefix" returns instantly while "prefix exists but the rest of the key is
+# wrong" pays for a full argon2id computation (tens of milliseconds). That
+# timing gap lets a remote attacker distinguish the two cases without ever
+# guessing a real key: enough responses timed against enough presented
+# prefixes reveals which key_prefix values exist in the database at all,
+# i.e. which orgs/keys exist, before any brute-forcing of the actual secret
+# begins. This defense is specific to the prefix-scan shape of the legacy
+# path; the HMAC path has no "candidate rows sharing a prefix" concept to
+# leak in the first place (see verify_api_key).
 _DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(32))
+
+# HMAC-SHA256(pepper, raw_key) is the verification key, not a secret an
+# attacker who reads it out of the database could use alone -- reversing an
+# HMAC digest is as hard as reversing SHA-256 itself, pepper or not. The
+# pepper's job is narrower: it stops someone who has ONLY read `key_hmac`
+# values (a DB dump, a backup, a read replica) from computing their own
+# digest of a guessed key and checking it against those values offline,
+# which a bare unkeyed hash of the key would allow.
+#
+# Set HUB_API_KEY_PEPPER (any string, kept identical across every replica
+# and every restart of a given deployment) for the fast path's benefit to
+# survive a restart and to be shared across replicas. Left unset, a random
+# pepper is generated per process: HMAC verification still works, correctly,
+# for any key backfilled within THIS process's own lifetime, but a restart
+# or a different replica will not recognize digests this one computed, and
+# such requests simply fall through to the always-correct legacy path below
+# -- a throughput regression for that key on that request, never a security
+# or correctness one.
+_pepper_env = os.environ.get("HUB_API_KEY_PEPPER", "")
+_PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32)
+
+
+def _key_hmac(raw_key: str) -> str:
+    return hmac.new(_PEPPER, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
 
 # How stale last_used_at may be before verify_api_key bothers to refresh it.
 # See the write site below for why this exists: idle-key auditing needs
@@ -58,20 +123,42 @@ class IssuedKey:
     org_id: str
     raw_key: str  # only ever available at issuance time; caller must display/store it now
     key_prefix: str = ""  # non-secret; safe to log / use as an audit actor
+    # What the issued key may do (hub/scopes.py). Returned so the caller can
+    # print it: an operator who asked for a narrow key needs to see what they
+    # actually got, and one who asked for nothing needs to see that the
+    # default is everything.
+    scopes: tuple[str, ...] = ()
 
 
 def generate_raw_key() -> str:
     return _KEY_PREFIX + secrets.token_urlsafe(32)
 
 
-async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | None = None) -> IssuedKey:
+async def issue_api_key(
+    session: AsyncSession,
+    org_id: str,
+    expires_days: int | None = None,
+    scopes: str | list | tuple | None = None,
+) -> IssuedKey:
     """`expires_days=None` (the default) issues a non-expiring key, matching
     the behavior before expiry existed. A positive value sets `expires_at`,
     after which verify_api_key rejects the key with no revocation job
-    needing to run."""
+    needing to run.
+
+    `scopes=None` grants every scope -- what a key could do before scopes
+    existed, so the documented one-liner onboarding is unchanged. Pass a
+    subset ("read", ["read", "write"]) for a least-privilege workload token;
+    hub/scopes.py raises on an unknown scope rather than silently dropping
+    it, because a typo that quietly narrows or widens a credential is a
+    privilege change nobody reviews.
+    """
     org = await session.get(Organization, org_id)
     if org is None:
         raise ValueError(f"no such organization: {org_id}")
+
+    # Validated before any expensive work and before the row exists: a
+    # ScopeError here must not leave a half-issued key behind.
+    granted_scopes = scopes_module.parse(scopes)
 
     expires_at = None
     if expires_days is not None:
@@ -86,13 +173,22 @@ async def issue_api_key(session: AsyncSession, org_id: str, expires_days: int | 
     # other request the single-process Hub is concurrently serving, not just
     # the one issuing a key. asyncio.to_thread moves it off the loop onto a
     # worker thread so issuance stays expensive only for its own caller.
+    # Issuance is rare (an operator action, not a per-request cost), so
+    # keeping this computation -- unlike verification -- is simply the
+    # cheapest way to keep key_hash populated for every row, uniformly, with
+    # no "some rows have it, some don't" special case anywhere downstream.
     key_hash = await asyncio.to_thread(_hasher.hash, raw_key)
     api_key = ApiKey(
-        org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash, expires_at=expires_at
+        org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash,
+        key_hmac=_key_hmac(raw_key), expires_at=expires_at,
+        scopes=list(granted_scopes),
     )
     session.add(api_key)
     await session.flush()
-    return IssuedKey(key_id=api_key.id, org_id=org_id, raw_key=raw_key, key_prefix=api_key.key_prefix)
+    return IssuedKey(
+        key_id=api_key.id, org_id=org_id, raw_key=raw_key,
+        key_prefix=api_key.key_prefix, scopes=granted_scopes,
+    )
 
 
 async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
@@ -121,21 +217,103 @@ async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
     )
 
 
+def _scopes_of(raw: object) -> tuple[str, ...] | None:
+    """Normalize the `scopes` column into what AuthenticatedKey carries.
+
+    NULL means a key that predates the column -- full capability, see
+    hub/scopes.py. Anything else, including an empty array, is taken
+    literally: a deliberately narrowed key.
+    """
+    if raw is None:
+        return None
+    return tuple(raw)
+
+
 @dataclass(frozen=True)
 class AuthenticatedKey:
     org_id: str
     key_prefix: str  # non-secret; used to attribute audit-log entries
+    # What this key may do (hub/scopes.py). None means a key issued before
+    # the column existed, which held every capability at issuance -- see
+    # scopes.satisfies for why that is distinct from an empty tuple.
+    scopes: tuple[str, ...] | None = None
 
 
 async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKey | None:
     """Return the authenticated org (plus the key's non-secret prefix, for
     audit attribution), or None if the key is invalid, revoked, or expired.
     Never raises on a bad key -- an unrecognized or malformed key is simply
-    "not authenticated", not a server error."""
+    "not authenticated", not a server error.
+
+    Tries the fast `key_hmac` lookup first; a miss falls through to the
+    original prefix-scan-plus-Argon2 path unchanged (`_verify_by_legacy_scan`),
+    which backfills `key_hmac` on success so the fast path covers this key
+    from its next request on. See this module's docstring for why both
+    exist and why that order is safe.
+    """
     if not raw_key or not raw_key.startswith(_KEY_PREFIX):
         return None
-    prefix = raw_key[:_PREFIX_LEN]
     now = datetime.now(timezone.utc)
+
+    fast = await _verify_by_hmac(session, raw_key, now)
+    if fast is not None:
+        return fast
+    return await _verify_by_legacy_scan(session, raw_key, now)
+
+
+async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) -> AuthenticatedKey | None:
+    """O(1) via the unique index on `key_hmac` -- no Argon2 call, on either
+    a hit or a miss. A plain equality lookup costs the same (modulo index
+    depth, which carries no information about the presented secret) whether
+    it matches or not, so this path has no timing gap for the _DUMMY_HASH
+    defense above to close -- there is no "candidate rows share this
+    prefix" fact left to leak, because nothing here is grouped by prefix.
+
+    A raw Core column select, not `select(ApiKey)`: this runs on every
+    authenticated request, and hydrating a full mapped entity (identity map,
+    instrumented attributes) for the handful of columns actually needed here
+    is pure overhead on the hottest path in the process.
+    """
+    row = (
+        await session.execute(
+            select(
+                ApiKey.id, ApiKey.org_id, ApiKey.key_prefix, ApiKey.key_hmac,
+                ApiKey.revoked_at, ApiKey.expires_at, ApiKey.last_used_at,
+                ApiKey.scopes,
+            ).where(ApiKey.key_hmac == _key_hmac(raw_key))
+        )
+    ).first()
+    if row is None:
+        return None
+    # Belt and braces: the SQL equality above already did the real
+    # filtering, but compare_digest costs nothing extra and removes any
+    # doubt that a future change to this query could reintroduce a
+    # non-constant-time comparison of secret material.
+    if not hmac.compare_digest(row.key_hmac, _key_hmac(raw_key)):
+        return None
+    if row.revoked_at is not None:
+        return None
+    if row.expires_at is not None and row.expires_at <= now:
+        return None
+    # Same throttling rationale as the legacy path below: idle-key auditing
+    # needs roughly-current information, not per-request precision, and an
+    # unconditional write here would serialize a hot key's concurrent
+    # requests against each other's row lock for no operational benefit.
+    if row.last_used_at is None or (now - row.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
+        await session.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used_at=now))
+    return AuthenticatedKey(
+        org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes)
+    )
+
+
+async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datetime) -> AuthenticatedKey | None:
+    """The ORIGINAL verify_api_key, unchanged, for a key with no `key_hmac`
+    yet (issued before that column existed) or one whose digest was computed
+    under a different process's ephemeral pepper (see _PEPPER above). Only
+    reached when `_verify_by_hmac` already missed, so this is off the hot
+    path for any key that has completed one round through it.
+    """
+    prefix = raw_key[:_PREFIX_LEN]
     candidates = (
         await session.execute(
             select(ApiKey).where(ApiKey.key_prefix == prefix, ApiKey.revoked_at.is_(None))
@@ -207,7 +385,18 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
         # volume by roughly the same factor as the interval.
         if candidate.last_used_at is None or (now - candidate.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
             candidate.last_used_at = now
-        return AuthenticatedKey(org_id=candidate.org_id, key_prefix=candidate.key_prefix)
+        # Backfill the fast path for next time. Deterministic in `raw_key`,
+        # so two requests racing this same key at once (both missing the
+        # fast lookup because neither has backfilled yet) both compute the
+        # SAME digest and write it to the SAME row -- an idempotent update,
+        # not a unique-constraint race, even though key_hmac is unique
+        # across DIFFERENT rows.
+        if candidate.key_hmac is None:
+            candidate.key_hmac = _key_hmac(raw_key)
+        return AuthenticatedKey(
+            org_id=candidate.org_id, key_prefix=candidate.key_prefix,
+            scopes=_scopes_of(candidate.scopes),
+        )
     return None
 
 
@@ -230,6 +419,59 @@ current_org_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("cur
 # their audit-log rows (hub/audit.py) without re-reading the key.
 current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_actor", default=None)
 
+# Set alongside the two above by the same middleware: what the authenticated
+# key is allowed to do (hub/scopes.py). None means either "no authenticated
+# request in context" (operator CLI, benchmarks) or "a key issued before
+# scopes existed" -- both of which `require_scope` treats as unrestricted,
+# and for the same reason it always has: those paths were never gated by a
+# key's capabilities in the first place.
+current_scopes: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar(
+    "current_scopes", default=None
+)
+
+
+class ScopeDenied(PermissionError):
+    """The key authenticated, and is not allowed to do this.
+
+    A PermissionError subclass so any handler that only knows about that
+    base class still refuses correctly, but hub/server.py's
+    `_error_response` gives it its own label ("forbidden", not
+    "unauthorized"): the credential is valid, and telling a caller to
+    re-authenticate when retrying with the same key will fail identically
+    forever is a lie that turns a configuration error into a retry loop.
+
+    `required` and `granted` are carried as attributes so the wire response
+    can be acted on without parsing the message.
+    """
+
+    def __init__(self, message: str, required: str, granted: tuple[str, ...] | None):
+        super().__init__(message)
+        self.required = required
+        self.granted = granted
+
+
+def require_scope(required: str) -> None:
+    """Raise `ScopeDenied` unless the key in context holds `required`.
+
+    Called from one place per tool (hub/server.py's `_scoped_tool`), so the
+    enforcement point is the registration site an author cannot forget to
+    write -- a tool registered with no scope does not compile past
+    `_scoped_tool`, and hub/tests asserts every registered tool declares one.
+    """
+    from hub import scopes as scopes_module
+
+    granted = current_scopes.get()
+    if scopes_module.satisfies(granted, required):
+        return
+    raise ScopeDenied(
+        f"this API key does not have the {required!r} scope "
+        f"(it holds: {scopes_module.describe(granted)}). Issue a key that does with "
+        f"`python -m hub.manage issue-key <org_id> <days> {required}` -- "
+        "re-authenticating with the same key will not help.",
+        required=required,
+        granted=granted,
+    )
+
 
 def get_current_org_id() -> str:
     org_id = current_org_id.get()
@@ -238,8 +480,156 @@ def get_current_org_id() -> str:
     return org_id
 
 
+# --- human identity (hub/models.py:User, hub/sso.py) -----------------------
+#
+# Everything above authenticates a WORKLOAD credential -- one shared key per
+# org, no notion of who is holding it. This section authenticates a PERSON,
+# by verifying an OIDC bearer token (hub/sso.py) names an OIDC subject that
+# is linked to a `User` row here and not deprovisioned.
+#
+# Set ALONGSIDE current_org_id/current_actor/current_scopes by the same
+# middleware (hub/server.py), never instead of them: a person's role still
+# derives a scope (hub/rbac.py:ROLE_SCOPES) so `require_scope`'s existing
+# enforcement point stays meaningful for this path too, and the finer-grained
+# capability check below is an ADDITIONAL gate, not a replacement for it.
+current_user: contextvars.ContextVar[AuthenticatedUser | None] = contextvars.ContextVar(
+    "current_user", default=None
+)
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    id: str
+    org_id: str
+    role: str
+    email: str
+
+
+async def verify_user_token(
+    session: AsyncSession, raw_token: str, provider, *, jwks_cache=None,
+) -> AuthenticatedUser | None:
+    """Verify `raw_token` as an OIDC bearer JWT and resolve it to a `User`.
+
+    Returns None on ANY failure -- an unverifiable token, an unlinked
+    subject, or a deprovisioned user -- deliberately indistinguishable at
+    this layer for the same reason `verify_api_key` collapses invalid,
+    revoked, and expired into one outcome: telling an attacker which one
+    they hit is a probe they should not get for free.
+
+    NO AUTO-PROVISIONING. A subject verified by the IdP is proof the IdP
+    vouches for a person, not proof that person should have an account
+    here -- linking one is always `hub.manage link-sso`, an explicit
+    operator action. A verified subject with no matching row authenticates
+    no one.
+
+    `disabled_at` is checked HERE, on every call, not only when the row was
+    linked -- a token that was valid when minted must stop authorizing
+    anything the moment this column is set, independent of the token's own
+    remaining lifetime. That is what makes deprovisioning actually block
+    access rather than merely record an intention to.
+    """
+    from hub import sso as sso_module
+
+    try:
+        # asyncio.to_thread for the same reason issue_api_key/verify_api_key
+        # move Argon2 off the loop: this is CPU-bound signature verification
+        # and, on a JWKS cache miss, a blocking HTTP fetch (JWKSCache's own
+        # `fetch` callable) -- either would otherwise stall every other
+        # request this process is handling.
+        claims = await asyncio.to_thread(
+            sso_module.verify_bearer_token, raw_token, provider,
+            jwks_cache=jwks_cache,
+        )
+    except sso_module.IdentityError:
+        return None
+
+    row = (
+        await session.execute(
+            select(User).where(
+                User.issuer == claims.issuer,
+                User.external_subject == claims.subject,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None or row.disabled_at is not None:
+        return None
+
+    row.last_login_at = datetime.now(timezone.utc)
+    return AuthenticatedUser(id=row.id, org_id=row.org_id, role=row.role, email=row.email)
+
+
+class CapabilityDenied(PermissionError):
+    """A verified person authenticated, and their role does not grant the
+    capability the tool they called requires.
+
+    Distinct from `ScopeDenied` even though both are "the credential is
+    valid and this action is refused": this one names a ROLE, not a scope,
+    because the remedy is different (re-role the person, hub.manage
+    set-user-role) and a caller rendering the error should say so.
+    """
+
+    def __init__(self, message: str, required: str, role: str):
+        super().__init__(message)
+        self.required = required
+        self.role = role
+
+
+def require_capability(tool_name: str) -> None:
+    """Raise `CapabilityDenied` unless the person in context (if any) may
+    call `tool_name`.
+
+    A NO-OP when no verified person is in context -- an API-key-only
+    request is governed by `require_scope` alone, exactly as before this
+    module existed. This is the layer that only ever ADDS a restriction; it
+    never grants one `require_scope` would have refused.
+    """
+    from hub import rbac as rbac_module
+
+    person = current_user.get()
+    if person is None:
+        return
+    required = rbac_module.capability_for_tool(tool_name)
+    if not rbac_module.has_capability(person.role, required):
+        raise CapabilityDenied(
+            f"the signed-in user does not hold the {required!r} capability "
+            f"(role: {person.role!r}). Ask an Owner to change this user's role "
+            "with `python -m hub.manage set-user-role`.",
+            required=required,
+            role=person.role,
+        )
+
+
 def get_current_actor() -> str:
     from hub.audit import actor_for_api_key
 
-    prefix = current_actor.get()
-    return actor_for_api_key(prefix) if prefix else "unknown"
+    raw = current_actor.get()
+    if not raw:
+        return "unknown"
+    # The person path (hub/server.py's middleware) stores the actor string
+    # already fully formed ("user:<id>"); only an API key's bare prefix
+    # still needs actor_for_api_key's "api-key:" wrapper. Without this
+    # check a person's actor was double-wrapped into "api-key:user:<id>",
+    # which reads as a workload credential in the audit log when it is not
+    # one.
+    if raw.startswith("user:"):
+        return raw
+    return actor_for_api_key(raw)
+
+
+class PersonRequiredError(PermissionError):
+    """Raised for a tool that only means something for a specific PERSON --
+    a comment's author, an assignment's assignee, whose inbox a
+    notification belongs to -- when called by an API-key-only request with
+    no signed-in user in context. There is no meaningful value to fall
+    back to: a shared workload credential cannot author a remark or be
+    the one someone assigns work to."""
+
+
+def get_current_user() -> AuthenticatedUser:
+    person = current_user.get()
+    if person is None:
+        raise PersonRequiredError(
+            "this action requires a signed-in person (an OIDC bearer token "
+            "linked via `hub.manage link-sso`), not just an org's API key."
+        )
+    return person

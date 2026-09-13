@@ -1,0 +1,363 @@
+"""One store's retrieval settings, read by EVERY retriever.
+
+Modeled deliberately on commontrace/holdout_io.py's ExperimentConfig, for the
+same reason it exists: a setting that lives as a CLI flag default on `query`
+and a separate constant in the MCP server is a setting the two surfaces can
+silently disagree about. Retrieval settings are worse in that respect than the
+holdout rate, because they decide which lessons are ELIGIBLE at all -- so a
+disagreement between surfaces doesn't just change what an agent sees, it
+changes the denominator of the causal experiment measuring whether any of it
+helped (commontrace/integrity.py's check_scorer_drift).
+
+THE BACKWARD-COMPATIBILITY RULE HERE IS LOAD-BEARING. A store that already has
+holdout assignments on disk was scored by the historical raw-additive scorer
+with no floor. Switching it to IDF scoring mid-flight would change which
+lessons clear the bar, which changes eligibility, which makes the assignments
+before and after the upgrade two different experiments -- pooled into one
+comparison, silently, by the act of upgrading. holdout_io.read_log's own
+comment on the `salt` field states the principle:
+
+    "Backward compatibility for a measurement is not a nicety: the
+     alternative is a fleet's entire experiment history becoming unreadable
+     on upgrade."
+
+So `load_config` pins such a store to the historical scorer and prints how to
+opt in, rather than upgrading it silently. A store with no experiment running
+has nothing to invalidate and gets the better scorer immediately.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import math
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+
+from commontrace import dosage, paths, retrieval
+
+CONFIG_NAME = "retrieval.json"
+
+#: How the arms are combined. "none" is the historical either/or: semantic
+#: when the extra is installed and the index is fresh, lexical otherwise.
+FUSION_NONE = "none"
+#: Reciprocal Rank Fusion over both arms (commontrace/retrieval.py). Position
+#: only, because cosine and IDF relevance are not on a comparable scale.
+FUSION_RRF = "rrf"
+FUSIONS = (FUSION_NONE, FUSION_RRF)
+
+# WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
+# ---------------------------------------------------
+# The holdout log records `scorer` and `floor` as the evidence of what decided
+# ELIGIBILITY, and integrity.check_scorer_drift invalidates an experiment
+# whose scorer changed mid-run -- because "injected when retrieved" is not one
+# treatment if what counts as retrieved moved.
+#
+# Turning fusion on moves exactly that. A lesson no lexical pass would surface
+# becomes eligible because the semantic arm ranked it, and the denominator of
+# the experiment changes with it. Recording the composition INSIDE the scorer
+# label means the existing drift check catches it for free -- no second column
+# that an older reader would ignore, and no second check that could disagree
+# with the first about the same fact.
+_FUSION_LABEL = re.compile(r"^rrf\((?P<lexical>[^+()]+)\+semantic\)$")
+
+
+def eligibility_label(scorer: str, fusion: str) -> str:
+    """What to record as the `scorer` of an assignment made under these settings."""
+    if fusion == FUSION_RRF:
+        return f"rrf({scorer}+semantic)"
+    return scorer
+
+
+def parse_eligibility_label(label: str) -> tuple[str, str]:
+    """Inverse of `eligibility_label`: (lexical scorer, fusion mode).
+
+    A label this build does not recognise is read as a plain scorer with no
+    fusion, which is what every pre-fusion log line is.
+    """
+    match = _FUSION_LABEL.match(label or "")
+    if match:
+        return match.group("lexical"), FUSION_RRF
+    return label, FUSION_NONE
+
+
+def config_path(root: str) -> str:
+    return os.path.join(paths.memory_dir(root), CONFIG_NAME)
+
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    scorer: str = retrieval.SCORER_IDF
+    floor: float = retrieval.DEFAULT_FLOOR
+    # How much retrieved memory actually reaches the agent
+    # (commontrace/dosage.py). `floor` and `scorer` decide WHICH lessons are
+    # eligible; these decide how many of them fit. Kept here, with the rest
+    # of the retrieval settings, because a store whose budget differs is
+    # serving a different treatment -- the same reason scorer and floor are
+    # read from the store rather than passed per call.
+    max_lessons: int = dosage.DEFAULT_MAX_LESSONS
+    max_chars: int = dosage.DEFAULT_MAX_CHARS
+    #: Whether to fuse the lexical and semantic arms rather than pick one.
+    #: Defaults to the historical either/or, because switching a store that
+    #: is mid-experiment would change its eligibility denominator -- opting
+    #: in is a decision, not an upgrade side effect.
+    fusion: str = FUSION_NONE
+    #: RRF's rank-damping constant. Exposed because commons/eval sweeps it.
+    rrf_k: int = retrieval.DEFAULT_RRF_K
+
+    @property
+    def eligibility(self) -> str:
+        """The label an assignment made under these settings records."""
+        return eligibility_label(self.scorer, self.fusion)
+    configured_at: str = ""
+    note: str = ""
+    # True when these settings were inferred for an existing store rather than
+    # chosen by anyone, so callers can say so once instead of pretending the
+    # store opted into them.
+    pinned_for_running_experiment: bool = False
+
+
+def _int_or(value: object, default: int) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _float_or(value: object, default: float) -> float:
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    # NaN/Inf parse but poison every comparison (x >= nan is False):
+    # a nan floor would silently yield empty results. Fall back instead.
+    if not math.isfinite(out):
+        return default
+    return out
+
+
+def has_recorded_assignments(root: str) -> bool:
+    """Whether this store has already logged holdout assignments.
+
+    Checked by size rather than by parsing: this runs on every retrieval, and
+    the question is only "is there history here to protect".
+    """
+    from commontrace import holdout_io
+
+    path = holdout_io.holdout_log_path(root)
+    try:
+        return os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def _last_logged_settings(root: str) -> tuple[str, float] | None:
+    """The scorer and floor the most recent assignment was made under.
+
+    None when there is no log, or when the last line predates these fields --
+    which is what identifies a genuine pre-upgrade store.
+
+    Reads only the tail of the file. This runs on every retrieval, and a
+    fleet's log grows without bound, so parsing all of it here would make
+    retrieval get slower the longer the pilot runs.
+    """
+    from commontrace import holdout_io
+
+    path = holdout_io.holdout_log_path(root)
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return None
+        with open(path, "rb") as fh:
+            # A logged row is a few hundred bytes; 8 KiB covers the last one
+            # comfortably without reading a large log into memory.
+            fh.seek(max(0, size - 8192))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed([ln for ln in tail.splitlines() if ln.strip()]):
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            continue  # a torn final line, or a partial first line from the seek
+        scorer = raw.get("scorer")
+        floor = raw.get("floor")
+        if scorer and floor is not None:
+            try:
+                return str(scorer), float(floor)
+            except (TypeError, ValueError):
+                return None
+        return None  # a complete row that simply predates these fields
+    return None
+
+
+def load_config(root: str) -> RetrievalConfig:
+    """This store's retrieval settings, or the right defaults if unset.
+
+    Never raises. A malformed config falls back to defaults rather than
+    failing the retrieval that asked for it -- refusing to serve a lesson
+    because a settings file is corrupt trades a working fleet for a tidy
+    error (holdout_io.load_config takes the same position).
+    """
+    path = config_path(root)
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if isinstance(raw, dict):
+                scorer = str(raw.get("scorer") or retrieval.SCORER_IDF)
+                if scorer not in (retrieval.SCORER_IDF, retrieval.SCORER_COUNT):
+                    scorer = retrieval.SCORER_IDF
+                return RetrievalConfig(
+                    scorer=scorer,
+                    floor=_float_or(raw.get("floor"), retrieval.DEFAULT_FLOOR),
+                    # Absent in a config written before budgets existed,
+                    # which is the overwhelmingly common case: such a store
+                    # gets the defaults rather than zero, because a budget
+                    # of nothing would silently stop injecting anything.
+                    max_lessons=_int_or(
+                        raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
+                    max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
+                    # An unrecognised value reads as "no fusion" rather than
+                    # raising: this file is read on every retrieval, and a
+                    # typo must not stop a fleet retrieving.
+                    fusion=(
+                        str(raw.get("fusion") or FUSION_NONE)
+                        if str(raw.get("fusion") or FUSION_NONE) in FUSIONS
+                        else FUSION_NONE
+                    ),
+                    rrf_k=max(1, _int_or(raw.get("rrf_k"), retrieval.DEFAULT_RRF_K)),
+                    configured_at=str(raw.get("configured_at") or ""),
+                    note=str(raw.get("note") or ""),
+                )
+        except (OSError, ValueError):
+            pass
+
+    # Unconfigured. A store with assignments already on disk keeps the scorer
+    # those assignments were made under; see this module's docstring.
+    #
+    # WHICH scorer that is has to come from the log, not from the mere
+    # EXISTENCE of a log. Treating "there are assignments" as "this is a
+    # pre-upgrade store" was wrong in the case that matters most: a brand-new
+    # store writes its first assignment under the current scorer, and from the
+    # second query onward the log exists -- so every new fleet was silently
+    # downgraded to the historical scorer after one query, and its log then
+    # held two scorers, which check_scorer_drift correctly reports as an
+    # INVALIDATED experiment. The mechanism meant to protect an upgrade was
+    # breaking every fresh pilot instead.
+    #
+    # New rows record `scorer`/`floor`; pre-upgrade rows do not. That
+    # distinction is exactly the question being asked, so ask it directly.
+    logged = _last_logged_settings(root)
+    if logged is not None:
+        label, floor = logged
+        # The logged label may carry the arm composition; restoring only the
+        # lexical half would silently drop the semantic arm and change the
+        # denominator in the direction this pinning exists to prevent.
+        scorer, fusion = parse_eligibility_label(label)
+        return RetrievalConfig(
+            scorer=scorer,
+            floor=floor,
+            fusion=fusion,
+            pinned_for_running_experiment=True,
+        )
+    if has_recorded_assignments(root):
+        return RetrievalConfig(
+            scorer=retrieval.SCORER_COUNT,
+            floor=0.0,
+            pinned_for_running_experiment=True,
+        )
+    return RetrievalConfig()
+
+
+def configure(root: str, *, scorer: str | None = None, floor: float | None = None,
+              fusion: str | None = None, max_lessons: int | None = None,
+              max_chars: int | None = None, note: str = "") -> RetrievalConfig:
+    """Persist this store's retrieval settings. Returns the new settings.
+
+    EVERY setting is carried through from the current config, not just the
+    ones this call changes. Writing only the named fields meant a store that
+    had set a context budget lost it the next time anyone touched the floor
+    -- the budget silently reverted to the default, so an operator tightening
+    precision by one flag also tripled how much text their agents received,
+    with nothing printed. A partial write is the wrong shape for a settings
+    file that more than one command edits.
+
+    Callers that change `scorer`, `floor` or `fusion` on a store with a
+    running experiment must rotate the holdout salt afterwards
+    (holdout_io.configure): all three change which lessons are eligible, so
+    the assignments before and after describe two different treatments,
+    exactly as a changed holdout rate does.
+    """
+    current = load_config(root)
+    new_scorer = current.scorer if scorer is None else scorer
+    if new_scorer not in (retrieval.SCORER_IDF, retrieval.SCORER_COUNT):
+        raise ValueError(
+            f"unknown scorer {new_scorer!r}: expected "
+            f"{retrieval.SCORER_IDF!r} or {retrieval.SCORER_COUNT!r}"
+        )
+    new_floor = current.floor if floor is None else float(floor)
+    if not 0.0 <= new_floor <= 1.0:
+        raise ValueError(f"relevance floor must be in [0.0, 1.0], got {new_floor}")
+    new_fusion = current.fusion if fusion is None else fusion
+    if new_fusion not in FUSIONS:
+        raise ValueError(
+            f"unknown fusion mode {new_fusion!r}: expected one of "
+            f"{', '.join(repr(f) for f in FUSIONS)}"
+        )
+
+    config = RetrievalConfig(
+        scorer=new_scorer,
+        floor=new_floor,
+        fusion=new_fusion,
+        rrf_k=current.rrf_k,
+        max_lessons=(
+            current.max_lessons if max_lessons is None else max(0, int(max_lessons))),
+        max_chars=(
+            current.max_chars if max_chars is None else max(0, int(max_chars))),
+        configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        note=note or current.note,
+    )
+    # Atomic + locked + fsynced, matching holdout_io.configure: the previous
+    # fixed ".tmp" name without a lock raced concurrent configures and a
+    # crash mid-write lost the config. Unique tmp via mkstemp, lock the
+    # target, fsync before replace.
+    from commontrace import frontmatter
+
+    os.makedirs(paths.memory_dir(root), exist_ok=True)
+    target = config_path(root)
+    with frontmatter.locked(target):
+        fd, tmp = tempfile.mkstemp(
+            dir=os.path.dirname(target) or ".",
+            prefix=CONFIG_NAME + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(
+                    {
+                        "scorer": config.scorer,
+                        "floor": config.floor,
+                        "fusion": config.fusion,
+                        "rrf_k": config.rrf_k,
+                        "max_lessons": config.max_lessons,
+                        "max_chars": config.max_chars,
+                        "configured_at": config.configured_at,
+                        "note": config.note,
+                    },
+                    fh,
+                    indent=2,
+                )
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    return config

@@ -24,6 +24,10 @@ _HUB_TOOLS = [
     # that worth (the last one is the pricing basis, STRATEGY.md 11.5)
     "fleet_outcomes", "holdout_assign", "record_occasion_outcome",
     "value_delivered",
+    # the graduated subset of that measurement: the memories whose effect
+    # is already established, rendered once per session as a pinnable
+    # block instead of paid for on every query
+    "working_set",
     # entitlements
     "account_usage",
     # self-service deletion
@@ -31,13 +35,22 @@ _HUB_TOOLS = [
     "cancel_account_deletion",
     # the optional Knowledge Base (absent when HUB_COMMONS_ENABLED=false)
     "commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions",
+    # collaboration on a trace for a customer's own team: comments,
+    # assignment, and a per-person notification inbox
+    "add_comment", "list_comments", "assign_trace", "unassign_trace",
+    "list_my_notifications", "mark_notification_read",
+    # locating traces for a subject-erasure request
+    "search_trace_content",
+    # structured subject tagging + exact-match find/purge, the other half
+    # of subject-erasure support
+    "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
 
 _GENERIC_POINTER_SKILL = """---
 name: commontrace
 description: "Pointer skill — no reference pipeline (SKILL.md) was found on disk. \
 Read protocol/PROTOCOL.md for the CommonTrace Protocol spec and implement \
-Capture -> Structure -> Extract -> Validate -> Store -> Inject -> Measure for this agent."
+Capture → Structure → Extract → Validate → Store → Inject → Measure for this agent."
 ---
 
 # commontrace (generic pointer)

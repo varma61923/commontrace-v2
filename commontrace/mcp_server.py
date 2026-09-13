@@ -46,37 +46,65 @@ So `approve_lesson` exists, and:
   - it enforces the same scaffolding refusal `commontrace lesson approve`
     does, so an agent cannot activate a lesson that is still "TODO:" -- the
     defect that used to let template text become a fleet-wide instruction;
+  - it runs the same content-safety scan (commontrace/memory_guard.py), so a
+    credential or a prompt-injection payload cannot reach `active`;
   - it records WHO approved it in the lesson body, so an agent-approved
     lesson is distinguishable from a human-approved one after the fact;
   - and `serve(allow_approval=False)` removes the tool entirely, for a
     deployment that requires a person. Absent, not merely refused.
+
+BUT "SECOND JUDGEMENT" WAS OPTIONAL, AND NOW THE STORE DECIDES
+--------------------------------------------------------------
+Everything above is about WHAT is being activated. None of it stopped the
+same actor drafting a lesson and approving it a second later, so the
+independence the Validator role exists to supply was available rather than
+required -- in exactly the case where it matters most, an agent curating its
+own output unattended at machine speed. Recording an agent-approved lesson
+as agent-approved makes that auditable; it does not make it reviewed.
+
+commontrace/approval.py makes that a policy the store states
+(`memory/approval-policy.yaml`): `mode: two-person` requires that the
+approver is not among the lesson's recorded authors, and
+`require_human: true` refuses an `mcp:` actor's approval outright. With no
+policy file the behaviour above is unchanged, so an existing store sees
+nothing new until someone opts in.
 """
 
 from __future__ import annotations
 
 import contextlib
+import datetime
 import glob
 import io
 import os
 from typing import Any
 
 from commontrace import (
+    approval,
+    cache_gate,
+    dosage,
     evidence_io,
     experiment,
     frontmatter,
     holdout_io,
+    lesson_cache,
     lesson_io,
     mcp_tools,
+    memory_guard,
     paths,
+    receipts,
     retrieval,
+    retrieval_io,
     revision,
+    store_state,
     taxonomy,
     templates,
     trace_io,
     validate,
 )
-from commontrace.commands import query_cmd
+from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
+from commontrace.commands._validators import REFUSE_CHARS, check_text_size
 
 # The lesson fields an agent may set. Anything outside this set is ignored
 # rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
@@ -192,6 +220,33 @@ def _agent_actor(who: str = "") -> str:
     return f"mcp:{who}" if who else "mcp:agent"
 
 
+def _coerce_tags(tags: object) -> list[str] | None:
+    """A loosely-typed MCP client may send a single string instead of a list;
+    iterating it char-by-char would corrupt tags to single letters (",".join
+    on "mytag" -> "m,y,t,a,g"). Accept a bare string as one tag, mirroring
+    distill_cmd._safe_tags' isinstance guard.
+
+    Raises ValueError for anything else (an int, a dict, a bool, ...) rather
+    than silently dropping it -- a caller whose tags are quietly discarded
+    still gets back a normal-looking success response with no signal that
+    its tags never landed.
+    """
+    if tags is None:
+        return None
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        raise ValueError(f"tags must be a string or a list of strings, got {type(tags).__name__}")
+    return [str(t) for t in tags]
+
+
+def _sanitize_comment(text: str) -> str:
+    """Approval/rejection notes are embedded in `<!-- ... -->`; an agent-
+    controlled `-->` would break out of the comment and inject markdown/HTML
+    into the lesson body that retrieval later injects verbatim."""
+    return str(text).replace("-->", "--&gt;").replace("--", "—")
+
+
 def _lesson_path(root: str, slug: str) -> str:
     from commontrace.commands.lesson_cmd import _SLUG_RE, _resolve_lesson_path
 
@@ -203,6 +258,115 @@ def _lesson_path(root: str, slug: str) -> str:
     if path is None:
         raise LocalStoreError(f"no lesson found for slug {slug!r}")
     return path
+
+
+def _apply_dosage(matched, active, config):
+    """Admit core lessons and enforce the budget, returning the wire items.
+
+    Core lessons are loaded from the whole active set rather than from the
+    ranked one, because the entire point of `core: true` is that the lesson
+    is present whether or not it matched today's vocabulary. A core lesson
+    that ALSO matched is not admitted twice -- it is already in `matched`,
+    and is marked core there so it keeps its priority.
+
+    Returns (admitted_items, core_items, dose) -- the dose is carried out so
+    the caller can report the gauge and what was left out.
+    """
+    ranked_slugs = {item.get("slug") for item in matched}
+    core_items: list[dict] = []
+    for path, fm in active:
+        if not dosage.is_core(fm):
+            continue
+        slug = str(fm.get("name", ""))
+        if slug in ranked_slugs:
+            continue
+        try:
+            fm_full, body = frontmatter.read(path)
+        except Exception:  # noqa: BLE001 - an unreadable lesson is not injected
+            continue
+        item = _lesson_wire(fm_full, body, include_body=True)
+        item["core"] = True
+        core_items.append(item)
+
+    # A core lesson that also matched keeps its core priority rather than
+    # competing for a ranked slot, which is the whole point of the flag.
+    core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
+    for item in matched:
+        if item.get("slug") in core_slugs:
+            item["core"] = True
+
+    considered = [*core_items, *matched]
+    by_slug = {item.get("slug", ""): item for item in considered}
+    candidates = [
+        dosage.Candidate(
+            slug=item.get("slug", ""),
+            # The real text, so the character budget is spent against what
+            # the agent will actually be handed rather than an estimate.
+            text=item.get("body") or "",
+            core=bool(item.get("core", False)),
+            importance=int(item.get("importance") or 0),
+            revision=str(item.get("revision", "")),
+        )
+        for item in considered
+    ]
+    dose = dosage.select(
+        candidates,
+        dosage.Budget(max_lessons=config.max_lessons, max_chars=config.max_chars),
+    )
+    admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
+    kept_core = [item for item in admitted if item.get("core")]
+    return admitted, kept_core, dose
+
+
+def _record_receipt(root, occasion_id, task, active, injected, held, dose, config):
+    """One receipt for this retrieval. See commontrace/receipts.py."""
+    from commontrace import release as release_mod
+
+    visible = []
+    for path, fm in active:
+        slug = str(fm.get("name", ""))
+        if not slug:
+            continue
+        visible.append(
+            receipts.Visible(slug=slug, revision=lesson_io.current_revision(path) or "")
+        )
+
+    relevance_by_slug = {
+        item.get("slug", ""): float(item.get("score", 0.0))
+        for item in (*injected, *held)
+    }
+    admitted = tuple(
+        receipts.Admitted(
+            slug=item.get("slug", ""),
+            revision=str(item.get("revision", "")),
+            rank=position,
+            relevance=relevance_by_slug.get(item.get("slug", ""), 0.0),
+            core=bool(item.get("core", False)),
+        )
+        for position, item in enumerate(injected, start=1)
+    )
+    # The withheld-for-the-experiment set and the didn't-fit-the-budget set
+    # are both "not injected" and are NOT the same fact: one is a control
+    # arm, the other is a capacity limit. Labelled distinctly so a later
+    # reader is not left to guess which.
+    withheld = tuple(
+        [(item.get("slug", ""), "control arm (holdout)") for item in held]
+        + [(d.slug, d.reason) for d in dose.dropped]
+    )
+    receipts.record(root, receipts.Receipt(
+        occasion_id=occasion_id,
+        at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        visible=tuple(visible),
+        admitted=admitted,
+        withheld=withheld,
+        query=task,
+        scorer=config.scorer,
+        floor=config.floor,
+        chars_used=dose.chars_used,
+        max_chars=dose.budget.max_chars,
+        max_lessons=dose.budget.max_lessons,
+        release_id=(release_mod.current_id(root) or ""),
+    ))
 
 
 def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dict:
@@ -232,6 +396,43 @@ def _lesson_wire(fm: dict, body: str = "", *, include_body: bool = False) -> dic
     if include_body:
         out["body"] = body
     return out
+
+
+def _no_active_lessons_note(root: str) -> str:
+    """Which of the three "no active lessons" states this store is in.
+
+    All three used to get "`capture` your work, then `propose_lessons` once
+    a pattern repeats", which is right for an empty store and actively
+    misleading for the other two. An operator whose lessons are all sitting
+    at status=review has already captured and already proposed; what they
+    need is `approve`, and telling them to capture more sends them round a
+    loop that cannot terminate.
+
+    Phrased for an agent reading a JSON field rather than a terminal, so it
+    names MCP tools and CLI commands as the reader can actually reach them.
+    """
+    state = store_state.inspect(root)
+    if state.review:
+        plural = "s" if state.review != 1 else ""
+        slugs = ", ".join(state.review_slugs[:3])
+        return (
+            f"This store has {state.review} lesson{plural} at status=review and none active. "
+            "Retrieval only returns ACTIVE lessons, and promotion is a deliberate human gate "
+            "-- an unreviewed rule injected into every future run is how memory starts doing "
+            f"harm. An operator approves with `commontrace lesson approve <slug>` ({slugs})."
+        )
+    if state.traces:
+        plural = "s" if state.traces != 1 else ""
+        return (
+            f"This store has {state.traces} trace{plural} but no lessons yet. Traces are raw "
+            "experience; retrieval ranks the curated rules distilled from them. Call "
+            "`propose_lessons` once a pattern repeats (it needs >= 2 similar traces), or an "
+            "operator can write one directly with `commontrace lesson new`."
+        )
+    return (
+        "This store is empty -- nothing has been captured yet. `capture` your work, then "
+        "`propose_lessons` once a pattern repeats."
+    )
 
 
 def build_server(root: str, *, allow_approval: bool = True):
@@ -285,46 +486,72 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
+
+        A turn whose entire content is an acknowledgement -- "ok", "thanks",
+        "go ahead" -- is answered immediately with `skipped: true` and no
+        ranking pass, because there is nothing in it for a lesson to match.
         """
+        # Before the store is read, and before any arm is assigned. Both halves
+        # of that ordering matter: the saving is the corpus parse this skips,
+        # and the safety is that a skipped turn never becomes an occasion, so
+        # nothing is filtered after its arm is known (commontrace/cache_gate.py).
+        if cache_gate.is_trivial_prompt(task):
+            return _ok(
+                lessons=[], n_active=0, occasion_id=occasion_id or None,
+                skipped=True,
+                note=(
+                    "Nothing was retrieved: this turn carries no task to match a "
+                    "lesson against, so no corpus was read and no holdout arm was "
+                    "assigned -- it is not an occasion. Describe the work you are "
+                    "about to attempt, in a full sentence, to retrieve against it."
+                ),
+            )
         try:
             # The SAME loader and ranker `commontrace query` uses, on the same
             # (path, frontmatter) shape -- not a parallel implementation. If
             # the two surfaces ranked differently, a fleet's shell-capable and
             # shell-less agents would be reading different memory.
+            # Lexical, deliberately, even when the attention extra is
+            # installed. This is a long-running server answering one
+            # retrieval per agent turn, and the semantic path is a subprocess
+            # that loads a sentence-transformer model and reads an index that
+            # nothing rebuilds automatically -- so it would be both slow per
+            # call and stale by default here. Since scoring became
+            # IDF-weighted and length-normalized (commontrace/retrieval.py),
+            # lexical reads the lesson files as they are right now and cannot
+            # go stale, which is the better trade for this surface. The CLI
+            # falls back to exactly this retriever whenever its index is
+            # stale, so the two surfaces agree in the common case rather
+            # than only in name.
+            # `load_active_with_terms`, not `query_cmd._iter_active_lessons`
+            # directly, so this long-lived server benefits from the same
+            # incremental cache the CLI does -- re-tokenizing only the lesson
+            # files that changed since the LAST `retrieve` call, not the
+            # whole store on every one. This is where that matters most: a
+            # one-shot CLI process pays the parse once regardless; this
+            # process answers many `retrieve` calls without exiting.
             with _quiet():
-                active = query_cmd._iter_active_lessons(root, agent_type or None)
-            ranked = retrieval.rank_lessons(task, active, top_k=max(1, min(int(top_k), 50)))
+                active, term_cache = lesson_cache.load_active_with_terms(
+                    root, agent_type or None,
+                    reader=lambda p: read_or_warn(frontmatter.read, p),
+                )
+            # The store's own retrieval settings, for the same reason the
+            # holdout config below is read from the store rather than
+            # hardcoded here: scorer and floor decide which lessons are
+            # ELIGIBLE, so this surface disagreeing with `commontrace query`
+            # would put two different treatments in one experiment.
+            retrieval_config = retrieval_io.load_config(root)
+            ranked = retrieval.rank_lessons(
+                task, active,
+                top_k=max(1, min(int(top_k), 50)),
+                floor=retrieval_config.floor,
+                scorer=retrieval_config.scorer,
+                term_cache=term_cache,
+            )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
-        slugs = [r.slug for r in ranked]
-        withheld: set[str] = set()
-        # The STORE's settings, not this module's constants. Hardcoding them
-        # here meant an agent-driven fleet could not change its holdout rate
-        # at all -- the product could compute exactly what rate a pilot needed
-        # and then offer its AI-first half no way to set it -- and it let this
-        # surface silently disagree with `commontrace query`, which pools two
-        # randomizations into one comparison.
-        config = holdout_io.load_config(root)
-        if occasion_id and slugs and config.running:
-            try:
-                withheld = holdout_io.assign_and_log(
-                    root, slugs,
-                    occasion_id=occasion_id,
-                    rate=config.rate,
-                    salt=config.salt,
-                )
-            except Exception as exc:  # noqa: BLE001
-                # An assignment that could not be LOGGED must not be acted on:
-                # honouring an unrecorded holdout withholds a lesson from the
-                # agent and leaves no record that it was withheld, which is the
-                # one failure that corrupts the causal number silently.
-                return _err(
-                    "could not record the holdout assignment, so no lesson was withheld: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-        injected, held = [], []
+        matched_items = []
         for r in ranked:
             # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
             # only, and the body is where the rule actually is -- returning a
@@ -337,13 +564,127 @@ def build_server(root: str, *, allow_approval: bool = True):
             item = _lesson_wire(fm, body, include_body=True)
             item["score"] = round(r.score, 3)
             item["matched"] = list(r.matched_terms or [])
-            (held if r.slug in withheld else injected).append(item)
+            item["_relevance"] = r.relevance
+            matched_items.append(item)
+
+        # ALWAYS-ON lessons, and the budget everything is admitted against
+        # (commontrace/dosage.py). `top_k` bounds the COUNT and says nothing
+        # about the size, so ten terse lessons and ten pages of prose were
+        # the same budget -- and a lesson that is the fleet's position
+        # rather than a match for today's task had no way to be reliably
+        # present except by matching everything, which is the same as making
+        # retrieval worse.
+        #
+        # BEFORE the arms are assigned, and that ordering is the whole point.
+        # A lesson the budget crowds out is never administered. Assigning it
+        # an arm first would log it as TREATED on an occasion it was never
+        # present for, and an occasion counted as treated where no memory was
+        # injected pulls the measured effect toward zero -- silently, and
+        # worse the tighter the budget is. Only lessons that will actually be
+        # handed over are eligible to be randomized.
+        admitted_items, core_items, dose = _apply_dosage(
+            matched_items, active, retrieval_config
+        )
+
+        withheld: set[str] = set()
+        # The STORE's settings, not this module's constants. Hardcoding them
+        # here meant an agent-driven fleet could not change its holdout rate
+        # at all -- the product could compute exactly what rate a pilot needed
+        # and then offer its AI-first half no way to set it -- and it let this
+        # surface silently disagree with `commontrace query`, which pools two
+        # randomizations into one comparison.
+        config = holdout_io.load_config(root)
+        # Core lessons are excluded from randomization: they are unconditional
+        # by definition, so withholding one contradicts the flag. They are
+        # also constant across both arms, which is exactly why they cannot
+        # confound the comparison -- every occasion gets them.
+        eligible = [
+            item["slug"] for item in admitted_items
+            if item.get("slug") and not item.get("core")
+        ]
+        if occasion_id and eligible and config.running:
+            try:
+                withheld = holdout_io.assign_and_log(
+                    root, eligible,
+                    occasion_id=occasion_id,
+                    rate=config.rate,
+                    salt=config.salt,
+                    # Same evidence `commontrace query` records. Omitting it
+                    # here would make an agent-driven fleet's log unauditable
+                    # by exactly the checks a shell-driven one gets.
+                    relevance={r.slug: r.relevance for r in ranked},
+                    scorer=retrieval_config.scorer,
+                    floor=retrieval_config.floor,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # An assignment that could not be LOGGED must not be acted on:
+                # honouring an unrecorded holdout withholds a lesson from the
+                # agent and leaves no record that it was withheld, which is the
+                # one failure that corrupts the causal number silently.
+                return _err(
+                    "could not record the holdout assignment, so no lesson was withheld: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        injected, held = [], []
+        for item in admitted_items:
+            item.pop("_relevance", None)
+            if item.get("slug") not in withheld:
+                injected.append(item)
+                continue
+            # A withheld lesson is the control arm: the agent is told never
+            # to act on it, so its BODY -- the actual instructional text --
+            # has no legitimate use once it crosses the wire, only cost
+            # (this can run to MAX_TEXT_CHARS-scale content, on EVERY
+            # retrieve() call while an experiment is running -- exactly the
+            # calls a customer rigorously proving this product's causal
+            # claim makes most of) and a small, avoidable priming risk: an
+            # agent that has read the rule anyway is not the same
+            # experiment as one that has not. Everything except the body
+            # still ships, so `withheld` stays informative about WHAT was
+            # suppressed, just not usable. Matches `commontrace query`'s own
+            # CLI behavior, which has never printed a withheld lesson's body.
+            #
+            # The slot it vacates is NOT backfilled with the next-ranked
+            # lesson. Substituting one would make the control arm "a
+            # different lesson" rather than "no lesson", and the contrast
+            # this experiment reports would no longer be the one it claims.
+            item.pop("body", None)
+            held.append(item)
 
         result = {
             "lessons": injected,
             "n_active": len(active),
             "occasion_id": occasion_id or None,
+            "budget": dose.gauge(),
         }
+        if retrieval_config.fusion != retrieval_io.FUSION_NONE:
+            # This surface is lexical by design (see the comment above the
+            # ranking call: the semantic arm is a subprocess that loads a
+            # sentence-transformer and reads an index nothing rebuilds
+            # automatically). Said out loud rather than ignored, because the
+            # store configured a DIFFERENT eligibility rule and the two
+            # surfaces must not silently disagree about which lessons are
+            # eligible -- that is two treatments pooled into one experiment.
+            # The assignment below records the lexical label, which is what
+            # actually ran, so integrity.check_scorer_drift sees the mix.
+            result["fusion_note"] = (
+                f"this store configures fusion={retrieval_config.fusion!r}, which "
+                "this surface does not run: the semantic arm needs a model load "
+                "per call and an index nothing rebuilds automatically. Lessons "
+                "here were ranked lexically, and the holdout assignment records "
+                f"{retrieval_config.scorer!r} accordingly. Run an experiment on "
+                "one surface at a time, or set fusion=none."
+            )
+        if core_items:
+            result["core"] = [item["slug"] for item in core_items if item.get("slug")]
+        if dose.dropped:
+            # Named, never silent: an agent given nine of ten lessons and
+            # told it was given ten acts on the missing one's absence as
+            # though it were the fleet's position.
+            result["not_injected"] = [
+                {"slug": d.slug, "reason": d.reason} for d in dose.dropped
+            ]
         if occasion_id:
             result["withheld"] = held
             result["holdout_rate"] = config.rate if config.running else 0.0
@@ -360,9 +701,32 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."
                 if active else
-                "This store has no active lessons yet. `capture` your work, then "
-                "`propose_lessons` once a pattern repeats."
+                _no_active_lessons_note(root)
             )
+
+        # The receipt: what was VISIBLE, what was admitted, and why the rest
+        # was not (commontrace/receipts.py). The holdout log records
+        # eligibility and arm, which starts one step too late -- a lesson
+        # that was never a candidate does not appear in it at all, so "the
+        # memory did not help" and "the memory was never offered" are
+        # indistinguishable afterwards, and they have opposite remedies.
+        #
+        # Failure here must not fail the retrieval: unlike a holdout
+        # assignment (which CHANGES what the agent is given, so an unlogged
+        # one corrupts the experiment silently), a receipt only records what
+        # already happened. Losing one costs an audit trail entry; refusing
+        # to serve a lesson over it costs the fleet its memory.
+        if occasion_id:
+            try:
+                _record_receipt(
+                    root, occasion_id, task, active, injected, held, dose,
+                    retrieval_config,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["receipt_error"] = (
+                    f"the retrieval happened but was not recorded: "
+                    f"{type(exc).__name__}: {exc}"
+                )
         return _ok(**result)
 
     @mcp.tool()
@@ -397,8 +761,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         argv = ["--title", title, "--context", context_text, "--solution", solution_text,
                 "--dest", root]
-        if tags:
-            argv += ["--tags", ",".join(str(t) for t in tags)]
+        try:
+            coerced = _coerce_tags(tags)
+        except ValueError as exc:
+            return _err(str(exc))
+        if coerced:
+            argv += ["--tags", ",".join(str(t) for t in coerced)]
         if agent_type:
             argv += ["--agent-type", agent_type]
         if agent_id:
@@ -581,6 +949,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             "description": description, "importance_rationale": importance_rationale,
             "domain": domain,
         }
+        if not check_text_size({**sections, **fields}, what="lesson"):
+            return _err(
+                f"refusing to write {slug!r}: the drafted text is too large "
+                f"(over {REFUSE_CHARS} chars total). Split the content or "
+                "trim the sections and try again."
+            )
         try:
             # Locked read-modify-write: a fleet may have several agents
             # drafting at once, and two independent read-then-writes silently
@@ -591,7 +965,9 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if value and key in _AGENT_WRITABLE:
                         fm[key] = value
                 if tags is not None:
-                    fm["tags"] = [str(t) for t in tags]
+                    coerced_tags = _coerce_tags(tags)
+                    if coerced_tags is not None:
+                        fm["tags"] = coerced_tags
                 if importance is not None:
                     fm["importance"] = int(importance)
                 for name, text in sections.items():
@@ -626,6 +1002,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             displaces a real one -- and it would be counted as coverage by
             every report the customer reads.
 
+            It also REFUSES a lesson whose content trips a high-confidence
+            secret or prompt-injection pattern (OWASP ASI06 -- see
+            `commontrace/memory_guard.py`), naming what was found. The same
+            "injected verbatim" property that makes stale scaffolding costly
+            makes a credential or an injection payload dangerous: this call
+            is the one gate between drafted text and every later agent
+            decision the lesson matches. There is no override on this path
+            -- fix the content and call approve_lesson again.
+
             And it records `approved_by` in the lesson, so an
             agent-approved lesson is distinguishable from a human-approved one
             afterwards. Approve your OWN draft only when you have genuinely
@@ -657,8 +1042,48 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if errors:
                         return _err(f"refusing to activate {slug!r}: it does not satisfy the "
                                     "lesson schema.", schema_errors=errors)
+                    # Separation of duties, where the store asks for it
+                    # (memory/approval-policy.yaml). Absent, this is a
+                    # no-op and an agent may still approve its own draft --
+                    # the documented default. Set `mode: two-person` or
+                    # `require_human: true` and this is the gate that stops
+                    # the agent curating its own output unattended.
+                    try:
+                        policy = approval.load_policy(root)
+                        approval.check(
+                            policy, slug=slug, approver=_agent_actor(approved_by),
+                            authors=approval.authors_of(root, slug),
+                        )
+                    except (approval.ApprovalDenied, approval.PolicyError) as exc:
+                        return _err(f"refusing to activate {slug!r}: {exc}")
+
+                    # OWASP ASI06 (Memory & Context Poisoning): an active
+                    # lesson is injected into every later retrieval verbatim
+                    # (this tool's own docstring), so a credential or a
+                    # prompt-injection payload reaching `active` here would
+                    # be replayed into every later decision the lesson
+                    # matches. No --force equivalent on this path, unlike
+                    # the CLI's `lesson approve`: an agent approving its own
+                    # draft has no interactive human to confirm a deliberate
+                    # override, so a HIGH-confidence finding refuses outright
+                    # -- edit the lesson and call approve_lesson again.
+                    from commontrace.commands.lesson_cmd import _guard_fields
+                    guard = memory_guard.scan_fields(_guard_fields(fm, body))
+                    if guard.should_block:
+                        return _err(
+                            f"refusing to activate {slug!r}: the content-safety scan flagged "
+                            f"this lesson -- {guard.summary()}. Edit it to remove the flagged "
+                            "content and try again.",
+                            findings=[
+                                {"category": f.category, "label": f.label,
+                                 "field": f.field, "excerpt": f.excerpt}
+                                for f in guard.blocking_findings
+                            ],
+                        )
                     fm["status"] = "active"
-                    note = f"Approved by {approved_by}" + (f": {rationale}" if rationale else "")
+                    safe_by = _sanitize_comment(approved_by)
+                    safe_rationale = _sanitize_comment(rationale)
+                    note = f"Approved by {safe_by}" + (f": {safe_rationale}" if rationale else "")
                     body = body.rstrip() + f"\n\n<!-- {note} -->\n"
                     activated = lesson_io.write_lesson(
                         path, fm, body, root=root, actor=_agent_actor(approved_by),
@@ -688,7 +1113,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                     if fm.get("status") != "review":
                         return _err(f"{slug!r} has status {fm.get('status')!r}, not 'review'.")
                     fm["status"] = "archived"
-                    body = body.rstrip() + f"\n\n<!-- Rejected: {reason} -->\n"
+                    body = body.rstrip() + f"\n\n<!-- Rejected: {_sanitize_comment(reason)} -->\n"
                     lesson_io.write_lesson(path, fm, body, root=root,
                                            actor=_agent_actor(), reason=reason)
             except LocalStoreError as exc:
