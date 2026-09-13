@@ -274,6 +274,21 @@ class HubConfig:
     # missing setting.
     console_secret: str = ""
 
+    # --- Public disclosure (GET /disclosure, unauthenticated) ---
+    # Audit §2.3/§4.4 named "unknown data residency" and "no canonical
+    # product identity" as gaps only a real operator's own hosting and
+    # legal-entity decisions can close -- this codebase asserts neither on
+    # its own behalf, and nothing here changes that. What was missing was
+    # a PLACE for an operator who HAS made those decisions to state them
+    # where a procurement reviewer can actually see them, rather than
+    # every deployment needing its own bespoke status page. Unset means
+    # the response says exactly that -- "not disclosed by this
+    # deployment's operator" -- never a guess, a default, or silence that
+    # could be mistaken for "nothing to disclose."
+    data_region: str = ""
+    operator_legal_name: str = ""
+    operator_support_contact: str = ""
+
     # --- Self-serve signup (hub/signup.py) ---
     # False (default): no /signup route is registered at all -- the only way
     # to create an org is still `python -m hub.manage create-org`, run by an
@@ -579,6 +594,9 @@ class HubConfig:
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),
+            data_region=os.environ.get("HUB_DATA_REGION", ""),
+            operator_legal_name=os.environ.get("HUB_OPERATOR_LEGAL_NAME", ""),
+            operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
             stripe_secret_key=os.environ.get("HUB_STRIPE_SECRET_KEY", ""),
             stripe_webhook_secret=os.environ.get("HUB_STRIPE_WEBHOOK_SECRET", ""),

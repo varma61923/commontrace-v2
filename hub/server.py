@@ -48,6 +48,7 @@ from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
 from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
+from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
@@ -518,6 +519,13 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
     internal network rather than wherever this allowlist is meant to
     keep out -- refusing them would turn a security control into a
     self-inflicted outage.
+
+    `/disclosure` (hub/disclosure.py) is exempt for the opposite reason:
+    it exists specifically so an external party with no relationship to
+    this deployment's own network -- a customer's procurement or security
+    reviewer -- can read it. An IP allowlist meant to keep general traffic
+    out would make the one page built for outside reach unreachable from
+    outside, which is the one thing it must never do.
     """
 
     def __init__(self, app: ASGIApp, networks, trusted_proxy_hops: int = 0):
@@ -533,7 +541,7 @@ class IpAllowlistMiddleware(BaseHTTPMiddleware):
         # future caller constructs it.
         if not self._networks:
             return await call_next(request)
-        if request.url.path in ("/healthz", "/readyz"):
+        if request.url.path in ("/healthz", "/readyz", "/disclosure"):
             return await call_next(request)
         client_ip_raw = resolve_client_key(request, self._trusted_proxy_hops)
         try:
@@ -1639,6 +1647,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
     )
+    add_disclosure_route(inner_app, config)
     inner_app.add_middleware(
         ApiKeyAuthMiddleware,
         session_factory=session_factory,

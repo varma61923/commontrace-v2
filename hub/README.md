@@ -82,8 +82,10 @@ hub/audit.py       append-only audit-log writes (who did what, no secrets, no co
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
 hub/console.py         customer console at /app (off unless HUB_CONSOLE_SECRET is set) -- mostly
-                        read-only over this Hub's own data; Users & API Keys are admin-scope-gated
-                        exceptions; can also send a browser to Stripe (see billing.py)
+                        read-only over this Hub's own data; Users & roles, API Keys, and Alerts
+                        are admin-scope-gated exceptions; can also send a browser to Stripe (billing.py)
+hub/disclosure.py   always-on, unauthenticated GET /disclosure -- an operator's self-reported
+                    data region / legal name / support contact, or an honest "not disclosed"
 hub/signup.py       public, self-serve org creation at /signup (off unless HUB_SIGNUP_ENABLED is set)
 hub/billing.py      self-serve Stripe upgrades: Checkout/Billing Portal + the webhook that applies them
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn

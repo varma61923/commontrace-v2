@@ -9,7 +9,9 @@ What these tests defend:
 2. A source outside the configured CIDR set is refused with 403; one
    inside it is let through.
 3. /healthz and /readyz are exempt regardless -- an orchestrator's own
-   probes must never be blocked by this.
+   probes must never be blocked by this. /disclosure is exempt for the
+   opposite reason: it exists specifically for reach from OUTSIDE this
+   deployment's own network.
 4. trusted_proxy_hops is honored: behind a trusted proxy, the real
    client address (not the proxy's own) is what gets checked.
 """
@@ -35,6 +37,7 @@ def _app(networks, trusted_proxy_hops: int = 0) -> Starlette:
     app = Starlette(routes=[])
     app.add_route("/healthz", ok, methods=["GET"])
     app.add_route("/readyz", ok, methods=["GET"])
+    app.add_route("/disclosure", ok, methods=["GET"])
     app.add_route("/mcp", ok, methods=["GET"])
     app.add_middleware(IpAllowlistMiddleware, networks=networks, trusted_proxy_hops=trusted_proxy_hops)
     return app
@@ -89,6 +92,11 @@ class TestHealthAndReadinessAreAlwaysExempt:
     async def test_readyz_is_reachable_from_outside_the_allowlist(self):
         async with _client(_app(_networks("10.0.0.0/8")), client_ip="203.0.113.9") as client:
             resp = await client.get("/readyz")
+        assert resp.status_code == 200
+
+    async def test_disclosure_is_reachable_from_outside_the_allowlist(self):
+        async with _client(_app(_networks("10.0.0.0/8")), client_ip="203.0.113.9") as client:
+            resp = await client.get("/disclosure")
         assert resp.status_code == 200
 
 

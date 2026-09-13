@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /disclosure`** (`hub/disclosure.py`, audit §2.3, §4.4): an
+  always-mounted, unauthenticated endpoint reporting an operator's own
+  configured data region, legal name, and support contact
+  (`HUB_DATA_REGION`/`HUB_OPERATOR_LEGAL_NAME`/
+  `HUB_OPERATOR_SUPPORT_CONTACT`) — or, for any field left unset, the
+  honest `"not disclosed by this deployment's operator"` rather than
+  silence or a guess. This codebase still asserts no region, entity, or
+  certification on its own behalf — that remains a genuine business
+  decision — but a deployment that HAS made those decisions now has
+  somewhere a procurement reviewer can actually find them, exempted from
+  `HUB_IP_ALLOWLIST` the same way `/healthz` is (for the opposite
+  reason: built specifically for reach from outside this deployment's
+  own network). Tests: `hub/tests/test_disclosure.py` (11).
+
 - **`SUBPROCESSORS.md` and `SOC2_READINESS.md`** (audit §2.4, §7.1). Not
   a DPA and not a SOC 2 attestation — both stay correctly out of scope,
   needing a registered legal entity and an accredited audit firm
