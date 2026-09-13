@@ -11,8 +11,12 @@ and the properties that matter are:
 2. **Revoking a key ends the sessions it opened.** Otherwise an operator
    revoking a compromised key is told the problem is handled while the
    console keeps serving that org's data.
-3. **Nothing changes state.** The console is read-only, which is what makes
-   the absence of CSRF tokens correct rather than an oversight.
+3. **Overview/Proof/Memory/Knowledge Base change nothing** -- read-only,
+   which is what makes the absence of CSRF tokens correct there rather than
+   an oversight. Users & API Keys are the one deliberate exception, gated
+   behind `admin` scope (checked live on every request, not baked into the
+   session cookie) plus an explicit org-ownership check on every
+   id-addressed mutation.
 4. **Absent unless configured**, like /admin: no secret, no routes to probe.
 5. **Escaping**, because a trace title is customer-supplied and lands in
    that customer's own page -- self-XSS is less severe than the operator
@@ -29,10 +33,10 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from starlette.applications import Starlette
 
-from hub import auth, console
+from hub import auth, console, rbac
 from hub.billing import StripeSettings
 from hub.db import session_scope
-from hub.models import ApiKey, Organization, Trace
+from hub.models import ApiKey, Organization, Trace, User
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,6 +78,19 @@ async def other_org_and_key(session_factory):
         return org.id, issued.raw_key
 
 
+@pytest_asyncio.fixture
+async def org_and_readonly_key(session_factory):
+    """A key scoped read-only -- satisfies() with `read` never satisfies
+    `admin`, which is exactly the property the new mutating console
+    routes below are gated on."""
+    async with session_scope(session_factory) as session:
+        org = Organization(name="Readonly Co")
+        session.add(org)
+        await session.flush()
+        issued = await auth.issue_api_key(session, org.id, scopes=["read"])
+        return org.id, issued.raw_key
+
+
 async def _revoke_keys(session_factory, org_id: str) -> None:
     async with session_scope(session_factory) as session:
         await session.execute(
@@ -94,7 +111,7 @@ class TestAbsentUnlessConfigured:
         """A deployment that has not opted in should have no console to
         probe: a 404 from the router, not a redirect from a handler."""
         async with _client(_app(secret="")) as client:
-            for path in ("", "/signin", "/proof", "/memory", "/kb"):
+            for path in ("", "/signin", "/proof", "/memory", "/kb", "/users", "/keys"):
                 response = await client.get(f"{console.CONSOLE_PATH}{path}")
                 assert response.status_code == 404, path
 
@@ -1002,3 +1019,302 @@ class TestBillingCheckoutAndPortal:
             response = await client.get(console.CONSOLE_PATH)
         assert "Manage billing" in response.text
         assert "Upgrade to Team" not in response.text
+
+
+# --- Users & API Keys: the one deliberate exception to read-only -----------
+#
+# These pages are gated on `admin` scope, checked fresh on every request
+# (not baked into the session cookie), plus an explicit org-ownership check
+# on every id-addressed mutation -- auth.revoke_api_key/rotate_api_key take
+# only a bare id and trust a cross-tenant operator caller to have already
+# scoped it, which a customer's own browser session has not.
+
+
+class TestAdminScopeGatesMutation:
+    async def test_a_read_only_key_can_view_the_users_page(
+        self, session_factory, org_and_readonly_key
+    ):
+        _org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/users")
+        assert response.status_code == 200
+        assert "admin-scoped" in response.text
+
+    async def test_a_read_only_key_cannot_create_a_user(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/users/create",
+                data={"email": "nope@example.com", "role": rbac.ROLE_VIEWER},
+            )
+        async with session_scope(session_factory) as session:
+            count = await session.scalar(
+                select(User).where(User.org_id == org_id).limit(1)
+            )
+        assert count is None
+
+    async def test_a_read_only_key_cannot_issue_a_key(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read", "write"], "expires_days": "30"},
+            )
+        assert "shown once" not in response.text
+        async with session_scope(session_factory) as session:
+            keys = (
+                await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))
+            ).scalars().all()
+        # Only the readonly key this fixture itself issued -- nothing new.
+        assert len(keys) == 1
+
+    async def test_a_read_only_key_cannot_disable_a_user(
+        self, session_factory, org_and_key
+    ):
+        org_id, _full_raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=org_id, email="a@example.com", role=rbac.ROLE_VIEWER)
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+            readonly_issued = await auth.issue_api_key(session, org_id, scopes=["read"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, readonly_issued.raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/users/{user_id}/disable")
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+        assert row.disabled_at is None
+
+    async def test_scope_narrowing_takes_effect_without_a_new_sign_in(
+        self, session_factory, org_and_key
+    ):
+        """The console re-fetches the key's scopes fresh on every request
+        (like the existing revocation-liveness check) rather than trusting
+        what was true at sign-in time -- an admin-scoped session narrowed
+        to read-only mid-session must lose console-mutation access on its
+        very next request."""
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            still_admin = await client.get(f"{console.CONSOLE_PATH}/users")
+            assert "Create a user" in still_admin.text
+            async with session_scope(session_factory) as session:
+                await session.execute(
+                    sa_update(ApiKey).where(ApiKey.org_id == org_id).values(scopes=["read"])
+                )
+            narrowed = await client.get(f"{console.CONSOLE_PATH}/users")
+            assert "Create a user" not in narrowed.text
+            assert "admin-scoped" in narrowed.text
+
+
+class TestUserManagement:
+    async def test_creating_a_user_through_the_console(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/users/create",
+                data={"email": "ana@example.com", "role": rbac.ROLE_ANALYST},
+                follow_redirects=True,
+            )
+        assert "ana@example.com" in response.text
+        async with session_scope(session_factory) as session:
+            user = (
+                await session.execute(select(User).where(User.org_id == org_id))
+            ).scalar_one()
+        assert user.email == "ana@example.com"
+        assert user.role == rbac.ROLE_ANALYST
+        # Audited with the ACTUAL console credential, not a borrowed
+        # operator-cli label -- see manage.create_user's threaded actor.
+        assert user.created_by.startswith("api-key:")
+
+    async def test_setting_a_users_role(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=org_id, email="b@example.com", role=rbac.ROLE_VIEWER)
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/users/{user_id}/role",
+                data={"role": rbac.ROLE_CURATOR},
+            )
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+        assert row.role == rbac.ROLE_CURATOR
+
+    async def test_disabling_and_enabling_a_user(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=org_id, email="c@example.com", role=rbac.ROLE_VIEWER)
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/users/{user_id}/disable")
+            async with session_scope(session_factory) as session:
+                row = await session.get(User, user_id)
+            assert row.disabled_at is not None
+            await client.post(f"{console.CONSOLE_PATH}/users/{user_id}/enable")
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+        assert row.disabled_at is None
+
+    async def test_cannot_set_the_role_of_another_orgs_user(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=other_org_id, email="d@example.com", role=rbac.ROLE_VIEWER)
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/users/{user_id}/role",
+                data={"role": rbac.ROLE_OWNER},
+            )
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+        assert row.role == rbac.ROLE_VIEWER  # unchanged
+
+    async def test_cannot_disable_another_orgs_user(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            user = User(org_id=other_org_id, email="e@example.com", role=rbac.ROLE_VIEWER)
+            session.add(user)
+            await session.flush()
+            user_id = user.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/users/{user_id}/disable")
+        async with session_scope(session_factory) as session:
+            row = await session.get(User, user_id)
+        assert row.disabled_at is None
+
+
+class TestApiKeyManagement:
+    async def test_issuing_a_key_shows_the_raw_key_once(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read", "write"], "expires_days": "30"},
+            )
+        assert "shown once" in response.text
+        assert "ct_" in response.text
+
+    async def test_an_issued_keys_scopes_persist(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+            )
+        async with session_scope(session_factory) as session:
+            issued = (
+                await session.execute(
+                    select(ApiKey).where(ApiKey.org_id == org_id).order_by(ApiKey.created_at.desc())
+                )
+            ).scalars().first()
+        assert issued.scopes == ["read"]
+
+    async def test_issuing_with_no_scopes_checked_issues_nothing(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/keys/issue", data={})
+        async with session_scope(session_factory) as session:
+            keys = (
+                await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))
+            ).scalars().all()
+        assert len(keys) == 1  # only the fixture's own signing-in key
+
+    async def test_revoking_a_key(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org_id, scopes=["read"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/keys/{issued.key_id}/revoke")
+        async with session_scope(session_factory) as session:
+            row = await session.get(ApiKey, issued.key_id)
+        assert row.revoked_at is not None
+
+    async def test_rotating_a_key_shows_the_new_raw_key_once(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, org_id, scopes=["read"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/keys/{issued.key_id}/rotate")
+        assert "shown once" in response.text
+        async with session_scope(session_factory) as session:
+            old_row = await session.get(ApiKey, issued.key_id)
+        assert old_row.revoked_at is not None
+
+    async def test_cannot_revoke_another_orgs_key(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, other_org_id, scopes=["read"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/keys/{issued.key_id}/revoke")
+        async with session_scope(session_factory) as session:
+            row = await session.get(ApiKey, issued.key_id)
+        assert row.revoked_at is None
+
+    async def test_cannot_rotate_another_orgs_key(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(session, other_org_id, scopes=["read"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/keys/{issued.key_id}/rotate")
+        assert "shown once" not in response.text
+        async with session_scope(session_factory) as session:
+            row = await session.get(ApiKey, issued.key_id)
+        assert row.revoked_at is None
+
+
+class TestUsersAndKeysAreEscaped:
+    async def test_a_users_display_name_cannot_inject_script(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        payload = '<script>alert("xss")</script>'
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/users/create",
+                data={"email": "x@example.com", "role": rbac.ROLE_VIEWER, "display_name": payload},
+            )
+            response = await client.get(f"{console.CONSOLE_PATH}/users")
+        assert "<script>alert" not in response.text

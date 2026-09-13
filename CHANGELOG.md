@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Users & roles and API keys are now manageable from the customer
+  console** (`hub/console.py`, `/app/users`, `/app/keys`), not only the
+  CLI — the one deliberate exception to that console's otherwise
+  read-only design. Gated behind `admin` scope on the signed-in
+  session's own API key, checked fresh on every request (a key narrowed
+  from admin to read-only loses console-mutation access on its very
+  next request, not just at the session's own TTL). Every mutation
+  calls the same `hub/manage.py`/`hub/auth.py` functions the CLI does —
+  no second implementation — audited with the session's actual
+  credential rather than a borrowed `operator-cli` label, and an
+  explicit org-ownership check on every id-addressed mutation (`auth.
+  revoke_api_key`/`rotate_api_key` take only a bare id and trust a
+  cross-tenant operator caller to have already scoped it, which a
+  customer's browser session has not). Tests:
+  `hub/tests/test_console.py::TestAdminScopeGatesMutation`/
+  `TestUserManagement`/`TestApiKeyManagement`/`TestUsersAndKeysAreEscaped`
+  (18).
+
 - **SCIM Groups (`/scim/v2/Groups`, `hub/models.py:ScimGroup`/
   `ScimGroupMembership`).** Audit §1.2 named "SCIM Groups" as a declined
   gap: a real Groups API needs many-to-many membership, which this Hub's

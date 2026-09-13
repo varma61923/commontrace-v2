@@ -33,20 +33,37 @@ the isolation argument should rest on the one set of filters that
 `hub/tests/test_tenant_isolation.py` already exercises rather than on a
 second set that a new file introduced.
 
-READ-ONLY, AND WHY THAT IS THE RIGHT BOUNDARY
----------------------------------------------
-Nothing here changes state. Not because mutation is hard, but because of
-what the mutations WOULD be: everything a customer could change from this
-page either alters a measurement (the experiment, an outcome) or alters a
-shared corpus (a Knowledge Base submission). Both already have audited,
-authenticated paths through MCP and the CLI that record who did what, and
-adding a second way in through a browser session widens that surface for a
-convenience nobody has asked for.
+MOSTLY READ-ONLY, ON PURPOSE, WITH ONE NAMED EXCEPTION
+--------------------------------------------------------
+Overview/Proof/Memory/Knowledge Base change nothing. Not because mutation
+is hard, but because of what those mutations WOULD be: altering a
+measurement (the experiment, an outcome) or a shared corpus (a Knowledge
+Base submission). Both already have audited, authenticated paths through
+MCP and the CLI that record who did what, and adding a second way in
+through a browser session widens that surface for a convenience nobody
+has asked for.
 
-Read-only also removes the entire CSRF surface: there is no state-changing
-request for a forged one to trigger. `hub/admin.py` needed CSRF precisely
-because it moderates; this does not, and it says so rather than carrying
-defences it does not need.
+Users & Roles and API Keys (below) are the one deliberate exception --
+this Hub's own identity/credential management (audit 1.2), previously
+CLI-only, gated behind the SAME check every one of those CLI commands
+already enforces (`scopes.SCOPE_ADMIN` on the signed-in session's own
+key) plus an explicit org-ownership check on every id-addressed
+mutation, since `auth.revoke_api_key`/`rotate_api_key` take no org_id
+argument at all -- they trust an operator's own direct DB access to be
+scoped correctly already, which a customer's browser session is not.
+Every mutation here calls the SAME `hub/manage.py`/`hub/auth.py`
+functions the CLI does (no second implementation) and is audited with
+the ACTUAL originating credential (`audit.actor_for_api_key`), not a
+borrowed `operator-cli` label. A merely `read`- or `write`-scoped
+session sees these pages exist but cannot act on them -- the same
+`satisfies()` check `hub/rbac.py` uses everywhere else in this Hub.
+
+Read-only pages need no CSRF token: `hub/admin.py` needed one precisely
+because it moderates; a route with no state-changing request has no
+forged request to defend against. The admin-scoped mutations above are
+POST, same-origin, `SameSite=Strict` cookie -- the same protection
+`billing_checkout`/`proof_share` already rely on, not a new defence
+invented for this.
 """
 
 from __future__ import annotations
@@ -64,12 +81,12 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from hub import auth, crud, plans
+from hub import audit, auth, crud, manage, plans, rbac, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.db import session_scope
-from hub.models import ApiKey, Organization
+from hub.models import ApiKey, Organization, User
 
 logger = logging.getLogger("commontrace.hub.console")
 
@@ -252,6 +269,8 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f'<a href="{CONSOLE_PATH}/proof">Proof</a>'
         f'<a href="{CONSOLE_PATH}/memory">Memory</a>'
         f'<a href="{CONSOLE_PATH}/kb">Knowledge Base</a>'
+        f'<a href="{CONSOLE_PATH}/users">Users</a>'
+        f'<a href="{CONSOLE_PATH}/keys">API Keys</a>'
         f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
         if signed_in else ""
     )
@@ -827,6 +846,122 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
     return "".join(body)
 
 
+def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
+    body = ["<h1>Users &amp; roles</h1>",
+            '<p class="sub">A person, distinct from your org\'s shared API key — a named '
+            "role checked as a second, additive gate on every tool call. No SSO is linked "
+            "by creating a row here; that is always a separate, explicit step "
+            "(<code>hub.manage link-sso</code>).</p>"]
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
+    if users:
+        rows = []
+        for u in users:
+            state = "disabled" if u.disabled_at is not None else "active"
+            linked = "linked" if u.external_subject else "no SSO linked"
+            actions = ""
+            if is_admin:
+                role_options = "".join(
+                    f'<option value="{h(r)}"{" selected" if r == u.role else ""}>{h(r)}</option>'
+                    for r in rbac.ROLES
+                )
+                actions = (
+                    f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/role" '
+                    f'style="display:inline">'
+                    f'<select name="role">{role_options}</select> '
+                    f'<button type="submit">Set role</button></form> '
+                )
+                if u.disabled_at is not None:
+                    actions += (
+                        f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/enable" '
+                        f'style="display:inline"><button type="submit">Enable</button></form>'
+                    )
+                else:
+                    actions += (
+                        f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/disable" '
+                        f'style="display:inline"><button type="submit">Disable</button></form>'
+                    )
+            rows.append(
+                f"<tr><td>{h(u.email)}</td><td>{h(u.role)}</td><td>{h(state)}</td>"
+                f"<td>{h(linked)}</td><td>{actions}</td></tr>"
+            )
+        body.append(
+            "<table><thead><tr><th>Email</th><th>Role</th><th>State</th>"
+            f"<th>SSO</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
+    else:
+        body.append('<p class="sub">No users yet.</p>')
+    if is_admin:
+        role_options = "".join(f'<option value="{h(r)}">{h(r)}</option>' for r in rbac.ROLES)
+        body.append(
+            "<h2>Create a user</h2>"
+            f'<form method="post" action="{CONSOLE_PATH}/users/create">'
+            '<input type="email" name="email" placeholder="person@example.com" required> '
+            '<input type="text" name="display_name" placeholder="Display name (optional)"> '
+            f'<select name="role">{role_options}</select> '
+            '<button type="submit">Create</button></form>'
+        )
+    else:
+        body.append('<p class="muted">Sign in with an admin-scoped key to create or '
+                    "change a user's role.</p>")
+    return "".join(body)
+
+
+def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) -> str:
+    body = ["<h1>API keys</h1>",
+            '<p class="sub">Scopes do not imply each other: '
+            "<code>admin</code> alone cannot read a trace. A production agent wants "
+            "<code>read,write</code>; a dashboard wants <code>read</code>.</p>"]
+    if fresh:
+        body.append(
+            '<div class="verdict warn"><h2>New key — shown once</h2>'
+            f'<p class="rev">{h(fresh["raw_key"])}</p>'
+            "<p>Store this now. It will not be shown again, and this Hub keeps only its "
+            "hash.</p></div>"
+        )
+    if keys:
+        rows = []
+        for k in keys:
+            state = "revoked" if k.revoked_at is not None else "active"
+            key_scopes = ",".join(k.scopes) if k.scopes is not None else "(all — legacy key)"
+            expires = k.expires_at.isoformat()[:10] if k.expires_at else "never"
+            actions = ""
+            if is_admin and k.revoked_at is None:
+                actions = (
+                    f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/rotate" '
+                    f'style="display:inline"><button type="submit">Rotate</button></form> '
+                    f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/revoke" '
+                    f'style="display:inline"><button type="submit">Revoke</button></form>'
+                )
+            rows.append(
+                f"<tr><td>{h(k.key_prefix)}</td><td>{h(key_scopes)}</td>"
+                f"<td>{h(expires)}</td><td>{h(state)}</td><td>{actions}</td></tr>"
+            )
+        body.append(
+            "<table><thead><tr><th>Prefix</th><th>Scopes</th><th>Expires</th>"
+            f"<th>State</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
+    else:
+        body.append('<p class="sub">No keys yet.</p>')
+    if is_admin:
+        scope_boxes = "".join(
+            f'<label><input type="checkbox" name="scopes" value="{h(s)}"> {h(s)}</label> '
+            for s in scopes.ALL_SCOPES if s != scopes.SCOPE_SCIM
+        )
+        body.append(
+            "<h2>Issue a new key</h2>"
+            f'<form method="post" action="{CONSOLE_PATH}/keys/issue">'
+            f"<p>{scope_boxes}</p>"
+            '<input type="number" name="expires_days" placeholder="Expires in N days '
+            '(blank = never)" min="1"> '
+            '<button type="submit">Issue</button></form>'
+        )
+    else:
+        body.append('<p class="muted">Sign in with an admin-scoped key to issue, '
+                    "rotate, or revoke keys.</p>")
+    return "".join(body)
+
+
 _SIGNIN = """
 <div class="signin">
   <h1>Sign in</h1>
@@ -838,9 +973,10 @@ _SIGNIN = """
     <button type="submit">Sign in</button>
   </form>
   {error}
-  <p class="muted" style="margin-top:1.5rem">This console is read-only. Everything that
-  changes state — capturing a trace, running the experiment, proposing to the Knowledge
-  Base — goes through your agents or the CLI, where it is authenticated and audited.</p>
+  <p class="muted" style="margin-top:1.5rem">Most of this console is read-only —
+  capturing a trace, running the experiment, proposing to the Knowledge Base still goes
+  through your agents or the CLI. An admin-scoped key can also manage users and API keys
+  here directly; every change is still authenticated and audited the same way.</p>
 </div>
 """
 
@@ -896,17 +1032,27 @@ def add_console_routes(
             return None
         now = datetime.now(timezone.utc)
         async with session_scope(session_factory) as session:
-            live = (
+            row = (
                 await session.execute(
-                    select(ApiKey.id).where(
+                    select(ApiKey.id, ApiKey.scopes).where(
                         ApiKey.org_id == str(claims["org"]),
                         ApiKey.key_prefix == prefix,
                         ApiKey.revoked_at.is_(None),
                         or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now),
                     ).limit(1)
                 )
-            ).scalar_one_or_none()
-        return claims if live is not None else None
+            ).first()
+        if row is None:
+            return None
+        # Refetched live on every page load, same as the liveness check
+        # above and for the same reason: a key narrowed from admin to
+        # read-only must lose console-mutation access on its very next
+        # request, not merely at the browser session's own TTL.
+        claims["scopes"] = row[1]
+        return claims
+
+    def _is_admin(claims: dict) -> bool:
+        return scopes.satisfies(claims.get("scopes"), scopes.SCOPE_ADMIN)
 
     def _redirect_to_signin() -> RedirectResponse:
         return RedirectResponse(f"{CONSOLE_PATH}/signin", status_code=303)
@@ -1169,6 +1315,199 @@ def add_console_routes(
             ent = await crud.entitlements(session, org_id)
         return _page("Knowledge Base", _render_kb(submissions, ent))
 
+    async def _list_users(org_id: str) -> list[User]:
+        async with session_scope(session_factory) as session:
+            return list((
+                await session.execute(
+                    select(User).where(User.org_id == org_id).order_by(User.created_at)
+                )
+            ).scalars().all())
+
+    async def users_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        users = await _list_users(org_id)
+        return _page("Users & roles", _render_users(users, _is_admin(claims)))
+
+    async def users_create(request: Request) -> Response:
+        """Admin-scope-gated: creates a User row through the SAME
+        hub/manage.py function `hub.manage create-user` calls, audited
+        with the actual console session's own credential (not a borrowed
+        `operator-cli` label) via `actor=`."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            users = await _list_users(org_id)
+            return _page("Users & roles", _render_users(
+                users, False, error="An admin-scoped API key is required."))
+        form = await request.form()
+        email = str(form.get("email") or "").strip()
+        role = str(form.get("role") or "").strip()
+        display_name = str(form.get("display_name") or "").strip()
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        await manage.create_user(
+            org_id, email, role, display_name,
+            session_factory=session_factory, actor=actor,
+        )
+        return RedirectResponse(f"{CONSOLE_PATH}/users", status_code=303)
+
+    async def _mutate_own_org_user(
+        request: Request, user_id: str, action,
+    ) -> Response:
+        """Shared body for the three per-user mutating routes below: admin
+        gate, then an explicit org-ownership check before calling into
+        hub/manage.py -- `set_user_role`/`disable_user`/`enable_user` take
+        only a bare user_id (correct for a trusted, cross-tenant operator
+        CLI caller) and do not themselves verify which org a user belongs
+        to, so a customer's own browser session must check that here
+        before ever reaching them."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            users = await _list_users(org_id)
+            return _page("Users & roles", _render_users(
+                users, False, error="An admin-scoped API key is required."))
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+        if user is None or user.org_id != org_id:
+            users = await _list_users(org_id)
+            return _page("Users & roles", _render_users(
+                users, True, error="No such user in your organization."))
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        await action(user_id, actor)
+        return RedirectResponse(f"{CONSOLE_PATH}/users", status_code=303)
+
+    async def users_set_role(request: Request) -> Response:
+        role = str((await request.form()).get("role") or "")
+
+        async def action(user_id: str, actor: str) -> None:
+            await manage.set_user_role(
+                user_id, role, session_factory=session_factory, actor=actor)
+
+        return await _mutate_own_org_user(request, request.path_params["user_id"], action)
+
+    async def users_disable(request: Request) -> Response:
+        async def action(user_id: str, actor: str) -> None:
+            await manage.disable_user(user_id, session_factory=session_factory, actor=actor)
+
+        return await _mutate_own_org_user(request, request.path_params["user_id"], action)
+
+    async def users_enable(request: Request) -> Response:
+        async def action(user_id: str, actor: str) -> None:
+            await manage.enable_user(user_id, session_factory=session_factory, actor=actor)
+
+        return await _mutate_own_org_user(request, request.path_params["user_id"], action)
+
+    async def _list_keys(org_id: str) -> list[ApiKey]:
+        async with session_scope(session_factory) as session:
+            return list((
+                await session.execute(
+                    select(ApiKey).where(ApiKey.org_id == org_id).order_by(ApiKey.created_at)
+                )
+            ).scalars().all())
+
+    async def keys_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        keys = await _list_keys(org_id)
+        return _page("API keys", _render_keys(keys, _is_admin(claims)))
+
+    async def keys_issue(request: Request) -> Response:
+        """Calls hub/auth.py directly rather than hub/manage.py's own
+        `issue_key` -- that CLI wrapper only prints the result, and this
+        route needs the raw key back as data to render it once, not on
+        stdout. Audited the same way manage.py's issue_key audits it,
+        with the console session's own credential as actor."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            keys = await _list_keys(org_id)
+            return _page("API keys", _render_keys(keys, False))
+        form = await request.form()
+        chosen_scopes = form.getlist("scopes")
+        if not chosen_scopes:
+            keys = await _list_keys(org_id)
+            return _page("API keys", _render_keys(keys, True))
+        raw_days = str(form.get("expires_days") or "").strip()
+        try:
+            expires_days = int(raw_days) if raw_days else None
+        except ValueError:
+            expires_days = None
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(
+                session, org_id, expires_days=expires_days, scopes=chosen_scopes,
+            )
+            await audit.record(
+                session, actor=actor, action="issue_key",
+                org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                summary=f"prefix={issued.key_prefix} scopes={','.join(issued.scopes)}",
+            )
+        keys = await _list_keys(org_id)
+        return _page("API keys", _render_keys(
+            keys, True, fresh={"raw_key": issued.raw_key}))
+
+    async def keys_rotate(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            keys = await _list_keys(org_id)
+            return _page("API keys", _render_keys(keys, False))
+        key_id = request.path_params["key_id"]
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, key_id)
+        # Explicit org-ownership check -- auth.rotate_api_key takes only a
+        # bare key_id and, like revoke below, trusts a cross-tenant
+        # operator caller to have already scoped it; a customer's own
+        # session must not be able to rotate (or even discover the
+        # existence of) another org's key by guessing its id.
+        if key is None or key.org_id != org_id:
+            keys = await _list_keys(org_id)
+            return _page("API keys", _render_keys(keys, True))
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            issued = await auth.rotate_api_key(session, key_id)
+            await audit.record(
+                session, actor=actor, action="rotate_key",
+                org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                summary=f"replaces={key_id}",
+            )
+        keys = await _list_keys(org_id)
+        return _page("API keys", _render_keys(
+            keys, True, fresh={"raw_key": issued.raw_key}))
+
+    async def keys_revoke(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
+        key_id = request.path_params["key_id"]
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, key_id)
+            if key is None or key.org_id != org_id:
+                return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
+            await auth.revoke_api_key(session, key_id)
+            actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+            await audit.record(
+                session, actor=actor, action="revoke_key",
+                org_id=org_id, target_type="api_key", target_id=key_id,
+            )
+        return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
+
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
@@ -1180,6 +1519,15 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/disable", users_disable, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/enable", users_enable, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys", keys_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/keys/issue", keys_issue, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/rotate", keys_rotate, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/revoke", keys_revoke, methods=["POST"])
 
 
 __all__ = ["CONSOLE_PATH", "add_console_routes", "issue_session", "read_session"]

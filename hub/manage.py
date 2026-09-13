@@ -440,7 +440,7 @@ async def list_orgs(session_factory=None) -> None:
 
 async def create_user(
     org_id: str, email: str, role: str, display_name: str = "",
-    session_factory=None,
+    session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
     """`create-user <org_id> <email> <role> [display_name]`.
 
@@ -462,7 +462,7 @@ async def create_user(
             return False
         user = User(
             org_id=org_id, email=email, role=role, display_name=display_name,
-            created_by=audit.ACTOR_OPERATOR_CLI,
+            created_by=actor,
         )
         session.add(user)
         try:
@@ -480,13 +480,13 @@ async def create_user(
             return False
         user_id = user.id
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="create_user",
+            session, actor=actor, action="create_user",
             org_id=org_id, target_type="user", target_id=user_id,
             summary=f"email={email} role={role}",
         )
         if role in rbac.PRIVILEGED_ROLES:
             await events.emit(session, org_id, "user.privileged_role_granted", {
-                "user_id": user_id, "role": role, "actor": audit.ACTOR_OPERATOR_CLI,
+                "user_id": user_id, "role": role, "actor": actor,
             })
     print(f"user_id: {user_id}")
     print(f"  {email}  role={role}  org={org_id}")
@@ -520,7 +520,9 @@ async def list_users(org_id: str, session_factory=None) -> bool:
     return True
 
 
-async def set_user_role(user_id: str, role: str, session_factory=None) -> bool:
+async def set_user_role(
+    user_id: str, role: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     """Change what a person may do. Takes effect on their NEXT request --
     there is no session to invalidate, since every call re-reads the role
     from this row (hub/auth.py:verify_user_token)."""
@@ -538,19 +540,21 @@ async def set_user_role(user_id: str, role: str, session_factory=None) -> bool:
         previous = user.role
         user.role = role
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="set_user_role",
+            session, actor=actor, action="set_user_role",
             org_id=user.org_id, target_type="user", target_id=user_id,
             summary=f"{previous} -> {role}",
         )
         if role in rbac.PRIVILEGED_ROLES:
             await events.emit(session, user.org_id, "user.privileged_role_granted", {
-                "user_id": user_id, "role": role, "actor": audit.ACTOR_OPERATOR_CLI,
+                "user_id": user_id, "role": role, "actor": actor,
             })
     print(f"{user_id}: role changed {previous} -> {role}")
     return True
 
 
-async def disable_user(user_id: str, session_factory=None) -> bool:
+async def disable_user(
+    user_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     """Deprovision. Blocks access on this user's VERY NEXT authenticated
     call, not merely at their token's next natural expiry
     (hub/auth.py:verify_user_token checks `disabled_at` on every call) --
@@ -567,7 +571,7 @@ async def disable_user(user_id: str, session_factory=None) -> bool:
             return False
         user.disabled_at = datetime.now(timezone.utc)
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="disable_user",
+            session, actor=actor, action="disable_user",
             org_id=user.org_id, target_type="user", target_id=user_id,
         )
     print(f"{user_id} disabled. Access is blocked immediately, independent of any "
@@ -575,7 +579,9 @@ async def disable_user(user_id: str, session_factory=None) -> bool:
     return True
 
 
-async def enable_user(user_id: str, session_factory=None) -> bool:
+async def enable_user(
+    user_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     session_factory = session_factory or _default_session_factory()
     async with session_scope(session_factory) as session:
         user = await session.get(User, user_id)

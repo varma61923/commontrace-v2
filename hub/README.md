@@ -81,8 +81,9 @@ hub/abuse.py       size limits, per-org rate limiting, a spam + content-safety h
 hub/audit.py       append-only audit-log writes (who did what, no secrets, no content)
 hub/observability.py  JSON logging, request-id correlation, /healthz + /readyz + /metrics
 hub/admin.py          read-only operator console at /admin (off unless HUB_ADMIN_TOKEN is set)
-hub/console.py         customer console at /app (off unless HUB_CONSOLE_SECRET is set) -- read-only
-                        over this Hub's own data; can also send a browser to Stripe (see billing.py)
+hub/console.py         customer console at /app (off unless HUB_CONSOLE_SECRET is set) -- mostly
+                        read-only over this Hub's own data; Users & API Keys are admin-scope-gated
+                        exceptions; can also send a browser to Stripe (see billing.py)
 hub/signup.py       public, self-serve org creation at /signup (off unless HUB_SIGNUP_ENABLED is set)
 hub/billing.py      self-serve Stripe upgrades: Checkout/Billing Portal + the webhook that applies them
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
@@ -143,38 +144,50 @@ miss rate, audit history and the Knowledge Base queue — and for anything
 that changes state it shows the `hub.manage` command rather than doing it.
 That is deliberate: see `hub/admin.py`.
 
-Set `HUB_CONSOLE_SECRET` to also serve a second, **read-only** console at
-`/app` — not for you, for your **customers** (unset means these routes do
-not exist either, same as `/admin`). Where the operator console is
-cross-tenant and moderates, this one is scoped to a single organization
-and cannot change any state at all. A customer signs in with the same API
-key their agents already authenticate with; the Hub verifies it once and
-never stores it, then hands back a signed, `HttpOnly` session cookie
-scoped to that org, checked against the key's live/revoked state on every
-request — so revoking a key ends the browser sessions it opened, not just
-future MCP calls. From there they get four pages, all reading through the
-same `org_id`-scoped functions in `hub/crud.py` as every other Hub
-surface, rather than a second set of queries to keep tenant-isolated: an
-overview of what their fleet has captured and how it sits against plan; a
-proof page where the randomized holdout's validity verdict renders
-*above* the effect sizes it qualifies, because a report that leads with a
-significant number and caveats it underneath is how a broken one gets
-quoted; their own corpus, searched the way their agents search it; and
-their Knowledge Base proposals and the query credit those proposals
-earned. Everything that changes state in THIS HUB'S OWN DATA — capturing a trace,
-running the experiment, proposing to the Knowledge Base — still goes
-through MCP or the CLI, where it is authenticated and audited; nothing a
-browser does at `/app` writes to `Organization`, `Trace`, or any other row
-here directly. The one exception carries its own trust boundary rather
-than weakening this one: an "Upgrade" click sends the browser to a
-Stripe-hosted Checkout/Billing Portal page (`hub/billing.py`), and this
-Hub's own `Organization.plan` only ever changes later, from Stripe's own
-signed webhook call — never from the browser request itself. The console
-still carries no CSRF token: its session cookie is `SameSite=Strict`, so a
-forged cross-site request arrives with no session at all and is turned
-back at sign-in, the same defense that already covered every other route
-here. See `hub/console.py`'s and `hub/billing.py`'s module docstrings for
-the rest of that reasoning. `HUB_CONSOLE_SECRET` is deliberately a
+Set `HUB_CONSOLE_SECRET` to also serve a second console at `/app` — not
+for you, for your **customers** (unset means these routes do not exist
+either, same as `/admin`). Where the operator console is cross-tenant and
+moderates, this one is scoped to a single organization. A customer signs
+in with the same API key their agents already authenticate with; the Hub
+verifies it once and never stores it, then hands back a signed, `HttpOnly`
+session cookie scoped to that org, checked against the key's live/revoked
+state — and, for the two pages below that can mutate, its live *scopes* —
+on every request, so revoking or narrowing a key ends what its browser
+sessions can do immediately, not just at the next MCP call. From there
+they get six pages, all reading through the same `org_id`-scoped functions
+in `hub/crud.py`/`hub/manage.py`/`hub/auth.py` as every other Hub surface,
+rather than a second set of queries to keep tenant-isolated: an overview
+of what their fleet has captured and how it sits against plan; a proof
+page where the randomized holdout's validity verdict renders *above* the
+effect sizes it qualifies, because a report that leads with a significant
+number and caveats it underneath is how a broken one gets quoted; their
+own corpus, searched the way their agents search it; their Knowledge Base
+proposals and the query credit those proposals earned; and — the one
+deliberate exception to "changes nothing" — **Users & roles** and **API
+Keys**, gated behind `admin` scope on top of the ordinary sign-in check.
+Capturing a trace, running the experiment, proposing to the Knowledge
+Base still goes through MCP or the CLI, where it is authenticated and
+audited the same way it always was; nothing at `/app` writes to `Trace`,
+`Organization.plan`, or any other measurement/corpus row directly. Users
+& API Keys are different: they call the SAME `hub/manage.py`/`hub/auth.py`
+functions `hub.manage create-user`/`issue-key`/etc. already call (no
+second implementation), audited with the console session's own credential
+(`api-key:<prefix>`) rather than a borrowed `operator-cli` label, and an
+explicit org-ownership check on every id-addressed mutation — `auth.
+revoke_api_key`/`rotate_api_key` take only a bare id and trust a
+cross-tenant operator caller to have already scoped it, which a
+customer's browser session has not. A merely `read`- or `write`-scoped
+session sees these two pages exist but cannot act on them. The one other
+exception carries its own trust boundary rather than weakening this one:
+an "Upgrade" click sends the browser to a Stripe-hosted Checkout/Billing
+Portal page (`hub/billing.py`), and this Hub's own `Organization.plan`
+only ever changes later, from Stripe's own signed webhook call — never
+from the browser request itself. The console still carries no CSRF token:
+its session cookie is `SameSite=Strict`, so a forged cross-site request
+arrives with no session at all and is turned back at sign-in, the same
+defense that already covered every other route here, mutating ones
+included. See `hub/console.py`'s and `hub/billing.py`'s module docstrings
+for the rest of that reasoning. `HUB_CONSOLE_SECRET` is deliberately a
 separate value from `HUB_ADMIN_TOKEN`, too — one is your operator
 credential, the other signs customer sessions, and collapsing them into
 one secret would mean a single leak compromises both surfaces at once
