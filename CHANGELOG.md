@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three stale "what this does not have" claims corrected** (`TRUST.md`
+  §6, `README.md`, `hub/DEPLOYMENT.md` §11). All three still said the Hub
+  has no SSO, no SCIM and no human user accounts, and `TRUST.md` added
+  that there is therefore "no person in this system, which is also why
+  subject-level deletion and any collaboration surface are absent" —
+  every part of which this codebase has since disproved (`hub/sso.py`,
+  `hub/scim.py`, `hub/rbac.py`, `hub/collab.py`, `User`, and the
+  `/scim/v2/*` routes that mount in `build_app`). `TRUST.md` also still
+  claimed no subprocessor list exists, which `SUBPROCESSORS.md`
+  contradicts, and its §6 preamble asserted that none of its gaps was
+  "partially satisfied by code that exists", which two of them now are.
+  Each bullet is narrowed to what is *genuinely* still missing — SAML and
+  a browser-based Authorization Code/PKCE login, a DPA, a residency
+  commitment from the project itself — rather than deleted, so the
+  document keeps naming the real gap instead of quietly shrinking. This is
+  the same understating-drift already fixed once in `hub/README.md`'s
+  "Auth follow-ups" section; a trust document that is wrong in the
+  *conservative* direction still teaches a reader not to trust it.
+
 ### Added
 
 - **SSRF protection for webhook endpoints** (`hub/events.py`, audit §6.3):

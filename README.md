@@ -1654,8 +1654,8 @@ tests, not left to convention:
 
 **What this does *not* have** is as important as the table above, and is
 written down rather than left to be discovered: no legal entity, no SOC 2,
-no penetration test, no SSO/SCIM, no residency commitment and no support
-SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
+no penetration test, no SAML or browser-based login (OIDC, SCIM and human
+user accounts do exist), no residency commitment and no support SLA. [`TRUST.md`](TRUST.md) states the trust boundary and lists every gap at
 full weight; [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) answers a third-party
 readiness audit finding by finding, marking each one done, partial, not
 applicable, or *requires business action* — with the rule that the last

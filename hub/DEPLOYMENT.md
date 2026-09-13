@@ -838,7 +838,7 @@ rather than implied by this section existing.
 | Limitation | Where |
 |---|---|
 | Rate limiting is per-process | §6, `hub/abuse.py` |
-| Auth is API-key-only; no OAuth/JWT, no human users, no SSO/SCIM/RBAC (keys do carry `read`/`write`/`admin` scopes) | `hub/README.md`, `hub/scopes.py` |
+| No *browser* login: a person authenticates with a bearer JWT their IdP already issued (`hub/sso.py` verifies it), and the console signs in with an API key — there is no OAuth2 Authorization Code/PKCE redirect flow and no SAML, so nothing here can start a login from a browser on its own | `hub/sso.py`, `hub/console.py`, `AUDIT_RESPONSE.md` §1.2 |
 | No self-service withdrawal of a pending Knowledge Base submission before an operator decides it | `DATA_RETENTION.md` §5 |
 | No in-place edit of a Knowledge Base entry — the workflow is `kb-retract` then re-seed, which changes the trace id and resets its hit history | `DATA_RETENTION.md` §5 |
 | Acting on a disputed or security-flagged entry needs an operator running `kb-review`; nothing withdraws content automatically | §10, `hub/README.md` |

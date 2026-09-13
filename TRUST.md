@@ -144,8 +144,11 @@ pytest tests/ hub/tests
 ## 6. What does not exist
 
 Stated plainly, because a buyer who finds these after a reassuring answer
-is worse off than one who reads them here. None of these is blocked on
-code, and none is partially satisfied by code that exists — see
+is worse off than one who reads them here. Most are blocked on a business
+decision rather than on code — a certification, a signed contract, a
+staffed rota — and no amount of building closes them. Where code *has*
+since narrowed one, the bullet says so explicitly and names what is still
+missing, rather than dropping the bullet; see
 [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md) §7 for the full treatment.
 
 - **No legal entity.** The copyright line names a project, not a
@@ -157,15 +160,27 @@ code, and none is partially satisfied by code that exists — see
   must not be read as one.
 - **No independent penetration test.** `SECURITY.md` describes a
   disclosure channel. A channel is not a test.
-- **No DPA, no subprocessor list, no residency commitment.** Residency is
-  a property of where an operator runs Postgres; this source cannot
-  assert a region.
+- **No DPA, and no residency commitment from this project.** A DPA needs
+  a legal entity to sign it, and there is none. Residency is a property
+  of where an operator runs Postgres; this source cannot assert a region
+  on its own behalf — though an operator who *has* decided theirs can now
+  publish it, along with their legal name and support contact, at
+  `GET /disclosure` (`hub/disclosure.py`), which reports
+  `"not disclosed by this deployment's operator"` for anything left
+  unset rather than guessing. The **subprocessor list does now exist**:
+  [`SUBPROCESSORS.md`](SUBPROCESSORS.md) names the one processor this
+  code actually implies (Stripe, for self-serve billing).
 - **No support SLA, no incident or vulnerability response SLA, no status
   page, no on-call rota.**
-- **No SSO, SAML, OIDC, SCIM, or human user accounts.** A scoped API key
-  is a *workload* credential. There is no person in this system, which is
-  also why subject-level deletion and any collaboration surface are
-  absent.
+- **No SAML, and no browser-based login.** OIDC, SCIM and human user
+  accounts now exist — a `User` row is a person with a named role
+  (`hub/rbac.py`), `hub/sso.py` verifies a bearer JWT their IdP issued,
+  and `hub/scim.py` serves `/scim/v2/Users` and `/scim/v2/Groups` for
+  auto-provisioning and immediate deprovisioning. What is still absent is
+  the *interactive* half: no OAuth2 Authorization Code/PKCE redirect flow
+  and no SAML, so a person arrives holding a token rather than being sent
+  to an IdP and back. A scoped API key remains a *workload* credential,
+  distinct from a person.
 - **No signed artifacts, SBOM, or build provenance.**
 
 ## 7. How to read this document
