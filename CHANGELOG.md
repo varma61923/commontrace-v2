@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit org-ownership check on every id-addressed mutation (`auth.
   revoke_api_key`/`rotate_api_key` take only a bare id and trust a
   cross-tenant operator caller to have already scoped it, which a
-  customer's browser session has not). Tests:
+  customer's browser session has not). Alert rules (audit §8.3) get the
+  same treatment at `/app/alerts` — create/list/delete calling
+  `hub/alerts.py`'s own functions directly, with the same explicit
+  org-ownership check before delete. Tests:
   `hub/tests/test_console.py::TestAdminScopeGatesMutation`/
-  `TestUserManagement`/`TestApiKeyManagement`/`TestUsersAndKeysAreEscaped`
-  (18).
+  `TestUserManagement`/`TestApiKeyManagement`/`TestUsersAndKeysAreEscaped`/
+  `TestAlertRuleManagement` (23).
 
 - **SCIM Groups (`/scim/v2/Groups`, `hub/models.py:ScimGroup`/
   `ScimGroupMembership`).** Audit §1.2 named "SCIM Groups" as a declined

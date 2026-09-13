@@ -43,20 +43,21 @@ MCP and the CLI that record who did what, and adding a second way in
 through a browser session widens that surface for a convenience nobody
 has asked for.
 
-Users & Roles and API Keys (below) are the one deliberate exception --
-this Hub's own identity/credential management (audit 1.2), previously
-CLI-only, gated behind the SAME check every one of those CLI commands
-already enforces (`scopes.SCOPE_ADMIN` on the signed-in session's own
-key) plus an explicit org-ownership check on every id-addressed
-mutation, since `auth.revoke_api_key`/`rotate_api_key` take no org_id
-argument at all -- they trust an operator's own direct DB access to be
-scoped correctly already, which a customer's browser session is not.
-Every mutation here calls the SAME `hub/manage.py`/`hub/auth.py`
-functions the CLI does (no second implementation) and is audited with
-the ACTUAL originating credential (`audit.actor_for_api_key`), not a
-borrowed `operator-cli` label. A merely `read`- or `write`-scoped
-session sees these pages exist but cannot act on them -- the same
-`satisfies()` check `hub/rbac.py` uses everywhere else in this Hub.
+Users & Roles, API Keys, and Alerts (below) are the one deliberate
+exception -- this Hub's own identity/credential/alerting management
+(audit 1.2, 8.3), previously CLI-only, gated behind the SAME check every
+one of those CLI commands already enforces (`scopes.SCOPE_ADMIN` on the
+signed-in session's own key) plus an explicit org-ownership check on
+every id-addressed mutation, since `auth.revoke_api_key`/`rotate_api_key`
+and `alerts.delete_rule` take no org_id argument at all -- they trust an
+operator's own direct DB access to be scoped correctly already, which a
+customer's browser session is not. Every mutation here calls the SAME
+`hub/manage.py`/`hub/auth.py`/`hub/alerts.py` functions the CLI does (no
+second implementation) and is audited with the ACTUAL originating
+credential (`audit.actor_for_api_key`), not a borrowed `operator-cli`
+label. A merely `read`- or `write`-scoped session sees these pages exist
+but cannot act on them -- the same `satisfies()` check `hub/rbac.py`
+uses everywhere else in this Hub.
 
 Read-only pages need no CSRF token: `hub/admin.py` needed one precisely
 because it moderates; a route with no state-changing request has no
@@ -81,12 +82,12 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from hub import audit, auth, crud, manage, plans, rbac, scopes
+from hub import alerts, audit, auth, crud, manage, plans, rbac, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.db import session_scope
-from hub.models import ApiKey, Organization, User
+from hub.models import AlertRule, ApiKey, Organization, User
 
 logger = logging.getLogger("commontrace.hub.console")
 
@@ -271,6 +272,7 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f'<a href="{CONSOLE_PATH}/kb">Knowledge Base</a>'
         f'<a href="{CONSOLE_PATH}/users">Users</a>'
         f'<a href="{CONSOLE_PATH}/keys">API Keys</a>'
+        f'<a href="{CONSOLE_PATH}/alerts">Alerts</a>'
         f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
         if signed_in else ""
     )
@@ -962,6 +964,57 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
     return "".join(body)
 
 
+def _render_alerts(rules: list[AlertRule], is_admin: bool, error: str = "") -> str:
+    body = ["<h1>Alerts</h1>",
+            '<p class="sub">Fires <code>alert.triggered</code> through your existing '
+            "webhook endpoint(s) when a metric crosses a threshold you set — no polling "
+            "needed. A closed, named set of metrics, never a free-form query.</p>"]
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
+    if rules:
+        rows = []
+        for r in rules:
+            state = "enabled" if r.enabled else "disabled"
+            last = r.last_triggered_at.isoformat()[:16] if r.last_triggered_at else "never"
+            actions = ""
+            if is_admin:
+                actions = (
+                    f'<form method="post" action="{CONSOLE_PATH}/alerts/{h(r.id)}/delete" '
+                    f'style="display:inline"><button type="submit">Delete</button></form>'
+                )
+            rows.append(
+                f"<tr><td>{h(r.metric)}</td><td>{h(r.comparator)}</td><td>{h(r.threshold)}</td>"
+                f"<td>{h(r.cooldown_minutes)}m</td><td>{h(state)}</td><td>{h(last)}</td>"
+                f"<td>{actions}</td></tr>"
+            )
+        body.append(
+            "<table><thead><tr><th>Metric</th><th>Comparator</th><th>Threshold</th>"
+            "<th>Cooldown</th><th>State</th><th>Last fired</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+    else:
+        body.append('<p class="sub">No alert rules yet.</p>')
+    if is_admin:
+        metric_options = "".join(f'<option value="{h(m)}">{h(m)}</option>' for m in alerts.METRICS)
+        comparator_options = "".join(
+            f'<option value="{h(c)}">{h(c)}</option>' for c in alerts.COMPARATORS
+        )
+        body.append(
+            "<h2>Create a rule</h2>"
+            f'<form method="post" action="{CONSOLE_PATH}/alerts/create">'
+            f'<select name="metric">{metric_options}</select> '
+            f'<select name="comparator">{comparator_options}</select> '
+            '<input type="number" step="any" name="threshold" placeholder="Threshold" required> '
+            f'<input type="number" name="cooldown_minutes" placeholder="Cooldown minutes" '
+            f'value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"> '
+            '<button type="submit">Create</button></form>'
+        )
+    else:
+        body.append('<p class="muted">Sign in with an admin-scoped key to create or '
+                    "delete an alert rule.</p>")
+    return "".join(body)
+
+
 _SIGNIN = """
 <div class="signin">
   <h1>Sign in</h1>
@@ -1508,6 +1561,74 @@ def add_console_routes(
             )
         return RedirectResponse(f"{CONSOLE_PATH}/keys", status_code=303)
 
+    async def _list_alert_rules(org_id: str) -> list[AlertRule]:
+        async with session_scope(session_factory) as session:
+            return await alerts.list_rules(session, org_id)
+
+    async def alerts_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        rules = await _list_alert_rules(org_id)
+        return _page("Alerts", _render_alerts(rules, _is_admin(claims)))
+
+    async def alerts_create(request: Request) -> Response:
+        """Calls hub/alerts.py directly, same as manage.py's own
+        create-alert-rule CLI command -- create_rule already takes a
+        `created_by` actor and is inherently org-scoped (it writes
+        org_id straight onto the new row), so no separate ownership
+        check is needed here the way key/user mutations require."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            rules = await _list_alert_rules(org_id)
+            return _page("Alerts", _render_alerts(rules, False))
+        form = await request.form()
+        metric = str(form.get("metric") or "")
+        comparator = str(form.get("comparator") or "")
+        try:
+            threshold = float(form.get("threshold") or "")
+        except ValueError:
+            rules = await _list_alert_rules(org_id)
+            return _page("Alerts", _render_alerts(
+                rules, True, error="Threshold must be a number."))
+        try:
+            cooldown_minutes = int(form.get("cooldown_minutes") or alerts.DEFAULT_COOLDOWN_MINUTES)
+        except ValueError:
+            cooldown_minutes = alerts.DEFAULT_COOLDOWN_MINUTES
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            try:
+                await alerts.create_rule(
+                    session, org_id, metric, comparator, threshold,
+                    cooldown_minutes=cooldown_minutes, created_by=actor,
+                )
+            except alerts.AlertError as exc:
+                rules = await _list_alert_rules(org_id)
+                return _page("Alerts", _render_alerts(rules, True, error=str(exc)))
+        return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
+
+    async def alerts_delete(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
+        rule_id = request.path_params["rule_id"]
+        async with session_scope(session_factory) as session:
+            rule = await session.get(AlertRule, rule_id)
+            # Explicit org-ownership check -- alerts.delete_rule takes only
+            # a bare rule_id and, like the API-key routes above, trusts a
+            # cross-tenant operator caller to have already scoped it.
+            if rule is None or rule.org_id != org_id:
+                return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
+            await alerts.delete_rule(session, rule_id)
+        return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
+
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
@@ -1528,6 +1649,9 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/keys/issue", keys_issue, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/rotate", keys_rotate, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/revoke", keys_revoke, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/alerts", alerts_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/alerts/create", alerts_create, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", alerts_delete, methods=["POST"])
 
 
 __all__ = ["CONSOLE_PATH", "add_console_routes", "issue_session", "read_session"]

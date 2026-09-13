@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from starlette.applications import Starlette
 
+from hub import alerts as alerts_module
 from hub import auth, console, rbac
 from hub.billing import StripeSettings
 from hub.db import session_scope
@@ -111,7 +112,7 @@ class TestAbsentUnlessConfigured:
         """A deployment that has not opted in should have no console to
         probe: a 404 from the router, not a redirect from a handler."""
         async with _client(_app(secret="")) as client:
-            for path in ("", "/signin", "/proof", "/memory", "/kb", "/users", "/keys"):
+            for path in ("", "/signin", "/proof", "/memory", "/kb", "/users", "/keys", "/alerts"):
                 response = await client.get(f"{console.CONSOLE_PATH}{path}")
                 assert response.status_code == 404, path
 
@@ -1318,3 +1319,96 @@ class TestUsersAndKeysAreEscaped:
             )
             response = await client.get(f"{console.CONSOLE_PATH}/users")
         assert "<script>alert" not in response.text
+
+
+class TestAlertRuleManagement:
+    async def test_creating_a_rule_through_the_console(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/alerts/create",
+                data={
+                    "metric": alerts_module.METRIC_QUARANTINE_RATE,
+                    "comparator": alerts_module.COMPARATOR_GT,
+                    "threshold": "0.2",
+                    "cooldown_minutes": "30",
+                },
+                follow_redirects=True,
+            )
+        assert alerts_module.METRIC_QUARANTINE_RATE in response.text
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert len(rules) == 1
+        assert rules[0].threshold == 0.2
+        assert rules[0].cooldown_minutes == 30
+        # Audited with the actual console credential, not operator-cli.
+        assert rules[0].created_by.startswith("api-key:")
+
+    async def test_an_unknown_metric_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/alerts/create",
+                data={
+                    "metric": "not_a_real_metric", "comparator": alerts_module.COMPARATOR_GT,
+                    "threshold": "0.2",
+                },
+            )
+        assert "unknown metric" in response.text
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert rules == []
+
+    async def test_deleting_a_rule(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            rule = await alerts_module.create_rule(
+                session, org_id, alerts_module.METRIC_QUARANTINE_RATE,
+                alerts_module.COMPARATOR_GT, 0.5,
+            )
+            rule_id = rule.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/alerts/{rule_id}/delete")
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert rules == []
+
+    async def test_a_read_only_key_cannot_create_a_rule(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/alerts/create",
+                data={
+                    "metric": alerts_module.METRIC_QUARANTINE_RATE,
+                    "comparator": alerts_module.COMPARATOR_GT, "threshold": "0.2",
+                },
+            )
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert rules == []
+
+    async def test_cannot_delete_another_orgs_rule(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            rule = await alerts_module.create_rule(
+                session, other_org_id, alerts_module.METRIC_QUARANTINE_RATE,
+                alerts_module.COMPARATOR_GT, 0.5,
+            )
+            rule_id = rule.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/alerts/{rule_id}/delete")
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, other_org_id)
+        assert len(rules) == 1

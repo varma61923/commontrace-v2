@@ -151,34 +151,37 @@ moderates, this one is scoped to a single organization. A customer signs
 in with the same API key their agents already authenticate with; the Hub
 verifies it once and never stores it, then hands back a signed, `HttpOnly`
 session cookie scoped to that org, checked against the key's live/revoked
-state — and, for the two pages below that can mutate, its live *scopes* —
-on every request, so revoking or narrowing a key ends what its browser
-sessions can do immediately, not just at the next MCP call. From there
-they get six pages, all reading through the same `org_id`-scoped functions
-in `hub/crud.py`/`hub/manage.py`/`hub/auth.py` as every other Hub surface,
-rather than a second set of queries to keep tenant-isolated: an overview
-of what their fleet has captured and how it sits against plan; a proof
-page where the randomized holdout's validity verdict renders *above* the
-effect sizes it qualifies, because a report that leads with a significant
-number and caveats it underneath is how a broken one gets quoted; their
-own corpus, searched the way their agents search it; their Knowledge Base
-proposals and the query credit those proposals earned; and — the one
-deliberate exception to "changes nothing" — **Users & roles** and **API
-Keys**, gated behind `admin` scope on top of the ordinary sign-in check.
-Capturing a trace, running the experiment, proposing to the Knowledge
-Base still goes through MCP or the CLI, where it is authenticated and
-audited the same way it always was; nothing at `/app` writes to `Trace`,
-`Organization.plan`, or any other measurement/corpus row directly. Users
-& API Keys are different: they call the SAME `hub/manage.py`/`hub/auth.py`
-functions `hub.manage create-user`/`issue-key`/etc. already call (no
-second implementation), audited with the console session's own credential
+state — and, for the three pages below that can mutate, its live
+*scopes* — on every request, so revoking or narrowing a key ends what its
+browser sessions can do immediately, not just at the next MCP call. From
+there they get seven pages, all reading through the same `org_id`-scoped
+functions in `hub/crud.py`/`hub/manage.py`/`hub/auth.py`/`hub/alerts.py`
+as every other Hub surface, rather than a second set of queries to keep
+tenant-isolated: an overview of what their fleet has captured and how it
+sits against plan; a proof page where the randomized holdout's validity
+verdict renders *above* the effect sizes it qualifies, because a report
+that leads with a significant number and caveats it underneath is how a
+broken one gets quoted; their own corpus, searched the way their agents
+search it; their Knowledge Base proposals and the query credit those
+proposals earned; and — the one deliberate exception to "changes
+nothing" — **Users & roles**, **API Keys**, and **Alerts**, gated behind
+`admin` scope on top of the ordinary sign-in check. Capturing a trace,
+running the experiment, proposing to the Knowledge Base still goes
+through MCP or the CLI, where it is authenticated and audited the same
+way it always was; nothing at `/app` writes to `Trace`,
+`Organization.plan`, or any other measurement/corpus row directly. Users,
+API Keys, and Alerts are different: they call the SAME
+`hub/manage.py`/`hub/auth.py`/`hub/alerts.py` functions `hub.manage
+create-user`/`issue-key`/`create-alert-rule`/etc. already call (no second
+implementation), audited with the console session's own credential
 (`api-key:<prefix>`) rather than a borrowed `operator-cli` label, and an
 explicit org-ownership check on every id-addressed mutation — `auth.
-revoke_api_key`/`rotate_api_key` take only a bare id and trust a
-cross-tenant operator caller to have already scoped it, which a
-customer's browser session has not. A merely `read`- or `write`-scoped
-session sees these two pages exist but cannot act on them. The one other
-exception carries its own trust boundary rather than weakening this one:
+revoke_api_key`/`rotate_api_key` and `alerts.delete_rule` all take only a
+bare id and trust a cross-tenant operator caller to have already scoped
+it, which a customer's browser session has not. A merely `read`- or
+`write`-scoped session sees these three pages exist but cannot act on
+them. The one other exception carries its own trust boundary rather than
+weakening this one:
 an "Upgrade" click sends the browser to a Stripe-hosted Checkout/Billing
 Portal page (`hub/billing.py`), and this Hub's own `Organization.plan`
 only ever changes later, from Stripe's own signed webhook call — never
