@@ -1412,3 +1412,58 @@ class TestAlertRuleManagement:
         async with session_scope(session_factory) as session:
             rules = await alerts_module.list_rules(session, other_org_id)
         assert len(rules) == 1
+
+
+class TestUsageReportFromTheConsole:
+    async def test_generating_a_report_shows_the_summary(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/alerts/generate-report")
+        assert response.status_code == 200
+        assert "Report queued" in response.text
+        assert "report.generated" in response.text
+
+    async def test_generating_a_report_queues_a_webhook_delivery(
+        self, session_factory, org_and_key
+    ):
+        from hub import events as events_module
+        from hub.models import WebhookDelivery
+
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            await events_module.add_endpoint(
+                session, org_id, "https://example.invalid/hooks/commontrace",
+                signing_key="test-signing-key",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/alerts/generate-report")
+        async with session_scope(session_factory) as session:
+            deliveries = (
+                await session.execute(
+                    select(WebhookDelivery).where(
+                        WebhookDelivery.org_id == org_id,
+                        WebhookDelivery.event_type == "report.generated",
+                    )
+                )
+            ).scalars().all()
+        assert len(deliveries) == 1
+
+    async def test_a_read_only_key_cannot_generate_a_report(
+        self, session_factory, org_and_readonly_key
+    ):
+        _org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/alerts/generate-report")
+        assert "Report queued" not in response.text
+
+    async def test_generating_a_report_is_not_reachable_by_get(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/alerts/generate-report")
+        assert response.status_code == 405

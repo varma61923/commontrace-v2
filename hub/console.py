@@ -964,13 +964,25 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
     return "".join(body)
 
 
-def _render_alerts(rules: list[AlertRule], is_admin: bool, error: str = "") -> str:
+def _render_alerts(
+    rules: list[AlertRule], is_admin: bool, error: str = "", report: dict | None = None,
+) -> str:
     body = ["<h1>Alerts</h1>",
             '<p class="sub">Fires <code>alert.triggered</code> through your existing '
             "webhook endpoint(s) when a metric crosses a threshold you set — no polling "
             "needed. A closed, named set of metrics, never a free-form query.</p>"]
     if error:
         body.append(f'<p class="err">{h(error)}</p>')
+    if report:
+        body.append(
+            '<div class="verdict good"><h2>Report queued</h2>'
+            f'<p>{h(report["period"])}, plan={h(report["plan"])}: '
+            f'{h(report["traces_total"])} traces, '
+            f'{h(report["commons_queries_used"])}/{h(report["commons_queries_allowance"])} '
+            "Knowledge Base consultations used.</p>"
+            "<p>Delivered as <code>report.generated</code> to this org's webhook "
+            "endpoint(s), the same as a scheduled one would be.</p></div>"
+        )
     if rules:
         rows = []
         for r in rules:
@@ -1009,9 +1021,18 @@ def _render_alerts(rules: list[AlertRule], is_admin: bool, error: str = "") -> s
             f'value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"> '
             '<button type="submit">Create</button></form>'
         )
+        body.append(
+            "<h2>Usage report</h2>"
+            '<p class="sub">A one-off <code>report.generated</code> event, the same '
+            "shape a scheduled cron run or an operator's own "
+            "<code>generate-report</code> would emit — for a customer who wants one "
+            "now rather than waiting for the next cycle.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/alerts/generate-report">'
+            '<button type="submit">Generate now</button></form>'
+        )
     else:
         body.append('<p class="muted">Sign in with an admin-scoped key to create or '
-                    "delete an alert rule.</p>")
+                    "delete an alert rule, or generate a usage report.</p>")
     return "".join(body)
 
 
@@ -1629,6 +1650,29 @@ def add_console_routes(
             await alerts.delete_rule(session, rule_id)
         return RedirectResponse(f"{CONSOLE_PATH}/alerts", status_code=303)
 
+    async def alerts_generate_report(request: Request) -> Response:
+        """Audit §8.3's `generate-report` CLI command, reachable from the
+        browser too. Not a GET: this queues a real `report.generated`
+        webhook delivery (`alerts.generate_report` calls `events.emit`),
+        so loading a page must never trigger it -- only a deliberate POST,
+        the same reasoning `proof_share`/`billing_checkout` already rely
+        on for their own state-creating actions."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            rules = await _list_alert_rules(org_id)
+            return _page("Alerts", _render_alerts(rules, False))
+        async with session_scope(session_factory) as session:
+            try:
+                report = await alerts.generate_report(session, org_id)
+            except alerts.AlertError as exc:
+                rules = await _list_alert_rules(org_id)
+                return _page("Alerts", _render_alerts(rules, True, error=str(exc)))
+        rules = await _list_alert_rules(org_id)
+        return _page("Alerts", _render_alerts(rules, True, report=report))
+
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
@@ -1652,6 +1696,7 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/alerts", alerts_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/alerts/create", alerts_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", alerts_delete, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/alerts/generate-report", alerts_generate_report, methods=["POST"])
 
 
 __all__ = ["CONSOLE_PATH", "add_console_routes", "issue_session", "read_session"]

@@ -25,10 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   customer's browser session has not). Alert rules (audit §8.3) get the
   same treatment at `/app/alerts` — create/list/delete calling
   `hub/alerts.py`'s own functions directly, with the same explicit
-  org-ownership check before delete. Tests:
-  `hub/tests/test_console.py::TestAdminScopeGatesMutation`/
+  org-ownership check before delete — plus a "Generate now" button for a
+  one-off usage report, POST-only since it queues a real
+  `report.generated` webhook delivery and must never fire from a page
+  load. Tests: `hub/tests/test_console.py::TestAdminScopeGatesMutation`/
   `TestUserManagement`/`TestApiKeyManagement`/`TestUsersAndKeysAreEscaped`/
-  `TestAlertRuleManagement` (23).
+  `TestAlertRuleManagement`/`TestUsageReportFromTheConsole` (27).
 
 - **SCIM Groups (`/scim/v2/Groups`, `hub/models.py:ScimGroup`/
   `ScimGroupMembership`).** Audit §1.2 named "SCIM Groups" as a declined

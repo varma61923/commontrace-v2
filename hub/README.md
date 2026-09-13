@@ -180,8 +180,11 @@ revoke_api_key`/`rotate_api_key` and `alerts.delete_rule` all take only a
 bare id and trust a cross-tenant operator caller to have already scoped
 it, which a customer's browser session has not. A merely `read`- or
 `write`-scoped session sees these three pages exist but cannot act on
-them. The one other exception carries its own trust boundary rather than
-weakening this one:
+them. The Alerts page also has a "Generate now" button for a one-off
+usage report — `alerts.generate_report` reachable by POST only, never
+GET, since it queues a real `report.generated` webhook delivery and a
+page load must never trigger one. The one other exception carries its
+own trust boundary rather than weakening this one:
 an "Upgrade" click sends the browser to a Stripe-hosted Checkout/Billing
 Portal page (`hub/billing.py`), and this Hub's own `Organization.plan`
 only ever changes later, from Stripe's own signed webhook call — never
@@ -647,12 +650,15 @@ Trace via `contribute_trace`." A `lessons` table would be dead schema. If a
 future Hub tool ever needs to accept a Lesson, `validate_lesson()` is already
 there and ready.
 
-### Auth follow-ups (not implemented)
+### Auth follow-ups (partially implemented)
 
 API-key-per-org (argon2-hashed, shown once, rotatable via
-`hub/manage.py rotate-key`) is the whole auth story today, per the brief's
-explicit MVP scope. Not implemented, and worth doing before this serves
-traffic beyond a pilot:
+`hub/manage.py rotate-key`) was the whole auth story at the brief's
+original MVP scope. It no longer is: human users, roles, OIDC SSO, SCIM
+provisioning (Users and Groups), and a documented break-glass procedure
+with an automatic alert on use are all implemented below. What is still
+genuinely missing, and worth doing before this serves traffic beyond a
+pilot:
 
 - **OAuth/JWT.** The `mcp` SDK's built-in auth framework
   (`mcp.server.auth`) is OAuth-resource-server-shaped (issuer URLs, token
