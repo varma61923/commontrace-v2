@@ -650,6 +650,47 @@ The corollary matters for incident response: restoring an older backup
 **resurrects keys revoked after that backup was taken**. If you restore
 across a revocation, re-revoke those key ids immediately.
 
+### 9b. RPO/RTO: what this drill measures, and what it deliberately does not
+
+Audit §7.5 named "no RPO/RTO, restore or deletion drills" as missing.
+The drill above is not hypothetical — it was run end to end (dump,
+restore into a fresh database, `alembic check`, and the full `hub.smoke`
+suite including tenant isolation) against a seeded database of 8,000
+traces across two orgs (~28 MB). Measured on that run, on this sandbox's
+hardware:
+
+| Step | Measured time |
+|---|---|
+| `pg_dump` (custom format) | 0.29s |
+| `pg_restore` into a fresh database | 2.78s |
+| `alembic check` (schema-currency verification) | 1.33s |
+| `hub.smoke` full suite (both orgs, tenant isolation included) | 4.78s |
+
+**What this does and does not establish, stated precisely so neither
+number is mistaken for a commitment:**
+
+- This is the *mechanism's* time cost — dump, restore, and verify against
+  a database of this specific size — not a promised production RTO. A
+  production database with more data restores slower; `pg_dump`/
+  `pg_restore` scale with data volume, so re-run this drill against a
+  copy of your actual production size to get a number that means
+  something for your deployment, not this test dataset's.
+- **RPO (how much data a restore could lose) is entirely a function of
+  backup *frequency*, which is an operator/hosting decision this
+  document cannot make.** A managed Postgres provider's continuous
+  WAL archiving can put RPO in the seconds; a nightly `pg_dump` cron
+  puts it at up to 24 hours. Pick a frequency, then your RPO is that
+  frequency's own interval — no code change alters this.
+- **Production RTO also includes time this local drill has none of**:
+  noticing the outage, deciding to restore, provisioning a database to
+  restore into, and DNS/traffic cutover. The table above is the
+  restore-and-verify slice alone — the part that is actually testable
+  independent of a specific production topology.
+- This drill is a rehearsal you can re-run, not a standing commitment.
+  Nothing here schedules it, alerts if it has gone stale, or promises a
+  cadence — that is the "staffed rota" half of §7.4/§7.6, which remains
+  a real operator/business decision, not a repository file.
+
 ## 9a. Break-glass: every admin account is disabled or its IdP is unreachable
 
 Human sign-in (`hub/README.md` "Human users, roles, and OIDC SSO") has no

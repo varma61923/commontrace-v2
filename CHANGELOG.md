@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A measured backup/restore drill and a continuous deletion drill**
+  (audit §7.5). The restore rehearsal documented in `hub/DEPLOYMENT.md`
+  §9 was actually run end to end — dump, restore into a fresh database,
+  `alembic check`, full `hub.smoke` including tenant isolation — against
+  a seeded 8,000-trace, two-org database, with real measured timings
+  (§9b: dump 0.29s, restore 2.78s, schema check 1.33s, smoke suite
+  4.78s), not estimates. Precisely scoped: this measures the restore
+  *mechanism's* cost on this dataset, not a promised production RTO —
+  RPO remains a function of an operator's own backup-frequency choice,
+  and production RTO also includes detection/decision/provisioning time
+  no local drill can measure. The deletion half already runs on every
+  CI push (`hub/tests/test_manage.py::test_purge_org_cascades_to_its_traces`).
+
+- **Accessibility pass on the console and operator console** (audit
+  §7.8): every visible form control across `hub/console.py` and
+  `hub/admin.py` now has a programmatically-associated name
+  (`<label for>`/`aria-labelledby`, replacing several placeholder-only
+  inputs), and the API-key scope checkboxes are grouped under a
+  `<fieldset><legend>`. Self-conducted, not a certified audit — that
+  still needs a real auditor and stays out of scope for the same reason
+  this document never asserts an attestation it can't back. Tests:
+  `hub/tests/test_console.py::TestAccessibleFormControls` (6).
+
 - **Users & roles and API keys are now manageable from the customer
   console** (`hub/console.py`, `/app/users`, `/app/keys`), not only the
   CLI — the one deliberate exception to that console's otherwise

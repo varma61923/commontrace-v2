@@ -425,6 +425,82 @@ class TestItChangesNothing:
                     assert response.status_code == 405, (method, path)
 
 
+# --- Accessibility -----------------------------------------------------------
+#
+# Not a certified audit (audit §7.8 names that as needing a real auditor and
+# is correctly left "requires business action" in AUDIT_RESPONSE.md) -- a
+# self-conducted check that every visible form control has a programmatically
+# associated name, the one WCAG failure a placeholder-only input actually is
+# (placeholder text is not reliably announced as a label and disappears the
+# moment a value is typed).
+
+
+def _every_visible_input_has_a_label(html: str) -> bool:
+    """True if every `<input>`/`<select>` with a visible-and-focusable type
+    has an `id` that some `<label for=...>` (or `aria-labelledby`) points
+    at. Hidden and submit/button inputs need no label -- there is nothing
+    for a screen reader to name."""
+    import re
+    label_targets = set(re.findall(r'<label[^>]*\bfor="([^"]+)"', html))
+    labelledby_targets = set(re.findall(r'\baria-labelledby="([^"]+)"', html))
+    named = label_targets | labelledby_targets
+    for tag in re.findall(r'<(?:input|select)\b[^>]*>', html):
+        if re.search(r'\btype="(hidden|submit|button|checkbox)"', tag):
+            continue
+        # Checkboxes are exempt above only because this suite's own
+        # checkboxes are individually wrapped in <label>...</label> rather
+        # than using for=/id -- verified separately in the scopes test.
+        match = re.search(r'\bid="([^"]+)"', tag)
+        if match is None or match.group(1) not in named:
+            return False
+    return True
+
+
+class TestAccessibleFormControls:
+    async def test_the_signin_page_labels_its_input(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/signin")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_the_memory_search_box_is_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/memory")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_the_users_page_forms_are_labeled(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            session.add(User(org_id=org_id, email="labeled@example.com", role=rbac.ROLE_VIEWER))
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/users")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_every_scope_checkbox_has_its_own_label(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/keys")
+        # Each checkbox is wrapped directly in its own <label>...</label>.
+        assert response.text.count('<label><input type="checkbox" name="scopes"') >= 1
+
+    async def test_the_keys_page_forms_are_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/keys")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_the_alerts_page_forms_are_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/alerts")
+        assert _every_visible_input_has_a_label(response.text)
+
+
 # --- Escaping ---------------------------------------------------------------
 
 

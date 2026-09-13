@@ -231,6 +231,11 @@ def read_share_token(secret: str, token: str) -> dict | None:
 # --- Chrome -----------------------------------------------------------------
 
 _EXTRA_CSS = """
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+fieldset{border:0;padding:0;margin:.5rem 0}
+fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.04em;padding:0;margin:0 0 .3rem}
 .verdict{border-radius:10px;padding:1rem 1.15rem;margin:0 0 1.25rem;
   border:1px solid var(--rule);background:var(--surface)}
 .verdict.bad{border-color:#C0392B;background:#FDF3F2}
@@ -630,10 +635,11 @@ def _render_share_form(share_url: str | None) -> str:
     days = SHARE_TOKEN_TTL_SECONDS // 86400
     if share_url:
         return (
-            '<div class="share-box"><b>Shareable link generated.</b><br>'
+            '<div class="share-box"><b id="share-url-label">Shareable link generated.</b><br>'
             f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
             "anyone who has the link -- treat it like the report data it is."
-            f'<input type="text" readonly value="{h(share_url)}" onclick="this.select()"></div>'
+            f'<input type="text" readonly aria-labelledby="share-url-label" '
+            f'value="{h(share_url)}" onclick="this.select()"></div>'
         )
     return (
         f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
@@ -763,7 +769,9 @@ def _render_memory(result: dict, tags: list[str]) -> str:
             "written; searchable the same way your agents search it.</p>"]
     body.append(
         f'<form method="get" action="{CONSOLE_PATH}/memory">'
-        f'<input type="search" name="q" placeholder="Describe a task in your own words…" '
+        '<label for="memory-q" class="sr-only">Search your memory</label>'
+        f'<input type="search" id="memory-q" name="q" '
+        f'placeholder="Describe a task in your own words…" '
         f'value="{h(result.get("query", ""))}" style="width:26rem;padding:.5rem .6rem;'
         'font:inherit;border:1px solid var(--rule);border-radius:8px">'
         ' <button type="submit" style="padding:.5rem 1rem;font:inherit;border-radius:8px;'
@@ -870,7 +878,8 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/users/{h(u.id)}/role" '
                     f'style="display:inline">'
-                    f'<select name="role">{role_options}</select> '
+                    f'<label for="role-{h(u.id)}" class="sr-only">Role for {h(u.email)}</label>'
+                    f'<select id="role-{h(u.id)}" name="role">{role_options}</select> '
                     f'<button type="submit">Set role</button></form> '
                 )
                 if u.disabled_at is not None:
@@ -898,9 +907,14 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
         body.append(
             "<h2>Create a user</h2>"
             f'<form method="post" action="{CONSOLE_PATH}/users/create">'
-            '<input type="email" name="email" placeholder="person@example.com" required> '
-            '<input type="text" name="display_name" placeholder="Display name (optional)"> '
-            f'<select name="role">{role_options}</select> '
+            '<label for="new-user-email" class="sr-only">Email</label>'
+            '<input type="email" id="new-user-email" name="email" '
+            'placeholder="person@example.com" required> '
+            '<label for="new-user-name" class="sr-only">Display name</label>'
+            '<input type="text" id="new-user-name" name="display_name" '
+            'placeholder="Display name (optional)"> '
+            '<label for="new-user-role" class="sr-only">Role</label>'
+            f'<select id="new-user-role" name="role">{role_options}</select> '
             '<button type="submit">Create</button></form>'
         )
     else:
@@ -953,9 +967,10 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
         body.append(
             "<h2>Issue a new key</h2>"
             f'<form method="post" action="{CONSOLE_PATH}/keys/issue">'
-            f"<p>{scope_boxes}</p>"
-            '<input type="number" name="expires_days" placeholder="Expires in N days '
-            '(blank = never)" min="1"> '
+            f'<fieldset><legend>Scopes</legend>{scope_boxes}</fieldset>'
+            '<label for="new-key-expires" class="sr-only">Expires in N days</label>'
+            '<input type="number" id="new-key-expires" name="expires_days" '
+            'placeholder="Expires in N days (blank = never)" min="1"> '
             '<button type="submit">Issue</button></form>'
         )
     else:
@@ -1014,11 +1029,16 @@ def _render_alerts(
         body.append(
             "<h2>Create a rule</h2>"
             f'<form method="post" action="{CONSOLE_PATH}/alerts/create">'
-            f'<select name="metric">{metric_options}</select> '
-            f'<select name="comparator">{comparator_options}</select> '
-            '<input type="number" step="any" name="threshold" placeholder="Threshold" required> '
-            f'<input type="number" name="cooldown_minutes" placeholder="Cooldown minutes" '
-            f'value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"> '
+            '<label for="new-alert-metric" class="sr-only">Metric</label>'
+            f'<select id="new-alert-metric" name="metric">{metric_options}</select> '
+            '<label for="new-alert-comparator" class="sr-only">Comparator</label>'
+            f'<select id="new-alert-comparator" name="comparator">{comparator_options}</select> '
+            '<label for="new-alert-threshold" class="sr-only">Threshold</label>'
+            '<input type="number" step="any" id="new-alert-threshold" name="threshold" '
+            'placeholder="Threshold" required> '
+            '<label for="new-alert-cooldown" class="sr-only">Cooldown minutes</label>'
+            '<input type="number" id="new-alert-cooldown" name="cooldown_minutes" '
+            f'placeholder="Cooldown minutes" value="{alerts.DEFAULT_COOLDOWN_MINUTES}" min="1"> '
             '<button type="submit">Create</button></form>'
         )
         body.append(
@@ -1042,7 +1062,8 @@ _SIGNIN = """
   <p class="sub">Use an API key for your organisation — the same key your agents
   authenticate with. It is verified once and never stored in your browser.</p>
   <form method="post" action="{path}/signin">
-    <input type="password" name="api_key" placeholder="ct_…" autocomplete="off"
+    <label for="api_key" class="sr-only">API key</label>
+    <input type="password" id="api_key" name="api_key" placeholder="ct_…" autocomplete="off"
            autofocus required>
     <button type="submit">Sign in</button>
   </form>

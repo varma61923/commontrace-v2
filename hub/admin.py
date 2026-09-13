@@ -127,6 +127,8 @@ _CSS = """
   --ok:#4EA878; --warn:#D2A149; --bad:#D86F5B; --code:#101820;
 }}
 *{box-sizing:border-box}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
 body{margin:0;background:var(--paper);color:var(--ink);
   font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 a{color:var(--accent)}
@@ -726,7 +728,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                 f'<input type="hidden" name="decision" value="reject">'
                 f'<input type="hidden" name="csrf" '
                 f'value="{h(_csrf_token(admin_token, "reject", sid))}">'
-                f'<input type="text" name="reason" maxlength="200" placeholder="reason (optional)">'
+                f'<label for="reason-{h(sid)}" class="sr-only">Reason for declining</label>'
+                f'<input type="text" id="reason-{h(sid)}" name="reason" maxlength="200" '
+                f'placeholder="reason (optional)">'
                 f'<button type="submit" class="btn">Decline</button></form>'
             )
             tags = " ".join(f'<span class="pill mute">{h(t)}</span>' for t in (s.get("tags") or []))
@@ -765,7 +769,9 @@ def _render_kb(data: dict, admin_token: str, operator_org_id: str, flash: str = 
                 f'<input type="hidden" name="trace_id" value="{h(tid)}">'
                 f'<input type="hidden" name="csrf" '
                 f'value="{h(_csrf_token(admin_token, "retract", str(tid)))}">'
-                f'<input type="text" name="reason" maxlength="200" placeholder="reason">'
+                f'<label for="retract-reason-{h(tid)}" class="sr-only">Reason for retracting</label>'
+                f'<input type="text" id="retract-reason-{h(tid)}" name="reason" maxlength="200" '
+                f'placeholder="reason">'
                 f'<button type="submit" class="btn warn">Retract</button></form></td></tr>'
             )
         queue_html = ('<div class="scroll"><table><thead><tr><th>Entry</th>'
