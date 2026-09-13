@@ -6,15 +6,15 @@ gave wordier fields (legal, robotics) systematically higher scores than terse
 ones, so no single threshold meant the same thing in two stores -- and no test
 would have caught a change that improved coding at legal's expense.
 
-This runs the labelled cross-field corpus in commontrace/fixtures/fields/ (six
-fields, 36 lessons, 108 queries) and gates on two things, deliberately
+This runs the labelled cross-field corpus in commontrace/fixtures/fields/
+(eight fields, 48 lessons, 144 queries) and gates on two things, deliberately
 neither of them a mean:
 
   - the WORST field's pollution ratio, absolutely; and
   - the SPREAD between the worst and best field.
 
-Both are needed. Against the historical scorer the six fields polluted at
-1.89x-2.50x. The current scorer's DEFAULT_FLOOR is not tuned against this
+Both are needed. Against the historical scorer the eight fields polluted at
+1.72x-2.50x. The current scorer's DEFAULT_FLOOR is not tuned against this
 corpus alone -- commontrace/retrieval.py's comment on DEFAULT_FLOOR documents
 a second corpus (commons/eval/, pinned by hub/tests/test_commons.py) whose
 existing thresholds bound how high the floor can go. Jointly, the floor lands
@@ -55,12 +55,16 @@ def report():
 
 class TestTheCorpusItself:
     def test_it_covers_fields_with_no_starter_vocabulary(self, report):
-        """robotics and legal are the point: neither has a STARTER_DOMAINS
-        entry, and before the taxonomy was opened neither could even be
-        declared as an agent_type."""
+        """robotics, legal, clinical and finance are the point: none has a
+        STARTER_DOMAINS entry, and before the taxonomy was opened none could
+        even be declared as an agent_type.
+
+        The floor ratchets rather than sitting at whatever the corpus
+        happens to hold -- "six fields is not any field" is answered by
+        adding fields, so this must fail if one is ever deleted."""
         fields = {f["field"] for f in report["fields"]}
-        assert {"robotics", "legal"} <= fields
-        assert len(fields) >= 6
+        assert {"robotics", "legal", "clinical", "finance"} <= fields
+        assert len(fields) >= 8
 
     def test_every_field_has_enough_queries_to_mean_something(self, report):
         for f in report["fields"]:

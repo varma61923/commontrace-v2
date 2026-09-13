@@ -751,7 +751,7 @@ correlational answer on a specific lesson, see `commontrace experiment`
 
 `commontrace bench --pilot` measures your fleet. `commontrace bench --retrieval`
 measures the retriever itself, **per field**, against a labelled corpus that ships
-with the package (six fields, 36 lessons, 108 queries):
+with the package (eight fields, 48 lessons, 144 queries):
 
 ```bash
 commontrace bench --retrieval                                  # per-field table

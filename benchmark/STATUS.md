@@ -586,9 +586,26 @@ that improved coding at legal's expense.
 
 ### 9.2 The corpus, and what it is not
 
-`commontrace/fixtures/fields/*.json` — six fields (coding, HR, sales,
-marketing, robotics, legal), 36 lessons, 108 labelled queries
-(`query → relevant slugs`).
+`commontrace/fixtures/fields/*.json` — eight fields (coding, HR, sales,
+marketing, robotics, legal, clinical, finance), 48 lessons, 144 labelled
+queries (`query → relevant slugs`).
+
+`clinical` and `finance` were added after the fact, to answer §9.5's own
+"six fields is not 'any field'" with fields rather than with an argument.
+Both were chosen to stress axes the original six did not:
+
+- **`finance` is deliberately the wordiest field in the corpus** (48.7 mean
+  words per `applies_when`, against legal's 32.5), because verbosity bias is
+  what this benchmark exists to catch. It pollutes at 2.11× — *below* legal's
+  2.33× despite being half again as wordy, which is the clearest single
+  data point that the IDF scorer is not rewarding whichever field writes
+  more.
+- **Both collide with existing fields' vocabulary on purpose.** `clinical`
+  owns `escalation` (support's word), `compliance` (legal's and HR's),
+  `follow-up` (sales') and `appeal`/`denial` (finance's); `finance` owns
+  `policy` (HR's) and `contract`/`obligation` (legal's). Queries that only
+  ever match their own field would make a benchmark that proves nothing, so
+  the collisions are the point rather than an oversight.
 
 **It is hand-authored, not sampled from production traffic.** The lessons and
 queries were written to be realistic for each field — a legal store's lessons
@@ -622,11 +639,13 @@ product uses retrieval:
 `--max-pollution` (absolute ceiling on the worst field) AND `--max-spread`
 (worst ÷ best). Building this proved both are needed:
 
+Measured across all eight fields:
+
 | Scorer | Per-field pollution | Spread |
 |---|---|---|
-| `count-v1` (historical) | 1.72× – 2.50× | 1.32× |
-| `idf-v2`, floor=0.10 (single-corpus tuning) | 1.00× – 1.28× | 1.28× |
-| `idf-v2`, floor=0.04 (current — see §9.6) | 1.72× – 2.33× | 1.36× |
+| `count-v1` (historical) | 1.72× – 2.50× | 1.45× |
+| `idf-v2`, floor=0.10 (single-corpus tuning) | 1.00× – 1.39× | 1.39× |
+| `idf-v2`, floor=0.04 (current — see §9.6) | 1.72× – 2.33× | 1.35× |
 
 Retrieval noise did not halve as cleanly as the single-corpus tuning first
 suggested — §9.6 explains why the floor was lowered from 0.10 to 0.04 after
@@ -646,10 +665,22 @@ measuring, not the scorer improved.
 
 ### 9.5 Known limitations
 
-- **Six fields is not "any field".** The gate demonstrates the scorer is not
-  verbosity-biased across a deliberately varied set; it cannot prove the next
-  field will behave. Adding a field is adding one JSON file, and is the right
-  response to a fleet whose retrieval underperforms.
+- **Eight fields is still not "any field".** The gate demonstrates the scorer
+  is not verbosity-biased across a deliberately varied set; it cannot prove
+  the next field will behave. Adding a field is adding one JSON file, and is
+  the right response to a fleet whose retrieval underperforms.
+- **Adding a field widens regression coverage; it does not automatically add
+  verbosity-bias signal.** Worth stating, because it is the trap in growing
+  this corpus. `clinical` pollutes at **1.72× under both the historical and
+  the current scorer — a delta of exactly zero** — so it discriminates
+  nothing on the axis this benchmark was built for, even though it does
+  broaden the "did this change regress some field?" check and contributes
+  cross-field vocabulary collisions. `finance` moved only 2.28× → 2.11×. The
+  fields that actually exercise verbosity bias are still the wordy,
+  boilerplate-heavy ones (HR −0.50, sales −0.28, legal −0.17). A corpus can
+  therefore grow in field count while getting no better at catching the
+  regression it exists for, so the per-field delta is worth checking when a
+  field is added rather than assumed.
 - **Lexical only.** The semantic retriever needs an embedding model and a built
   index, so it is not exercised here. The lexical path is what MCP always uses
   and what the CLI falls back to whenever the index is stale, so it is the path

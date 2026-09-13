@@ -8,8 +8,8 @@ number cannot show: scoring was raw word overlap with no normalization, so
 fields that write more (legal, robotics) produced systematically higher scores
 than terse ones (coding), and every threshold meant something different in
 each store. Measured before the fix, collateral retrievals ranged from 16
-(robotics) to 27 (legal) across six fields — a mean would have called that
-"about 21" and hidden the spread entirely.
+(robotics) to 27 (legal) across the original six fields — a mean would have
+called that "about 21" and hidden the spread entirely.
 
 So this reports PER FIELD and gates on two things, neither of which is the
 mean:
@@ -21,10 +21,14 @@ mean:
   another?
 
 Both are needed, and building this proved it. Against the historical scorer
-the six fields polluted at 1.89x-2.50x; against the current one, 1.00x-1.28x.
-That is retrieval noise more than halving -- and the SPREAD barely moved
-(1.32x to 1.28x), because the old scorer was bad in every field roughly
-equally. A spread-only gate would have called that regression acceptable.
+the eight fields pollute at 1.72x-2.50x; against the shipped scorer,
+1.72x-2.33x. Tuning the floor against THIS corpus alone would buy far more
+(1.00x-1.28x at floor=0.10), but a second corpus bounds how high the floor
+can go -- see DEFAULT_FLOOR in commontrace/retrieval.py and benchmark/
+STATUS.md §9.6, which records why it was lowered to 0.04 after shipping.
+The SPREAD barely moves either way (1.45x to 1.36x), because the old scorer
+was bad in every field roughly equally. A spread-only gate would have called
+that regression acceptable.
 Conversely a ceiling-only gate passes a change that fixes five fields and
 abandons the sixth, which is the failure this whole file exists for.
 

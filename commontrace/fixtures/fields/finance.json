@@ -1,0 +1,85 @@
+{
+  "field": "finance",
+  "agent_type": "finance",
+  "lessons": [
+    {
+      "name": "revenue_recognition_multi_element",
+      "description": "Bundled contract recognised entirely on signature",
+      "applies_when": "A signed arrangement bundles distinct performance obligations -- a licence delivered up front alongside implementation services and a support term that runs for the life of the agreement -- and the proposed entry recognises the full contract value in the period of signature rather than allocating the transaction price across those obligations and recognising each as it is satisfied.",
+      "do_not_apply_when": "Does not apply to a single-obligation arrangement delivered in full at a point in time, where signature and satisfaction genuinely coincide.",
+      "tags": ["revenue-recognition", "contract", "obligation", "asc606"],
+      "domain": "revenue-recognition",
+      "importance": 5
+    },
+    {
+      "name": "intercompany_reconciliation_mismatch",
+      "description": "Intercompany balances do not tie at consolidation",
+      "applies_when": "Two entities within the consolidation group report balances against each other that do not agree, and the difference survives the elimination entry -- typically because one side booked the charge in a later period, or because each side translated the same transaction at a different rate before the balance was struck.",
+      "do_not_apply_when": "Does not apply where the difference is a known timing item already recorded on the intercompany bridge and scheduled to clear in the following period.",
+      "tags": ["reconciliation", "intercompany", "consolidation", "elimination"],
+      "domain": "reconciliation",
+      "importance": 4
+    },
+    {
+      "name": "expense_policy_exception_approval",
+      "description": "Out-of-policy expense approved at the wrong tier",
+      "applies_when": "A submitted expense breaches a stated policy limit -- premium cabin travel, an entertainment amount above the per-head cap, a booking made outside the managed travel tool -- and is approved by the claimant's direct manager alone when the policy reserves exceptions of that magnitude for a higher approval tier.",
+      "do_not_apply_when": "Does not apply where a documented pre-approval for the exception was obtained at the correct tier before the expense was incurred.",
+      "tags": ["policy", "expense", "approval", "exception"],
+      "domain": "policy",
+      "importance": 3
+    },
+    {
+      "name": "duplicate_vendor_payment_detection",
+      "description": "Same invoice paid twice under two references",
+      "applies_when": "A payment run contains an invoice that has already been settled, reaching the ledger a second time because the vendor reissued it under a new reference, or because the same document was entered against two vendor master records created for one legal counterparty.",
+      "do_not_apply_when": "Does not apply to legitimate instalments against a single invoice under agreed payment terms, which share a reference by design.",
+      "tags": ["accounts-payable", "duplicate", "payment", "vendor"],
+      "domain": "accounts-payable",
+      "importance": 4
+    },
+    {
+      "name": "month_end_accrual_cutoff",
+      "description": "Goods received before close booked in the wrong period",
+      "applies_when": "Goods or services were received before the period cutoff but the vendor invoice has not yet arrived, and the cost is left unrecorded until the invoice lands in the following period rather than being accrued against the period that actually consumed the benefit.",
+      "do_not_apply_when": "Does not apply below the standing materiality threshold for accruals, where the policy deliberately accepts the timing difference rather than carrying the work.",
+      "tags": ["close", "accrual", "cutoff", "period-end"],
+      "domain": "close",
+      "importance": 4
+    },
+    {
+      "name": "fx_revaluation_monetary_balances",
+      "description": "Foreign currency balances carried at historic rate",
+      "applies_when": "Monetary assets and liabilities denominated in a currency other than the entity's functional currency are still carried at the rate on the date of the original transaction at period end, so the unrealised gain or loss arising from the closing rate never reaches the income statement.",
+      "do_not_apply_when": "Does not apply to non-monetary items such as prepayments, inventory or fixed assets, which remain at historic rate by design.",
+      "tags": ["fx", "revaluation", "unrealised", "currency"],
+      "domain": "fx",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {"query": "we booked the whole bundled licence and services deal on signature", "relevant": ["revenue_recognition_multi_element"]},
+    {"query": "should implementation and support be split out from the licence revenue", "relevant": ["revenue_recognition_multi_element"]},
+    {"query": "transaction price was not allocated across the performance obligations", "relevant": ["revenue_recognition_multi_element"]},
+
+    {"query": "intercompany balances between the two entities do not agree", "relevant": ["intercompany_reconciliation_mismatch"]},
+    {"query": "elimination entry leaves a residual difference at consolidation", "relevant": ["intercompany_reconciliation_mismatch"]},
+    {"query": "each side used a different rate so the intercompany balance is off", "relevant": ["intercompany_reconciliation_mismatch"]},
+
+    {"query": "business class flight approved by the line manager only", "relevant": ["expense_policy_exception_approval"]},
+    {"query": "entertainment claim over the per head cap went through the wrong tier", "relevant": ["expense_policy_exception_approval"]},
+    {"query": "who signs off an expense booked outside the managed travel tool", "relevant": ["expense_policy_exception_approval"]},
+
+    {"query": "vendor reissued the invoice and we paid it a second time", "relevant": ["duplicate_vendor_payment_detection"]},
+    {"query": "two supplier master records for one counterparty caused a double payment", "relevant": ["duplicate_vendor_payment_detection"]},
+    {"query": "same document settled twice in the payment run", "relevant": ["duplicate_vendor_payment_detection"]},
+
+    {"query": "goods arrived before cutoff but the invoice came after close", "relevant": ["month_end_accrual_cutoff"]},
+    {"query": "cost landed in the wrong period because nobody raised an accrual", "relevant": ["month_end_accrual_cutoff"]},
+    {"query": "do we accrue for services received where no invoice has arrived", "relevant": ["month_end_accrual_cutoff"]},
+
+    {"query": "foreign currency payables still sitting at the original transaction rate", "relevant": ["fx_revaluation_monetary_balances"]},
+    {"query": "unrealised exchange movement never hit the income statement", "relevant": ["fx_revaluation_monetary_balances"]},
+    {"query": "should monetary balances be retranslated at the closing rate", "relevant": ["fx_revaluation_monetary_balances"]}
+  ]
+}

@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Two more fields in the cross-field retrieval corpus** —
+  `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
+  six fields to eight (48 lessons, 144 labelled queries). This answers
+  `benchmark/STATUS.md` §9.5's own "six fields is not 'any field'" with
+  fields rather than with an argument. Both were picked to stress axes the
+  original six did not: `finance` is deliberately the **wordiest** field in
+  the corpus (48.7 mean words per `applies_when`, against legal's 32.5), and
+  both collide on purpose with existing fields' vocabulary — `clinical` owns
+  `escalation` (support's word), `compliance` (legal's and HR's), `follow-up`
+  (sales') and `appeal`/`denial` (finance's); `finance` owns `policy` (HR's)
+  and `contract`/`obligation` (legal's). A corpus whose queries only ever
+  match their own field would prove nothing.
+
+  Both pass the existing gate unchanged — **no threshold was moved**:
+  `finance` pollutes at 2.11× and `clinical` at 1.72×, against the untouched
+  ceiling of 2.4× and spread limit of 2.0×. The corpus-wide spread is
+  unchanged at 1.35× and the worst field is still `legal` at 2.33×. That
+  `finance` pollutes *below* legal while being half again as wordy is the
+  clearest single data point that the IDF scorer is not rewarding whichever
+  field writes more. The regression detector still fires: `count-v1` reaches
+  2.50× across the eight fields, over the ceiling.
+
+  Recorded as a limitation in the same pass (§9.5): **adding a field widens
+  regression coverage without automatically adding verbosity-bias signal.**
+  `clinical` scores 1.72× under *both* scorers — a delta of exactly zero — so
+  it discriminates nothing on the axis this benchmark was built for. The
+  fields that genuinely exercise it remain the boilerplate-heavy ones
+  (HR −0.50, sales −0.28, legal −0.17).
+
 ### Fixed
+
+- **A stale scorer claim in `commontrace/reference/measure_retrieval.py`.**
+  Its module docstring said the current scorer pollutes at 1.00×–1.28×, which
+  is the superseded single-corpus tuning at `floor=0.10`, not the shipped
+  `floor=0.04` default (1.72×–2.33×) that `benchmark/STATUS.md` §9.6 records
+  the reason for. Re-measured across all eight fields, along with the §9.4
+  table and the "six fields, 36 lessons, 108 queries" counts in `README.md`,
+  `tests/test_cross_field_retrieval.py` and `benchmark/STATUS.md` §9.2.
 
 - **Three stale "what this does not have" claims corrected** (`TRUST.md`
   §6, `README.md`, `hub/DEPLOYMENT.md` §11). All three still said the Hub

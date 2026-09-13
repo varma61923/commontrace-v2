@@ -1,0 +1,85 @@
+{
+  "field": "clinical",
+  "agent_type": "clinical",
+  "lessons": [
+    {
+      "name": "phi_stripped_before_external_send",
+      "description": "Free-text note leaves the clinical system with identifiers intact",
+      "applies_when": "An agent is about to send any free-text clinical note, intake summary or message thread to a system outside the covered entity -- a translation service, a scheduling vendor, an analytics pipeline -- and the text was authored by a human who had no reason to avoid naming the patient.",
+      "do_not_apply_when": "Does not apply to transfers to another covered entity under an existing business associate agreement, where identifiers are the point of the transfer.",
+      "tags": ["phi", "de-identification", "compliance", "privacy"],
+      "domain": "privacy",
+      "importance": 5
+    },
+    {
+      "name": "critical_result_escalates_out_of_queue",
+      "description": "Critical lab value queued instead of escalated",
+      "applies_when": "A returned result carries a critical flag or falls outside the panic range, and the routing logic would otherwise place it in the ordinary results queue behind non-urgent items for the assigned clinician to review in turn.",
+      "do_not_apply_when": "Does not apply to a repeat or confirmatory draw on a value already escalated and acknowledged within the same encounter.",
+      "tags": ["escalation", "critical-value", "results", "triage"],
+      "domain": "escalation",
+      "importance": 5
+    },
+    {
+      "name": "discharge_medication_reconciliation",
+      "description": "Discharge list conflicts with the home medication list",
+      "applies_when": "A discharge summary is being assembled and the discharge medication list disagrees with the reconciled home list -- a dose changed, a home drug was silently dropped, or a therapeutic duplicate appears across two brand names for the same molecule.",
+      "do_not_apply_when": "Does not apply when the prescriber has already documented an explicit rationale for the change in the discharge note.",
+      "tags": ["medication", "reconciliation", "discharge", "safety"],
+      "domain": "medication",
+      "importance": 5
+    },
+    {
+      "name": "prior_authorization_denial_appeal",
+      "description": "Payer denies prior authorization on medical necessity",
+      "applies_when": "A payer returns a prior authorization denial citing medical necessity, and the ordering clinician's documentation already contains the failed-first-line trial or imaging finding the payer's own published policy asks for.",
+      "do_not_apply_when": "Does not apply when the denial is administrative -- wrong plan, lapsed coverage, missing member id -- which is corrected and resubmitted rather than appealed.",
+      "tags": ["prior-auth", "denial", "appeal", "payer"],
+      "domain": "prior-auth",
+      "importance": 4
+    },
+    {
+      "name": "no_show_outreach_cadence",
+      "description": "Missed appointment gets no structured follow-up",
+      "applies_when": "A scheduled patient does not present and no outreach is attempted, particularly where the visit was a post-discharge follow-up or an oncology or dialysis appointment whose gap carries clinical consequence rather than only lost revenue.",
+      "do_not_apply_when": "Does not apply when the patient has already been contacted and rescheduled, or has opted out of outreach in writing.",
+      "tags": ["scheduling", "no-show", "follow-up", "outreach"],
+      "domain": "scheduling",
+      "importance": 3
+    },
+    {
+      "name": "verbal_order_readback_timestamp",
+      "description": "Verbal order recorded without read-back attestation",
+      "applies_when": "An order is taken verbally or by telephone during a code, a procedure, or after hours, and is entered into the record without the read-back attestation and the time the order was actually received.",
+      "do_not_apply_when": "Does not apply to standing protocol orders executed under an approved order set, which carry their own signed authorization.",
+      "tags": ["orders", "verbal-order", "read-back", "documentation"],
+      "domain": "orders",
+      "importance": 4
+    }
+  ],
+  "queries": [
+    {"query": "note with patient name is about to go to an outside translation vendor", "relevant": ["phi_stripped_before_external_send"]},
+    {"query": "are we sending identifiers to the analytics pipeline in free text", "relevant": ["phi_stripped_before_external_send"]},
+    {"query": "de-identify the intake summary before it leaves our systems", "relevant": ["phi_stripped_before_external_send"]},
+
+    {"query": "panic value came back and it is sitting in the normal results queue", "relevant": ["critical_result_escalates_out_of_queue"]},
+    {"query": "critical potassium flagged but nobody was paged", "relevant": ["critical_result_escalates_out_of_queue"]},
+    {"query": "should an out of range result wait its turn for clinician review", "relevant": ["critical_result_escalates_out_of_queue"]},
+
+    {"query": "discharge list dropped a medication the patient takes at home", "relevant": ["discharge_medication_reconciliation"]},
+    {"query": "two brand names for the same drug both appear on the discharge summary", "relevant": ["discharge_medication_reconciliation"]},
+    {"query": "home dose and discharge dose disagree and nothing explains why", "relevant": ["discharge_medication_reconciliation"]},
+
+    {"query": "payer denied the authorization saying it was not medically necessary", "relevant": ["prior_authorization_denial_appeal"]},
+    {"query": "insurer rejected the request even though we documented the failed first line", "relevant": ["prior_authorization_denial_appeal"]},
+    {"query": "how do we appeal a medical necessity denial from the plan", "relevant": ["prior_authorization_denial_appeal"]},
+
+    {"query": "patient missed the post discharge visit and nobody followed up", "relevant": ["no_show_outreach_cadence"]},
+    {"query": "dialysis appointment was a no show with no outreach attempt", "relevant": ["no_show_outreach_cadence"]},
+    {"query": "what cadence should we use to reach a patient who did not present", "relevant": ["no_show_outreach_cadence"]},
+
+    {"query": "telephone order entered without the read back being recorded", "relevant": ["verbal_order_readback_timestamp"]},
+    {"query": "verbal order during the code has no attestation or time received", "relevant": ["verbal_order_readback_timestamp"]},
+    {"query": "after hours order taken by phone is missing its readback", "relevant": ["verbal_order_readback_timestamp"]}
+  ]
+}
