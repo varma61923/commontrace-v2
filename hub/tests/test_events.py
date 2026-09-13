@@ -21,6 +21,7 @@ What these tests defend, in order of how badly getting it wrong would hurt:
 from __future__ import annotations
 
 import json
+import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -34,6 +35,30 @@ from hub.models import Organization, WebhookDelivery, WebhookEndpoint
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 KEY = "test-deployment-signing-key"
 URL = "https://example.invalid/hooks/commontrace"
+
+
+async def _fake_public_resolve(hostname: str) -> list:
+    """A DNS answer for a genuinely public, non-TEST-NET address (8.8.8.8
+    is not flagged is_private by ipaddress, unlike RFC 5737 ranges)."""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
+
+def _fake_resolve_to(ip: str):
+    async def resolve(hostname: str) -> list:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip, 0))]
+    return resolve
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_dns_for_webhook_hosts(monkeypatch):
+    """Every fixture and call site in this module targets
+    ``example.invalid`` -- non-resolving by RFC 2606 design, which is
+    exactly what `_reject_private_target`'s DNS check now requires
+    resolving. Faking a genuinely public answer here keeps that guarantee
+    for tests that are not themselves about SSRF protection.
+    TestSsrfProtection below overrides this per-test with its own resolvers
+    to exercise the real rejection behavior."""
+    monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 
 @pytest_asyncio.fixture
@@ -226,6 +251,94 @@ class TestEndpoints:
         header = events.signature_header(rotated, int(NOW.timestamp()), body)
         assert not events.verify_signature(
             endpoint["secret"], header, body, now=int(NOW.timestamp()))
+
+
+# --- SSRF protection ----------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestSsrfProtection:
+    """A webhook URL is egress to a third party's OWN infrastructure --
+    never a way to reach this deployment's own internal network. See
+    `_reject_private_target`'s docstring in hub/events.py for the full
+    rationale, including why this is checked again at delivery time."""
+
+    @pytest.mark.parametrize("ip", [
+        "127.0.0.1",         # loopback
+        "10.0.0.5",          # RFC 1918 private
+        "172.16.0.1",        # RFC 1918 private
+        "192.168.1.1",       # RFC 1918 private
+        "169.254.169.254",   # link-local -- cloud metadata services live here
+        "224.0.0.1",         # multicast
+        "0.0.0.0",           # unspecified
+        "::1",               # IPv6 loopback
+        "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback -- not a bypass
+    ])
+    async def test_a_private_or_internal_target_is_rejected(self, ip):
+        with pytest.raises(events.EventError, match="private"):
+            await events._reject_private_target(
+                URL, resolve=_fake_resolve_to(ip))
+
+    async def test_a_genuinely_public_target_is_accepted(self):
+        # 8.8.8.8, unlike an RFC 5737 TEST-NET range, is not flagged
+        # is_private by ipaddress -- this actually exercises the allowed
+        # path rather than accidentally rejecting for the wrong reason.
+        await events._reject_private_target(URL, resolve=_fake_resolve_to("8.8.8.8"))
+
+    async def test_an_unresolvable_host_is_refused_not_silently_allowed(self):
+        async def resolve(hostname):
+            raise socket.gaierror("nodename nor servname provided")
+        with pytest.raises(events.EventError, match="could not resolve"):
+            await events._reject_private_target(URL, resolve=resolve)
+
+    async def test_a_url_with_no_host_is_refused(self):
+        with pytest.raises(events.EventError, match="resolvable host"):
+            await events._reject_private_target("https:///no-host-here")
+
+    async def test_add_endpoint_refuses_a_url_resolving_to_a_private_address(
+        self, session_factory, org, monkeypatch
+    ):
+        monkeypatch.setattr(
+            events, "_default_resolve", _fake_resolve_to("127.0.0.1"))
+        async with session_scope(session_factory) as session:
+            with pytest.raises(events.EventError, match="private"):
+                await events.add_endpoint(session, org, URL, signing_key=KEY)
+
+    async def test_add_endpoint_accepts_a_url_resolving_publicly(
+        self, session_factory, org, monkeypatch
+    ):
+        monkeypatch.setattr(
+            events, "_default_resolve", _fake_resolve_to("8.8.8.8"))
+        async with session_scope(session_factory) as session:
+            endpoint, _ = await events.add_endpoint(session, org, URL, signing_key=KEY)
+        assert endpoint.url == URL
+
+    async def test_http_transport_rechecks_at_delivery_time_not_only_registration(
+        self, session_factory, org, monkeypatch
+    ):
+        """DNS can change between `add_endpoint` and delivery -- the
+        send-time recheck is what actually narrows that window rather than
+        only validating a fact that was true once (see
+        `_reject_private_target`'s docstring)."""
+        calls = {"n": 0}
+
+        async def rebinding_resolve(hostname):
+            calls["n"] += 1
+            ip = "8.8.8.8" if calls["n"] == 1 else "127.0.0.1"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip, 0))]
+
+        monkeypatch.setattr(events, "_default_resolve", rebinding_resolve)
+        async with session_scope(session_factory) as session:
+            await events.add_endpoint(session, org, URL, signing_key=KEY)
+            await events.emit(session, org, "trace.created", {"trace_id": "t1"}, now=NOW)
+
+        transport = events.http_transport()
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(
+                session, transport, signing_key=KEY, now=NOW)
+        # Rejected as a retry, exactly like any other delivery failure --
+        # never silently delivered and never crashing deliver_pending.
+        assert result.delivered == 0
+        assert result.retrying == 1
 
 
 # --- emitting and delivery ---------------------------------------------------

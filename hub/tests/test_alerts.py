@@ -20,6 +20,7 @@ hurt:
 """
 from __future__ import annotations
 
+import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -34,6 +35,20 @@ NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 URL = "https://example.invalid/hooks/commontrace"
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _fake_public_resolve(hostname: str) -> list:
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_dns_for_webhook_hosts(monkeypatch):
+    """This module's endpoint targets ``example.invalid`` -- non-resolving
+    by RFC 2606 design, which is exactly what hub/events.py's SSRF check
+    (`_reject_private_target`) now requires resolving. Faking a genuinely
+    public answer keeps that guarantee; the check itself is exercised in
+    hub/tests/test_events.py::TestSsrfProtection."""
+    monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 
 @pytest_asyncio.fixture

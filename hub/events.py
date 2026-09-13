@@ -54,11 +54,15 @@ than implying exactly-once and being wrong at the worst moment.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import json
+import socket
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 
@@ -88,6 +92,59 @@ _BACKOFF = (30, 60, 300, 900, 3600, 7200, 21600)
 
 class EventError(Exception):
     """An event could not be emitted as described."""
+
+
+async def _default_resolve(hostname: str) -> list:
+    return await asyncio.to_thread(socket.getaddrinfo, hostname, None)
+
+
+async def _reject_private_target(url: str, *, resolve=None) -> None:
+    """Refuse a webhook URL whose hostname resolves anywhere this Hub's own
+    process could reach but a customer's public endpoint never should --
+    loopback, link-local (cloud metadata services live at
+    169.254.169.254), RFC 1918 private ranges, and other reserved/
+    multicast space. `add_endpoint` is operator-CLI-only today, but the
+    operator is trusting whatever URL a customer asked them to configure,
+    not vetting it themselves -- an SSRF-shaped mistake here is exactly as
+    real as if a customer typed it into a public form.
+
+    Checked again in `http_transport.send`, immediately before every
+    delivery, not only at registration: a hostname's DNS record can change
+    at any point after `add_endpoint` accepted it, and re-checking right
+    before the request is what actually closes that window rather than
+    only validating a fact that was true once. This narrows, but does not
+    eliminate, a TOCTOU race against DNS rebinding between this check and
+    httpx's own connection a moment later -- a deployment that needs to
+    close that fully should put an egress proxy in front of deliveries
+    (see http_transport's own docstring for why this module leaves room
+    for exactly that, rather than trying to be the only layer that does).
+
+    `resolve`, like `http_transport`'s own transport parameter, is
+    injectable so tests never need a real DNS lookup -- defaulting to
+    `None` runs actual resolution, same shape as the rest of this module's
+    test-vs-production seams.
+    """
+    hostname = urlsplit(url).hostname
+    if not hostname:
+        raise EventError(f"a webhook endpoint must have a resolvable host, got {url!r}")
+    resolve = resolve or _default_resolve
+    try:
+        addrinfo = await resolve(hostname)
+    except socket.gaierror as exc:
+        raise EventError(f"could not resolve webhook host {hostname!r}: {exc}") from None
+    for family, _type, _proto, _canonname, sockaddr in addrinfo:
+        raw_ip = sockaddr[0]
+        ip = ipaddress.ip_address(raw_ip)
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        ):
+            raise EventError(
+                f"webhook host {hostname!r} resolves to {raw_ip}, a private/"
+                "internal address. Events are egress to a third party's own "
+                "infrastructure, never a way to reach this deployment's own "
+                "internal network."
+            )
 
 
 @dataclass(frozen=True)
@@ -302,6 +359,7 @@ async def add_endpoint(
             "trace content, but they do carry trace ids and experiment "
             "verdicts, and plaintext delivery puts those on the wire."
         )
+    await _reject_private_target(url)
     for name in events or []:
         if name not in EVENT_TYPES:
             raise EventError(
@@ -513,6 +571,11 @@ def http_transport(timeout: float = 10.0):
     import httpx
 
     async def send(url: str, body: str, headers: dict) -> None:
+        # Re-checked here, not only at add_endpoint time -- see
+        # _reject_private_target's own docstring for why a hostname that
+        # resolved to a public address at registration is not guaranteed
+        # to still do so at delivery time.
+        await _reject_private_target(url)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, content=body, headers=headers)
             # A 2xx is the only success. A receiver answering 200 to

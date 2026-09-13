@@ -4,15 +4,32 @@ the deletion path DATA_RETENTION.md previously documented as
 unimplemented)."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import audit, auth, crud, manage, rbac
+from hub import audit, auth, crud, events, manage, rbac
 from hub.abuse import make_rate_limiter
 from hub.crud import amend_trace, contribute_trace
 from hub.db import session_scope
 from hub.models import Organization, Trace, TraceRelation, User
+
+
+async def _fake_public_resolve(hostname: str) -> list:
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_dns_for_webhook_hosts(monkeypatch):
+    """TestPrivilegedRoleGrantAlert registers a webhook endpoint at
+    ``example.invalid`` -- non-resolving by RFC 2606 design, which is
+    exactly what hub/events.py's SSRF check (`_reject_private_target`) now
+    requires resolving. Faking a genuinely public answer keeps that
+    guarantee; the check itself is exercised in
+    hub/tests/test_events.py::TestSsrfProtection."""
+    monkeypatch.setattr(events, "_default_resolve", _fake_public_resolve)
 
 pytestmark = pytest.mark.asyncio
 

@@ -24,6 +24,7 @@ and the properties that matter are:
 """
 from __future__ import annotations
 
+import socket
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -35,9 +36,24 @@ from starlette.applications import Starlette
 
 from hub import alerts as alerts_module
 from hub import auth, console, rbac
+from hub import events as events_module
 from hub.billing import StripeSettings
 from hub.db import session_scope
 from hub.models import ApiKey, Organization, Trace, User
+
+
+async def _fake_public_resolve(hostname: str) -> list:
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_dns_for_webhook_hosts(monkeypatch):
+    """This module registers a webhook endpoint at ``example.invalid`` --
+    non-resolving by RFC 2606 design, which is exactly what
+    hub/events.py's SSRF check (`_reject_private_target`) now requires
+    resolving. Faking a genuinely public answer keeps that guarantee; the
+    check itself is exercised in hub/tests/test_events.py::TestSsrfProtection."""
+    monkeypatch.setattr(events_module, "_default_resolve", _fake_public_resolve)
 
 pytestmark = pytest.mark.asyncio
 

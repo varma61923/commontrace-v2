@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SSRF protection for webhook endpoints** (`hub/events.py`, audit §6.3):
+  `add_endpoint` previously validated only that a URL was `https://`, never
+  where it actually pointed. `_reject_private_target` now resolves the
+  hostname and refuses one that resolves to loopback, an RFC 1918 private
+  range, link-local (including the `169.254.169.254` cloud metadata
+  address), or other reserved/multicast/unspecified space — checked both
+  at registration (`add_endpoint`) and again in `http_transport.send`
+  immediately before every delivery, since DNS can change in between. Not
+  from the original audit document — a gap found through this session's
+  own adversarial review, closed the same way any other SSRF-shaped
+  "customer-supplied URL" finding would be. Tests:
+  `hub/tests/test_events.py::TestSsrfProtection` (15 new; 54 total in the
+  file).
+
 - **`GET /disclosure`** (`hub/disclosure.py`, audit §2.3, §4.4): an
   always-mounted, unauthenticated endpoint reporting an operator's own
   configured data region, legal name, and support contact
