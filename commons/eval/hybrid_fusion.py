@@ -54,9 +54,14 @@ it says this corpus cannot tell, and the honest response to "cannot tell"
 is to leave a working retriever alone.
 
 Run: python commons/eval/hybrid_fusion.py
-Needs the `attention` extra (numpy + sentence-transformers) and the
-model cached locally; it explains and exits 0 if either is missing, so
-this stays runnable on the core install like everything else here.
+Needs the `attention` extra (numpy + sentence-transformers) and the model
+cached locally; it explains and exits 0 if either is missing, so this stays
+runnable on the core install like everything else here.
+
+To install dependencies:
+  pip install "commontrace[attention]"
+or from repository root:
+  pip install -e ".[attention]"
 """
 from __future__ import annotations
 

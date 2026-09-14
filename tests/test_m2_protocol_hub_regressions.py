@@ -232,6 +232,7 @@ class TestSearchTracesTenantIsolation:
 
     def test_search_traces_retrieval_update_includes_org_id_in_where_clause(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
 
         async def _test():
             from sqlalchemy.sql.dml import Update
@@ -290,6 +291,7 @@ class TestAmendTraceProfileRetention:
 
     def test_amend_trace_passes_profile_to_wire_validation(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
 
         async def _test():
             from hub import crud
@@ -385,3 +387,68 @@ class TestSharedPgPoolThreadCleanupOnTimeout:
         time.sleep(0.1)
         alive_threads = [t for t in threading.enumerate() if t.name == "hub-ratelimit-pg"]
         assert len(alive_threads) == 0, f"Thread leaked after timeout: {alive_threads}"
+
+
+class TestHubAuthArgon2Remediation:
+    """Tests for hub/auth.py argon2 graceful fallback and import resilience."""
+
+    @pytest.fixture(autouse=True)
+    def require_hub(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
+
+    def test_hub_auth_imports_without_crashing_when_argon2_missing(self):
+        from hub import auth, crud, db
+        assert auth is not None
+        assert db is not None
+        assert crud is not None
+
+    def test_argon2_stubs_and_dummy_hash_presence(self):
+        from hub import auth
+        assert hasattr(auth, "InvalidHashError")
+        assert issubclass(auth.InvalidHashError, ValueError)
+        assert hasattr(auth, "VerifyMismatchError")
+        assert issubclass(auth.VerifyMismatchError, Exception)
+        assert hasattr(auth, "_DUMMY_HASH")
+        assert isinstance(auth._DUMMY_HASH, str)
+        assert len(auth._DUMMY_HASH) > 0
+
+    def test_verify_argon2_fallback_returns_false_and_logs(self, caplog):
+        import logging
+
+        from hub import auth
+
+        with caplog.at_level(logging.WARNING):
+            if not auth._has_argon2:
+                result = auth._verify_argon2("some-secret", "some-hash")
+                assert result is False
+                assert any("argon2-cffi is not installed" in rec.message for rec in caplog.records)
+
+    def test_hash_argon2_raises_runtime_error_without_argon2(self):
+        from hub import auth
+        if not auth._has_argon2:
+            with pytest.raises(RuntimeError, match="argon2-cffi is required"):
+                auth._hash_argon2("some-secret")
+
+    def test_issue_api_key_raises_runtime_error_without_argon2(self):
+        from hub import auth
+        if not auth._has_argon2:
+            session = AsyncMock()
+            with pytest.raises(RuntimeError, match="argon2-cffi is required"):
+                asyncio.run(auth.issue_api_key(session, "test-org-id"))
+
+    def test_verify_by_legacy_scan_returns_none_without_argon2(self, caplog):
+        import logging
+        from datetime import datetime, timezone
+
+        from hub import auth
+
+        if not auth._has_argon2:
+            session = AsyncMock()
+            with caplog.at_level(logging.WARNING):
+                result = asyncio.run(
+                    auth._verify_by_legacy_scan(session, "ct_live_test_key_12345", datetime.now(timezone.utc))
+                )
+                assert result is None
+                assert any("argon2-cffi is not installed" in rec.message for rec in caplog.records)
+

@@ -106,8 +106,37 @@ class ApprovalPolicy:
         return self.mode == POLICY_TWO_PERSON
 
 
+ALLOWED_KEYS = frozenset({"mode", "require_human"})
+VALID_BOOL_STRINGS = frozenset({"true", "yes", "1", "false", "no", "0"})
+TRUE_BOOL_STRINGS = frozenset({"true", "yes", "1"})
+
+
 def policy_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), POLICY_FILENAME)
+
+
+def validate_policy(raw: dict, path: str = "approval-policy.yaml") -> None:
+    """Validate parsed policy dictionary strictly to prevent fail-open security bypass."""
+    unknown = set(raw.keys()) - ALLOWED_KEYS
+    if unknown:
+        raise PolicyError(f"{path}: unrecognized policy key(s): {', '.join(sorted(unknown))}")
+
+    if "mode" in raw:
+        mode = str(raw["mode"]).strip().lower()
+        if mode not in POLICIES:
+            raise PolicyError(f"{path}: mode must be one of {', '.join(POLICIES)}, got {mode!r}")
+
+    if "require_human" in raw:
+        rh = raw["require_human"]
+        if isinstance(rh, str):
+            if rh.strip().lower() not in VALID_BOOL_STRINGS:
+                raise PolicyError(
+                    f"{path}: require_human must be a boolean (true/false), got {rh!r}"
+                )
+        elif not isinstance(rh, bool):
+            raise PolicyError(
+                f"{path}: require_human must be a boolean (true/false), got {type(rh).__name__}"
+            )
 
 
 def load_policy(root: str) -> ApprovalPolicy:
@@ -126,15 +155,16 @@ def load_policy(root: str) -> ApprovalPolicy:
     except OSError as exc:
         raise PolicyError(f"could not read {path}: {exc}") from exc
 
+    validate_policy(raw, path)
+
     mode = str(raw.get("mode", POLICY_SINGLE)).strip().lower()
-    if mode not in POLICIES:
-        raise PolicyError(
-            f"{path}: mode must be one of {', '.join(POLICIES)}, got {mode!r}"
-        )
-    require_human = raw.get("require_human", False)
-    if isinstance(require_human, str):
-        require_human = require_human.strip().lower() in ("true", "yes", "1")
-    return ApprovalPolicy(mode=mode, require_human=bool(require_human))
+    rh_raw = raw.get("require_human", False)
+    if isinstance(rh_raw, str):
+        require_human = rh_raw.strip().lower() in TRUE_BOOL_STRINGS
+    else:
+        require_human = bool(rh_raw)
+
+    return ApprovalPolicy(mode=mode, require_human=require_human)
 
 
 def _parse_policy_yaml(text: str) -> dict:
@@ -155,7 +185,12 @@ def _parse_policy_yaml(text: str) -> dict:
                 f"line {lineno}: expected `key: value`, got {line.strip()!r}"
             )
         key, _, value = stripped.partition(":")
-        out[key.strip()] = value.strip().strip("'\"")
+        clean_key = key.strip().strip("'\"")
+        if not clean_key:
+            raise PolicyError(f"line {lineno}: empty key in policy file")
+        if clean_key in out:
+            raise PolicyError(f"line {lineno}: duplicate key {clean_key!r} in policy file")
+        out[clean_key] = value.strip().strip("'\"")
     return out
 
 

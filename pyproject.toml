@@ -155,7 +155,7 @@ line-length = 120
 target-version = "py310"
 # hub/ worktrees Claude Code may create locally under .claude/ are gitignored
 # and not part of the package -- keep them out of lint scope explicitly too.
-extend-exclude = [".claude"]
+extend-exclude = [".claude", ".agents", "scratch"]
 
 [tool.ruff.lint]
 # An explicit, intentional baseline (pycodestyle errors/warnings, pyflakes,

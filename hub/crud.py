@@ -1752,7 +1752,11 @@ async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict |
         # known org_b id must 404, not 403, so org_a can never learn that
         # the id exists at all.
         return None
-    await session.execute(update(Trace).where(Trace.id == trace_id).values(retrievals=Trace.retrievals + 1))
+    await session.execute(
+        update(Trace)
+        .where(Trace.id == trace_id, Trace.org_id == org_id)
+        .values(retrievals=Trace.retrievals + 1)
+    )
     return await _hydrate_one(session, trace)
 
 

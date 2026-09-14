@@ -59,33 +59,54 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+try:
+    from argon2 import PasswordHasher
+    from argon2.exceptions import InvalidHashError, VerifyMismatchError
+
+    _has_argon2 = True
+except ImportError:
+    PasswordHasher = None  # type: ignore[assignment, misc]
+
+    class InvalidHashError(ValueError):  # type: ignore[no-redef]
+        """Fallback stub when argon2-cffi is not installed."""
+
+    class VerifyMismatchError(Exception):  # type: ignore[no-redef]
+        """Fallback stub when argon2-cffi is not installed."""
+
+    _has_argon2 = False
+
+import logging
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub import scopes as scopes_module
 from hub.models import ApiKey, Organization, User
 
+logger = logging.getLogger(__name__)
+
 _KEY_PREFIX = "ct_live_"
 _PREFIX_LEN = 12  # "ct_live_" + 4 chars, enough to disambiguate without leaking useful entropy
 
-_hasher = PasswordHasher()
-
-# A valid argon2id hash of a value that is never a real key. The LEGACY
-# fallback path (only reached when the HMAC lookup below misses) runs this
-# through the same verify() call a real candidate would get whenever no
-# key_prefix matches the presented key at all -- without it, "no such
-# prefix" returns instantly while "prefix exists but the rest of the key is
-# wrong" pays for a full argon2id computation (tens of milliseconds). That
-# timing gap lets a remote attacker distinguish the two cases without ever
-# guessing a real key: enough responses timed against enough presented
-# prefixes reveals which key_prefix values exist in the database at all,
-# i.e. which orgs/keys exist, before any brute-forcing of the actual secret
-# begins. This defense is specific to the prefix-scan shape of the legacy
-# path; the HMAC path has no "candidate rows sharing a prefix" concept to
-# leak in the first place (see verify_api_key).
-_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(32))
+if _has_argon2 and PasswordHasher is not None:
+    _hasher: PasswordHasher | None = PasswordHasher()
+    # A valid argon2id hash of a value that is never a real key. The LEGACY
+    # fallback path (only reached when the HMAC lookup below misses) runs this
+    # through the same verify() call a real candidate would get whenever no
+    # key_prefix matches the presented key at all -- without it, "no such
+    # prefix" returns instantly while "prefix exists but the rest of the key is
+    # wrong" pays for a full argon2id computation (tens of milliseconds). That
+    # timing gap lets a remote attacker distinguish the two cases without ever
+    # guessing a real key: enough responses timed against enough presented
+    # prefixes reveals which key_prefix values exist in the database at all,
+    # i.e. which orgs/keys exist, before any brute-forcing of the actual secret
+    # begins. This defense is specific to the prefix-scan shape of the legacy
+    # path; the HMAC path has no "candidate rows sharing a prefix" concept to
+    # leak in the first place (see verify_api_key).
+    _DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(32))
+else:
+    _hasher = None
+    _DUMMY_HASH = "$argon2id$v=19$m=65536,t=3,p=4$dummy$dummy"
 
 # HMAC-SHA256(pepper, raw_key) is the verification key, not a secret an
 # attacker who reads it out of the database could use alone -- reversing an
@@ -110,6 +131,33 @@ _PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32
 
 def _key_hmac(raw_key: str) -> str:
     return hmac.new(_PEPPER, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _hash_argon2(secret: str) -> str:
+    """Compute an argon2 hash of a secret string.
+
+    Raises RuntimeError if argon2-cffi is not installed.
+    """
+    if not _has_argon2 or PasswordHasher is None or _hasher is None:
+        raise RuntimeError(
+            "argon2-cffi is required for API key legacy hashing/issuance. Install with: pip install argon2-cffi"
+        )
+    return _hasher.hash(secret)
+
+
+def _verify_argon2(secret: str, stored_hash: str) -> bool:
+    """Verify raw key/secret against an argon2 hash string.
+
+    Returns False if argon2-cffi is not installed or if verification fails.
+    Logs a warning when argon2-cffi is missing.
+    """
+    if not _has_argon2 or PasswordHasher is None or _hasher is None:
+        logger.warning("argon2-cffi is not installed; cannot verify legacy argon2 hash")
+        return False
+    try:
+        return bool(_hasher.verify(stored_hash, secret))
+    except (VerifyMismatchError, InvalidHashError, Exception):
+        return False
 
 # How stale last_used_at may be before verify_api_key bothers to refresh it.
 # See the write site below for why this exists: idle-key auditing needs
@@ -177,6 +225,10 @@ async def issue_api_key(
     # keeping this computation -- unlike verification -- is simply the
     # cheapest way to keep key_hash populated for every row, uniformly, with
     # no "some rows have it, some don't" special case anywhere downstream.
+    if not _has_argon2 or PasswordHasher is None or _hasher is None:
+        raise RuntimeError(
+            "argon2-cffi is required for API key issuance. Install with: pip install argon2-cffi"
+        )
     key_hash = await asyncio.to_thread(_hasher.hash, raw_key)
     api_key = ApiKey(
         org_id=org_id, key_prefix=raw_key[:_PREFIX_LEN], key_hash=key_hash,
@@ -313,6 +365,10 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
     reached when `_verify_by_hmac` already missed, so this is off the hot
     path for any key that has completed one round through it.
     """
+    if not _has_argon2 or PasswordHasher is None or _hasher is None:
+        logger.warning("argon2-cffi is not installed; cannot verify legacy argon2 hash")
+        return None
+
     prefix = raw_key[:_PREFIX_LEN]
     candidates = (
         await session.execute(
@@ -391,8 +447,9 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
         # SAME digest and write it to the SAME row -- an idempotent update,
         # not a unique-constraint race, even though key_hmac is unique
         # across DIFFERENT rows.
-        if candidate.key_hmac is None:
-            candidate.key_hmac = _key_hmac(raw_key)
+        current_hmac = _key_hmac(raw_key)
+        if candidate.key_hmac != current_hmac:
+            candidate.key_hmac = current_hmac
         return AuthenticatedKey(
             org_id=candidate.org_id, key_prefix=candidate.key_prefix,
             scopes=_scopes_of(candidate.scopes),

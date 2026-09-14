@@ -84,8 +84,11 @@ _MAX_IMPORT_FILE_BYTES = 500 * 1024 * 1024
 
 
 def run(args: argparse.Namespace) -> int:
-    if not os.path.isfile(args.file):
+    if not os.path.exists(args.file):
         print(f"[commontrace] no such file: {args.file}", file=sys.stderr)
+        return 1
+    if not os.path.isfile(args.file):
+        print(f"[commontrace] not a regular file: {args.file}", file=sys.stderr)
         return 1
     try:
         if os.path.getsize(args.file) > _MAX_IMPORT_FILE_BYTES:
@@ -96,8 +99,9 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-    except OSError:
-        pass
+    except OSError as exc:
+        print(f"[commontrace] cannot access {args.file}: {exc}", file=sys.stderr)
+        return 1
 
     mapping = import_data.FieldMapping(
         title=args.title_field,
@@ -116,9 +120,6 @@ def run(args: argparse.Namespace) -> int:
     date = datetime.date.today().isoformat()
     schema = validate.load_schema("trace.schema.json")
 
-    if not args.dry_run:
-        os.makedirs(tdir, exist_ok=True)
-
     # Single pass over the file, streamed via iter_jsonl/iter_csv rather than
     # collecting parse_jsonl/parse_csv's full result lists: a multi-gigabyte
     # export was previously read entirely into memory -- as parsed Python
@@ -136,7 +137,15 @@ def run(args: argparse.Namespace) -> int:
     # read_failures for why -- a BOM-prefixed CSV/JSONL export (Excel,
     # Windows tools) otherwise lands a literal U+FEFF in the first header
     # cell or JSON key. Identical to utf-8 for files without a BOM.
-    with open(args.file, "r", encoding="utf-8-sig", newline="" if fmt == "csv" else None) as fh:
+    try:
+        fh = open(args.file, "r", encoding="utf-8-sig", newline="" if fmt == "csv" else None)
+    except OSError as exc:
+        print(f"[commontrace] could not open {args.file}: {exc}", file=sys.stderr)
+        return 1
+
+    with fh:
+        if not args.dry_run:
+            os.makedirs(tdir, exist_ok=True)
         rows = import_data.iter_csv(fh, mapping) if fmt == "csv" else import_data.iter_jsonl(fh, mapping)
         for result in rows:
             if isinstance(result, import_data.SkippedRow):

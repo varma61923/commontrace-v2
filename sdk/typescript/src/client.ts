@@ -32,8 +32,57 @@ export interface HubClientOptions {
   fetch?: FetchLike;
 }
 
-function isErrorBody(body: Record<string, unknown>): body is ToolErrorBody {
-  return typeof body.error === "string";
+function isErrorBody(body: Record<string, unknown> | null | undefined): body is ToolErrorBody {
+  return !!body && typeof body === "object" && typeof (body as ToolErrorBody).error === "string";
+}
+
+/**
+ * Parse an MCP CallToolResult into a JSON body dictionary, properly handling
+ * structuredContent, JSON text content, non-JSON plain text errors on `isError`,
+ * and malformed responses.
+ */
+export function parseToolResult(
+  name: string,
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  if (result.structuredContent && typeof result.structuredContent === "object") {
+    const sc = result.structuredContent as Record<string, unknown>;
+    if (result.isError && typeof sc.error !== "string") {
+      return { ...sc, error: "tool_error", detail: typeof sc.detail === "string" ? sc.detail : JSON.stringify(sc) };
+    }
+    return sc;
+  }
+  const first = Array.isArray(result.content) ? result.content[0] : undefined;
+  const text = first && typeof first === "object" && "text" in first ? (first as { text: string }).text : "{}";
+  if (result.isError) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as Record<string, unknown>).error === "string") {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Plain text or invalid JSON error from tool
+    }
+    return { error: "tool_error", detail: text };
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (err) {
+    throw new HubConnectionError(`${name}: response was not valid JSON`, err);
+  }
+}
+
+/**
+ * Clamp a server-provided retry_after value to bounded seconds [1, 30].
+ * Omitting or non-numeric values default to 1 second. Values greater than
+ * 30 seconds are clamped to 30 seconds to prevent indefinite client hangs.
+ */
+export function clampRetryAfter(retryAfter?: unknown): number {
+  const rawDelay =
+    typeof retryAfter === "number" && (Number.isFinite(retryAfter) || retryAfter === Infinity)
+      ? retryAfter
+      : 1;
+  return Math.min(30, Math.max(1, rawDelay));
 }
 
 /**
@@ -90,16 +139,7 @@ export class HubClient {
         } catch (err) {
           throw new HubConnectionError(`${name}: request failed`, err);
         }
-        if (result.structuredContent && typeof result.structuredContent === "object") {
-          return result.structuredContent as Record<string, unknown>;
-        }
-        const first = Array.isArray(result.content) ? result.content[0] : undefined;
-        const text = first && typeof first === "object" && "text" in first ? (first as { text: string }).text : "{}";
-        try {
-          return JSON.parse(text) as Record<string, unknown>;
-        } catch (err) {
-          throw new HubConnectionError(`${name}: response was not valid JSON`, err);
-        }
+        return parseToolResult(name, result);
       },
     };
     return new HubClient(caller, options.maxAttempts ?? 3);
@@ -134,7 +174,7 @@ export class HubClient {
       const body = await this.caller.callTool(name, args);
       if (isErrorBody(body)) {
         if (body.error === "rate_limited" && attempt < this.maxAttempts) {
-          const retryAfterSeconds = typeof body.retry_after === "number" ? body.retry_after : 1;
+          const retryAfterSeconds = clampRetryAfter(body.retry_after);
           await new Promise((resolve) => setTimeout(resolve, retryAfterSeconds * 1000));
           continue;
         }

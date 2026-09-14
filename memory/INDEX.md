@@ -1,4 +1,4 @@
-# Memory Index — `/commontrace`
+# Memory Index — agent_type: code
 
 Hierarchical index by domain of the `/commontrace` skill memory base (lessons + episodes). Edited by the orchestrator in Phase 11 (after automatic Lambda validation of Omega proposals).
 
@@ -6,7 +6,7 @@ Hierarchical index by domain of the `/commontrace` skill memory base (lessons + 
 
 - **Who edits**: the `/commontrace` orchestrator in Phase 11 (after automatic Lambda validation). Manual editing allowed to refine / archive / merge (keep a trace in the commit message).
 - **When**: on each creation / update / revision of a lesson validated by Lambda (Phase 11 auto), and on each episode write (mention in the domain's Episodes section).
-- **How to add a new domain category**: edit this file (add a `## <Domain>` section), edit `memory/lessons/README.md` (add the mention in the hierarchical list), and use this domain in the `domain:` field of the relevant lessons' frontmatter.
+- **How to add a new domain category**: edit this file (add a `### <Domain>` section), edit `memory/lessons/README.md` (add the mention in the hierarchical list), and use this domain in the `domain:` field of the relevant lessons' frontmatter.
 
 ## Line Format
 

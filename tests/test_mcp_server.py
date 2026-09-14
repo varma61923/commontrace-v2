@@ -935,8 +935,9 @@ def _write_matching_lessons(root: str, n: int) -> list[str]:
 
 def test_retrieve_writes_a_receipt_rather_than_swallowing_the_attempt(server, store):
     """The wiring is real: a receipt reaches disk and nothing was swallowed."""
-    from commontrace import receipts
+    from commontrace import holdout_io, receipts
 
+    holdout_io.configure(store, rate=0.0)
     slug = _curate(server)
     out = call(
         server, "retrieve",
@@ -1064,8 +1065,9 @@ def test_a_lesson_the_budget_crowds_out_is_never_logged_as_treated(server, store
 def test_use_reports_separate_injected_from_actually_used(server, store):
     """Injected is not used. Without that distinction every reuse number this
     product reports is an INJECTION number wearing a better name."""
-    from commontrace import receipts
+    from commontrace import holdout_io, receipts
 
+    holdout_io.configure(store, rate=0.0)
     slug = _curate(server)
     call(
         server, "retrieve",
