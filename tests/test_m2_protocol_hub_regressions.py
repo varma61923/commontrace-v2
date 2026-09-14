@@ -438,8 +438,8 @@ class TestHubAuthArgon2Remediation:
                 asyncio.run(auth.issue_api_key(session, "test-org-id"))
 
     def test_verify_by_legacy_scan_returns_none_without_argon2(self, caplog):
-        from datetime import datetime, timezone
         import logging
+        from datetime import datetime, timezone
 
         from hub import auth
 

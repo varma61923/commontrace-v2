@@ -371,17 +371,26 @@ class TestM2TypeScriptSdkHardening:
         assert.strictEqual(clampRetryAfter(Infinity), 30, "Infinity -> clamped max 30");
 
         // 2. parseToolResult plain text error handling
-        const plainErr = parseToolResult("test_tool", { isError: true, content: [{ text: "Service Unavailable" }] });
+        const plainErr = parseToolResult("test_tool", {
+            isError: true,
+            content: [{ text: "Service Unavailable" }],
+        });
         assert.strictEqual(plainErr.error, "tool_error");
         assert.strictEqual(plainErr.detail, "Service Unavailable");
 
         // 3. parseToolResult structuredContent error normalization
-        const scErr = parseToolResult("test_tool", { isError: true, structuredContent: { status: 500, detail: "DB Error" } });
+        const scErr = parseToolResult("test_tool", {
+            isError: true,
+            structuredContent: { status: 500, detail: "DB Error" },
+        });
         assert.strictEqual(scErr.error, "tool_error");
         assert.strictEqual(scErr.detail, "DB Error");
 
         // 4. parseToolResult valid JSON error preservation
-        const jsonErr = parseToolResult("test_tool", { isError: true, content: [{ text: '{"error": "rate_limited", "retry_after": 5}' }] });
+        const jsonErr = parseToolResult("test_tool", {
+            isError: true,
+            content: [{ text: '{"error": "rate_limited", "retry_after": 5}' }],
+        });
         assert.strictEqual(jsonErr.error, "rate_limited");
         assert.strictEqual(jsonErr.retry_after, 5);
 

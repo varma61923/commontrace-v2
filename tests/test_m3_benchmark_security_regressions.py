@@ -336,6 +336,7 @@ class TestApprovalPolicyUnknownKeys:
 class TestImportCmdFileCheck:
     def test_import_missing_file_does_not_create_directory(self, tmp_path, capsys):
         import argparse
+
         from commontrace.commands import import_cmd
         dest = tmp_path / "target_store"
         args = argparse.Namespace(
@@ -364,17 +365,22 @@ class TestMcpServerDraftLessonErrorHandling:
         import asyncio
         pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
         from commontrace import mcp_server
-        server = mcp_server.build_server(str(tmp_path))
-        draft_tool = None
-        for tool in server._tool_manager.list_tools():
-            if tool.name == "draft_lesson":
-                draft_tool = tool
-                break
-        assert draft_tool is not None, "draft_lesson tool must be registered"
 
-        with patch("commontrace.frontmatter.read", side_effect=OSError("disk read failure")):
-            async def _invoke():
-                return await server._tool_manager.call_tool(
+        lessons_dir = tmp_path / "memory" / "lessons"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        lesson_path = lessons_dir / "lesson_test_slug.md"
+        lesson_path.write_text(
+            "---\nname: test_slug\nstatus: draft\nimportance: 3\n---\n## Rule\nTODO\n",
+            encoding="utf-8",
+        )
+
+        server = mcp_server.build_server(str(tmp_path))
+        tools = asyncio.run(server.list_tools())
+        assert any(tool.name == "draft_lesson" for tool in tools), "draft_lesson tool must be registered"
+
+        with patch("commontrace.validate.validate", side_effect=RuntimeError("disk read failure")):
+            res = asyncio.run(
+                server.call_tool(
                     "draft_lesson",
                     arguments={
                         "slug": "test_slug",
@@ -385,10 +391,17 @@ class TestMcpServerDraftLessonErrorHandling:
                         "counter_examples": "counter",
                     },
                 )
-            res = asyncio.run(_invoke())
+            )
             assert res is not None
-            text = res[0].text if isinstance(res, list) else str(res)
-            data = json.loads(text)
+            if getattr(res, "structured_content", None):
+                sc = res.structured_content
+                data = sc.get("result", sc)
+            elif hasattr(res, "content") and res.content:
+                data = json.loads(res.content[0].text)
+            elif isinstance(res, list) and res:
+                data = json.loads(res[0].text)
+            else:
+                data = json.loads(str(res))
             assert "error" in data
             assert "could not validate" in data["error"]
 
