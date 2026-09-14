@@ -14,7 +14,7 @@ last_hit: NEVER
 source_traces: []        # IDs/slugs of the Traces (see protocol/schemas/trace.schema.json) that produced this lesson
 source_episodes: []      # deprecated alias, kept for the code-review profile's episode files
 hub_trace_id: null        # set by `commontrace sync` once this lesson is promoted to a Hub trace
-status: active
+status: review
 ---
 
 ## Rule

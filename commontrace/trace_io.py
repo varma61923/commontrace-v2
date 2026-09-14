@@ -45,6 +45,12 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     fm, body = frontmatter_io.read(path)
     sections = _first_wins(body)
     instance = dict(fm)
-    instance.setdefault("context_text", sections.get("context", ""))
-    instance.setdefault("solution_text", sections.get("solution", ""))
+
+    for field, section_key in (("context_text", "context"), ("solution_text", "solution")):
+        val = instance.get(field)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            instance[field] = sections.get(section_key, "")
+        elif not isinstance(val, str):
+            instance[field] = str(val)
+
     return instance, body

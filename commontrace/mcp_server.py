@@ -978,14 +978,17 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not write {slug!r}: {type(exc).__name__}: {exc}")
 
-        fm, body = frontmatter.read(path)
-        errors = validate.validate(fm, validate.load_schema("lesson.schema.json"))
-        return _ok(lesson=_lesson_wire(fm, body, include_body=True),
-                   schema_errors=errors,
-                   next_step=("Still scaffolding: "
-                              + ", ".join(templates.unfilled_placeholders(fm, body))
-                              if templates.unfilled_placeholders(fm, body)
-                              else "Ready. Call approve_lesson to activate it."))
+        try:
+            fm, body = frontmatter.read(path)
+            errors = validate.validate(fm, validate.load_schema("lesson.schema.json"))
+            return _ok(lesson=_lesson_wire(fm, body, include_body=True),
+                       schema_errors=errors,
+                       next_step=("Still scaffolding: "
+                                  + ", ".join(templates.unfilled_placeholders(fm, body))
+                                  if templates.unfilled_placeholders(fm, body)
+                                  else "Ready. Call approve_lesson to activate it."))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not validate {slug!r}: {type(exc).__name__}: {exc}")
 
     if allow_approval:
         @mcp.tool()

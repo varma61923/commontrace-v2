@@ -306,3 +306,147 @@ class TestReportHtml:
         assert 'class="label">Metric<' in card
         assert 'class="value">99%<' in card
         assert 'class="note">High accuracy<' in card
+
+
+# ---------------------------------------------------------------------------
+# 12. Approval Policy Unknown Key Validation
+# ---------------------------------------------------------------------------
+class TestApprovalPolicyUnknownKeys:
+    def test_load_policy_rejects_typo_keys(self, tmp_path):
+        from commontrace import approval
+        policy_file = tmp_path / "memory" / "approval-policy.yaml"
+        policy_file.parent.mkdir(parents=True, exist_ok=True)
+        policy_file.write_text("mode: single\nrequire-human: true\n", encoding="utf-8")
+        with pytest.raises(approval.PolicyError, match="unrecognized policy key.*require-human"):
+            approval.load_policy(str(tmp_path))
+
+    def test_load_policy_accepts_valid_keys(self, tmp_path):
+        from commontrace import approval
+        policy_file = tmp_path / "memory" / "approval-policy.yaml"
+        policy_file.parent.mkdir(parents=True, exist_ok=True)
+        policy_file.write_text("mode: two-person\nrequire_human: true\n", encoding="utf-8")
+        p = approval.load_policy(str(tmp_path))
+        assert p.mode == "two-person"
+        assert p.require_human is True
+
+
+# ---------------------------------------------------------------------------
+# 13. Import Command File Existence Check Prior to Directory Creation
+# ---------------------------------------------------------------------------
+class TestImportCmdFileCheck:
+    def test_import_missing_file_does_not_create_directory(self, tmp_path, capsys):
+        import argparse
+        from commontrace.commands import import_cmd
+        dest = tmp_path / "target_store"
+        args = argparse.Namespace(
+            file=str(tmp_path / "nonexistent.jsonl"),
+            dest=str(dest),
+            dry_run=False,
+            title_field="title",
+            context_field="context",
+            solution_field="solution",
+            tags_field="tags",
+            id_field="id",
+            format="auto",
+        )
+        rc = import_cmd.run(args)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "no such file" in captured.err
+        assert not dest.exists(), "Target store directory must not be created when file is missing"
+
+
+# ---------------------------------------------------------------------------
+# 14. MCP Server draft_lesson Error Handling
+# ---------------------------------------------------------------------------
+class TestMcpServerDraftLessonErrorHandling:
+    def test_draft_lesson_handles_validation_exception(self, tmp_path):
+        import asyncio
+        pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+        from commontrace import mcp_server
+        server = mcp_server.build_server(str(tmp_path))
+        draft_tool = None
+        for tool in server._tool_manager.list_tools():
+            if tool.name == "draft_lesson":
+                draft_tool = tool
+                break
+        assert draft_tool is not None, "draft_lesson tool must be registered"
+
+        with patch("commontrace.frontmatter.read", side_effect=OSError("disk read failure")):
+            async def _invoke():
+                return await server._tool_manager.call_tool(
+                    "draft_lesson",
+                    arguments={
+                        "slug": "test_slug",
+                        "description": "desc",
+                        "rule": "rule",
+                        "why": "why",
+                        "how_to_apply": "how",
+                        "counter_examples": "counter",
+                    },
+                )
+            res = asyncio.run(_invoke())
+            assert res is not None
+            text = res[0].text if isinstance(res, list) else str(res)
+            data = json.loads(text)
+            assert "error" in data
+            assert "could not validate" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# 15. Trace IO Fallback for Empty Context/Solution Text
+# ---------------------------------------------------------------------------
+class TestTraceIoFallback:
+    def test_trace_io_read_falls_back_when_frontmatter_empty_or_none(self, tmp_path):
+        from commontrace import trace_io
+        trace_file = tmp_path / "test_trace.md"
+        content = (
+            "---\n"
+            "id: test-fallback-1\n"
+            "title: Test Fallback\n"
+            "agent_type: code\n"
+            "tags: [test]\n"
+            "context_text: \"\"\n"
+            "solution_text: null\n"
+            "---\n\n"
+            "## Context\n"
+            "Recovered context text from body section.\n\n"
+            "## Solution\n"
+            "Recovered solution text from body section.\n"
+        )
+        trace_file.write_text(content, encoding="utf-8")
+        inst, body = trace_io.read(str(trace_file))
+        assert inst["context_text"] == "Recovered context text from body section."
+        assert inst["solution_text"] == "Recovered solution text from body section."
+
+
+# ---------------------------------------------------------------------------
+# 16. Scaffold Store Traces and Templates Sanity
+# ---------------------------------------------------------------------------
+class TestScaffoldStoreSanity:
+    def test_example_trace_conforms_to_schema(self):
+        from commontrace import paths, trace_io, validate
+        root = paths.resolve_root(None)
+        example_trace = os.path.join(paths.traces_dir(root), "2026-07-01_example-trace.md")
+        assert os.path.isfile(example_trace), f"Example trace not found at {example_trace}"
+        inst, _ = trace_io.read(example_trace)
+        schema = validate.load_schema("trace.schema.json")
+        errors = validate.validate(inst, schema)
+        assert errors == [], f"Example trace schema errors: {errors}"
+
+    def test_lesson_template_has_review_status(self):
+        from commontrace import frontmatter, paths
+        root = paths.resolve_root(None)
+        template = os.path.join(paths.lessons_dir(root), "lesson_template.md")
+        assert os.path.isfile(template)
+        fm, _ = frontmatter.read(template)
+        assert fm.get("status") == "review"
+
+    def test_memory_index_declares_agent_type_code(self):
+        from commontrace import paths
+        from commontrace.commands import doctor_cmd
+        root = paths.resolve_root(None)
+        declared = doctor_cmd._declared_agent_type(root)
+        assert declared == "code"
+
+
