@@ -43,14 +43,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Guard hub imports so a core-only installation skips hub tests gracefully.
-# Note: pytest.importorskip("hub") is required by tests/test_audit_tier1_remediations.py.
-pytest.importorskip("hub", reason="hub package not importable in this environment")
-
 from commontrace import approval, frontmatter, trace_io, validate  # noqa: E402
 from commontrace.commands import doctor_cmd, import_cmd  # noqa: E402
-from hub import auth, crud  # noqa: E402
-from hub.models import ApiKey, Trace  # noqa: E402
+
+# Guard hub imports so a core-only installation skips hub tests gracefully.
+# Note: pytest.importorskip("hub") is required by tests/test_audit_tier1_remediations.py.
+try:
+    from hub import auth, crud  # noqa: E402
+    from hub.models import ApiKey, Trace  # noqa: E402
+    _has_hub = True
+except ImportError:
+    _has_hub = False
+    auth = None  # type: ignore[assignment]
+    crud = None  # type: ignore[assignment]
+    ApiKey = None  # type: ignore[assignment]
+    Trace = None  # type: ignore[assignment]
 
 
 # ===========================================================================
@@ -59,6 +66,11 @@ from hub.models import ApiKey, Trace  # noqa: E402
 
 class TestM1Argon2HardeningAndFailClosed:
     """Tests for hub/auth.py argon2 graceful fallback and import resilience."""
+
+    @pytest.fixture(autouse=True)
+    def require_hub(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
 
     def test_argon2_stubs_and_dummy_hash_presence(self):
         """Verify fallback stub exception classes and dummy hash constant exist."""
@@ -145,6 +157,11 @@ class TestM1Argon2HardeningAndFailClosed:
 
 class TestM2HubPepperRotationAndTenantIsolation:
     """Tests for API key pepper rotation HMAC backfill and multi-tenant isolation."""
+
+    @pytest.fixture(autouse=True)
+    def require_hub(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
 
     def test_search_traces_retrieval_update_includes_org_id_in_where_clause(self):
         pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")

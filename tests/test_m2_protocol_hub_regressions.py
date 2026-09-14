@@ -392,6 +392,11 @@ class TestSharedPgPoolThreadCleanupOnTimeout:
 class TestHubAuthArgon2Remediation:
     """Tests for hub/auth.py argon2 graceful fallback and import resilience."""
 
+    @pytest.fixture(autouse=True)
+    def require_hub(self):
+        pytest.importorskip("sqlalchemy", reason="hub[server] extra not installed in this env")
+        pytest.importorskip("hub", reason="hub package not importable in this env")
+
     def test_hub_auth_imports_without_crashing_when_argon2_missing(self):
         from hub import auth, crud, db
         assert auth is not None
