@@ -23,7 +23,7 @@ mcp==2.1.1                 # MCP server transport (streamable-http), also pulls 
 httpx==0.28.1               # official Encode HTTP client (was pinned to the unofficial "httpx2" repackaging)
 sqlalchemy[asyncio]==2.0.52
 asyncpg==0.31.0            # async Postgres driver
-alembic==1.19.2
+alembic==1.20.0
 argon2-cffi==25.1.0        # API key hashing
 jsonschema==4.26.0         # protocol/schemas/*.json validation
 PyJWT==2.13.0              # OIDC bearer-token verification (hub/sso.py) -- was

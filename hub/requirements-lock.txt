@@ -52,7 +52,7 @@
 # committing -- a lock file that pins an untested combination is worse than
 # no lock file, because it looks authoritative.
 
-alembic==1.19.2
+alembic==1.20.0
 annotated-types==0.8.0
 anyio==4.15.1
 argon2-cffi==25.1.0
