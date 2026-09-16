@@ -26,7 +26,7 @@ asyncpg==0.31.0            # async Postgres driver
 alembic==1.19.2
 argon2-cffi==25.1.0        # API key hashing
 jsonschema==4.26.0         # protocol/schemas/*.json validation
-PyJWT==2.13.0              # OIDC bearer-token verification (hub/sso.py) -- was
+PyJWT==2.14.0              # OIDC bearer-token verification (hub/sso.py) -- was
                            # only ever a transitive dependency before; now
                            # imported directly, so it is pinned directly too
 # commons_overlap compares every submitted failure signature against the
