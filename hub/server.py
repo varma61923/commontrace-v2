@@ -1612,6 +1612,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
             stripe=stripe_settings,
+            allow_insecure_http=config.allow_insecure_http,
         )
 
     # Public, unauthenticated org creation -- opt-in only (hub/signup.py's

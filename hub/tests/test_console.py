@@ -64,15 +64,30 @@ def _explode(*a, **kw):
     raise AssertionError("no database access should happen for this request")
 
 
-def _app(secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None) -> Starlette:
+def _app(
+    secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None,
+    allow_insecure_http: bool = False,
+) -> Starlette:
     app = Starlette()
     if secret:
-        console.add_console_routes(app, session_factory, console_secret=secret, stripe=stripe)
+        console.add_console_routes(
+            app, session_factory, console_secret=secret, stripe=stripe,
+            allow_insecure_http=allow_insecure_http,
+        )
     return app
 
 
 def _client(app: Starlette) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    # https://, not http://: this is what the documented deployment topology
+    # (hub/DEPLOYMENT.md -- the Hub speaks plain HTTP behind a
+    # TLS-terminating proxy) looks like from the BROWSER's side of the
+    # connection, which is the side that decides whether to resend a
+    # Secure-flagged cookie. httpx's own cookie jar correctly refuses to
+    # resend one across an http:// origin, same as a real browser would --
+    # using https:// here isn't a workaround, it's modeling the actual
+    # client-facing hop instead of the internal one `request.url.scheme`
+    # used to (wrongly) stand in for.
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test")
 
 
 @pytest_asyncio.fixture
@@ -250,6 +265,40 @@ class TestSignIn:
         assert "HttpOnly" in header
         assert "samesite=strict" in header.lower()
         assert "Path=/app" in header
+        assert "Secure" in header
+
+    async def test_the_cookie_is_secure_even_when_the_asgi_app_itself_only_sees_plain_http(
+        self, session_factory, org_and_key
+    ):
+        """hub/DEPLOYMENT.md's own documented topology puts a TLS-terminating
+        proxy in front of the Hub, so `request.url.scheme` inside this ASGI
+        app is "http" on every real request regardless of what the browser
+        actually spoke -- the bug this guards was trusting that local scheme
+        instead of defaulting secure and requiring an explicit opt-out. Uses
+        a raw http:// client (not the module's https:// `_client()`, which
+        only exists so OTHER tests' multi-request sessions survive httpx's
+        own Secure-cookie-jar policy) so the ASGI scope's scheme is
+        genuinely "http", the exact shape of the real deployment."""
+        _org_id, raw_key = org_and_key
+        app = _app(session_factory=session_factory)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/signin", data={"api_key": raw_key},
+            )
+        assert "Secure" in response.headers["set-cookie"]
+
+    async def test_allow_insecure_http_opts_out_of_the_secure_flag(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        app = _app(session_factory=session_factory, allow_insecure_http=True)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/signin", data={"api_key": raw_key},
+            )
+        assert "Secure" not in response.headers["set-cookie"]
 
     async def test_sign_out_clears_the_session(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key

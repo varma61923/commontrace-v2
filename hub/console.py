@@ -1084,6 +1084,7 @@ def add_console_routes(
     trusted_proxy_hops: int = 0,
     commons_enabled: bool = True,
     stripe: StripeSettings | None = None,
+    allow_insecure_http: bool = False,
 ) -> None:
     """Mount the customer console. Registered only when a secret is set."""
     stripe = stripe or StripeSettings()
@@ -1197,7 +1198,19 @@ def add_console_routes(
             max_age=SESSION_TTL_SECONDS,
             httponly=True,      # not readable by script, so XSS cannot lift the session
             samesite="strict",  # not sent cross-site, which is why no CSRF token is needed
-            secure=request.url.scheme == "https",
+            # Not `request.url.scheme == "https"`: hub/DEPLOYMENT.md's own
+            # documented topology is "the Hub speaks plain HTTP behind your
+            # TLS-terminating load balancer / ingress", so the ASGI app only
+            # ever sees the plaintext hop and this would be False on every
+            # request in the deployment this project tells operators to run.
+            # Same reasoning hub/observability.py already applies to HSTS:
+            # don't infer the real scheme from a spoofable header (or, here,
+            # from the one this process can see instead of the one the
+            # browser used) -- default to secure and require an operator to
+            # affirmatively opt out via the same flag that already gates
+            # "this deployment really does serve plaintext HTTP"
+            # (HubConfig.validate_transport_safety).
+            secure=not allow_insecure_http,
             path=CONSOLE_PATH,  # never sent to /mcp, /admin or /metrics
         )
         return response
