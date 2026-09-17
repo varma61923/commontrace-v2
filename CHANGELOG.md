@@ -40,6 +40,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hardening pass across `hub/` and `commontrace/`** found via 6 parallel
+  read-only review agents plus manual verification of every finding
+  (agent-suggested remediations are not trusted blindly — one proposed SSRF
+  fix was itself checked and rejected below):
+
+  - **`hub/events.py`: SSRF gap, delivery race, three dead event types.**
+    `_reject_private_target` now also rejects CGNAT (`100.64.0.0/10`),
+    additively on top of the existing enumerated private/loopback/link-local
+    checks — not by replacing them with `ipaddress`'s `is_global`, since that
+    predicate is `True` for multicast addresses and swapping to it alone
+    would have stopped rejecting multicast targets. `deliver_pending` now
+    locks its due-delivery row selection with `SELECT ... FOR UPDATE SKIP
+    LOCKED` (the pattern `crud._adjust_trace_count` already uses), so
+    concurrent sweeps can no longer double-deliver the same webhook. Three of
+    five declared-but-never-emitted event types are now wired to real call
+    sites: `trace.created`/`trace.quarantined` from `crud.contribute_trace`,
+    `trace.deleted` from `crud.delete_trace`. The other two,
+    `usage.limit_reached` and `experiment.verdict`, are deliberately left
+    unwired this pass — see `AUDIT_RESPONSE.md` §6.3 for why (transaction
+    safety across an exception-unwinding path for the former, new
+    "verdict already announced" persistent state for the latter). Tests:
+    `hub/tests/test_events.py` (60), `hub/tests/test_concurrency_audit.py::TestDeliverPendingRace`.
+
+  - **`hub/console.py`: the session cookie now defaults to `Secure`.** It was
+    conditioned on `request.url.scheme`, which reflects the ASGI app's own
+    (plaintext, behind the documented TLS-terminating reverse proxy) view of
+    the request, not what the browser actually saw — so the cookie silently
+    lost `Secure` in the standard deployment topology. Defaults to `Secure`
+    unconditionally now, with the existing `allow_insecure_http` config flag
+    (already used by `validate_transport_safety`) as the explicit opt-out.
+    `test_console.py`'s client now uses `base_url="https://test"` to actually
+    model the browser-facing hop instead of masking the bug — httpx's own
+    cookie jar (correctly) won't resend a `Secure` cookie without one.
+
+  - **`commontrace/experiment.py`: two statistics bugs.** `plan()` accepted
+    any holdout rate in `(0.0, 1.0)`, but its feasibility math only holds for
+    `rate <= 0.5`; a rate like `0.9` could report a bogus `verdict="ok"` for a
+    budget that cannot actually detect the requested effect. Range is now
+    `(0.0, 0.5]`, with a matching pre-check in `experiment_cmd.py` so a bad
+    `--holdout-rate` is refused by the CLI rather than raising an uncaught
+    `ValueError`. `analyze()` reported the fixed-sample confidence interval
+    for a HELPS/HURTS verdict even when sequential/anytime-valid testing was
+    what actually established significance for that lesson — it now reports
+    the anytime-valid interval in that case, matching what backs the claim.
+
+  - **`commontrace/commands/capture_cmd.py`: `--agent-type` now validated.**
+    `init`, `import`, and `lesson new` all validate their `--agent-type`
+    argument against `_validators.agent_type`; `capture`'s had no `type=` at
+    all, so a malformed slug bypassed the check its sibling commands enforce.
+
 - **A stale scorer claim in `commontrace/reference/measure_retrieval.py`.**
   Its module docstring said the current scorer pollutes at 1.00×–1.28×, which
   is the superseded single-corpus tuning at `floor=0.10`, not the shipped
