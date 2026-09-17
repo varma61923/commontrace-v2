@@ -93,6 +93,7 @@ from commontrace import (
     memory_guard,
     paths,
     receipts,
+    redundancy,
     retrieval,
     retrieval_io,
     revision,
@@ -306,12 +307,23 @@ def _apply_dosage(matched, active, config):
             core=bool(item.get("core", False)),
             importance=int(item.get("importance") or 0),
             revision=str(item.get("revision", "")),
+            # What redundancy is judged on -- description + applies_when +
+            # do_not_apply_when + body, same fields `commontrace consolidate`
+            # and the authoring-time check compare, via `_lesson_wire`'s own
+            # projection of the frontmatter rather than a second read of the
+            # file. See commontrace/redundancy.py's module docstring for why
+            # `tags`/`domain` are deliberately excluded.
+            compare_text=redundancy.comparable_text(item, item.get("body") or ""),
         )
         for item in considered
     ]
     dose = dosage.select(
         candidates,
-        dosage.Budget(max_lessons=config.max_lessons, max_chars=config.max_chars),
+        dosage.Budget(
+            max_lessons=config.max_lessons,
+            max_chars=config.max_chars,
+            redundancy_threshold=config.redundancy_threshold,
+        ),
     )
     admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
     kept_core = [item for item in admitted if item.get("core")]
@@ -684,6 +696,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             # though it were the fleet's position.
             result["not_injected"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.dropped
+            ]
+        if dose.noted:
+            # A core lesson duplicates another admitted lesson. Never
+            # suppressed (see commontrace/dosage.py's module docstring), so
+            # both are still in `lessons` -- this is a configuration signal
+            # for `commontrace consolidate`, not a thing that happened to
+            # this occasion.
+            result["core_redundancy"] = [
+                {"slug": d.slug, "reason": d.reason} for d in dose.noted
             ]
         if occasion_id:
             result["withheld"] = held

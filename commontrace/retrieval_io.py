@@ -99,6 +99,12 @@ class RetrievalConfig:
     # read from the store rather than passed per call.
     max_lessons: int = dosage.DEFAULT_MAX_LESSONS
     max_chars: int = dosage.DEFAULT_MAX_CHARS
+    #: Similarity (commontrace/redundancy.py's token-set Jaccard) at or above
+    #: which a lesson competing for the budget is dropped for restating one
+    #: already admitted. 0.0 (the default) disables the check entirely --
+    #: see commontrace/dosage.py's module docstring for why suppression is
+    #: opt-in rather than an upgrade side effect.
+    redundancy_threshold: float = dosage.DEFAULT_REDUNDANCY_THRESHOLD
     #: Whether to fuse the lexical and semantic arms rather than pick one.
     #: Defaults to the historical either/or, because switching a store that
     #: is mid-experiment would change its eligibility denominator -- opting
@@ -137,6 +143,16 @@ def _float_or(value: object, default: float) -> float:
     if not math.isfinite(out):
         return default
     return out
+
+
+def _redundancy_or(value: object, default: float) -> float:
+    """Like `_float_or`, additionally rejecting anything outside [0, 1] --
+    `dosage.Budget` raises on that range, and a malformed config must fall
+    back to the default rather than crash the retrieval that reads it (the
+    same posture `load_config`'s own docstring states for the file as a
+    whole)."""
+    out = _float_or(value, default)
+    return out if 0.0 <= out <= 1.0 else default
 
 
 def has_recorded_assignments(root: str) -> bool:
@@ -222,6 +238,8 @@ def load_config(root: str) -> RetrievalConfig:
                     max_lessons=_int_or(
                         raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
                     max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
+                    redundancy_threshold=_redundancy_or(
+                        raw.get("redundancy_threshold"), dosage.DEFAULT_REDUNDANCY_THRESHOLD),
                     # An unrecognised value reads as "no fusion" rather than
                     # raising: this file is read on every retrieval, and a
                     # typo must not stop a fleet retrieving.
@@ -276,7 +294,8 @@ def load_config(root: str) -> RetrievalConfig:
 
 def configure(root: str, *, scorer: str | None = None, floor: float | None = None,
               fusion: str | None = None, max_lessons: int | None = None,
-              max_chars: int | None = None, note: str = "") -> RetrievalConfig:
+              max_chars: int | None = None, redundancy_threshold: float | None = None,
+              note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings.
 
     EVERY setting is carried through from the current config, not just the
@@ -309,6 +328,15 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             f"unknown fusion mode {new_fusion!r}: expected one of "
             f"{', '.join(repr(f) for f in FUSIONS)}"
         )
+    new_redundancy = (
+        current.redundancy_threshold if redundancy_threshold is None
+        else float(redundancy_threshold)
+    )
+    if not 0.0 <= new_redundancy <= 1.0:
+        raise ValueError(
+            f"redundancy threshold must be in [0.0, 1.0] (0 disables it), "
+            f"got {new_redundancy}"
+        )
 
     config = RetrievalConfig(
         scorer=new_scorer,
@@ -319,6 +347,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             current.max_lessons if max_lessons is None else max(0, int(max_lessons))),
         max_chars=(
             current.max_chars if max_chars is None else max(0, int(max_chars))),
+        redundancy_threshold=new_redundancy,
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         note=note or current.note,
     )
@@ -344,6 +373,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                         "rrf_k": config.rrf_k,
                         "max_lessons": config.max_lessons,
                         "max_chars": config.max_chars,
+                        "redundancy_threshold": config.redundancy_threshold,
                         "configured_at": config.configured_at,
                         "note": config.note,
                     },

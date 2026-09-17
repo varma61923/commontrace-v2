@@ -143,6 +143,45 @@ class TestConfig:
         assert config.fusion == retrieval_io.FUSION_NONE
         assert config.scorer == "count"
 
+    def test_redundancy_threshold_is_off_unless_the_store_asked(self, tmp_path):
+        """Suppressing an admitted lesson is a treatment change -- must never
+        arrive as an upgrade side effect. Same posture as fusion."""
+        from commontrace import dosage
+
+        assert (
+            retrieval_io.load_config(str(tmp_path)).redundancy_threshold
+            == dosage.DEFAULT_REDUNDANCY_THRESHOLD
+            == 0.0
+        )
+
+    def test_redundancy_threshold_is_read_from_the_store(self, tmp_path):
+        _write_config(str(tmp_path), redundancy_threshold=0.4)
+        assert retrieval_io.load_config(str(tmp_path)).redundancy_threshold == pytest.approx(0.4)
+
+    def test_an_out_of_range_redundancy_threshold_degrades_rather_than_raising(self, tmp_path):
+        """This file is read on every retrieval; a bad value must degrade,
+        not raise -- same posture as the fusion typo case above."""
+        from commontrace import dosage
+
+        _write_config(str(tmp_path), redundancy_threshold=1.7)
+        assert (
+            retrieval_io.load_config(str(tmp_path)).redundancy_threshold
+            == dosage.DEFAULT_REDUNDANCY_THRESHOLD
+        )
+        _write_config(str(tmp_path), redundancy_threshold=-0.5)
+        assert (
+            retrieval_io.load_config(str(tmp_path)).redundancy_threshold
+            == dosage.DEFAULT_REDUNDANCY_THRESHOLD
+        )
+
+    def test_redundancy_threshold_does_not_change_eligibility(self, tmp_path):
+        """Like the budget, this decides how many of the ELIGIBLE set are
+        actually injected, not which lessons are eligible -- so it must not
+        appear in the eligibility label the drift check keys on."""
+        _write_config(str(tmp_path), redundancy_threshold=0.5)
+        config = retrieval_io.load_config(str(tmp_path))
+        assert config.eligibility == "idf-v2"
+
 
 # --- the property the whole label design exists for ------------------------
 
@@ -228,6 +267,18 @@ class TestConfigureCarriesEverything:
         the default."""
         with pytest.raises(ValueError, match="unknown fusion mode"):
             retrieval_io.configure(str(tmp_path), fusion="rff")
+
+    def test_redundancy_threshold_survives_an_unrelated_edit(self, tmp_path):
+        root = str(tmp_path)
+        retrieval_io.configure(root, redundancy_threshold=0.4)
+        retrieval_io.configure(root, floor=0.1)
+        assert retrieval_io.load_config(root).redundancy_threshold == pytest.approx(0.4)
+
+    def test_an_out_of_range_redundancy_threshold_is_refused_on_write(self, tmp_path):
+        """The WRITE path refuses, matching the fusion case: an operator who
+        set an invalid value must be told, not silently given the default."""
+        with pytest.raises(ValueError, match="redundancy threshold"):
+            retrieval_io.configure(str(tmp_path), redundancy_threshold=1.5)
 
 
 # --- the fusion itself -------------------------------------------------------

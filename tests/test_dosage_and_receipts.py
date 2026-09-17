@@ -126,6 +126,101 @@ class TestDosage:
         assert not dosage.is_core({"core": "no"})
 
 
+class TestRedundancySuppression:
+    """dosage.Budget's optional third gate: a candidate that restates one
+    already admitted is dropped instead of spending a slot and its
+    characters on guidance the agent already received. See
+    commontrace/dosage.py's module docstring for why this is off by default
+    and why core is checked but never suppressed."""
+
+    def _dup_candidate(self, slug: str, text: str, **kwargs) -> dosage.Candidate:
+        """A candidate whose comparable text IS its body -- the common case
+        for a caller that only holds the rendered lesson."""
+        return dosage.Candidate(slug=slug, text=text, compare_text=text, **kwargs)
+
+    def test_off_by_default(self):
+        """The default budget admits two restatements of the same thing --
+        changing that is an upgrade side effect this product refuses to
+        ship silently."""
+        same_text = "never retry a payment without an idempotency key"
+        dose = dosage.select(
+            [
+                self._dup_candidate("a", same_text, relevance=0.9),
+                self._dup_candidate("b", same_text, relevance=0.8),
+            ],
+            dosage.Budget(max_lessons=5, max_chars=10_000),
+        )
+        assert {c.slug for c in dose.admitted} == {"a", "b"}
+
+    def test_a_restatement_is_dropped_and_names_what_it_duplicates(self):
+        same_text = "never retry a payment without an idempotency key " * 5
+        dose = dosage.select(
+            [
+                self._dup_candidate("first", same_text, relevance=0.9),
+                self._dup_candidate("second", same_text, relevance=0.8),
+            ],
+            dosage.Budget(max_lessons=5, max_chars=10_000, redundancy_threshold=0.3),
+        )
+        assert [c.slug for c in dose.admitted] == ["first"]
+        assert dose.dropped[0].slug == "second"
+        assert dose.dropped[0].reason == dosage.redundant_reason("first")
+        assert dose.redundant_dropped == dose.dropped
+
+    def test_the_freed_slot_goes_to_the_next_distinct_candidate(self):
+        """A dropped duplicate must not just vanish the slot -- the whole
+        point is that the budget was being spent on redundant guidance."""
+        same_text = "never retry a payment without an idempotency key " * 5
+        dose = dosage.select(
+            [
+                self._dup_candidate("first", same_text, relevance=0.9),
+                self._dup_candidate("duplicate", same_text, relevance=0.8),
+                self._dup_candidate("distinct", "rotate credentials every 90 days", relevance=0.7),
+            ],
+            dosage.Budget(max_lessons=2, max_chars=10_000, redundancy_threshold=0.3),
+        )
+        assert [c.slug for c in dose.admitted] == ["first", "distinct"]
+
+    def test_core_is_never_suppressed_but_is_noted(self):
+        """The fleet's unconditional rule must not be withheld because it
+        resembles something that matched today's vocabulary -- but two core
+        lessons saying the same thing is a real configuration problem, so it
+        is reported."""
+        same_text = "never retry a payment without an idempotency key " * 5
+        dose = dosage.select(
+            [
+                self._dup_candidate("core_a", same_text, core=True, importance=5),
+                self._dup_candidate("core_b", same_text, core=True, importance=4),
+            ],
+            dosage.Budget(max_lessons=5, max_chars=10_000, redundancy_threshold=0.3),
+        )
+        assert {c.slug for c in dose.admitted} == {"core_a", "core_b"}
+        assert dose.redundant_core
+        assert dose.redundant_core[0].slug == "core_b"
+
+    def test_distinct_lessons_are_unaffected(self):
+        dose = dosage.select(
+            [
+                self._dup_candidate("payments", "idempotency keys prevent double charges"),
+                self._dup_candidate("security", "rotate credentials every 90 days"),
+            ],
+            dosage.Budget(max_lessons=5, max_chars=10_000, redundancy_threshold=0.3),
+        )
+        assert {c.slug for c in dose.admitted} == {"payments", "security"}
+        assert not dose.dropped
+
+    def test_a_threshold_outside_zero_one_is_refused(self):
+        with pytest.raises(ValueError, match="redundancy_threshold"):
+            dosage.Budget(redundancy_threshold=1.5)
+        with pytest.raises(ValueError, match="redundancy_threshold"):
+            dosage.Budget(redundancy_threshold=-0.1)
+
+    def test_candidate_falls_back_to_text_when_compare_text_is_unset(self):
+        """A caller that never sets compare_text is compared on the rendered
+        body -- the sensible fallback, not a silent no-op."""
+        candidate = dosage.Candidate(slug="a", text="hello world")
+        assert candidate.comparable == "hello world"
+
+
 class TestReciprocalRankFusion:
     def test_agreement_across_arms_beats_one_arms_confidence(self):
         """The entire point of fusing: a document both arms like outranks one
