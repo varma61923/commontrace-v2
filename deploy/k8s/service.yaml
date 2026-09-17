@@ -1,0 +1,16 @@
+# ClusterIP only -- this directory ships no Ingress (see the README for
+# why). Point your own Ingress/Gateway API resource at this Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: commontrace-hub
+  labels:
+    app: commontrace-hub
+spec:
+  type: ClusterIP
+  selector:
+    app: commontrace-hub
+  ports:
+    - name: http
+      port: 8420
+      targetPort: http

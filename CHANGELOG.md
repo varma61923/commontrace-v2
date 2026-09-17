@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Encryption at rest for `WebhookEndpoint.url`** (`hub/encryption.py`),
+  opt-in via `HUB_ENCRYPTION_KEY` (AES-256-GCM, with
+  `HUB_ENCRYPTION_KEY_PREVIOUS` for rotation) — `python -m hub.manage
+  generate-encryption-key` prints a fresh one. Unset (the default) leaves
+  the column exactly as before. Deliberately does NOT extend to Trace
+  content (`title`/`context_text`/`solution_text`/`subject_ids`): those
+  columns back a Postgres `GENERATED` full-text-search column and a
+  GIN-indexed exact-match query respectively, and application-layer
+  encryption would silently break both rather than protect them — see
+  `hub/encryption.py`'s module docstring and `hub/DEPLOYMENT.md`'s new
+  "Encryption at rest" section for the storage-layer alternative that
+  actually applies there, and `SOC2_READINESS.md`'s Confidentiality table
+  for the compliance framing. 19 new unit tests
+  (`hub/tests/test_encryption.py`), 5 new integration tests
+  (`hub/tests/test_events.py`), 4 new config-wiring regression tests
+  (`hub/tests/test_config_and_limits.py` — one of which would have caught
+  an initial version of this change that added `HUB_ENCRYPTION_KEY` to
+  `HubConfig` but never wired it into `from_env()`'s environment reads),
+  plus manage.py CLI tests.
+
+- **Kubernetes deployment manifests** (`deploy/k8s/`) for operators whose
+  platform is Kubernetes rather than a single Docker host: ConfigMap,
+  Secret shape (a template, not real values), a one-shot migration Job
+  mirroring `docker-compose.yml`'s `migrate` service, a Deployment with
+  liveness on `/healthz` and readiness on `/readyz` (matching the
+  Dockerfile's own HEALTHCHECK reasoning), a ClusterIP Service, an HPA,
+  and a PodDisruptionBudget. No Postgres manifest and no Ingress are
+  included, on purpose — see `deploy/k8s/README.md` for why, and for what
+  is and is not exercised in CI.
+
 - **Near-duplicate lesson detection (`commontrace/redundancy.py`) and its
   three consumers**, closing a gap competitor research surfaced: mem0's
   update-memory prompt resolves near-duplicate facts on write, and

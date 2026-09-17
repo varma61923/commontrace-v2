@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 
 from hub import events
 from hub.db import session_scope
+from hub.encryption import EnvelopeCipher, generate_key
 from hub.models import Organization, WebhookDelivery, WebhookEndpoint
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -251,6 +252,80 @@ class TestEndpoints:
         header = events.signature_header(rotated, int(NOW.timestamp()), body)
         assert not events.verify_signature(
             endpoint["secret"], header, body, now=int(NOW.timestamp()))
+
+
+# --- at-rest encryption (hub/encryption.py) -----------------------------------
+
+@pytest.mark.asyncio
+class TestAtRestEncryption:
+    async def test_no_cipher_stores_url_as_plaintext(self, session_factory, org):
+        """The default (no HUB_ENCRYPTION_KEY) -- every other test in this
+        module relies on this holding, since none of them pass a cipher."""
+        async with session_scope(session_factory) as session:
+            endpoint, _ = await events.add_endpoint(session, org, URL, signing_key=KEY)
+        assert endpoint.url == URL
+
+    async def test_a_configured_cipher_stores_ciphertext_not_the_url(
+        self, session_factory, org
+    ):
+        cipher = EnvelopeCipher.from_config(generate_key(), "")
+        async with session_scope(session_factory) as session:
+            endpoint, _ = await events.add_endpoint(
+                session, org, URL, signing_key=KEY, cipher=cipher)
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint.id)
+        assert row.url != URL
+        assert URL not in row.url
+        assert cipher.decrypt(row.url) == URL
+
+    async def test_ssrf_validation_still_runs_on_the_plaintext_url(
+        self, session_factory, org, monkeypatch
+    ):
+        """A cipher must not let a private-address target slip past
+        `_reject_private_target` by encrypting before that check runs."""
+        monkeypatch.setattr(
+            events, "_default_resolve", _fake_resolve_to("127.0.0.1"))
+        cipher = EnvelopeCipher.from_config(generate_key(), "")
+        async with session_scope(session_factory) as session:
+            with pytest.raises(events.EventError, match="private"):
+                await events.add_endpoint(
+                    session, org, URL, signing_key=KEY, cipher=cipher)
+
+    async def test_delivery_decrypts_the_url_before_transporting(
+        self, session_factory, org
+    ):
+        cipher = EnvelopeCipher.from_config(generate_key(), "")
+        async with session_scope(session_factory) as session:
+            await events.add_endpoint(session, org, URL, signing_key=KEY, cipher=cipher)
+            await events.emit(session, org, "trace.created", {"trace_id": "t1"}, now=NOW)
+
+        transport = Recorder()
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(
+                session, transport, signing_key=KEY, now=NOW, cipher=cipher)
+        assert result.delivered == 1
+        # The transport must see the real URL, not the stored ciphertext.
+        assert transport.calls[0][0] == URL
+
+    async def test_delivery_with_the_wrong_cipher_fails_closed(
+        self, session_factory, org
+    ):
+        """A mismatched or missing key must not crash `deliver_pending` --
+        it should be reported as a failed delivery, the same as any other
+        transport error, never a raw traceback that stops the drain."""
+        cipher = EnvelopeCipher.from_config(generate_key(), "")
+        async with session_scope(session_factory) as session:
+            await events.add_endpoint(session, org, URL, signing_key=KEY, cipher=cipher)
+            await events.emit(session, org, "trace.created", {"trace_id": "t1"}, now=NOW)
+
+        wrong_cipher = EnvelopeCipher.from_config(generate_key(), "")
+        transport = Recorder()
+        async with session_scope(session_factory) as session:
+            result = await events.deliver_pending(
+                session, transport, signing_key=KEY, now=NOW, cipher=wrong_cipher)
+        assert result.delivered == 0
+        assert result.retrying == 1
+        assert transport.calls == []
 
 
 # --- SSRF protection ----------------------------------------------------------

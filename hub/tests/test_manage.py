@@ -1253,8 +1253,15 @@ class TestWebhookCLI:
     async def hooked(self, session_factory, monkeypatch, capsys):
         """One org with one endpoint, and the secret the CLI printed."""
         from hub import manage as manage_mod
+        from hub.encryption import NULL_CIPHER
 
         monkeypatch.setattr(manage_mod, "_config_signing_key", lambda: "test-key")
+        # No HUB_DATABASE_URL is set in this test process, so the real
+        # `_config_cipher` (like `_config_signing_key` above) would fail
+        # building a HubConfig at all -- NULL_CIPHER is exactly what an
+        # unset HUB_ENCRYPTION_KEY would already produce, so this changes
+        # nothing about what these tests exercise.
+        monkeypatch.setattr(manage_mod, "_config_cipher", lambda: NULL_CIPHER)
         async with session_scope(session_factory) as session:
             org = Organization(name="hooked")
             session.add(org)
@@ -1411,6 +1418,59 @@ class TestWebhookCommandTable:
                      "webhook-disable", "webhook-deliver"):
             assert name in manage._COMMANDS, name
             assert name in manage.__doc__, name
+
+
+class TestEncryptionAtRestCLI:
+    URL = "https://example.invalid/hooks/commontrace"
+
+    async def test_generate_encryption_key_is_dispatchable_and_documented(self):
+        assert "generate-encryption-key" in manage._COMMANDS
+        assert "generate-encryption-key" in manage.__doc__
+
+    async def test_generate_encryption_key_prints_a_usable_key(self, capsys):
+        from hub.encryption import EnvelopeCipher
+
+        assert await manage.generate_encryption_key()
+        printed_key = capsys.readouterr().out.strip()
+        assert EnvelopeCipher.from_config(printed_key, "").enabled
+
+    async def test_webhook_add_stores_ciphertext_when_a_cipher_is_configured(
+        self, session_factory, monkeypatch, capsys
+    ):
+        from hub import manage as manage_mod
+        from hub.encryption import EnvelopeCipher, generate_key
+        from hub.models import WebhookEndpoint
+
+        cipher = EnvelopeCipher.from_config(generate_key(), "")
+        monkeypatch.setattr(manage_mod, "_config_signing_key", lambda: "test-key")
+        monkeypatch.setattr(manage_mod, "_config_cipher", lambda: cipher)
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="encrypted-hooks")
+            session.add(org)
+            await session.flush()
+            org_id = org.id
+        assert await manage.webhook_add(org_id, self.URL, session_factory=session_factory)
+        endpoint_id = capsys.readouterr().out.splitlines()[0].split()[1]
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint_id)
+        assert row.url != self.URL
+        assert cipher.decrypt(row.url) == self.URL
+
+        # And the operator-facing commands still show the real URL, not
+        # the ciphertext sitting in the row.
+        capsys.readouterr()
+        assert await manage.webhook_list(org_id, session_factory=session_factory)
+        assert self.URL in capsys.readouterr().out
+
+        assert await manage.webhook_disable(endpoint_id, session_factory=session_factory)
+        from hub.models import AuditLogEntry
+        async with session_scope(session_factory) as session:
+            entry = (await session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == "webhook.disable")
+            )).scalar_one()
+        assert entry.summary == self.URL
 
 
 class TestUserCLI:

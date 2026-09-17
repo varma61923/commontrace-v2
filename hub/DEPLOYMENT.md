@@ -436,6 +436,60 @@ invalidates verification of every already-issued invoice unless you keep
 the retired key available out-of-band, specifically to still check
 signatures minted under it.
 
+### Encryption at rest
+
+This has two different answers depending on which column you mean, and
+conflating them is the mistake to avoid.
+
+**Trace content (`title`, `context_text`, `solution_text`, `subject_ids`)
+is NOT encrypted at the application layer, deliberately.**
+`hub/models.py`'s `Trace.search_vector` is a Postgres `GENERATED STORED`
+column computed directly, in SQL, from `title`/`context_text`/
+`solution_text` — encrypting them here would mean Postgres builds that
+tsvector from ciphertext, so `search_traces` would keep running without
+error while silently never matching anything again. `subject_ids` has the
+same conflict one level down: `find_traces_by_subject`/
+`purge_traces_by_subject` (the subject-erasure path `DATA_RETENTION.md`
+documents) depend on exact array-membership matches against a GIN index,
+which a fresh-nonce-per-value scheme (the only kind worth using) makes
+impossible — the same id would encrypt to different ciphertext every time
+it's written.
+
+If your compliance program requires encryption at rest for this content —
+most do, and this is the normal, correct way to satisfy that requirement
+for a full-text-search-heavy schema — configure it at the storage layer
+**underneath** Postgres instead, where the database itself still operates
+on plaintext internally and neither of the above breaks:
+
+- A managed provider's disk/volume encryption (RDS, Cloud SQL, and
+  equivalents all support this, usually on by default for a new instance).
+- An encrypted filesystem under a self-hosted Postgres data directory
+  (LUKS or equivalent).
+- A Postgres Transparent Data Encryption extension, if your distribution
+  ships one.
+
+None of these are something this codebase can configure on your behalf —
+they're a property of where and how you run Postgres — which is also why
+`SOC2_READINESS.md`'s Confidentiality table lists this as an operator
+responsibility rather than a control this code implements.
+
+**`WebhookEndpoint.url` (`hub/encryption.py`) is the one column this code
+*does* encrypt, opt-in.** A webhook URL is never searched or matched by
+Postgres, so none of the above conflict applies, and it sometimes carries
+a bearer token or shared secret in its path or query string — exactly the
+kind of value that should not sit in plaintext in a `pg_dump`. Set
+`HUB_ENCRYPTION_KEY` to turn it on:
+
+```bash
+python -m hub.manage generate-encryption-key
+```
+
+Unset (the default) means this column is stored as plaintext, exactly as
+it always was — every existing deployment is unaffected until it opts in.
+Rotating: move the current value into `HUB_ENCRYPTION_KEY_PREVIOUS` before
+replacing `HUB_ENCRYPTION_KEY`, so endpoints registered under the old key
+keep decrypting until they're next re-registered or `webhook-rotate`d.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format:
@@ -490,6 +544,12 @@ deliberate: the migration that added plans defaults every existing org to
 the smallest one, because a migration that silently upgrades every customer
 gives the product away. Move orgs with `set-plan`; see their meters with
 `python -m hub.manage usage`.
+
+**Kubernetes:** `deploy/k8s/` has a reference manifest set (ConfigMap,
+Secret shape, a migration Job, Deployment, Service, HPA, PDB) for a
+platform where Compose isn't the deployment target — see that directory's
+own README for what's included, what's deliberately not (no Postgres
+manifest, no Ingress), and what is and isn't rehearsed in CI.
 
 **Without containers:**
 
@@ -798,6 +858,15 @@ rather than implied by this section existing.
       otherwise its ledger is only hash-chained, not signed by the issuer,
       and `signature` in the response is `null`. See §4, "Signing the value
       ledger".
+- [ ] Encryption at rest for Trace content is configured at the storage
+      layer (managed-provider disk encryption, LUKS, or a Postgres TDE
+      extension) if your compliance program requires it — this code
+      deliberately does not encrypt `title`/`context_text`/`solution_text`/
+      `subject_ids` itself, because those columns are what Postgres
+      full-text-searches and exact-matches over. See §4, "Encryption at
+      rest". `HUB_ENCRYPTION_KEY` (same section) covers a different,
+      narrower column (`WebhookEndpoint.url`) and does not substitute for
+      this.
 - [ ] Read [`DATA_RETENTION.md`](../DATA_RETENTION.md) — an org can delete
       its own trace or its entire account self-service
       (`delete_trace` / `request_account_deletion`), backed by an
@@ -851,6 +920,8 @@ rather than implied by this section existing.
 | Self-serve billing covers Checkout + the Billing Portal only — no dunning, tax handling, or invoicing UI beyond what Stripe's own hosted pages provide | §4, `hub/billing.py` |
 | Self-serve signup has no email verification and no CAPTCHA (a rate limit + honeypot only) | §4, `hub/signup.py` |
 | No production-like rehearsal (TLS, managed PG, multi-replica) | top of this file |
+| `deploy/k8s/` manifests are reviewed, not applied against a real cluster in CI | `deploy/k8s/README.md` |
+| Trace content (`title`/`context_text`/`solution_text`/`subject_ids`) is not encrypted at the application layer — full-text search and exact-match array queries depend on those columns being computable by Postgres itself; use storage-layer encryption instead | §4 "Encryption at rest", `hub/encryption.py` |
 
 ---
 

@@ -1,0 +1,66 @@
+# Non-secret HUB_* settings. Every key here has a fuller explanation in
+# hub/.env.example and hub/config.py -- this file only carries the values,
+# not the reasoning, to avoid the two drifting apart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: commontrace-hub-config
+  labels:
+    app: commontrace-hub
+data:
+  # 0.0.0.0, not loopback: the Service below routes to this pod over the
+  # cluster network, which (like Docker's bridge network in
+  # docker-compose.yml) is unreachable at a loopback-only bind. This is a
+  # routability requirement, not a decision to expose the Hub publicly --
+  # that is entirely what (and whether) you put in front of the Service.
+  HUB_HOST: "0.0.0.0"
+  HUB_PORT: "8420"
+  HUB_LOG_LEVEL: "INFO"
+
+  # Acknowledges plaintext HTTP inside the cluster network, matching
+  # docker-compose.yml's identical setting and identical reasoning: TLS is
+  # terminated at your Ingress/Gateway, not by this process, and Pod-to-Pod
+  # traffic on the cluster network is the trusted-network side of that
+  # boundary -- see hub/config.py:validate_transport_safety. This is NOT a
+  # substitute for actually putting TLS in front (DEPLOYMENT.md §10's first
+  # checklist item) -- it only lets the Hub start without also terminating
+  # TLS itself, which it is not built to do.
+  HUB_ALLOW_INSECURE_HTTP: "true"
+
+  # REQUIRED READING BEFORE YOU SCALE PAST ONE REPLICA OR GO BEHIND A REAL
+  # INGRESS: every client-address-keyed rate limiter (auth attempts, the
+  # read-request limiter, /readyz's own limiter) defaults to trusting only
+  # the raw TCP peer address, which is your Ingress/LoadBalancer's own
+  # address for every request once one is in front of this Service --
+  # collapsing every one of those limiters into a single shared bucket
+  # across every real client. Set HUB_TRUSTED_PROXY_HOPS to the exact
+  # number of trusted proxies between a real client and this Hub (commonly
+  # 1 for a single Ingress with no cloud load balancer also rewriting
+  # X-Forwarded-For in front of it, but verify your own topology -- setting
+  # this without a proxy actually there lets any client forge its own
+  # rate-limit identity). Left at the safe default (0, trust nothing but
+  # the TCP peer) here rather than guessing a number that could be wrong
+  # for your ingress controller.
+  # HUB_TRUSTED_PROXY_HOPS: "1"
+
+  # Per-org write/read rate limits (hub/abuse.py). Defaults match
+  # hub/config.py's own; override here rather than editing that file.
+  HUB_RATE_LIMIT_PER_MINUTE: "120"
+  HUB_RATE_LIMIT_BURST: "30"
+  HUB_READ_RATE_LIMIT_PER_MINUTE: "300"
+  HUB_READ_RATE_LIMIT_BURST: "60"
+  HUB_AUTH_ATTEMPTS_PER_MINUTE: "60"
+  HUB_AUTH_ATTEMPTS_BURST: "20"
+
+  # Once this deployment runs more than one replica, an in-process rate
+  # limiter grants each replica its own independent allowance instead of
+  # one shared one -- see hub/DEPLOYMENT.md §6. Set to "postgres" (and see
+  # that section) once replicas > 1.
+  HUB_RATE_LIMIT_BACKEND: "memory"
+
+  # pool_size * replicas must stay under your Postgres's max_connections --
+  # see this directory's README "Scaling note" and hub/DEPLOYMENT.md §2
+  # before raising deployment.yaml's replica count or hpa.yaml's
+  # maxReplicas without also revisiting this number.
+  HUB_DB_POOL_SIZE: "10"
+  HUB_DB_MAX_OVERFLOW: "5"

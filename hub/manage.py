@@ -167,6 +167,10 @@
                                        delivery is AT-LEAST-ONCE and every envelope
                                        carries a stable event_id, so receivers must
                                        deduplicate on it
+    generate-encryption-key        -> print a fresh HUB_ENCRYPTION_KEY (hub/encryption.py).
+                                       Unset (the default) means WebhookEndpoint.url is
+                                       stored as plaintext, exactly as it always was --
+                                       see hub/DEPLOYMENT.md's "Encryption at rest" section
     create-alert-rule <org_id> <metric> <gt|lt> <threshold> [cooldown_minutes]
                                    -> fire when <metric> crosses <threshold>. metric is
                                        one of quarantine_rate, commons_queries_used_pct,
@@ -2359,6 +2363,27 @@ def _config_signing_key() -> str:
     return HubConfig.from_env().ledger_signing_key
 
 
+def _config_cipher():
+    return HubConfig.from_env().cipher()
+
+
+async def generate_encryption_key() -> bool:
+    """Print a fresh HUB_ENCRYPTION_KEY. Not read from or written to
+    anywhere -- copy it into this deployment's secret store yourself."""
+    from hub.encryption import generate_key
+
+    print(generate_key())
+    print(
+        "Set this as HUB_ENCRYPTION_KEY (keep it in a secret store next to "
+        "HUB_DATABASE_URL). Rotating: move the current value into "
+        "HUB_ENCRYPTION_KEY_PREVIOUS (comma-separated if more than one) "
+        "before replacing HUB_ENCRYPTION_KEY, so values already encrypted "
+        "under it still decrypt.",
+        file=sys.stderr,
+    )
+    return True
+
+
 async def webhook_add(
     org_id: str, url: str, event_names: str = "", session_factory=None,
 ) -> bool:
@@ -2373,7 +2398,7 @@ async def webhook_add(
         try:
             endpoint, secret = await events.add_endpoint(
                 session, org_id, url, events=subscribed,
-                signing_key=_config_signing_key(),
+                signing_key=_config_signing_key(), cipher=_config_cipher(),
             )
         except events.EventError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2403,9 +2428,10 @@ async def webhook_list(org_id: str, session_factory=None) -> bool:
     if not endpoints:
         print(f"No webhook endpoints for {org_id}. Nothing is told anything.")
         return True
+    cipher = _config_cipher()
     for e in endpoints:
         state = "enabled" if e.enabled else "DISABLED"
-        print(f"{e.id}  {state}  {e.url}")
+        print(f"{e.id}  {state}  {cipher.decrypt(e.url)}")
         print(f"    events: {', '.join(e.events)}  (key v{e.key_version})")
     print()
     print(f"{pending} delivery/deliveries pending.")
@@ -2449,7 +2475,7 @@ async def webhook_disable(endpoint_id: str, session_factory=None) -> bool:
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="webhook.disable",
             org_id=endpoint.org_id, target_type="webhook_endpoint",
-            target_id=endpoint_id, summary=endpoint.url,
+            target_id=endpoint_id, summary=_config_cipher().decrypt(endpoint.url),
         )
     print(f"endpoint {endpoint_id} disabled. Queued deliveries to it will be "
           "marked failed rather than retried forever.")
@@ -2468,6 +2494,7 @@ async def webhook_deliver(limit: str = "100", session_factory=None) -> bool:
         result = await events.deliver_pending(
             session, events.http_transport(),
             signing_key=_config_signing_key(), limit=batch,
+            cipher=_config_cipher(),
         )
     print(f"attempted {result.attempted}: {result.delivered} delivered, "
           f"{result.retrying} will retry, {result.gave_up} gave up.")
@@ -2613,6 +2640,7 @@ _COMMANDS = {
     "webhook-rotate": (webhook_rotate, 1, 1),
     "webhook-disable": (webhook_disable, 1, 1),
     "webhook-deliver": (webhook_deliver, 0, 1),
+    "generate-encryption-key": (generate_encryption_key, 0, 0),
     "create-alert-rule": (create_alert_rule, 4, 5),
     "list-alert-rules": (list_alert_rules, 1, 1),
     "delete-alert-rule": (delete_alert_rule, 1, 1),

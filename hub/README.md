@@ -997,9 +997,16 @@ the container, and asserts `/healthz` serves while `/readyz` returns 503
 with no database reachable — which also confirms the liveness/readiness
 split behaves correctly in a real container, not just in unit tests.
 
-Still unproven, so worth saying: **the compose stack is not exercised by
-CI** (only the image is), and neither has been run against a
-production-like environment. Do a rehearsal deploy first.
+CI's "docker compose stack serves real MCP traffic" job now also exercises
+the compose stack itself, end to end (signup, console sign-in, tenant
+isolation, a restart surviving data, log hygiene) — an earlier revision of
+this file said the compose stack was NOT exercised by CI; that is no
+longer true either. Still worth saying: neither the image nor the compose
+stack has been run against a genuinely production-like environment (TLS,
+a managed Postgres, more than one replica) — do a rehearsal deploy first.
+The Kubernetes manifests in `deploy/k8s/` are a further step removed
+again: reviewed for correctness, not applied against a real cluster in
+CI — see that directory's own README.
 
 ## Event export (webhooks)
 
@@ -1045,6 +1052,14 @@ backoff and given up on after 8 attempts — visibly, in `webhook-list`,
 because a queue that gives up quietly is a queue that lies about delivery.
 Every envelope carries a stable `event_id`: **deduplicate on it**. Promising
 exactly-once here would be a promise this cannot keep.
+
+**The endpoint URL itself can be encrypted at rest.** Set
+`HUB_ENCRYPTION_KEY` (`python -m hub.manage generate-encryption-key`) and
+`WebhookEndpoint.url` — which sometimes carries a bearer token or shared
+secret in its path or query string — is stored as an AES-256-GCM envelope
+instead of plaintext. Unset (the default) leaves it exactly as before. See
+`hub/encryption.py` and `hub/DEPLOYMENT.md`'s "Encryption at rest" section
+for why this covers `url` specifically and not Trace content.
 
 ## Alerting and scheduled reports (`hub/alerts.py`)
 

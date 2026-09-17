@@ -353,6 +353,23 @@ class HubConfig:
     # out-of-band for exactly that purpose.
     ledger_signing_key: str = ""
 
+    # --- Encryption at rest (hub/encryption.py) ---
+    # Empty (default): no field-level encryption. `WebhookEndpoint.url` (the
+    # only column this covers -- see hub/encryption.py's module docstring
+    # for why Trace content is deliberately excluded) is stored as plaintext,
+    # exactly as it always was. A base64-urlsafe, 32-byte key, generated with
+    # `python -m hub.manage generate-encryption-key`. Keep it in a secret
+    # store next to HUB_DATABASE_URL -- unlike `ledger_signing_key`, this key
+    # is symmetric and its loss (not just its leak) is unrecoverable: an
+    # existing encrypted value simply stops decrypting with no other key to
+    # try.
+    encryption_key: str = ""
+    # Comma-separated retired keys, tried in order if the current key fails
+    # to decrypt a stored value -- see hub/encryption.py's "Key rotation"
+    # section. Setting this without `encryption_key` is rejected: a
+    # deployment with only retired keys has no key left to encrypt with.
+    encryption_key_previous: str = ""
+
     # --- Human identity: OIDC bearer-token verification (hub/sso.py) ---
     # One trusted issuer per deployment. Unset (the default) means SSO is
     # not configured at all: `identity_provider()` returns None, the
@@ -501,6 +518,21 @@ class HubConfig:
             raise ValueError(
                 f"HUB_RATE_LIMIT_BACKEND must be 'memory' or 'postgres', got {self.rate_limit_backend!r}"
             )
+        # Validated eagerly, at construction, rather than on whichever
+        # webhook registration or delivery attempt happens to be the first
+        # to need it -- the same "fail loud, name the reason" policy this
+        # module applies to every other setting.
+        self.cipher()
+
+    def cipher(self):
+        """The at-rest cipher for fields safe to encrypt (see
+        hub/encryption.py's module docstring for which fields, and why
+        Trace content is not among them). Built fresh each call, like
+        `identity_provider()` below -- a caller that wants it built once
+        holds the result itself."""
+        from hub.encryption import EnvelopeCipher
+
+        return EnvelopeCipher.from_config(self.encryption_key, self.encryption_key_previous)
 
     def identity_provider(self):
         """The trusted OIDC issuer this deployment verifies bearer tokens
@@ -591,6 +623,8 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
+            encryption_key=os.environ.get("HUB_ENCRYPTION_KEY", ""),
+            encryption_key_previous=os.environ.get("HUB_ENCRYPTION_KEY_PREVIOUS", ""),
             admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),

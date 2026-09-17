@@ -150,6 +150,53 @@ class TestSignupAndBillingDefaultOff:
         assert config.stripe_price_team == "price_team_123"
         assert config.stripe_price_scale == "price_scale_123"
 
+    def test_encryption_key_defaults_empty_and_cipher_is_disabled(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        config = HubConfig.from_env()
+        assert config.encryption_key == ""
+        assert config.encryption_key_previous == ""
+        assert config.cipher().enabled is False
+
+    def test_encryption_key_is_read_from_env(self, monkeypatch):
+        """Regression test: HUB_ENCRYPTION_KEY was added to the HubConfig
+        dataclass and to __post_init__'s eager validation, but the first
+        version of this change never wired it into from_env()'s os.environ
+        reads -- so the env var was silently ignored in every real
+        deployment (HubConfig() was always built with the field's default,
+        "") while every unit test on EnvelopeCipher itself, which
+        constructs one directly, kept passing. Only a test going through
+        from_env() -- the path hub/manage.py and hub/main.py actually use
+        -- catches that class of bug."""
+        from hub.encryption import generate_key
+
+        key = generate_key()
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ENCRYPTION_KEY", key)
+        config = HubConfig.from_env()
+        assert config.encryption_key == key
+        cipher = config.cipher()
+        assert cipher.enabled
+        assert cipher.decrypt(cipher.encrypt("secret-url")) == "secret-url"
+
+    def test_encryption_key_previous_is_read_from_env(self, monkeypatch):
+        from hub.encryption import EnvelopeCipher, generate_key
+
+        old_key, new_key = generate_key(), generate_key()
+        envelope = EnvelopeCipher.from_config(old_key, "").encrypt("secret-url")
+
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ENCRYPTION_KEY", new_key)
+        monkeypatch.setenv("HUB_ENCRYPTION_KEY_PREVIOUS", old_key)
+        config = HubConfig.from_env()
+        assert config.encryption_key_previous == old_key
+        assert config.cipher().decrypt(envelope) == "secret-url"
+
+    def test_malformed_encryption_key_is_refused_at_startup(self, monkeypatch):
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ENCRYPTION_KEY", "not-a-valid-key")
+        with pytest.raises(ValueError, match="HUB_ENCRYPTION_KEY"):
+            HubConfig.from_env()
+
 
 class TestRateLimiterReportsWhenToComeBack:
     @pytest.mark.asyncio
