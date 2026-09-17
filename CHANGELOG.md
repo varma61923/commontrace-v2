@@ -81,6 +81,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machine without that exact database instead of skipping cleanly — same
   defect and fix as `conftest.py`'s own `_skip_if_no_db`.
 
+- **Reliability- and recency-weighted retrieval ranking**, closing the
+  standing gap that `commontrace/retrieval.py`'s `rank_lessons` never
+  consulted `commontrace/reliability.py`'s HELPS/HURTS verdicts or a
+  lesson's `last_hit` freshness — a lesson flagged HARMFUL ranked exactly
+  like everything else, every time, until a human read the reliability
+  report and manually rejected it.
+
+  - **`commontrace/reliability.py`** gains `ranking_adjustments`: a pure
+    verdict → adjustment map (HARMFUL -1.0, MISCALIBRATED -0.5, UNPROVEN
+    0.0, RELIABLE +1.0) — MISCALIBRATED is a real but smaller penalty than
+    HARMFUL, because firing too often and being actively wrong have
+    different remedies (same reasoning `score_lessons` already gives for
+    keeping four verdicts rather than two).
+
+  - **New `commontrace/recency.py`**: an exponential-decay ranking signal
+    over the existing `last_hit` frontmatter field (no new schema needed).
+    A lesson hit today scores +1.0, one exactly `half_life_days` (default
+    180) old scores 0.0, older still negative, floored so age alone is
+    never scored worse than never having been validated at all.
+
+  - **`retrieval.rank_lessons`** gains opt-in `reliability_lookup`/
+    `reliability_weight` and `recency_lookup`/`recency_weight`. Both
+    default to 0.0 (off), producing byte-for-byte identical output to
+    calling the function with neither argument. Critically, **this never
+    changes ELIGIBILITY**: the relevance floor is computed and gated on
+    the pure topical relevance alone, before either adjustment is
+    consulted, and the `relevance` recorded on every `RankedLesson` is
+    always that same unadjusted number — only the sort ORDER among
+    already-eligible lessons changes, in a new, separate `adjusted` key.
+    Configurable per store via `commontrace retrieval
+    --reliability-weight`/`--recency-weight`, wired identically through
+    `commontrace query` (both the lexical and hybrid paths) and MCP's
+    `retrieve()`, so the two surfaces cannot disagree about which order a
+    tied pair comes back in.
+
+  35 new tests across `tests/test_recency.py`, plus additions to
+  `tests/test_reliability.py`, `tests/test_retrieval.py`,
+  `tests/test_retrieval_field_robustness.py`, and
+  `tests/test_query_dosage_parity.py` (the last of these end-to-end
+  through `commontrace query`, not just at the `rank_lessons` unit level).
+
+- **`retrieval.apply_reranker`**: a pluggable second-stage scorer seam,
+  closing the gap that this codebase had no equivalent of mem0's
+  `BaseReranker` interface. A plain callable
+  (`Reranker = Callable[[str, list[RankedLesson]], list[RankedLesson]]`),
+  not a class hierarchy — the same shape `commontrace/redundancy.py`'s own
+  caller-supplied `similarity` parameter already uses, so the core install
+  gains no new hard dependency for an extension point most stores never
+  use. `apply_reranker(task, ranked, None)` is a no-op. A composition
+  point for a Python caller using `commontrace.retrieval` as a library
+  (see README's "Using CommonTrace as a library" note), not a CLI flag —
+  a reranker is code, and there is no honest way to name one from
+  `--reliability-weight`-style config.
+
+- **`commontrace lesson suggest-revision <slug>`**: for a MISCALIBRATED
+  lesson (fires often, rarely helps), drafts a new `status: review` lesson
+  from its own retrieval evidence — which occasions it fired on, split
+  into "fired and helped" vs "fired but did not help", with a short label
+  per occasion where one is available (an episode's `task_invocation` or a
+  trace's `title`). The draft's `applies_when`/`do_not_apply_when` are
+  `TODO`-prefixed (the same scaffolding marker `lesson new`/`distill` use)
+  so `lesson approve` refuses it unedited, same governance as any other
+  candidate. Refuses outright for any verdict other than MISCALIBRATED — a
+  HARMFUL lesson's rule may be wrong, not just its activation condition,
+  and the refusal message points at `lesson reject` instead. Not an
+  LLM-authored rewrite: this codebase has no LLM call anywhere in its core
+  pipeline, and this command's job is aggregating real evidence into one
+  place a human or an LLM-driving agent then acts on. 11 new tests in
+  `tests/test_suggest_revision.py`.
+
+- **`commontrace query --exclude-shown`/MCP `retrieve(exclude_shown=...)`**:
+  a session/occasion-scoped retrieval filter, closing the gap that
+  `occasion_id` was recorded for holdout assignment but never usable as a
+  retrieval filter (mem0's `run_id` is the nearest competitor analog). A
+  long multi-turn task can now skip a lesson already logged as injected
+  for that occasion, so it isn't re-shown on every call. New
+  `holdout_io.injected_slugs_for_occasion` reads the existing holdout log
+  — no new persistent write path. A `core: true` lesson is never excluded
+  (present every call by design, same exemption the redundancy check
+  gives it). Honestly scoped: a prior call for that occasion made without
+  `--experiment` left no record, so nothing is excluded for it — stated
+  in the flag's own help text rather than silently degrading. 10 new
+  tests in `tests/test_occasion_exclusion.py`, plus 3 in
+  `tests/test_mcp_server.py`.
+
+- **Point-in-time lesson reconstruction**: `commontrace/lesson_io.py`'s
+  revision journal recorded a before/after HASH on every content change —
+  enough to detect a lesson changed mid-experiment
+  (`integrity.check_treatment_stability`), never enough to answer what it
+  actually SAID on a given date, since the prior text itself was never
+  kept. `commontrace/environments.py`'s own docstring named this
+  explicitly as separate, larger work rather than pretending it existed;
+  this closes it.
+
+  - `write_lesson` now stashes the full prior `frontmatter`/`body` in
+    `before_frontmatter`/`before_body` on every journal entry that has a
+    predecessor — additive only, so an old reader sees exactly the shape
+    it always has, and a creation event (nothing to reconstruct before
+    it) carries neither field, same as before.
+  - New `lesson_io.content_as_of(root, slug, at)` walks that chain to
+    find the version live at `at`, raising `ContentAsOfError` (never
+    silently guessing) for every way it can't answer: an unparseable
+    date, a missing lesson, or a target that predates full-content
+    recording — either because the store adopted this field after the
+    lesson's own history began, or because `at` is before the lesson
+    existed at all.
+  - `commontrace lesson history <slug> --as-of <date>` prints the
+    reconstructed `applies_when`/`do_not_apply_when`/body instead of the
+    change list.
+  - `environments.py`'s docstring updated to reflect this: retrieval
+    still does not resolve environments/releases through point-in-time
+    lookup, but that is now a deliberate scope decision (a release's
+    hash-pinned exact-identity guarantee is a stronger claim than "the
+    version nearest this date"), not a hard limit from missing data.
+  - 11 new tests in `tests/test_content_as_of.py`.
+
+- **`commontrace reliability` reports uncaptured retrievals**, closing a
+  narrower and safer version of the "continuous capture" gap than the
+  first design attempted. An agent retrieving under `--experiment` and
+  never calling `capture` afterward left that occasion invisible
+  everywhere — a lesson retrieved constantly but never reported on looked
+  identical to one nobody ever asked for.
+
+  The first design considered ("auto-draft" a placeholder occasion record
+  at retrieval time, for a later `capture` to complete) was rejected after
+  reading `commontrace/commands/capture_cmd.py`: a re-capture under the
+  same `occasion_id` preserves an EXISTING trace's title/context/solution
+  over a new call's by default, so a real capture's content would
+  silently lose to a placeholder that arrived first. Building that safely
+  would need new merge semantics in an already-hardened, heavily-tested
+  write path for a low-priority gap — not a good trade.
+
+  Shipped instead: `evidence_io.uncaptured_retrieval_counts` reads the
+  EXISTING holdout log (no new write path at all) for occasions no
+  episode or trace covers. Deliberately kept OUT of
+  `evidence_io.load_evidence`/`reliability.score_lessons`: that scorer
+  reads a slug absent from `Evidence.hit` as a confirmed miss, so folding
+  an unknown outcome in there would drag every under-captured lesson's
+  measured precision down for no reason but under-reporting. Surfaces
+  instead as `commontrace reliability`'s new "Under-reported" section
+  (and `--json`'s `uncaptured_retrievals`) — a coverage prompt, not
+  scoring input. 11 new tests across `tests/test_evidence_io.py` and
+  `tests/test_reliability.py`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

@@ -21,6 +21,7 @@ derived from the store's own corpus can, with nothing hardcoded per field.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,10 +98,23 @@ class RankedLesson:
     # retrieval floor gates on and what gets recorded alongside each holdout
     # assignment, so `commontrace experiment` can tell a lesson that was
     # squarely on-topic from one that scraped in on an incidental word.
+    #
+    # ALWAYS the pure topical relevance, unaffected by `reliability_weight`/
+    # `recency_weight` below -- those adjust ORDER among lessons that already
+    # cleared this floor, never the floor itself or the number recorded here.
+    # A caller wanting the value that actually decided this lesson's
+    # position reads `relevance` alongside `reliability_adjustment` and
+    # `recency_adjustment`, not a blended replacement for any of the three.
     relevance: float = 0.0
     # Which scorer produced `relevance`. An experiment that pooled occasions
     # from two scorers would be comparing two different treatments.
     scorer: str = SCORER_IDF
+    # In [-1, 1]; 0.0 when the caller passed no `reliability_lookup` (or the
+    # slug had none) -- see `rank_lessons`'s `reliability_weight`.
+    reliability_adjustment: float = 0.0
+    # In [-1, 1]; 0.0 when the caller passed no `recency_lookup` -- see
+    # `rank_lessons`'s `recency_weight`.
+    recency_adjustment: float = 0.0
 
 
 def _lesson_text_weighted(fm: dict) -> list[tuple[str, float]]:
@@ -198,6 +212,10 @@ def rank_lessons(
     floor: float | None = None,
     scorer: str = SCORER_IDF,
     term_cache: dict[str, list[list[str]]] | None = None,
+    reliability_lookup: dict[str, float] | None = None,
+    reliability_weight: float = 0.0,
+    recency_lookup: dict[str, float] | None = None,
+    recency_weight: float = 0.0,
 ) -> list[RankedLesson]:
     """Rank `lessons` -- (path, frontmatter) pairs the caller has already
     filtered to what it considers eligible (e.g. status == "active") -- by how
@@ -239,6 +257,29 @@ def rank_lessons(
     `set(cached_terms) == set(_tokenize(field_text))` by construction --
     `lesson_cache.field_terms` derives the cache from nothing but this same
     `_tokenize`.
+
+    `reliability_lookup`/`recency_lookup` (slug -> adjustment in [-1, 1];
+    see `commontrace/reliability.py`'s `ranking_adjustments` and
+    `commontrace/recency.py`'s `recency_lookup`) and their weights let a
+    store that has opted in (`commontrace/retrieval_io.py`'s
+    `reliability_weight`/`recency_weight`, both default 0.0) break ties
+    among already-eligible lessons using their track record and freshness,
+    not just topical match. Both default to inert: with weight 0.0 (or no
+    lookup at all) every RankedLesson's `reliability_adjustment`/
+    `recency_adjustment` is 0.0 and ordering is byte-for-byte identical to
+    calling this function with neither argument.
+
+    THIS NEVER CHANGES ELIGIBILITY. `rel >= floor` below is computed and
+    gated on the pure topical `relevance` alone, before either adjustment is
+    applied -- a HARMFUL-verdict lesson that would have cleared the floor
+    still clears it and is still returned, just later in the list than an
+    otherwise-equal lesson with a better track record. Silently hiding a
+    lesson based on a statistical verdict computed from a possibly-small
+    sample would be a stronger, riskier claim than "rank it lower," and this
+    module does not make it. `adjusted` (the sort key) is therefore a
+    SEPARATE number from the `relevance` stored on `RankedLesson` -- the
+    floor, the holdout log, and every existing caller keep reading the exact
+    number they always did.
     """
     query_terms = set(_tokenize(task))
     if not query_terms:
@@ -359,28 +400,43 @@ def rank_lessons(
             rel = 0.0
 
         if score > 0 and rel >= floor:
+            slug = str(fm.get("name", ""))
+            reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
+            recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
+            # Clamped to [0, 1]: an adjustment is bounded to [-1, 1] and a
+            # weight is expected small, but neither is validated here (the
+            # config surface that sets them does that) -- a misconfigured
+            # weight must degrade to "ranking is a little off," never to a
+            # relevance value outside the range every other caller of this
+            # function already assumes.
+            adjusted = min(1.0, max(0.0,
+                rel + reliability_weight * reliability_adj + recency_weight * recency_adj,
+            ))
             scored.append((
                 RankedLesson(
                     path=path,
-                    slug=str(fm.get("name", "")),
+                    slug=slug,
                     description=str(fm.get("description", "")),
                     score=score,
                     matched_terms=sorted(matched),
                     relevance=round(rel, 6),
                     scorer=scorer,
+                    reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
+                    recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
                 ),
+                adjusted,
                 _rank_int(fm.get("importance", 0)),
                 _rank_int(fm.get("uses", 0)),
             ))
 
-    scored.sort(key=lambda item: (item[0].relevance, item[0].score, item[1], item[2]), reverse=True)
+    scored.sort(key=lambda item: (item[1], item[0].score, item[2], item[3]), reverse=True)
     # max(0, ...): a plain `scored[:top_k]` on a negative top_k is a Python
     # slice, not a bounds check -- `scored[:-1]` means "all but the last
     # item", not "nothing", so a negative top_k silently returned nearly
     # the whole ranked list instead of failing. query_cmd.py's CLI already
     # rejects a negative --top-k before it reaches here; this clamp is the
     # same guarantee for any other caller of this function directly.
-    return [lesson for lesson, _, _ in scored[: max(0, top_k)]]
+    return [lesson for lesson, _, _, _ in scored[: max(0, top_k)]]
 
 
 # --- Combining two rankings that do not share a scale -----------------------
@@ -441,3 +497,52 @@ def reciprocal_rank_fusion(
             fused[item] = fused.get(item, 0.0) + weight / (k + position)
     ordered = sorted(fused.items(), key=lambda pair: (-pair[1], pair[0]))
     return ordered if top_k is None else ordered[: max(0, top_k)]
+
+
+# --- Second-stage reranking --------------------------------------------------
+#
+# `rank_lessons` (and `reciprocal_rank_fusion` for the hybrid path) is a
+# first-stage scorer: fast, dependency-free, and comparable across stores.
+# Nothing in this module ever runs a heavier second pass over the winners of
+# that first stage -- a cross-encoder, an LLM judge, or a bespoke scorer a
+# deployment already has. This was a real gap: mem0 ships a `BaseReranker`
+# interface with four concrete implementations selected by config, and this
+# module had no equivalent seam at all.
+#
+# The seam here is a plain callable, not a class hierarchy -- the same shape
+# `redundancy.find_near_duplicates`'s own `similarity` parameter already
+# uses for the identical reason: the core install (PyYAML only) must not
+# gain a hard dependency just to define an extension point nobody has to
+# use. A concrete embeddings-based reranker, when a caller wants one, is
+# exactly the kind of thing that belongs behind the optional `attention`
+# extra (see commontrace/reference/), not in this module.
+Reranker = Callable[[str, list[RankedLesson]], list[RankedLesson]]
+
+
+def apply_reranker(
+    task: str,
+    ranked: list[RankedLesson],
+    reranker: Reranker | None,
+) -> list[RankedLesson]:
+    """Apply an optional second-stage `reranker` to an already-ranked list.
+
+    `reranker=None` (the default) is a no-op: returns `ranked` unchanged,
+    so a caller that has not opted in pays no extra cost and sees no
+    behavior change at all -- calling this with `reranker=None` is
+    identical to not calling it.
+
+    A reranker receives `task` and the FULL ranked list (already past the
+    relevance floor -- eligibility is decided upstream, exactly as
+    `rank_lessons`'s own `reliability_weight`/`recency_weight` never touch
+    it either) and returns a re-ordered list over the SAME
+    `RankedLesson` objects. It is a caller error for a reranker to add,
+    drop, or duplicate an item -- this function does not defend against
+    that (validating a reranker's output on every call would be a real
+    cost every retrieval pays for a mistake only the reranker's author can
+    make), so a reranker's own tests are where that guarantee is checked,
+    the same trust boundary `redundancy.find_near_duplicates` places on a
+    caller-supplied `similarity` function.
+    """
+    if reranker is None:
+        return ranked
+    return reranker(task, ranked)

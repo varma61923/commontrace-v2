@@ -12,29 +12,34 @@ rather than deciding what gets served. See `commontrace/release.py`'s
 own module docstring ("WHAT THIS DOES NOT DO") for why that separation
 is deliberate rather than an oversight one level up.
 
-WHY RETRIEVAL STILL CANNOT RESOLVE THROUGH THIS -- A REAL LIMIT, NOT A
-DEFERRAL
+WHY RETRIEVAL STILL DOES NOT RESOLVE THROUGH THIS -- A SCOPE DECISION,
+NOT (ANY LONGER) A HARD LIMIT
 -------------------------------------------------------------------------
 A `Release` (commontrace/release.py) pins `(slug, revision)` pairs --
 `revision` is a content-addressed FINGERPRINT (commontrace/revision.py
-hashes frontmatter+body), not a stored snapshot of the text itself.
-Nothing in this store retains what a lesson's PAST revision actually
-said once it has been edited again; `commontrace/lesson_io.py`'s journal
-records the fingerprint transition (`from`/`to` hashes, actor, reason),
-never the superseded content. `plan_rollback` already lives with this
-honestly: it verifies a lesson's current text still matches a release's
-pinned hash and REFUSES to restore one that has since changed, rather
-than fabricating text it does not have.
+hashes frontmatter+body), not the text itself. `plan_rollback` lives
+with that honestly: it verifies a lesson's current text still matches a
+release's pinned hash and REFUSES to restore one that has since changed,
+rather than fabricating text it does not have -- exact-hash identity, not
+"whatever was closest to that date," is the guarantee a rollback needs.
 
-The same limit applies here. Serving "what prod is running" for a
-lesson edited since prod's release was cut would need to reconstruct
-text this codebase does not keep anywhere -- so this module does not
-attempt point-in-time serving, canary traffic splitting, or ring
-targeting, none of which can be built honestly without a real
-content-addressed revision STORE (keeping the text, not just its hash).
-That is separate, larger work, named here rather than implied to exist.
-This module answers a narrower, still-real question: which release does
-this environment consider current, when did that take effect, and what
+`commontrace/lesson_io.py`'s journal used to record only the fingerprint
+transition (`from`/`to` hashes) and has since gained the actual
+before/after TEXT on every entry going forward
+(`content_as_of`/`commontrace lesson history --as-of`) -- so "what did
+this lesson say on date X" is now answerable in general, for any lesson
+whose relevant history was written after that field existed. What it
+still does not give this module for free is a Release's exact-hash
+guarantee: two edits on the same day, or a store whose history predates
+the full-content field, make "the version active at this timestamp" a
+weaker claim than "the exact bytes this hash names." So this module still
+does not attempt point-in-time serving, canary traffic splitting, or ring
+targeting through environments/releases -- not because the text is
+unrecoverable in principle any more, but because a release's promotion
+record is a hash-pinned guarantee this module is not willing to weaken
+into a date-nearest-match one. This module answers a narrower, still-real
+question: which release does this environment consider current, when did
+that take effect, and what
 is scheduled next -- an audit trail an operator can act on by hand,
 today.
 

@@ -7,10 +7,12 @@ import sys
 
 from commontrace import (
     dosage,
+    evidence_io,
     frontmatter,
     holdout_io,
     lesson_cache,
     paths,
+    recency,
     redundancy,
     retrieval,
     retrieval_io,
@@ -95,6 +97,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "(safety override, default: 4 in semantic retriever)."
         ),
     )
+    p.add_argument(
+        "--exclude-shown", default=None, metavar="OCCASION_ID",
+        help="Skip any lesson already logged as injected (not withheld) for this "
+             "occasion in a prior `--experiment` call, so a long multi-turn task "
+             "does not re-inject the same guidance on every call. Reads the holdout "
+             "log (commontrace/holdout_io.py); a prior query for this occasion that "
+             "did NOT use --experiment left no record, so nothing is excluded for it.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -113,6 +123,60 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
     return lesson_cache.load_active(
         root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+
+
+def _already_shown(args: argparse.Namespace, root: str) -> set[str]:
+    """Every slug `--exclude-shown`'s occasion has already been shown --
+    see `holdout_io.injected_slugs_for_occasion`. Empty when the flag is
+    not given, so a caller that never opts in pays no holdout-log read at
+    all. Computed once per `commontrace query` call and threaded into both
+    the lexical candidate filter and the semantic arm's output filter, so
+    the two agree without reading the log twice.
+    """
+    if not args.exclude_shown:
+        return set()
+    return holdout_io.injected_slugs_for_occasion(root, args.exclude_shown)
+
+
+def _exclude_shown(
+    lessons: list[tuple[str, dict]],
+    already_shown: set[str],
+) -> list[tuple[str, dict]]:
+    """Drop any MATCHED lesson in `already_shown`. Never drops a
+    `core: true` lesson: core is the fleet's unconditional position
+    (commontrace/dosage.py's module docstring), present every time by
+    design -- "already shown" is not a reason to suppress it, the same way
+    the redundancy check never suppresses one either.
+
+    A no-op (returns `lessons` unchanged, by identity) when `already_shown`
+    is empty.
+    """
+    if not already_shown:
+        return lessons
+    return [
+        (path, fm) for path, fm in lessons
+        if dosage.is_core(fm) or str(fm.get("name", "")) not in already_shown
+    ]
+
+
+def _ranking_adjustments(
+    root: str,
+    lessons: list[tuple[str, dict]],
+    config: retrieval_io.RetrievalConfig,
+) -> tuple[dict[str, float] | None, dict[str, float] | None]:
+    """(reliability_lookup, recency_lookup) for `retrieval.rank_lessons`,
+    each None when this store has not opted in (weight <= 0) -- so a store
+    that has not configured either pays no extra cost at all: no evidence
+    glob, no `last_hit` parsing, matching `dosage.select`'s own "tokenized
+    lazily and only when the check is on" posture for redundancy.
+    """
+    reliability_lookup = (
+        evidence_io.reliability_snapshot(root) if config.reliability_weight > 0 else None
+    )
+    recency_lu = (
+        recency.recency_lookup(lessons) if config.recency_weight > 0 else None
+    )
+    return reliability_lookup, recency_lu
 
 
 def _apply_dosage(
@@ -275,11 +339,15 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    lessons = _exclude_shown(lessons, _already_shown(args, root))
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
+    reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
         term_cache=term_cache,
+        reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
+        recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and
@@ -438,12 +506,26 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    already_shown = _already_shown(args, root)
+    lessons = _exclude_shown(lessons, already_shown)
+    reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     lexical = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
         term_cache=term_cache,
+        reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
+        recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
 
     rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)
+    if already_shown and rc == 0:
+        # The semantic arm runs as a separate subprocess
+        # (memory/attention/query.py) with no knowledge of --exclude-shown,
+        # so a lesson dropped from the lexical candidate set above can
+        # still come back through this arm and reach the fused result
+        # unfiltered. Same exclusion, same core-lesson exemption, applied
+        # to this arm's output instead of its input.
+        core_slugs = {str(fm.get("name", "")) for _p, fm in lessons if dosage.is_core(fm)}
+        semantic = [s for s in semantic if s in core_slugs or s not in already_shown]
     if rc != 0:
         # The semantic arm failed outright. Serving the lexical half is
         # strictly better than serving nothing, but the arm composition is

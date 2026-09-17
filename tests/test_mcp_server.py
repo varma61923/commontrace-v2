@@ -313,6 +313,55 @@ def test_no_occasion_id_means_no_holdout_and_no_log(server, store):
     assert not os.path.exists(os.path.join(paths.memory_dir(store), "holdout_log.jsonl"))
 
 
+def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server, store):
+    """Session-scoped retrieval: a long multi-turn task should not be shown
+    the same guidance every turn -- see holdout_io.injected_slugs_for_occasion.
+
+    Seeds the log directly with assign_and_log (rate=0.0, so it always
+    records "injected") rather than driving a real holdout end to end:
+    `ExperimentConfig.running` requires rate > 0, and a real experiment's
+    randomization is exactly what a rate=0.0 setup cannot exercise --
+    that determinism is what this test needs from the LOG's contents, not
+    from the store's own holdout configuration.
+    """
+    from commontrace import holdout_io
+
+    slug = _curate(server)
+    holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
+
+    first = call(server, "retrieve", task="password reset email never arrived",
+                 occasion_id="occ-2")
+    assert [item["slug"] for item in first["lessons"]] == [slug]
+
+    again = call(server, "retrieve", task="password reset email never arrived",
+                 occasion_id="occ-2", exclude_shown="occ-1")
+    assert again["lessons"] == []
+
+
+def test_exclude_shown_never_drops_a_core_lesson(server, store):
+    from commontrace import frontmatter, holdout_io, lesson_io
+
+    slug = _curate(server)
+    lesson_path = lesson_io.lesson_path(store, slug)
+    fm, body = frontmatter.read(lesson_path)
+    fm["core"] = True
+    lesson_io.write_lesson(lesson_path, fm, body, root=store, actor="test", reason="mark core")
+    holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
+
+    out = call(server, "retrieve", task="totally unrelated task",
+               exclude_shown="occ-1")
+    assert [item["slug"] for item in out["lessons"]] == [slug]
+
+
+def test_exclude_shown_is_a_no_op_when_not_given(server, store):
+    from commontrace import holdout_io
+
+    slug = _curate(server)
+    holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
+    out = call(server, "retrieve", task="password reset email never arrived")
+    assert [item["slug"] for item in out["lessons"]] == [slug]
+
+
 def test_the_mcp_loop_alone_produces_a_measurable_experiment(server, store):
     """The whole point: an agent with no terminal can run the causal loop.
 

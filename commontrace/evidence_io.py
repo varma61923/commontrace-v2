@@ -12,7 +12,7 @@ from __future__ import annotations
 import glob
 import os
 
-from commontrace import frontmatter, paths, reliability, templates, trace_io
+from commontrace import frontmatter, holdout_io, paths, reliability, templates, trace_io
 from commontrace.commands._format import read_or_warn
 
 # Re-exported: the body is stashed on the returned frontmatter dict under
@@ -42,8 +42,8 @@ def load_active_lessons(root: str, status: str = "active") -> list[dict]:
 
 
 def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliability.Evidence]:
-    """Collect occasions on which lessons were injected, from both shapes the
-    protocol supports.
+    """Collect occasions on which lessons were injected, from every shape
+    the protocol supports.
 
     Episodes (the code-review profile) carry retrieval + hit + verdict
     directly. Generic traces carry outcomes but not, today, which lessons
@@ -51,6 +51,16 @@ def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliabili
     profile has recorded retrievals in `extensions`. That asymmetry is real
     and is surfaced to the user rather than hidden, because it determines
     whether this report can say anything at all.
+
+    Deliberately does NOT also read the holdout log for occasions neither
+    of the above covers (a `--experiment` retrieval whose agent never
+    called `capture` afterward) -- see `uncaptured_retrieval_counts` for
+    that data instead, and its own docstring for why folding it in HERE
+    would be actively wrong: `score_lessons` reads a missing slug in
+    `hit` as "retrieved and did not help," so an occasion with no captured
+    outcome at all would score as a confirmed miss rather than as the
+    unknown it actually is, dragging every such lesson's measured
+    precision down for no reason but under-reporting.
     """
     ev: list[reliability.Evidence] = []
 
@@ -118,3 +128,74 @@ def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliabili
         )
 
     return ev
+
+
+def uncaptured_retrieval_counts(root: str) -> dict[str, int]:
+    """Per lesson slug, how many occasions the holdout log shows it was
+    actually injected into that no episode or trace ever recorded an
+    outcome for -- an agent that retrieved under `--experiment` and never
+    called `capture` afterward.
+
+    A coverage signal, not scoring input: this is deliberately NOT folded
+    into `load_evidence`/`reliability.score_lessons`. That function reads a
+    slug absent from `Evidence.hit` as "retrieved and did not help," so an
+    uncaptured occasion (outcome genuinely UNKNOWN, not a confirmed miss)
+    would score as a miss and drag the lesson's measured precision down for
+    no reason but under-reporting -- exactly the kind of guessed-at outcome
+    this codebase's importers (`commontrace/adapters.py`) refuse to invent
+    elsewhere. `commontrace reliability` prints this alongside each
+    lesson's verdict instead, as "N more retrieval(s) with no captured
+    outcome" -- a prompt to capture more, not a number the verdict itself
+    should absorb.
+
+    Excludes any occasion an episode or trace DOES cover, so a captured
+    occasion is never counted here as if it were still missing -- that
+    would silently claim under-reporting for an occasion whose outcome the
+    real record already has, whatever it turned out to be (including a
+    genuine, recorded miss).
+
+    Only `injected=True` rows count: a lesson the holdout withheld was
+    matched but deliberately never shown, so counting it would credit a
+    lesson with an occasion it was never actually part of -- the same
+    reasoning `query_cmd.py`'s own `eligible` list excludes a
+    budget-dropped lesson from randomization for.
+    """
+    captured_occasions = {e.occasion_id for e in load_evidence(root)}
+    records, _corrupt = holdout_io.read_log(root)
+    counts: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for r in records:
+        if not r.injected or r.occasion_id in captured_occasions:
+            continue
+        # One occasion assigning the same lesson twice (a retry, or two
+        # calls under one occasion_id) is still one occasion's worth of
+        # missing evidence for that lesson, not two.
+        key = (r.lesson, r.occasion_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[r.lesson] = counts.get(r.lesson, 0) + 1
+    return counts
+
+
+def reliability_snapshot(root: str) -> dict[str, float]:
+    """This store's current reliability verdicts, as a ranking adjustment per
+    slug -- see `commontrace/reliability.py`'s `ranking_adjustments`.
+
+    Recomputed fresh on every call rather than cached to disk: evidence is
+    file-based (episodes/traces already on disk) and this product's own
+    corpora are hundreds to low-thousands of occasions, not the scale where
+    re-globbing and re-scoring costs anything a single retrieval call would
+    notice. A store with no evidence at all (a brand-new fleet) returns an
+    empty dict, which `retrieval.rank_lessons` reads as "no adjustment" for
+    every lesson -- the same as UNPROVEN.
+
+    This is the "precomputed reliability snapshot" `retrieval_io.py`'s
+    `reliability_weight` docstring refers to: computed once per retrieval
+    call, not once per candidate lesson inside the ranking loop.
+    """
+    evidence = load_evidence(root)
+    if not evidence:
+        return {}
+    scores = reliability.score_lessons(evidence)
+    return reliability.ranking_adjustments(scores)

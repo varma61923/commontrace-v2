@@ -351,7 +351,38 @@ It also flags **contradictions** — pairs of `active` lessons that fire in
 overlapping situations but pull in opposite directions, which an agent can
 otherwise receive both of at once.
 
+It also surfaces, separately from every verdict, occasions the holdout log
+shows a lesson was actually injected into (a `--experiment` retrieval) that
+no `capture` ever recorded an outcome for — an **"Under-reported"** section,
+not a penalty: an unknown outcome is a different fact from a confirmed
+miss, and folding it into precision would make an under-captured lesson
+look worse than measured for no reason but under-reporting. It's a prompt
+to capture more, not a number a verdict absorbs.
+
 Nothing is changed automatically; the Validator gate stays human.
+
+**`commontrace lesson suggest-revision <slug>`** goes one step further than
+the label, for a MISCALIBRATED lesson specifically (fires often, rarely
+helps — a narrowing problem, not necessarily a wrong rule): it drafts a new
+`status: review` lesson from that lesson's own retrieval evidence — which
+occasions it fired on, and which of those it actually helped — with
+`applies_when`/`do_not_apply_when` marked for a human or agent to tighten.
+Nothing about the original lesson changes until that draft is approved:
+
+```bash
+commontrace lesson suggest-revision my_broad_rule
+# -> drafts lesson_my_broad_rule-revision (status: review), evidence attached
+commontrace lesson approve my_broad_rule-revision   # once tightened
+commontrace lesson reject my_broad_rule --reason "superseded by my_broad_rule-revision"
+```
+
+Refuses outright for any other verdict — a HARMFUL lesson's rule may be
+wrong, not just its activation condition, and tightening WHEN it fires
+would not fix that (the message points at `lesson reject` instead). This
+does not call an LLM: nothing in this codebase's core pipeline does, and
+this command aggregates real evidence into one place for a human or an
+LLM-driving agent to act on, rather than adding a new dependency to draft
+prose automatically.
 
 **`commontrace consolidate`** asks the other question `reliability` doesn't:
 not "does this lesson work", but "does the corpus have two lessons saying
@@ -385,6 +416,54 @@ Falls back automatically to a pure-Python lexical (word-overlap) ranker if
 the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
+
+Ranking can also weigh a lesson's own track record and freshness, not just
+today's topical match — opt-in, and never a change to which lessons are
+*eligible* at all (the relevance floor is unaffected either way):
+
+```bash
+commontrace retrieval --reliability-weight 0.2   # a HARMFUL/MISCALIBRATED verdict ranks lower
+commontrace retrieval --recency-weight 0.2       # a lesson nobody has hit in a year ranks lower
+```
+
+Both default to 0 (off). See `commontrace/reliability.py`'s
+`ranking_adjustments` and `commontrace/recency.py` for what feeds each one
+— the former reads the same `reliability` verdicts, the latter the
+existing `last_hit` field, no new schema required.
+
+A long, multi-turn occasion that retrieves more than once can skip
+guidance it has already been shown, so it isn't re-injected on every call:
+
+```bash
+commontrace query "..." --exclude-shown occ-4711
+```
+
+Reads the holdout log for lessons already logged as injected (not
+withheld) under that `occasion_id` from a prior `--experiment` call; a
+`core: true` lesson is never excluded (it's the fleet's unconditional
+position, present every call by design). A prior call for that occasion
+made without `--experiment` left no record, so nothing is excluded for
+it — this is a real, stated limitation, not a silent gap. MCP's
+`retrieve` takes the identical `exclude_shown` parameter.
+
+**Using CommonTrace as a library, not just a CLI:** a second-stage
+reranker (a cross-encoder, an LLM judge, a bespoke scorer) has no seam to
+plug into via a CLI flag — it's code, not a config value — so this is a
+composition point for a Python caller instead:
+
+```python
+from commontrace import lesson_cache, retrieval
+
+lessons, term_cache = lesson_cache.load_active_with_terms(root, agent_type=None, reader=...)
+ranked = retrieval.rank_lessons(task, lessons, term_cache=term_cache)
+ranked = retrieval.apply_reranker(task, ranked, my_reranker)  # my_reranker(task, candidates) -> candidates
+```
+
+`apply_reranker(task, ranked, None)` (the default) is a no-op. This is the
+same shape `commontrace/redundancy.py`'s own `similarity` parameter
+already uses — a plain callable, not a class hierarchy, so the core
+install never gains a hard dependency for an extension point most stores
+never use.
 
 ### 9 — Prove the lessons *cause* the improvement
 
@@ -1284,7 +1363,17 @@ experiment inside a week, which is the false positive that teaches people to
 ignore a validity report. Every content change is journaled append-only with
 who changed it and why, so *what instruction was this fleet following on
 March 4th, who approved it, and what did withholding it do* is a question
-with an answer.
+with an answer — including the actual TEXT, not just which revision it was:
+
+```bash
+commontrace lesson history lesson_backoff --as-of 2026-03-04
+# prints the applies_when/do_not_apply_when/body that were live on that date,
+# reconstructed from the journal's before/after content on each entry
+```
+
+(Content recorded from the point this field was added onward — a change
+journaled before that upgrade still shows only its hash, and `--as-of`
+says so plainly rather than fabricating text it does not have.)
 
 Three things it will not do:
 

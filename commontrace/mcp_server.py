@@ -93,6 +93,7 @@ from commontrace import (
     memory_guard,
     paths,
     receipts,
+    recency,
     redundancy,
     retrieval,
     retrieval_io,
@@ -481,7 +482,8 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     @mcp.tool()
     async def retrieve(
-        task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = ""
+        task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = "",
+        exclude_shown: str = "",
     ) -> dict:
         """Find the lessons that apply to the task you are about to attempt.
 
@@ -495,6 +497,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         Honouring that is the whole experiment: using a withheld lesson anyway
         does not fail loudly, it silently biases the measured effect toward
         zero. Report the result afterwards with `capture(occasion_id=...)`.
+
+        `exclude_shown`, if given an occasion id, skips any (non-core)
+        lesson already logged as injected for that occasion in a prior
+        `--experiment`-mode call -- for a long multi-turn task that calls
+        this more than once and should not see the same guidance every
+        turn. A prior call for that occasion made WITHOUT a holdout
+        configured left no record, so nothing is excluded for it.
 
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
@@ -547,18 +556,45 @@ def build_server(root: str, *, allow_approval: bool = True):
                     root, agent_type or None,
                     reader=lambda p: read_or_warn(frontmatter.read, p),
                 )
+            # Never drops a `core: true` lesson (see
+            # commontrace/dosage.py's module docstring) -- core is the
+            # fleet's unconditional position, present every call by design.
+            if exclude_shown:
+                already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
+                if already_shown:
+                    active = [
+                        (p, fm) for p, fm in active
+                        if dosage.is_core(fm) or str(fm.get("name", "")) not in already_shown
+                    ]
             # The store's own retrieval settings, for the same reason the
             # holdout config below is read from the store rather than
             # hardcoded here: scorer and floor decide which lessons are
             # ELIGIBLE, so this surface disagreeing with `commontrace query`
             # would put two different treatments in one experiment.
             retrieval_config = retrieval_io.load_config(root)
+            # None (not computed at all) unless this store opted in --
+            # `evidence_io.reliability_snapshot` globs episodes/traces and
+            # `recency.recency_lookup` parses every lesson's `last_hit`, and
+            # a store that has not set either weight should not pay either
+            # cost on a surface a long-lived server answers many calls on.
+            reliability_lookup = (
+                evidence_io.reliability_snapshot(root)
+                if retrieval_config.reliability_weight > 0 else None
+            )
+            recency_lookup = (
+                recency.recency_lookup(active)
+                if retrieval_config.recency_weight > 0 else None
+            )
             ranked = retrieval.rank_lessons(
                 task, active,
                 top_k=max(1, min(int(top_k), 50)),
                 floor=retrieval_config.floor,
                 scorer=retrieval_config.scorer,
                 term_cache=term_cache,
+                reliability_lookup=reliability_lookup,
+                reliability_weight=retrieval_config.reliability_weight,
+                recency_lookup=recency_lookup,
+                recency_weight=retrieval_config.recency_weight,
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")

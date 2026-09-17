@@ -348,6 +348,32 @@ def read_log(root: str) -> tuple[list[LogRecord], int]:
     return records, corrupt
 
 
+def injected_slugs_for_occasion(root: str, occasion_id: str) -> set[str]:
+    """Every lesson slug this occasion has already been shown, per the
+    holdout log -- the "only what this occasion has seen so far" filter
+    `commontrace query --exclude-shown`/MCP `retrieve`'s `exclude_shown`
+    read, for a long multi-turn task that calls retrieval more than once
+    and should not re-inject the same guidance every turn.
+
+    Reads `injected=True` rows only -- a lesson this occasion was assigned
+    to the WITHHELD arm of a holdout was never actually shown, so excluding
+    it here would be excluding something the occasion never saw.
+
+    THIS IS SCOPED TO WHAT THE LOG CAN ANSWER, not to every past query:
+    `assign_and_log` only runs under `--experiment`
+    (`commontrace/commands/query_cmd.py`'s `_apply_holdout`), so a plain
+    (non-`--experiment`) prior query for this same `occasion_id` left no
+    record here at all, and this function has no way to know it happened.
+    Returning an empty set in that case is the honest answer -- "nothing
+    on record" -- rather than a guess at what a non-experiment query might
+    have shown.
+    """
+    if not occasion_id:
+        return set()
+    records, _corrupt = read_log(root)
+    return {r.lesson for r in records if r.occasion_id == occasion_id and r.injected}
+
+
 def _opt_float(value: object) -> float | None:
     """None rather than a default. A missing score is "not recorded", which
     the integrity checks must be able to tell apart from a recorded 0.0."""

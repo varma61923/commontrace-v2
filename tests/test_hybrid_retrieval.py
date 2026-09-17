@@ -341,7 +341,7 @@ def _args(root: str, task: str, **extra) -> argparse.Namespace:
         task=task, top_k=5, dest=root, agent_type=None, lexical=False,
         relevance_floor=None, include_importance_floor=None,
         experiment=False, occasion_id=None, holdout_rate=None,
-        experiment_salt=None,
+        experiment_salt=None, exclude_shown=None,
     )
     base.update(extra)
     return argparse.Namespace(**base)

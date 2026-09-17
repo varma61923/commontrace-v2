@@ -8,12 +8,15 @@ import sys
 
 from commontrace import (
     approval,
+    evidence_io,
     frontmatter,
     lesson_io,
     memory_guard,
     paths,
     redundancy,
+    reliability,
     templates,
+    trace_io,
     validate,
 )
 from commontrace.commands import _validators
@@ -94,6 +97,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rj.add_argument("--dest", default=None)
     rj.set_defaults(func=run_reject)
 
+    sr = sub.add_parser(
+        "suggest-revision",
+        help="Draft a tightened activation condition for a MISCALIBRATED lesson, "
+             "from its own retrieval evidence. Writes a new review-status lesson; "
+             "changes nothing about the original until you approve the draft.",
+    )
+    sr.add_argument("slug")
+    sr.add_argument("--dest", default=None)
+    sr.set_defaults(func=run_suggest_revision)
+
     hist = sub.add_parser(
         "history",
         help="What this lesson has said over time, and who changed it.",
@@ -105,6 +118,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     hist.add_argument("slug", help="Lesson slug (e.g. lesson_retry_backoff)")
+    hist.add_argument(
+        "--as-of", default=None, metavar="DATE",
+        help="Print what this lesson actually SAID at this point in time (YYYY-MM-DD "
+             "or full ISO 8601), reconstructed from the revision journal, instead of "
+             "the list of changes. What environments.py calls 'which release is "
+             "current' upgraded to 'what did this environment actually serve on any "
+             "past date' -- see commontrace/lesson_io.py's content_as_of.",
+    )
     hist.add_argument("--dest", default=None)
     hist.set_defaults(func=run_history)
 
@@ -464,6 +485,187 @@ def run_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+def _occasion_labels(root: str, wanted: set[str]) -> dict[str, str]:
+    """A short, best-effort label for each occasion id in `wanted` -- what
+    the task actually was, for `suggest-revision`'s evidence section.
+
+    Not indexed: this runs once per lesson a human is actively reviewing,
+    not on every retrieval, so scanning episodes/traces once is the same
+    cost `evidence_io.load_evidence` already pays to find these same
+    occasions in the first place. Best-effort on purpose -- a label this
+    cannot find (an occasion recorded by a profile with no
+    task_invocation/title at all) is simply omitted, not an error, since
+    the occasion id and hit/miss verdict alone are still real evidence.
+    """
+    out: dict[str, str] = {}
+    if not wanted:
+        return out
+    for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
+        if os.path.basename(path).startswith("_") or "template" in os.path.basename(path):
+            continue
+        parsed = read_or_warn(frontmatter.read, path)
+        if parsed is None:
+            continue
+        fm, _body = parsed
+        name = str(fm.get("name", os.path.basename(path)))
+        if name in wanted:
+            label = str(fm.get("task_invocation") or "").strip()
+            if label:
+                out[name] = label
+    remaining = wanted - set(out)
+    if remaining:
+        for path in sorted(glob.glob(os.path.join(paths.traces_dir(root), "*.md"))):
+            if os.path.basename(path) == "README.md":
+                continue
+            parsed = read_or_warn(trace_io.read, path)
+            if parsed is None:
+                continue
+            inst, _body = parsed
+            tid = str(inst.get("id", ""))
+            if tid in remaining:
+                label = str(inst.get("title") or "").strip()
+                if label:
+                    out[tid] = label
+    return out
+
+
+def run_suggest_revision(args: argparse.Namespace) -> int:
+    """Draft a tightened activation condition for a MISCALIBRATED lesson.
+
+    Deliberately NOT an LLM-authored rewrite -- this codebase has no LLM
+    call anywhere in its core pipeline, and inventing one just for this
+    command would be a much larger dependency and cost than the gap it
+    closes justifies. What this DOES do: aggregate the exact evidence
+    `commontrace reliability` already computed (which occasions this
+    lesson fired on, and which of those it actually helped) into one
+    place, in a new review-status lesson a human or an agent then edits --
+    the same "propose a draft, a human/Validator activates it" shape
+    `commontrace distill` and `lesson new` already use, not a new
+    governance mechanism.
+
+    Scoped to MISCALIBRATED specifically (see `reliability.py`'s own
+    verdict rationale): a HARMFUL lesson's rule may be wrong outright, and
+    tightening WHEN it fires does not fix a rule that is simply incorrect.
+    """
+    root = paths.resolve_root(args.dest)
+    path = _resolve_lesson_path(root, args.slug)
+    if path is None:
+        print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+        return 1
+    parsed = read_or_warn(frontmatter.read, path)
+    if parsed is None:
+        return 1
+    fm, body = parsed
+    slug = str(fm.get("name", "")) or lesson_io.canonical_slug(args.slug)
+
+    evidence = evidence_io.load_evidence(root)
+    scores = {s.slug: s for s in reliability.score_lessons(evidence)}
+    verdict_row = scores.get(slug)
+    if verdict_row is None or verdict_row.verdict != reliability.VERDICT_MISCALIBRATED:
+        current = verdict_row.verdict if verdict_row else "no evidence yet"
+        print(
+            f"[commontrace] '{slug}' is not MISCALIBRATED (currently: {current}) -- "
+            "refusing to draft a revision.",
+            file=sys.stderr,
+        )
+        if verdict_row is not None and verdict_row.verdict == reliability.VERDICT_HARMFUL:
+            print(
+                "  A HARMFUL verdict means the rule itself may be wrong, not just its\n"
+                "  activation condition -- tightening WHEN it fires would not fix that.\n"
+                "  Consider `commontrace lesson reject` or rewriting it by hand.",
+                file=sys.stderr,
+            )
+        else:
+            print("  Run `commontrace reliability` for the current verdict.", file=sys.stderr)
+        return 1
+
+    hit_occasions = [ev for ev in evidence if slug in ev.retrieved and slug in ev.hit]
+    miss_occasions = [ev for ev in evidence if slug in ev.retrieved and slug not in ev.hit]
+    labels = _occasion_labels(
+        root, {ev.occasion_id for ev in hit_occasions + miss_occasions},
+    )
+
+    def _section(heading: str, occasions: list) -> list[str]:
+        lines = [f"### {heading}"]
+        if not occasions:
+            lines.append("(none)")
+        for ev in occasions:
+            label = labels.get(ev.occasion_id)
+            lines.append(f"- `{ev.occasion_id}`" + (f": {label}" if label else ""))
+        return lines
+
+    evidence_lines = [
+        f"Reliability verdict at the time this draft was written: MISCALIBRATED "
+        f"-- {verdict_row.rationale}",
+        "",
+        *_section("Fired and helped", hit_occasions),
+        "",
+        *_section("Fired but did not help", miss_occasions),
+    ]
+
+    draft_slug = f"{lesson_io.canonical_slug(slug)}-revision"
+    out_path = os.path.join(paths.lessons_dir(root), f"lesson_{draft_slug}.md")
+
+    with frontmatter.locked(out_path):
+        # A draft that was approved or rejected is resolved -- its file
+        # stays on disk (nothing in this codebase deletes lesson history),
+        # but it no longer blocks drafting a fresh attempt at the same
+        # slug, and `write_lesson` below simply journals overwriting it.
+        # Only a still-pending ('review') draft blocks a second one, so an
+        # operator can't lose track of which draft is the live one.
+        if os.path.exists(out_path):
+            existing = read_or_warn(frontmatter.read, out_path)
+            if existing is not None and existing[0].get("status") == "review":
+                print(
+                    f"[commontrace] a draft already exists for '{slug}' "
+                    f"({draft_slug}, status=review) -- approve or reject it "
+                    "before drafting another.",
+                    file=sys.stderr,
+                )
+                return 1
+        # TODO-prefixed on purpose (see templates.PLACEHOLDER_MARKER): the
+        # ORIGINAL applies_when/do_not_apply_when are reproduced below each
+        # marker for reference, but the point of this command is that a
+        # human or agent reads the evidence and rewrites the condition --
+        # `lesson approve` refuses this draft, same as any other
+        # unedited scaffolding, until that happens (or --force).
+        draft_fm = templates.lesson_frontmatter(
+            slug=draft_slug,
+            description=f"Revision draft: tighten the activation condition for {slug}",
+            agent_type=str(fm.get("agent_type") or paths.store_agent_type(root)),
+            domain=str(fm.get("domain") or ""),
+            tags=list(fm.get("tags") or []),
+            applies_when=(
+                f"TODO: tighten -- was: {fm.get('applies_when', '')}"
+            ),
+            do_not_apply_when=(
+                f"TODO: tighten -- was: {fm.get('do_not_apply_when', '')}"
+            ),
+            importance=int(fm.get("importance") or 3),
+            importance_rationale=(
+                f"Drafted from {slug}'s own MISCALIBRATED evidence "
+                f"({verdict_row.n_hit}/{verdict_row.n_retrieved})."
+            ),
+            source_traces=[],
+            status="review",
+        )
+        draft_fm["revises"] = slug
+        draft_body = body.rstrip("\n") + "\n\n## Evidence for revision\n" + "\n".join(evidence_lines) + "\n"
+        lesson_io.write_lesson(
+            out_path, draft_fm, draft_body, root=root, actor=_actor(),
+            reason=f"suggest-revision draft of {slug}",
+        )
+    print(f"[commontrace] drafted {out_path}")
+    print(
+        f"  Nothing changed for '{slug}' yet -- this is a new, separate draft.\n"
+        "  Read the evidence, rewrite applies_when/do_not_apply_when, then:\n"
+        f"    commontrace lesson approve {draft_slug}\n"
+        f"    commontrace lesson reject {slug} --reason \"superseded by {draft_slug}\""
+        "   # once you're satisfied"
+    )
+    return 0
+
+
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     for path in _iter_lesson_paths(root, None):
@@ -492,6 +694,21 @@ def run_list(args: argparse.Namespace) -> int:
 
 def run_history(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.as_of:
+        try:
+            fm, body = lesson_io.content_as_of(root, args.slug, args.as_of)
+        except lesson_io.ContentAsOfError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+        print(f"# {args.slug} as of {args.as_of}")
+        print()
+        print(f"applies_when: {fm.get('applies_when', '')}")
+        print(f"do_not_apply_when: {fm.get('do_not_apply_when', '')}")
+        print(f"status: {fm.get('status', '')}")
+        print()
+        print(body)
+        return 0
+
     records = lesson_io.history(root, args.slug)
     path = lesson_io.lesson_path(root, args.slug)
     now = lesson_io.current_revision(path) if path else None
