@@ -269,6 +269,24 @@ fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
 """
 
 
+# An inline data-URI icon rather than a static file or route: this
+# console has no static-asset serving infrastructure at all (deliberately
+# -- the Hub image ships no frontend build step), and every browser
+# requests `/favicon.ico` once per origin unprompted. Without this,
+# every real browser session against the console logged a 404 on that
+# request from the moment the page loaded, on every page -- harmless to
+# the response actually served, but a real console.error a customer's own
+# browser devtools would show them looking at nothing else. A monogram,
+# not a logo: this product has no shipped brand mark to embed instead.
+_FAVICON_LINK = (
+    '<link rel="icon" href="data:image/svg+xml,'
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+    "%3Crect width='32' height='32' rx='6' fill='%23111'/%3E"
+    "%3Ctext x='16' y='23' font-size='18' font-family='ui-monospace,monospace' "
+    "text-anchor='middle' fill='%23fff'%3EC%3C/text%3E%3C/svg%3E\">"
+)
+
+
 def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
     nav = (
         f'<nav><a href="{CONSOLE_PATH}">Overview</a>'
@@ -284,7 +302,8 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{h(title)} · CommonTrace</title><style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}"
+        f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">your fleet</span>'
         f"{nav}</div></header><main>{body}</main></body></html>",
@@ -312,7 +331,8 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>Proof · CommonTrace</title><style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        f"<title>Proof · CommonTrace</title>{_FAVICON_LINK}"
+        f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">shared report</span></div></header>'
         f"<main>{banner}{body}</main></body></html>",

@@ -270,6 +270,40 @@ class TestSignIn:
         assert any("Too many attempts" in t for t in texts)
 
 
+# --- Every browser session's first, unprompted request -----------------
+
+class TestFaviconIsServedInline:
+    """This console has no static-asset route at all, and every browser
+    requests `/favicon.ico` once per origin on its own, unprompted. Found
+    live: a real Chromium session against the deployed stack logged a
+    console error for exactly that 404 on every single page, from the
+    first load. `_page`/`_shared_page` now embed the icon inline (a data
+    URI) rather than adding a route this console's own design (no static
+    files, no build step) has no other reason to need."""
+
+    async def test_the_signed_in_page_declares_an_inline_icon(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(console.CONSOLE_PATH)
+        assert 'rel="icon"' in response.text
+        assert "data:image/svg+xml" in response.text
+
+    async def test_the_signin_page_declares_one_too(self):
+        async with _client(_app()) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/signin")
+        assert 'rel="icon"' in response.text
+
+    async def test_the_shared_proof_page_declares_one_too(self):
+        """`_shared_page` is a second, separate `<head>` -- the one an
+        anonymous viewer with no session at all actually loads -- and needs
+        its own icon link, not just `_page`'s."""
+        body = console._shared_page("<p>irrelevant</p>", expires_at=9999999999)
+        assert 'rel="icon"' in body.body.decode()
+
+
 # --- Revocation must actually revoke ---------------------------------------
 
 
