@@ -351,6 +351,14 @@ It also flags **contradictions** — pairs of `active` lessons that fire in
 overlapping situations but pull in opposite directions, which an agent can
 otherwise receive both of at once.
 
+It also surfaces, separately from every verdict, occasions the holdout log
+shows a lesson was actually injected into (a `--experiment` retrieval) that
+no `capture` ever recorded an outcome for — an **"Under-reported"** section,
+not a penalty: an unknown outcome is a different fact from a confirmed
+miss, and folding it into precision would make an under-captured lesson
+look worse than measured for no reason but under-reporting. It's a prompt
+to capture more, not a number a verdict absorbs.
+
 Nothing is changed automatically; the Validator gate stays human.
 
 **`commontrace lesson suggest-revision <slug>`** goes one step further than

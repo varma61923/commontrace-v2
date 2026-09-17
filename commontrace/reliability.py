@@ -376,6 +376,7 @@ def render(
     scores: list[LessonReliability],
     contradictions: list[Contradiction],
     min_evidence: int,
+    uncaptured: dict[str, int] | None = None,
 ) -> str:
     counts: dict[str, int] = {}
     for s in scores:
@@ -395,6 +396,26 @@ def render(
         f"- Evidence floor: {min_evidence} retrievals before any verdict is issued",
         "",
     ]
+
+    # A coverage note, not a verdict input: `evidence_io.uncaptured_retrieval_counts`
+    # counts occasions a `--experiment` retrieval logged that no episode or
+    # trace ever recorded an outcome for. Folding it into the scores above
+    # would read an unknown outcome as a confirmed miss and drag precision
+    # down for no reason but under-reporting -- this says "capture more",
+    # not "this lesson is worse than measured".
+    if uncaptured:
+        lines += [
+            "## Under-reported",
+            "",
+            "Retrieved under `--experiment`, but no `capture` was ever recorded for the "
+            "occasion -- not reflected in any verdict above, since an unknown outcome is "
+            "not the same fact as a confirmed miss:",
+            "",
+        ]
+        for slug in sorted(uncaptured):
+            n = uncaptured[slug]
+            lines.append(f"- `{slug}` — {n} occasion(s) with no captured outcome")
+        lines.append("")
 
     actionable = [s for s in scores if s.verdict in (VERDICT_HARMFUL, VERDICT_MISCALIBRATED)]
     if actionable:

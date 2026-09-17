@@ -197,6 +197,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     version nearest this date"), not a hard limit from missing data.
   - 11 new tests in `tests/test_content_as_of.py`.
 
+- **`commontrace reliability` reports uncaptured retrievals**, closing a
+  narrower and safer version of the "continuous capture" gap than the
+  first design attempted. An agent retrieving under `--experiment` and
+  never calling `capture` afterward left that occasion invisible
+  everywhere — a lesson retrieved constantly but never reported on looked
+  identical to one nobody ever asked for.
+
+  The first design considered ("auto-draft" a placeholder occasion record
+  at retrieval time, for a later `capture` to complete) was rejected after
+  reading `commontrace/commands/capture_cmd.py`: a re-capture under the
+  same `occasion_id` preserves an EXISTING trace's title/context/solution
+  over a new call's by default, so a real capture's content would
+  silently lose to a placeholder that arrived first. Building that safely
+  would need new merge semantics in an already-hardened, heavily-tested
+  write path for a low-priority gap — not a good trade.
+
+  Shipped instead: `evidence_io.uncaptured_retrieval_counts` reads the
+  EXISTING holdout log (no new write path at all) for occasions no
+  episode or trace covers. Deliberately kept OUT of
+  `evidence_io.load_evidence`/`reliability.score_lessons`: that scorer
+  reads a slug absent from `Evidence.hit` as a confirmed miss, so folding
+  an unknown outcome in there would drag every under-captured lesson's
+  measured precision down for no reason but under-reporting. Surfaces
+  instead as `commontrace reliability`'s new "Under-reported" section
+  (and `--json`'s `uncaptured_retrievals`) — a coverage prompt, not
+  scoring input. 11 new tests across `tests/test_evidence_io.py` and
+  `tests/test_reliability.py`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

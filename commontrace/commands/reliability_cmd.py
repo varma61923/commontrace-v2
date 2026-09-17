@@ -35,12 +35,28 @@ def run(args: argparse.Namespace) -> int:
     evidence = evidence_io.load_evidence(root)
 
     if not evidence:
+        uncaptured = evidence_io.uncaptured_retrieval_counts(root)
+        if uncaptured:
+            # There IS retrieval evidence -- the holdout log has it -- just
+            # no captured OUTCOME for any of it, which is a different,
+            # more actionable fact than "nothing was ever retrieved".
+            print(
+                "[commontrace] no lesson can be scored yet: retrieval evidence exists "
+                f"({sum(uncaptured.values())} occasion(s), holdout log), but no `capture` "
+                "was ever recorded for any of them, so no outcome can be judged.\n"
+                "  Retrieved with no captured outcome: "
+                + ", ".join(f"`{slug}` ({n})" for slug, n in sorted(uncaptured.items())),
+                file=sys.stderr,
+            )
+            return 0
         print(
             "[commontrace] no retrieval evidence found, so no lesson can be scored.\n"
             "  This report needs to know which lessons were injected into which decisions.\n"
             "  Sources it reads:\n"
             "    - memory/episodes/*.md  -> lessons_retrieved_by_alpha + lessons_hit + verdict\n"
             "    - memory/traces/*.md    -> extensions.lessons_retrieved + extensions.lessons_hit\n"
+            "    - memory/holdout_log.jsonl -> retrieval alone, no outcome (a `--experiment`\n"
+            "      call with no matching `capture`)\n"
             "  Until a retriever records what it injected, lesson quality can only be\n"
             "  judged by opinion.",
             file=sys.stderr,
@@ -53,6 +69,7 @@ def run(args: argparse.Namespace) -> int:
     contradictions = reliability.find_contradictions(
         lessons, reliability=scores, activation_overlap=args.activation_overlap
     )
+    uncaptured = evidence_io.uncaptured_retrieval_counts(root)
 
     if args.json:
         import dataclasses
@@ -61,9 +78,10 @@ def run(args: argparse.Namespace) -> int:
             "n_occasions": len(evidence),
             "lessons": [dataclasses.asdict(s) for s in scores],
             "contradictions": [dataclasses.asdict(c) for c in contradictions],
+            "uncaptured_retrievals": uncaptured,
         }, indent=2))
     else:
-        print(reliability.render(scores, contradictions, args.min_evidence))
+        print(reliability.render(scores, contradictions, args.min_evidence, uncaptured))
 
     if args.strict:
         harmful = [s for s in scores if s.verdict == reliability.VERDICT_HARMFUL]

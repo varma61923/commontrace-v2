@@ -208,6 +208,72 @@ class TestReliabilityCLI:
         assert main(["reliability", "--dest", str(store)]) == 0
         assert "no retrieval evidence" in capsys.readouterr().err
 
+    def test_holdout_only_evidence_is_reported_distinctly_from_no_evidence_at_all(
+        self, store, capsys,
+    ):
+        from commontrace import holdout_io
+        from commontrace.cli import main
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        holdout_io.assign_and_log(
+            str(store), ["never_captured"], occasion_id="occ-1", rate=0.0, salt="s",
+        )
+        capsys.readouterr()
+        assert main(["reliability", "--dest", str(store)]) == 0
+        err = capsys.readouterr().err
+        assert "no capture" in err.lower() or "no captured" in err.lower()
+        assert "never_captured" in err
+
+    def test_uncaptured_retrievals_appear_alongside_scored_lessons(self, store, capsys):
+        """Once at least one lesson HAS captured evidence, an uncaptured
+        one for a DIFFERENT lesson must still be visible -- not just in the
+        all-empty case above."""
+        import yaml
+
+        from commontrace import holdout_io
+        from commontrace.cli import main
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        eps = store / "memory" / "episodes"
+        eps.mkdir(parents=True, exist_ok=True)
+        for i in range(10):
+            fm = {"name": f"ep{i}", "verdict": "CONFORM",
+                  "lessons_retrieved_by_alpha": ["scored"], "lessons_hit": ["scored"]}
+            (eps / f"ep{i}.md").write_text(
+                "---\n" + yaml.safe_dump(fm) + "---\n\nbody\n", encoding="utf-8")
+        holdout_io.assign_and_log(
+            str(store), ["never_captured"], occasion_id="occ-1", rate=0.0, salt="s",
+        )
+        capsys.readouterr()
+        assert main(["reliability", "--dest", str(store)]) == 0
+        out = capsys.readouterr().out
+        assert "Under-reported" in out
+        assert "never_captured" in out
+        assert "scored" in out  # the normally-scored lesson still renders
+
+    def test_json_output_carries_uncaptured_retrievals(self, store, capsys):
+        import json
+
+        from commontrace import holdout_io
+        from commontrace.cli import main
+
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        eps = store / "memory" / "episodes"
+        eps.mkdir(parents=True, exist_ok=True)
+        eps_fm = {"name": "ep0", "verdict": "CONFORM",
+                  "lessons_retrieved_by_alpha": ["scored"], "lessons_hit": ["scored"]}
+        import yaml
+
+        (eps / "ep0.md").write_text(
+            "---\n" + yaml.safe_dump(eps_fm) + "---\n\nbody\n", encoding="utf-8")
+        holdout_io.assign_and_log(
+            str(store), ["never_captured"], occasion_id="occ-1", rate=0.0, salt="s",
+        )
+        capsys.readouterr()
+        assert main(["reliability", "--dest", str(store), "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["uncaptured_retrievals"] == {"never_captured": 1}
+
     def test_scores_lessons_from_episode_evidence(self, store, capsys):
         import yaml
 
