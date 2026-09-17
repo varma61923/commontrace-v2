@@ -124,25 +124,43 @@ def write_lesson(
     order loses the fact that anything happened at all, and a silently
     unrecorded rewrite is the exact failure this module exists to prevent.
     """
-    before = current_revision(path) if os.path.exists(path) else None
+    # Read once, not via current_revision(): that helper discards the actual
+    # frontmatter/body after hashing them, and the journal entry below needs
+    # the text itself, not just its hash, to answer "what did this lesson
+    # say on date X" later (see content_as_of).
+    before_fm: dict | None = None
+    before_body: str | None = None
+    before: str | None = None
+    if os.path.exists(path):
+        try:
+            before_fm, before_body = frontmatter.read(path)
+            before = revision.revision_of(before_fm, before_body)
+        except Exception:  # noqa: BLE001 - an unreadable prior file has no revision
+            before = None
     after = revision.revision_of(fm, body)
 
     if after != before:
         basename = os.path.basename(path)
         if basename.endswith(".md"):
             basename = basename[: -len(".md")]
-        _journal(
-            root,
-            {
-                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "lesson": str(fm.get("name") or basename),
-                "from": before,
-                "to": after,
-                "status": fm.get("status"),
-                "actor": actor or "unknown",
-                "reason": reason,
-            },
-        )
+        record = {
+            "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "lesson": str(fm.get("name") or basename),
+            "from": before,
+            "to": after,
+            "status": fm.get("status"),
+            "actor": actor or "unknown",
+            "reason": reason,
+        }
+        # Only when there WAS a prior version: a lesson's first write has
+        # nothing to reconstruct before it, and `before is None` already
+        # says so via `record["from"]`. Kept out of the record entirely
+        # (not written as null) so an old reader that predates this field
+        # sees the exact same shape it always has for a creation event.
+        if before_fm is not None and before_body is not None:
+            record["before_frontmatter"] = before_fm
+            record["before_body"] = before_body
+        _journal(root, record)
     frontmatter.write(path, fm, body)
     return after
 
@@ -197,3 +215,82 @@ def history(root: str, slug: str) -> list[dict]:
     records, _ = read_revisions(root)
     want = canonical_slug(slug)
     return [r for r in records if canonical_slug(str(r.get("lesson") or "")) == want]
+
+
+def _parse_at(value: str) -> datetime.datetime | None:
+    """Parse a journal `at` timestamp or a caller-supplied point in time,
+    tolerant of a bare date ("2026-07-01") the way a human would type one
+    at a command line. None on anything unparseable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+class ContentAsOfError(Exception):
+    """`content_as_of` could not answer, and why -- distinct from a plain
+    None so a caller (and `lesson history --as-of`) can print the actual
+    reason rather than a generic "nothing found"."""
+
+
+def content_as_of(root: str, slug: str, at: str) -> tuple[dict, str]:
+    """What `slug` said at the point in time `at`, reconstructed from the
+    revision journal.
+
+    Before this, `memory/lesson_revisions.jsonl` recorded a before/after
+    HASH on every change -- enough to detect that a lesson changed
+    mid-experiment (`integrity.check_treatment_stability`), not enough to
+    answer what it actually said on a given date, because the prior text
+    itself was never kept. `write_lesson` now stashes the full prior
+    frontmatter/body in `before_frontmatter`/`before_body` on every entry
+    that has one; this walks that chain to find the version that was live
+    at `at`.
+
+    Raises `ContentAsOfError` (never returns None) for every way this can
+    fail to answer, each with a distinct, actionable message: no such
+    lesson, an unparseable `at`, or content that predates what this
+    journal can reconstruct (either the store adopted this field after the
+    lesson's own history began, or `at` is before the lesson existed at
+    all).
+    """
+    target = _parse_at(at)
+    if target is None:
+        raise ContentAsOfError(
+            f"could not parse {at!r} as a date/time -- use YYYY-MM-DD or full ISO 8601."
+        )
+
+    records = history(root, slug)
+    for record in records:
+        record_at = _parse_at(str(record.get("at") or ""))
+        if record_at is not None and record_at > target:
+            before_fm = record.get("before_frontmatter")
+            before_body = record.get("before_body")
+            if isinstance(before_fm, dict) and isinstance(before_body, str):
+                return before_fm, before_body
+            raise ContentAsOfError(
+                f"'{slug}' changed at {record.get('at')} (after {at}), but that entry "
+                "predates this journal recording full content, not just a hash -- "
+                "the text active at that point cannot be reconstructed from here."
+            )
+
+    # No change happened after `at`: either the current file is what was
+    # live then, or the lesson has never been journaled at all (written
+    # before this module existed, or a schema-only touch with no content
+    # change since) and the file on disk is simply the only version there
+    # has ever been.
+    path = lesson_path(root, slug)
+    if path is None:
+        raise ContentAsOfError(f"no lesson found for slug '{slug}'.")
+    try:
+        return frontmatter.read(path)
+    except Exception as exc:  # noqa: BLE001 - surfaced as this function's own error
+        raise ContentAsOfError(f"could not read '{slug}': {exc}") from exc

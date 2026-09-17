@@ -118,6 +118,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     hist.add_argument("slug", help="Lesson slug (e.g. lesson_retry_backoff)")
+    hist.add_argument(
+        "--as-of", default=None, metavar="DATE",
+        help="Print what this lesson actually SAID at this point in time (YYYY-MM-DD "
+             "or full ISO 8601), reconstructed from the revision journal, instead of "
+             "the list of changes. What environments.py calls 'which release is "
+             "current' upgraded to 'what did this environment actually serve on any "
+             "past date' -- see commontrace/lesson_io.py's content_as_of.",
+    )
     hist.add_argument("--dest", default=None)
     hist.set_defaults(func=run_history)
 
@@ -686,6 +694,21 @@ def run_list(args: argparse.Namespace) -> int:
 
 def run_history(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    if args.as_of:
+        try:
+            fm, body = lesson_io.content_as_of(root, args.slug, args.as_of)
+        except lesson_io.ContentAsOfError as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+        print(f"# {args.slug} as of {args.as_of}")
+        print()
+        print(f"applies_when: {fm.get('applies_when', '')}")
+        print(f"do_not_apply_when: {fm.get('do_not_apply_when', '')}")
+        print(f"status: {fm.get('status', '')}")
+        print()
+        print(body)
+        return 0
+
     records = lesson_io.history(root, args.slug)
     path = lesson_io.lesson_path(root, args.slug)
     now = lesson_io.current_revision(path) if path else None

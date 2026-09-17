@@ -1355,7 +1355,17 @@ experiment inside a week, which is the false positive that teaches people to
 ignore a validity report. Every content change is journaled append-only with
 who changed it and why, so *what instruction was this fleet following on
 March 4th, who approved it, and what did withholding it do* is a question
-with an answer.
+with an answer — including the actual TEXT, not just which revision it was:
+
+```bash
+commontrace lesson history lesson_backoff --as-of 2026-03-04
+# prints the applies_when/do_not_apply_when/body that were live on that date,
+# reconstructed from the journal's before/after content on each entry
+```
+
+(Content recorded from the point this field was added onward — a change
+journaled before that upgrade still shows only its hash, and `--as-of`
+says so plainly rather than fabricating text it does not have.)
 
 Three things it will not do:
 

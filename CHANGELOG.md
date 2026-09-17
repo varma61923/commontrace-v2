@@ -166,6 +166,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests in `tests/test_occasion_exclusion.py`, plus 3 in
   `tests/test_mcp_server.py`.
 
+- **Point-in-time lesson reconstruction**: `commontrace/lesson_io.py`'s
+  revision journal recorded a before/after HASH on every content change —
+  enough to detect a lesson changed mid-experiment
+  (`integrity.check_treatment_stability`), never enough to answer what it
+  actually SAID on a given date, since the prior text itself was never
+  kept. `commontrace/environments.py`'s own docstring named this
+  explicitly as separate, larger work rather than pretending it existed;
+  this closes it.
+
+  - `write_lesson` now stashes the full prior `frontmatter`/`body` in
+    `before_frontmatter`/`before_body` on every journal entry that has a
+    predecessor — additive only, so an old reader sees exactly the shape
+    it always has, and a creation event (nothing to reconstruct before
+    it) carries neither field, same as before.
+  - New `lesson_io.content_as_of(root, slug, at)` walks that chain to
+    find the version live at `at`, raising `ContentAsOfError` (never
+    silently guessing) for every way it can't answer: an unparseable
+    date, a missing lesson, or a target that predates full-content
+    recording — either because the store adopted this field after the
+    lesson's own history began, or because `at` is before the lesson
+    existed at all.
+  - `commontrace lesson history <slug> --as-of <date>` prints the
+    reconstructed `applies_when`/`do_not_apply_when`/body instead of the
+    change list.
+  - `environments.py`'s docstring updated to reflect this: retrieval
+    still does not resolve environments/releases through point-in-time
+    lookup, but that is now a deliberate scope decision (a release's
+    hash-pinned exact-identity guarantee is a stronger claim than "the
+    version nearest this date"), not a hard limit from missing data.
+  - 11 new tests in `tests/test_content_as_of.py`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers
