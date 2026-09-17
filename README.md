@@ -353,6 +353,27 @@ otherwise receive both of at once.
 
 Nothing is changed automatically; the Validator gate stays human.
 
+**`commontrace consolidate`** asks the other question `reliability` doesn't:
+not "does this lesson work", but "does the corpus have two lessons saying
+the same thing". It reports fusion candidates (near-duplicate active
+lessons, lexical — no `attention` extra required), lessons that have
+`uses: 0` / `last_hit: NEVER` (injected whenever their condition matched and
+never once counted as used — an archive candidate), and reuses
+`reliability`'s own contradiction check, in one place:
+
+```bash
+commontrace consolidate            # fuse / archive / contradict, reporting only
+commontrace consolidate --strict   # non-zero exit for a periodic hygiene check in CI
+```
+
+`commontrace lesson approve` already refuses to activate a lesson that
+restates one already active (same near-duplicate check, same measured
+threshold — see `commontrace/redundancy.py`), so a fresh duplicate cannot
+enter the corpus unnoticed; `consolidate` is what finds the ones already
+in it, and what an injection budget's own `--redundancy-threshold`
+(`commontrace retrieval`) can drop from what an agent actually receives —
+see `commontrace/dosage.py` for that opt-in.
+
 ### 8 — Retrieve a lesson for an incoming task
 
 ```bash
