@@ -31,6 +31,13 @@ real asyncio.gather() concurrency against a live Postgres:
      now returns the original amendment rather than forking the
      supersession chain (fixed the same way contribute_trace's #2 above is
      -- see TestAmendTraceIdempotency below).
+  8. events.deliver_pending: two overlapping sweeps (a slow endpoint makes
+     one run past the next cron tick, or an operator runs
+     `hub.manage webhook-deliver` by hand while cron also fires) must not
+     both select and deliver the SAME due row -- fixed via
+     `SELECT ... FOR UPDATE SKIP LOCKED` (see TestDeliverPendingRace
+     below), the same lock discipline as #5/#6 above applied to the
+     webhook delivery queue.
 
 Run with: HUB_TEST_DATABASE_URL=... pytest -s -v \
     hub/tests/test_concurrency_audit.py
@@ -45,10 +52,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from hub import commons, crud, plans
+from hub import commons, crud, events, plans
 from hub.abuse import make_rate_limiter
 from hub.db import session_scope
-from hub.models import Organization, Trace, Vote
+from hub.models import Organization, Trace, Vote, WebhookDelivery, WebhookEndpoint
 
 pytestmark = pytest.mark.asyncio
 
@@ -724,3 +731,70 @@ class TestSubmitKbEntryIdempotency:
         assert not exceptions, f"unexpected exceptions: {exceptions}"
         assert ids == {rows[0].id}, "every concurrent retry must resolve to the same single submission id"
         assert len(rows) == 1
+
+
+# --- 8. events.deliver_pending double-delivery race -----------------------
+
+
+class TestDeliverPendingRace:
+    """Regression test for a real bug: `deliver_pending`'s SELECT of due
+    rows took no row lock, unlike every other shared-counter path this
+    audit file covers. Two overlapping sweeps (a slow endpoint makes one
+    run past the next cron tick, or an operator runs
+    `hub.manage webhook-deliver` by hand while cron also fires) could both
+    select the SAME due delivery, both POST it to the customer's endpoint
+    concurrently, and have the loser's `attempts`/`status` write silently
+    discarded. Fixed with `SELECT ... FOR UPDATE SKIP LOCKED`
+    (hub/events.py:deliver_pending), so concurrent sweeps get disjoint
+    rows instead."""
+
+    async def test_concurrent_sweeps_never_deliver_the_same_row_twice(
+        self, session_factory, org
+    ):
+        n = 20
+        async with session_scope(session_factory) as session:
+            endpoint = WebhookEndpoint(
+                org_id=org, url="https://example.invalid/hook",
+                events=list(events.EVENT_NAMES),
+            )
+            session.add(endpoint)
+            await session.flush()
+            endpoint_id = endpoint.id
+            for i in range(n):
+                session.add(WebhookDelivery(
+                    org_id=org, endpoint_id=endpoint_id, event_type="trace.created",
+                    payload={"trace_id": f"t{i}"},
+                ))
+
+        delivered_ids: list[str] = []
+
+        async def _fake_transport(url, body, headers):
+            # A single event loop interleaves these coroutines only at
+            # `await` points, so a call recorded here reflects a delivery
+            # that already passed this sweep's row lock -- appending to a
+            # shared list needs no additional lock of its own.
+            delivered_ids.append(headers["X-CommonTrace-Event-Id"])
+
+        async def _sweep():
+            async with session_scope(session_factory) as session:
+                return await events.deliver_pending(
+                    session, _fake_transport, signing_key="test-key", limit=100,
+                )
+
+        results = await asyncio.gather(*[_sweep() for _ in range(5)])
+
+        print(
+            f"[deliver_pending race] n_queued={n} n_delivered_calls={len(delivered_ids)} "
+            f"n_distinct_delivered={len(set(delivered_ids))} "
+            f"per_sweep_attempted={[r.attempted for r in results]}"
+        )
+        # The invariant the row lock exists to guarantee: every queued
+        # delivery is attempted, and none is attempted more than once
+        # across all concurrent sweeps combined.
+        assert len(delivered_ids) == len(set(delivered_ids)), (
+            "the same delivery was handed to the transport more than once "
+            "across concurrent sweeps -- FOR UPDATE SKIP LOCKED did not "
+            "give them disjoint rows"
+        )
+        assert len(delivered_ids) == n
+        assert sum(r.attempted for r in results) == n

@@ -135,9 +135,17 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
     for family, _type, _proto, _canonname, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
+        # `not ip.is_global` is ORed in rather than replacing the enumerated
+        # checks: it closes a real gap (RFC 6598 Shared Address Space /
+        # CGNAT, 100.64.0.0/10 -- used as instance-metadata space by some
+        # clouds -- is neither is_private nor any of the other predicates
+        # below, so the enumerated list alone let it through), but
+        # `is_global` is *True* for multicast addresses, so using it alone
+        # would have silently stopped rejecting those.
         if (
             ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+            or not ip.is_global
         ):
             raise EventError(
                 f"webhook host {hostname!r} resolves to {raw_ip}, a private/"
@@ -479,6 +487,18 @@ async def deliver_pending(
     it without this module growing an opinion about any of them.
     """
     moment = now or _now()
+    # FOR UPDATE SKIP LOCKED, not a plain SELECT: two overlapping calls
+    # (a slow endpoint makes one sweep run past the next cron tick, or an
+    # operator runs `hub.manage webhook-deliver` by hand while cron also
+    # fires) would otherwise both select the SAME due rows, both POST them
+    # to the customer's endpoint concurrently -- real double delivery, not
+    # the "retries can double-deliver across attempts" case this module's
+    # docstring already accounts for -- and whichever commits last would
+    # silently clobber the other's `attempts`/`status` write. SKIP LOCKED
+    # instead gives concurrent callers disjoint rows: this is the same
+    # lost-update hazard `crud._adjust_trace_count`'s docstring reasons
+    # through for org counters, applied to a queue this codebase's other
+    # counter paths already treat this way.
     rows = await session.execute(
         select(WebhookDelivery)
         .where(
@@ -487,6 +507,7 @@ async def deliver_pending(
         )
         .order_by(WebhookDelivery.created_at)
         .limit(limit)
+        .with_for_update(skip_locked=True)
     )
     attempted = delivered = retrying = gave_up = 0
     for delivery in rows.scalars():

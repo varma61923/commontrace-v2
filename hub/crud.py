@@ -44,7 +44,7 @@ from commontrace import (
     revision,
     value,
 )
-from hub import audit, commons, outcomes, plans
+from hub import audit, commons, events, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
     RateLimited,
@@ -1355,6 +1355,22 @@ async def contribute_trace(
             f"n_tags={len(tags)} quarantined={trace.quarantined}"
         ),
     )
+    # A genuinely new trace, not the idempotent-replay return above (which
+    # stores nothing and must not announce a trace that already existed).
+    # `trace.created` and (conditionally) `trace.quarantined` were declared
+    # in hub/events.py's EVENT_TYPES from the start -- including as the
+    # very docstring/README example of what this pipeline is for -- but
+    # nothing ever called `emit` for them, so an org subscribed to "every
+    # event type" (the no-`--events`-filter default) got a durable
+    # delivery queue that would never receive either.
+    await events.emit(session, org_id, "trace.created", {
+        "trace_id": trace.id, "agent_type": agent_type, "agent_id": agent_id,
+        "n_tags": len(tags),
+    })
+    if trace.quarantined:
+        await events.emit(session, org_id, "trace.quarantined", {
+            "trace_id": trace.id, "reason": trace.quarantine_reason,
+        })
     possible_duplicates = await _possible_duplicates(
         session, org_id, trace.id, title, context_text, solution_text, tags, agent_type,
     )
@@ -2064,6 +2080,15 @@ async def delete_trace(session: AsyncSession, org_id: str, trace_id: str, actor:
         target_type="trace", target_id=trace_id,
         summary=f"irreversible n_amendment_chain={len(chain_ids)}",
     )
+    # One event per id actually deleted (own_chain_ids, matching the count
+    # decrement above), not just the originally-named trace_id -- a
+    # subscriber maintaining its own index/cache needs to know about every
+    # trace that stopped existing, not only the one named in the call.
+    # `trace.deleted` was declared in EVENT_TYPES from the start but never
+    # emitted anywhere; see contribute_trace's `trace.created` for the
+    # same gap on the create side.
+    for deleted_id in own_chain_ids:
+        await events.emit(session, org_id, "trace.deleted", {"trace_id": deleted_id})
     return True
 
 

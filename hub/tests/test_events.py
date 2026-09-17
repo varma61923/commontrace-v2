@@ -272,6 +272,9 @@ class TestSsrfProtection:
         "0.0.0.0",           # unspecified
         "::1",               # IPv6 loopback
         "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback -- not a bypass
+        "100.64.0.1",        # RFC 6598 Shared Address Space / CGNAT --
+                              # is_private is False for this range; caught
+                              # only by the `not is_global` check.
     ])
     async def test_a_private_or_internal_target_is_rejected(self, ip):
         with pytest.raises(events.EventError, match="private"):
@@ -622,3 +625,75 @@ class TestEmittedFromRealPaths:
             )).scalars())
         assert len(rows) == 1
         assert set(rows[0].payload) == {"plan", "n_deleted", "n_held"}
+
+    async def test_contributing_a_trace_announces_itself(self, session_factory, endpoint, config):
+        """Regression: `trace.created` was declared in EVENT_TYPES -- and
+        used as this module's own docstring/README example of what the
+        pipeline is for -- but nothing ever called `emit` for it."""
+        from hub import crud
+        from hub.abuse import make_rate_limiter
+
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, endpoint["org"], config, rate_limiter,
+                title="t", context_text="c", solution_text="s",
+                tags=[], agent_type="code", agent_id="agent-7", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            row = (await session.execute(
+                select(WebhookDelivery).where(WebhookDelivery.event_type == "trace.created")
+            )).scalar_one()
+        assert row.payload == {
+            "trace_id": result["id"], "agent_type": "code",
+            "agent_id": "agent-7", "n_tags": 0,
+        }
+
+    async def test_a_quarantined_trace_announces_the_quarantine_too(
+        self, session_factory, endpoint, config
+    ):
+        """Regression: same gap as `trace.created`, and the harder-hitting
+        one -- `trace.quarantined` was this module's OTHER motivating
+        example ("open a ticket when a memory was quarantined")."""
+        from hub import crud
+        from hub.abuse import make_rate_limiter
+
+        rate_limiter = make_rate_limiter(config)
+        spam = " ".join(f"http://spam{i}.example.com" for i in range(20))
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, endpoint["org"], config, rate_limiter,
+                title="t", context_text=spam, solution_text="s",
+                tags=[], agent_type="code", actor="test",
+            )
+        assert result["quarantined"] is True
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(WebhookDelivery.event_type == "trace.quarantined")
+            )).scalars())
+        assert len(rows) == 1
+        assert rows[0].payload["trace_id"] == result["id"]
+        assert rows[0].payload["reason"] == result["quarantine_reason"]
+
+    async def test_deleting_a_trace_announces_itself(self, session_factory, endpoint, config):
+        """Regression: `trace.deleted` was declared in EVENT_TYPES but
+        never emitted -- an org subscribed to it (the no-filter default)
+        got no signal that anything it stored had gone away."""
+        from hub import crud
+        from hub.abuse import make_rate_limiter
+
+        rate_limiter = make_rate_limiter(config)
+        async with session_scope(session_factory) as session:
+            result = await crud.contribute_trace(
+                session, endpoint["org"], config, rate_limiter,
+                title="t", context_text="c", solution_text="s",
+                tags=[], agent_type="code", actor="test",
+            )
+        async with session_scope(session_factory) as session:
+            await crud.delete_trace(session, endpoint["org"], result["id"], actor="test")
+        async with session_scope(session_factory) as session:
+            rows = list((await session.execute(
+                select(WebhookDelivery).where(WebhookDelivery.event_type == "trace.deleted")
+            )).scalars())
+        assert len(rows) == 1
+        assert rows[0].payload == {"trace_id": result["id"]}
