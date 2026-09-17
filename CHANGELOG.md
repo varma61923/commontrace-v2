@@ -135,6 +135,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a reranker is code, and there is no honest way to name one from
   `--reliability-weight`-style config.
 
+- **`commontrace lesson suggest-revision <slug>`**: for a MISCALIBRATED
+  lesson (fires often, rarely helps), drafts a new `status: review` lesson
+  from its own retrieval evidence — which occasions it fired on, split
+  into "fired and helped" vs "fired but did not help", with a short label
+  per occasion where one is available (an episode's `task_invocation` or a
+  trace's `title`). The draft's `applies_when`/`do_not_apply_when` are
+  `TODO`-prefixed (the same scaffolding marker `lesson new`/`distill` use)
+  so `lesson approve` refuses it unedited, same governance as any other
+  candidate. Refuses outright for any verdict other than MISCALIBRATED — a
+  HARMFUL lesson's rule may be wrong, not just its activation condition,
+  and the refusal message points at `lesson reject` instead. Not an
+  LLM-authored rewrite: this codebase has no LLM call anywhere in its core
+  pipeline, and this command's job is aggregating real evidence into one
+  place a human or an LLM-driving agent then acts on. 11 new tests in
+  `tests/test_suggest_revision.py`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

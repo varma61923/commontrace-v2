@@ -353,6 +353,29 @@ otherwise receive both of at once.
 
 Nothing is changed automatically; the Validator gate stays human.
 
+**`commontrace lesson suggest-revision <slug>`** goes one step further than
+the label, for a MISCALIBRATED lesson specifically (fires often, rarely
+helps — a narrowing problem, not necessarily a wrong rule): it drafts a new
+`status: review` lesson from that lesson's own retrieval evidence — which
+occasions it fired on, and which of those it actually helped — with
+`applies_when`/`do_not_apply_when` marked for a human or agent to tighten.
+Nothing about the original lesson changes until that draft is approved:
+
+```bash
+commontrace lesson suggest-revision my_broad_rule
+# -> drafts lesson_my_broad_rule-revision (status: review), evidence attached
+commontrace lesson approve my_broad_rule-revision   # once tightened
+commontrace lesson reject my_broad_rule --reason "superseded by my_broad_rule-revision"
+```
+
+Refuses outright for any other verdict — a HARMFUL lesson's rule may be
+wrong, not just its activation condition, and tightening WHEN it fires
+would not fix that (the message points at `lesson reject` instead). This
+does not call an LLM: nothing in this codebase's core pipeline does, and
+this command aggregates real evidence into one place for a human or an
+LLM-driving agent to act on, rather than adding a new dependency to draft
+prose automatically.
+
 **`commontrace consolidate`** asks the other question `reliability` doesn't:
 not "does this lesson work", but "does the corpus have two lessons saying
 the same thing". It reports fusion candidates (near-duplicate active
