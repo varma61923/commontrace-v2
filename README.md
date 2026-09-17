@@ -423,6 +423,21 @@ Both default to 0 (off). See `commontrace/reliability.py`'s
 — the former reads the same `reliability` verdicts, the latter the
 existing `last_hit` field, no new schema required.
 
+A long, multi-turn occasion that retrieves more than once can skip
+guidance it has already been shown, so it isn't re-injected on every call:
+
+```bash
+commontrace query "..." --exclude-shown occ-4711
+```
+
+Reads the holdout log for lessons already logged as injected (not
+withheld) under that `occasion_id` from a prior `--experiment` call; a
+`core: true` lesson is never excluded (it's the fleet's unconditional
+position, present every call by design). A prior call for that occasion
+made without `--experiment` left no record, so nothing is excluded for
+it — this is a real, stated limitation, not a silent gap. MCP's
+`retrieve` takes the identical `exclude_shown` parameter.
+
 **Using CommonTrace as a library, not just a CLI:** a second-stage
 reranker (a cross-encoder, an LLM judge, a bespoke scorer) has no seam to
 plug into via a CLI flag — it's code, not a config value — so this is a

@@ -482,7 +482,8 @@ def build_server(root: str, *, allow_approval: bool = True):
 
     @mcp.tool()
     async def retrieve(
-        task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = ""
+        task: str, top_k: int = 5, occasion_id: str = "", agent_type: str = "",
+        exclude_shown: str = "",
     ) -> dict:
         """Find the lessons that apply to the task you are about to attempt.
 
@@ -496,6 +497,13 @@ def build_server(root: str, *, allow_approval: bool = True):
         Honouring that is the whole experiment: using a withheld lesson anyway
         does not fail loudly, it silently biases the measured effect toward
         zero. Report the result afterwards with `capture(occasion_id=...)`.
+
+        `exclude_shown`, if given an occasion id, skips any (non-core)
+        lesson already logged as injected for that occasion in a prior
+        `--experiment`-mode call -- for a long multi-turn task that calls
+        this more than once and should not see the same guidance every
+        turn. A prior call for that occasion made WITHOUT a holdout
+        configured left no record, so nothing is excluded for it.
 
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
@@ -548,6 +556,16 @@ def build_server(root: str, *, allow_approval: bool = True):
                     root, agent_type or None,
                     reader=lambda p: read_or_warn(frontmatter.read, p),
                 )
+            # Never drops a `core: true` lesson (see
+            # commontrace/dosage.py's module docstring) -- core is the
+            # fleet's unconditional position, present every call by design.
+            if exclude_shown:
+                already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
+                if already_shown:
+                    active = [
+                        (p, fm) for p, fm in active
+                        if dosage.is_core(fm) or str(fm.get("name", "")) not in already_shown
+                    ]
             # The store's own retrieval settings, for the same reason the
             # holdout config below is read from the store rather than
             # hardcoded here: scorer and floor decide which lessons are

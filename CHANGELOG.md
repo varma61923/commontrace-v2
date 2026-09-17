@@ -151,6 +151,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place a human or an LLM-driving agent then acts on. 11 new tests in
   `tests/test_suggest_revision.py`.
 
+- **`commontrace query --exclude-shown`/MCP `retrieve(exclude_shown=...)`**:
+  a session/occasion-scoped retrieval filter, closing the gap that
+  `occasion_id` was recorded for holdout assignment but never usable as a
+  retrieval filter (mem0's `run_id` is the nearest competitor analog). A
+  long multi-turn task can now skip a lesson already logged as injected
+  for that occasion, so it isn't re-shown on every call. New
+  `holdout_io.injected_slugs_for_occasion` reads the existing holdout log
+  — no new persistent write path. A `core: true` lesson is never excluded
+  (present every call by design, same exemption the redundancy check
+  gives it). Honestly scoped: a prior call for that occasion made without
+  `--experiment` left no record, so nothing is excluded for it — stated
+  in the flag's own help text rather than silently degrading. 10 new
+  tests in `tests/test_occasion_exclusion.py`, plus 3 in
+  `tests/test_mcp_server.py`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers
