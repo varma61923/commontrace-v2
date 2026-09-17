@@ -141,6 +141,28 @@ no GenAI attributes is skipped, never an exception: an exporter that
 raised into the application it's attached to would take it down for an
 unrelated telemetry side-channel.
 
+**Getting your own corpus back out is the other direction of the same
+promise.** `commontrace export` is the counterpart to `commontrace import`
+— a portable JSONL dump of this store's lessons and/or traces, for a
+backup, an inspection pass in a spreadsheet, a customer's own tooling, or
+seeding a second store:
+
+```bash
+commontrace export --out backup.jsonl                     # everything
+commontrace export --kind lessons --status active --out lessons.jsonl
+commontrace export --kind traces > traces.jsonl            # composes with shell redirection
+```
+
+Exported trace rows are written in exactly the flat shape `commontrace
+import`'s generic mapping already reads (title/context/solution/tags/id,
+outcome fields inlined) — `commontrace export --kind traces` on one store
+followed by `commontrace import` on another is a real, tested round trip,
+with no field-mapping flags needed. Lesson rows carry this store's own
+frontmatter/body — there's no bulk lesson importer today (a real one needs
+its own slug-collision and approval-status semantics, a separate project),
+so a lesson row is documented as this store's interchange format, not
+implied to be import-ready.
+
 ### 3 — Wire it into your agent platform
 
 ```bash
