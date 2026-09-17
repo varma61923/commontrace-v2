@@ -1,0 +1,18 @@
+# Keeps at least one replica serving during a voluntary disruption (a node
+# drain, a cluster upgrade) -- without this, nothing stops an orchestrator
+# from evicting every replica of a multi-replica deployment at once during
+# routine node maintenance. Meaningless at replicas: 1 (there is nothing to
+# keep available beside the one that's evicted) but harmless to apply
+# ahead of scaling out, so it is already in place once hpa.yaml raises the
+# replica count.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: commontrace-hub
+  labels:
+    app: commontrace-hub
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: commontrace-hub

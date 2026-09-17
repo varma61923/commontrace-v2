@@ -29,6 +29,13 @@ jsonschema==4.26.0         # protocol/schemas/*.json validation
 PyJWT==2.14.0              # OIDC bearer-token verification (hub/sso.py) -- was
                            # only ever a transitive dependency before; now
                            # imported directly, so it is pinned directly too
+cryptography==50.0.1       # AES-256-GCM envelope encryption for WebhookEndpoint.url
+                           # (hub/encryption.py) -- same story as PyJWT above: this was
+                           # already resolving as a transitive dependency (underneath
+                           # mcp/httpx2's own TLS stack; see hub/requirements-lock.txt,
+                           # already pinned to this exact version) and is now imported
+                           # directly, so it moves to a direct, version-pinned dependency
+                           # here too rather than staying an unpinned implicit one.
 # commons_overlap compares every submitted failure signature against the
 # commons corpus. Measured on this codebase, numpy vectorizes that ~24x:
 # the worst-case bounded query is 1.6s with it and ~46s without. hub/commons.py

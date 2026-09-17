@@ -1,0 +1,45 @@
+# CPU-based autoscaling. NOT applied by the order-of-operations in this
+# directory's README by default -- read the whole comment below before you
+# `kubectl apply` this file, because raising replicas has a consequence
+# nothing in Kubernetes itself will warn you about.
+#
+# HUB_DB_POOL_SIZE (configmap.yaml) is PER REPLICA. hub/DEPLOYMENT.md §2
+# and hub/.env.example both say so directly: HUB_DB_POOL_SIZE * replicas
+# must stay under your Postgres's max_connections, or scaling out under
+# load is exactly when a rolling deploy or a scale-up event can exhaust
+# your database's connection ceiling -- the worst possible moment for that
+# failure to be a surprise. Before raising maxReplicas below:
+#   1. Confirm your Postgres's actual max_connections.
+#   2. Confirm HUB_DB_POOL_SIZE * maxReplicas (plus deployment.yaml's own
+#      maxSurge during a rollout) stays comfortably under it.
+#   3. Set HUB_RATE_LIMIT_BACKEND=postgres in configmap.yaml once
+#      replicas > 1 -- the in-process default otherwise grants each
+#      replica its own independent rate-limit allowance (hub/DEPLOYMENT.md
+#      §6), which is a correctness bug, not just a capacity one.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: commontrace-hub
+  labels:
+    app: commontrace-hub
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: commontrace-hub
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Scale down cautiously -- hub/config.py's graceful_shutdown_seconds
+    # (30s default) means a scaled-down pod takes real time to drain
+    # in-flight requests; a fast scale-down thrashes replicas during a
+    # noisy-but-brief load spike instead of riding it out.
+    scaleDown:
+      stabilizationWindowSeconds: 300

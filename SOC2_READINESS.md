@@ -52,6 +52,8 @@ document cannot.
 | Criterion | Control | Evidence |
 |---|---|---|
 | Encryption in transit | TLS assumed terminated in front of the Hub (operator's reverse proxy/load balancer) | `hub/DEPLOYMENT.md` §10 security checklist |
+| Encryption at rest — Trace content | Deliberately NOT encrypted at the application layer: `title`/`context_text`/`solution_text` back a Postgres `GENERATED` full-text-search column and `subject_ids` backs an exact-match GIN index, both of which application-layer encryption would silently break rather than protect. Satisfied at the storage layer instead (managed-provider disk encryption, LUKS, or a Postgres TDE extension) — an operator responsibility, documented rather than left unstated | `hub/encryption.py` module docstring, `hub/DEPLOYMENT.md` §4 "Encryption at rest" |
+| Encryption at rest — `WebhookEndpoint.url` | AES-256-GCM, opt-in via `HUB_ENCRYPTION_KEY`; unset means unaffected (plaintext, as before this existed). Covers the one column that carries no search/index conflict and sometimes embeds a bearer token or shared secret in its path or query string | `hub/encryption.py`, `hub/tests/test_encryption.py` |
 | Secrets never logged | API keys, webhook signing material never appear in logs or audit rows in recoverable form | `hub/auth.py`, `hub/audit.py` module docstrings |
 | Tenant data never crosses org boundaries, even in the shared Knowledge Base | Consultation via signature only, never raw text; explicit consent required to publish | `hub/commons.py`, `DATA_RETENTION.md` |
 

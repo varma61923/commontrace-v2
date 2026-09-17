@@ -1,0 +1,53 @@
+# One-shot `alembic upgrade head`, run to completion BEFORE deployment.yaml
+# is rolled out -- the same reason docker-compose.yml runs this as its own
+# `migrate` service rather than on container start (see the Dockerfile's
+# own comment on that): N replicas racing the same migration on every
+# deploy is a hazard, not a convenience.
+#
+# Re-apply this (kubectl delete -f then apply, or bump metadata.name) on
+# every deploy that could carry a new migration -- it does not run itself.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: commontrace-hub-migrate
+  labels:
+    app: commontrace-hub
+spec:
+  # A retried migration must be safe to run twice -- true of every
+  # migration in hub/alembic/versions/ (see .github/workflows/ci.yml's
+  # "interrupted CONCURRENTLY-index migration" check) -- so a small,
+  # nonzero backoff covers a transient connection failure without masking
+  # a genuinely broken migration by retrying it indefinitely.
+  backoffLimit: 2
+  # Clean up the completed Job automatically so a redeploy that reuses this
+  # name (or a namespace listing) is not cluttered with old one-shot runs.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: commontrace-hub
+        job: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # Build and push with the repo-root Dockerfile:
+          #   docker build -t <your-registry>/commontrace-hub:<tag> .
+          # Must be the SAME tag deployment.yaml runs, so the schema a
+          # migration produces always matches the code about to read it.
+          image: REPLACE_ME/commontrace-hub:REPLACE_ME
+          command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
+          envFrom:
+            # HUB_DATABASE_URL only needs to come from here -- alembic
+            # itself reads nothing else. Deliberately NOT the ConfigMap:
+            # only hub/config.py's own HubConfig.from_env() (used by
+            # deployment.yaml, not this Job) needs the rest.
+            - secretRef:
+                name: commontrace-hub-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

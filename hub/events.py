@@ -66,6 +66,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import select
 
+from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import WebhookDelivery, WebhookEndpoint
 
 _SECRET_DOMAIN = "commontrace-webhook-secret-v1"
@@ -350,9 +351,18 @@ def verify_signature(
 
 async def add_endpoint(
     session, org_id: str, url: str, *, events: list[str] | None = None,
-    signing_key: str = "",
+    signing_key: str = "", cipher: EnvelopeCipher = NULL_CIPHER,
 ) -> tuple[WebhookEndpoint, str]:
-    """Register a URL. Returns the endpoint and its secret, shown once."""
+    """Register a URL. Returns the endpoint and its secret, shown once.
+
+    `url` is validated (https-only, not a private/internal target) BEFORE
+    encryption, so a caller-supplied cipher never hides a rejected target
+    from those checks. The returned `endpoint.url` is whatever `cipher`
+    produced -- ciphertext when a cipher is configured, the same string
+    back when it isn't (see hub/encryption.py) -- so a caller that needs
+    the plaintext back should keep its own `url` argument rather than read
+    it off the returned row.
+    """
     if not url.startswith("https://"):
         raise EventError(
             f"a webhook endpoint must be https, got {url!r}. Events carry no "
@@ -367,7 +377,7 @@ async def add_endpoint(
                 + ", ".join(EVENT_NAMES)
             )
     endpoint = WebhookEndpoint(
-        org_id=org_id, url=url, events=sorted(set(events or EVENT_NAMES)),
+        org_id=org_id, url=cipher.encrypt(url), events=sorted(set(events or EVENT_NAMES)),
     )
     session.add(endpoint)
     await session.flush()
@@ -470,13 +480,18 @@ class DeliveryResult:
 async def deliver_pending(
     session, transport, *, signing_key: str = "",
     now: datetime.datetime | None = None, limit: int = 100,
+    cipher: EnvelopeCipher = NULL_CIPHER,
 ) -> DeliveryResult:
     """Attempt the deliveries that are due.
 
     `transport(url, body, headers) -> None` raising on failure. Injected
     rather than imported so this is testable without a network, and so a
     deployment can put its own egress proxy, allowlist or mTLS in front of
-    it without this module growing an opinion about any of them.
+    it without this module growing an opinion about any of them. `cipher`
+    must match whatever encrypted `endpoint.url` at registration time
+    (hub/manage.py builds one `HubConfig` and uses it for both) -- the same
+    disabled-by-default `NULL_CIPHER` if this deployment never set
+    HUB_ENCRYPTION_KEY.
     """
     moment = now or _now()
     rows = await session.execute(
@@ -515,7 +530,7 @@ async def deliver_pending(
             ),
         }
         try:
-            await transport(endpoint.url, body, headers)
+            await transport(cipher.decrypt(endpoint.url), body, headers)
         except Exception as exc:  # noqa: BLE001 - any failure is a retry
             delivery.last_error = f"{type(exc).__name__}: {exc}"[:500]
             if delivery.attempts >= MAX_ATTEMPTS:
