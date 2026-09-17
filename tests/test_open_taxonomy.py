@@ -47,6 +47,22 @@ class TestAnyFieldCanBeDeclared:
         assert "agent_type: robotics" in body
         assert "agent_type: code" not in body
 
+    def test_capture_rejects_a_malformed_agent_type_at_the_same_boundary_as_init(self, tmp_path, capsys):
+        """`capture --agent-type` had no `type=` validator while `init`/`import`/
+        `lesson new` all did -- an inconsistency that let a malformed value
+        (one a fleet would never have been able to declare at init time) sit
+        unquoted in a trace's frontmatter, into which the MCP `capture` tool
+        also forwards its own `agent_type` argument unvalidated at this exact
+        boundary."""
+        dest = str(tmp_path)
+        assert main(["init", "--dest", dest]) == 0
+        with pytest.raises(SystemExit):
+            main([
+                "capture", "--title", "x", "--context", "y", "--solution", "z",
+                "--agent-type", "not a valid slug!", "--dest", dest,
+            ])
+        assert "is not a valid agent type" in capsys.readouterr().err
+
     def test_suggested_types_are_examples_not_a_gate(self):
         assert "robotics" not in paths.SUGGESTED_AGENT_TYPES
         assert paths.AGENT_TYPE_RE.match("robotics")

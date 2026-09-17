@@ -24,7 +24,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--solution", required=True, help="What worked")
     p.add_argument("--tags", default="", help="Comma-separated tags")
     p.add_argument(
-        "--agent-type", default=None,
+        "--agent-type", type=_validators.agent_type, default=None,
         help="Defaults to the agent_type this store was initialized with.",
     )
     p.add_argument(
