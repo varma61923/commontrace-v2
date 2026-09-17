@@ -160,6 +160,50 @@ class TestItStillDetectsRealEffects:
         assert sum(sequential) / 30 > sum(fixed) / 30
 
 
+class TestTheReportedIntervalMatchesWhatEstablishedTheVerdict:
+    """A HELPS/HURTS verdict reached under `sequential=True` is only valid
+    because the anytime-valid confidence sequence excludes zero -- reporting
+    the ordinary fixed-sample interval instead would show a narrower,
+    invalid-under-continuous-monitoring number on exactly the figure most
+    likely to be quoted from the verdict."""
+
+    def _observations(self, n_inj_success, n_inj, n_wit_success, n_wit):
+        obs = []
+        for i in range(n_inj):
+            obs.append(experiment.HoldoutObservation(
+                lesson_slug="L", occasion_id=f"i{i}", injected=True,
+                succeeded=i < n_inj_success,
+            ))
+        for i in range(n_wit):
+            obs.append(experiment.HoldoutObservation(
+                lesson_slug="L", occasion_id=f"w{i}", injected=False,
+                succeeded=i < n_wit_success,
+            ))
+        return obs
+
+    def test_a_sequential_helps_verdict_reports_the_anytime_valid_interval(self):
+        """The exact fixture `TestTheConfidenceSequence.
+        test_an_overwhelming_effect_still_excludes_zero` already validates
+        (48/60 injected, 18/60 withheld, target_n_per_arm=98 -- which
+        `analyze` derives on its own from these same counts via
+        `required_n_per_arm(2*detectable, baseline)`, baseline=66/120=0.55,
+        detectable=DEFAULT_PRACTICAL_EFFECT=0.10)."""
+        observations = self._observations(48, 60, 18, 60)
+        [effect] = experiment.analyze(observations, sequential=True)
+        assert effect.verdict == experiment.VERDICT_HELPS
+
+        anytime_lo, anytime_hi = experiment.anytime_confidence_interval(
+            48, 60, 18, 60, target_n_per_arm=98)
+        fixed_lo, fixed_hi = experiment.diff_confidence_interval(48, 60, 18, 60)
+
+        # The two intervals actually differ for this fixture -- otherwise
+        # this test could pass before the fix too, having proven nothing.
+        assert (round(anytime_lo, 4), round(anytime_hi, 4)) != (
+            round(fixed_lo, 4), round(fixed_hi, 4))
+        assert (effect.ci_low, effect.ci_high) == (
+            round(anytime_lo, 4), round(anytime_hi, 4))
+
+
 class TestTheDefaultIsUnchanged:
     def test_a_one_shot_analysis_is_not_penalised(self):
         """A caller analysing a FINISHED run is not peeking, and paying a

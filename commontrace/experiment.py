@@ -455,10 +455,30 @@ def plan(
     n_per_arm = required_n_per_arm(effect, baseline, power)
     # A stopped (rate=0) or out-of-range experiment has no design: fail loud
     # rather than rendering "0 occasions needed", which reads as answered.
-    if not 0.0 < rate < 1.0:
-        raise ValueError(f"holdout rate must be in (0.0, 1.0), got {rate}")
+    #
+    # Bounded to (0.0, 0.5], not (0.0, 1.0): `rate` is the HOLDOUT (control)
+    # arm's share, and everything below -- occasions_needed's `smaller_share`,
+    # `rate_for_budget`'s feasibility check, and render_plan's "raise_rate"
+    # remediation ("set the rate to X or HIGHER") -- assumes the control arm
+    # is the smaller one, i.e. rate <= 1-rate. Above 0.5 that inverts (the
+    # INJECTION arm becomes the binding one), and "raise the rate" is then
+    # backwards advice -- LOWERING it is what would grow the shrinking arm.
+    # Reproduced without this bound: plan(effect=0.10, baseline=0.6, rate=0.9,
+    # occasions_budget=3000) reported verdict="ok" by comparing the required
+    # share (0.126) against `rate` (0.9) instead of against the binding arm's
+    # actual share (1-0.9=0.1) -- 3000 occasions at rate=0.9 gives the
+    # injection arm only 300, short of the ~377 needed, so it was actually
+    # infeasible. Nothing upstream (this CLI's own --holdout-rate check
+    # included) restricted rate to this domain before this fix.
+    if not 0.0 < rate <= 0.5:
+        raise ValueError(
+            f"holdout rate must be in (0.0, 0.5], got {rate}. This is the "
+            "share withheld as the control arm, which this design (and its "
+            "'raise the rate' remediation) assumes is the smaller one."
+        )
     # The control arm is the binding one at any rate below 50%, and both arms
-    # must reach n_per_arm, so the requirement is set by whichever is smaller.
+    # must reach n_per_arm, so the requirement is set by whichever is smaller
+    # -- which, given the bound above, is always `rate` itself.
     smaller_share = min(rate, 1.0 - rate)
     occasions_needed = math.ceil(n_per_arm / smaller_share)
 
@@ -728,6 +748,20 @@ def analyze(
             significant = False
         else:
             significant = sig_by_slug.get(slug, False)
+            # When `sequential` established significance, its guarantee is
+            # the anytime-valid `sequence_by_slug` interval, not the fixed-
+            # sample `diff_confidence_interval` set above (line ~738) --
+            # that interval's coverage assumes a single look at a fixed n,
+            # exactly the assumption continuous monitoring violates, and
+            # reporting it here would show a narrower, invalid-for-this-use
+            # interval on precisely the number most likely to be quoted
+            # from a HELPS/HURTS verdict. The other branch that also
+            # reports the sequence interval (a few lines below, for the
+            # "would clear a fixed threshold but the anytime interval still
+            # spans zero" UNDERPOWERED case) already gets this right;
+            # HELPS/HURTS didn't.
+            if significant and sequential and slug in sequence_by_slug:
+                lo, hi = sequence_by_slug[slug]
             if significant and effect > 0:
                 verdict, note = VERDICT_HELPS, "Injecting this lesson causes better outcomes."
             elif significant and effect < 0:

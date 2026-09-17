@@ -819,6 +819,23 @@ class TestDesigningTheExperimentBeforeRunningIt:
         assert design.verdict == "ok"
         assert "is enough at" in ex.render_plan(design)
 
+    @pytest.mark.parametrize("rate", [0.51, 0.9, 1.0])
+    def test_a_rate_above_one_half_is_refused_not_silently_misjudged(self, rate):
+        """Regression: `plan()` used to compare the required share against
+        `rate` itself rather than against whichever arm is actually smaller
+        (`min(rate, 1-rate)`). Above 0.5 those diverge -- the injection arm
+        becomes the binding one -- and the old comparison reported verdict
+        "ok" for a budget that was, in fact, infeasible: at rate=0.9 and a
+        3000-occasion budget, the injection arm gets only 300 occasions
+        against the ~377 needed, but `needed_share (0.126) <= rate (0.9)`
+        read as feasible. Refusing the rate outright, rather than trying to
+        generalize "raise the rate" into "raise or lower it depending on
+        which side of 0.5 you're on," is the safer fix: nothing in this
+        codebase's docs, tests, or CLI ever intended a holdout rate above
+        0.5 before this bug was found."""
+        with pytest.raises(ValueError, match=r"\(0\.0, 0\.5\]"):
+            ex.plan(effect=0.10, baseline=0.6, rate=rate, occasions_budget=3000)
+
     def test_the_rendered_plan_states_the_cost_of_a_wider_holdout(self):
         """A wider holdout means more work running without its memory. A tool
         that recommends one without saying so is selling the upside only."""
