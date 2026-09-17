@@ -118,3 +118,26 @@ def load_evidence(root: str, traces: list[dict] | None = None) -> list[reliabili
         )
 
     return ev
+
+
+def reliability_snapshot(root: str) -> dict[str, float]:
+    """This store's current reliability verdicts, as a ranking adjustment per
+    slug -- see `commontrace/reliability.py`'s `ranking_adjustments`.
+
+    Recomputed fresh on every call rather than cached to disk: evidence is
+    file-based (episodes/traces already on disk) and this product's own
+    corpora are hundreds to low-thousands of occasions, not the scale where
+    re-globbing and re-scoring costs anything a single retrieval call would
+    notice. A store with no evidence at all (a brand-new fleet) returns an
+    empty dict, which `retrieval.rank_lessons` reads as "no adjustment" for
+    every lesson -- the same as UNPROVEN.
+
+    This is the "precomputed reliability snapshot" `retrieval_io.py`'s
+    `reliability_weight` docstring refers to: computed once per retrieval
+    call, not once per candidate lesson inside the ranking loop.
+    """
+    evidence = load_evidence(root)
+    if not evidence:
+        return {}
+    scores = reliability.score_lessons(evidence)
+    return reliability.ranking_adjustments(scores)

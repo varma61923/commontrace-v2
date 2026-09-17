@@ -154,6 +154,44 @@ VERDICT_UNPROVEN = "UNPROVEN"          # not enough evidence to say anything
 VERDICT_MISCALIBRATED = "MISCALIBRATED"  # fires often, rarely useful -> tighten applies_when
 VERDICT_HARMFUL = "HARMFUL"            # tasks go *worse* when it is injected -> rule may be wrong
 
+# Verdict -> ranking adjustment, for commontrace/retrieval.py's optional
+# `reliability_lookup` (see RetrievalConfig.reliability_weight). This is the
+# one place a verdict becomes a number retrieval can use -- everywhere else
+# in this module a verdict stays a verdict, on purpose (see `score_lessons`'s
+# docstring on why four, not a score).
+#
+# MISCALIBRATED gets a real but SMALLER penalty than HARMFUL: a lesson that
+# fires too often is an activation-condition problem (see its own rationale
+# string above) and still helps on the occasions it is actually right, while
+# a HARMFUL verdict means the rule itself may be wrong. Collapsing the two to
+# the same penalty would rank a lesson that helps 20% of the time behind one
+# that measurably makes tasks worse, by the same amount -- which is not what
+# either verdict is trying to say.
+_VERDICT_ADJUSTMENT: dict[str, float] = {
+    VERDICT_HARMFUL: -1.0,
+    VERDICT_MISCALIBRATED: -0.5,
+    VERDICT_UNPROVEN: 0.0,
+    VERDICT_RELIABLE: 1.0,
+}
+
+
+def ranking_adjustments(scores: list["LessonReliability"]) -> dict[str, float]:
+    """slug -> adjustment in [-1, 1], for `retrieval.rank_lessons`'s optional
+    `reliability_lookup`.
+
+    A pure function of `verdict` alone, not the underlying counts: the
+    MAGNITUDE of the adjustment lives in exactly one place
+    (`_VERDICT_ADJUSTMENT` above), and how much that magnitude is allowed to
+    move a ranking lives in exactly one other place (`retrieval.py`'s
+    `reliability_weight`, which the caller supplies and this function knows
+    nothing about). A lesson with no verdict at all (not present in `scores`
+    -- typically because it has never been retrieved with a recorded
+    outcome) is absent from the returned dict; `rank_lessons` treats a
+    missing slug as 0.0, the same as UNPROVEN, which is the correct reading:
+    no evidence is not evidence of harm.
+    """
+    return {s.slug: _VERDICT_ADJUSTMENT.get(s.verdict, 0.0) for s in scores}
+
 
 def score_lessons(
     evidence: list[Evidence],

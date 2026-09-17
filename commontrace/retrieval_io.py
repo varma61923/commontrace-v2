@@ -112,6 +112,20 @@ class RetrievalConfig:
     fusion: str = FUSION_NONE
     #: RRF's rank-damping constant. Exposed because commons/eval sweeps it.
     rrf_k: int = retrieval.DEFAULT_RRF_K
+    #: How much a lesson's measured track record (commontrace/reliability.py)
+    #: moves its rank among lessons that already cleared `floor`. 0.0 (the
+    #: default) is off: this does not change which lessons are ELIGIBLE
+    #: (see retrieval.rank_lessons's own docstring on that boundary), only
+    #: their order, and "opting in is a decision" applies here for the same
+    #: reason it applies to `redundancy_threshold` above -- a store mid
+    #: experiment that starts reordering by reliability has changed which
+    #: of its eligible lessons the budget actually admits, even though the
+    #: eligible SET itself is untouched.
+    reliability_weight: float = 0.0
+    #: How much a lesson's `last_hit` freshness (commontrace/recency.py)
+    #: moves its rank among lessons that already cleared `floor`. Same
+    #: default-off reasoning as `reliability_weight`.
+    recency_weight: float = 0.0
 
     @property
     def eligibility(self) -> str:
@@ -145,12 +159,14 @@ def _float_or(value: object, default: float) -> float:
     return out
 
 
-def _redundancy_or(value: object, default: float) -> float:
+def _unit_float_or(value: object, default: float) -> float:
     """Like `_float_or`, additionally rejecting anything outside [0, 1] --
-    `dosage.Budget` raises on that range, and a malformed config must fall
-    back to the default rather than crash the retrieval that reads it (the
-    same posture `load_config`'s own docstring states for the file as a
-    whole)."""
+    every field this validates (`redundancy_threshold`, `reliability_weight`,
+    `recency_weight`) is either raised on out-of-range by its own consumer
+    (`dosage.Budget`) or documented as meaningless outside it, and a
+    malformed config must fall back to the default rather than crash the
+    retrieval that reads it (the same posture `load_config`'s own docstring
+    states for the file as a whole)."""
     out = _float_or(value, default)
     return out if 0.0 <= out <= 1.0 else default
 
@@ -238,8 +254,10 @@ def load_config(root: str) -> RetrievalConfig:
                     max_lessons=_int_or(
                         raw.get("max_lessons"), dosage.DEFAULT_MAX_LESSONS),
                     max_chars=_int_or(raw.get("max_chars"), dosage.DEFAULT_MAX_CHARS),
-                    redundancy_threshold=_redundancy_or(
+                    redundancy_threshold=_unit_float_or(
                         raw.get("redundancy_threshold"), dosage.DEFAULT_REDUNDANCY_THRESHOLD),
+                    reliability_weight=_unit_float_or(raw.get("reliability_weight"), 0.0),
+                    recency_weight=_unit_float_or(raw.get("recency_weight"), 0.0),
                     # An unrecognised value reads as "no fusion" rather than
                     # raising: this file is read on every retrieval, and a
                     # typo must not stop a fleet retrieving.
@@ -295,6 +313,7 @@ def load_config(root: str) -> RetrievalConfig:
 def configure(root: str, *, scorer: str | None = None, floor: float | None = None,
               fusion: str | None = None, max_lessons: int | None = None,
               max_chars: int | None = None, redundancy_threshold: float | None = None,
+              reliability_weight: float | None = None, recency_weight: float | None = None,
               note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings.
 
@@ -337,6 +356,22 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             f"redundancy threshold must be in [0.0, 1.0] (0 disables it), "
             f"got {new_redundancy}"
         )
+    new_reliability_weight = (
+        current.reliability_weight if reliability_weight is None else float(reliability_weight)
+    )
+    if not 0.0 <= new_reliability_weight <= 1.0:
+        raise ValueError(
+            f"reliability weight must be in [0.0, 1.0] (0 disables it), "
+            f"got {new_reliability_weight}"
+        )
+    new_recency_weight = (
+        current.recency_weight if recency_weight is None else float(recency_weight)
+    )
+    if not 0.0 <= new_recency_weight <= 1.0:
+        raise ValueError(
+            f"recency weight must be in [0.0, 1.0] (0 disables it), "
+            f"got {new_recency_weight}"
+        )
 
     config = RetrievalConfig(
         scorer=new_scorer,
@@ -348,6 +383,8 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
         max_chars=(
             current.max_chars if max_chars is None else max(0, int(max_chars))),
         redundancy_threshold=new_redundancy,
+        reliability_weight=new_reliability_weight,
+        recency_weight=new_recency_weight,
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         note=note or current.note,
     )
@@ -374,6 +411,8 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                         "max_lessons": config.max_lessons,
                         "max_chars": config.max_chars,
                         "redundancy_threshold": config.redundancy_threshold,
+                        "reliability_weight": config.reliability_weight,
+                        "recency_weight": config.recency_weight,
                         "configured_at": config.configured_at,
                         "note": config.note,
                     },

@@ -313,3 +313,60 @@ class TestConfigIsSharedByEverySurface:
 
         with pytest.raises(ValueError):
             retrieval_io.configure(str(tmp_path), floor=1.5)
+
+    def test_configure_rejects_a_reliability_weight_outside_the_scale(self, tmp_path):
+        from commontrace import retrieval_io
+
+        with pytest.raises(ValueError):
+            retrieval_io.configure(str(tmp_path), reliability_weight=1.5)
+
+    def test_configure_rejects_a_recency_weight_outside_the_scale(self, tmp_path):
+        from commontrace import retrieval_io
+
+        with pytest.raises(ValueError):
+            retrieval_io.configure(str(tmp_path), recency_weight=-0.1)
+
+    def test_reliability_and_recency_weight_default_off(self, tmp_path):
+        from commontrace import retrieval_io
+
+        config = retrieval_io.load_config(str(tmp_path))
+        assert config.reliability_weight == 0.0
+        assert config.recency_weight == 0.0
+
+    def test_reliability_and_recency_weight_persist_across_reads(self, tmp_path):
+        from commontrace import retrieval_io
+
+        retrieval_io.configure(
+            str(tmp_path), reliability_weight=0.3, recency_weight=0.15,
+        )
+        reloaded = retrieval_io.load_config(str(tmp_path))
+        assert reloaded.reliability_weight == 0.3
+        assert reloaded.recency_weight == 0.15
+
+    def test_configuring_one_weight_does_not_reset_the_other_or_redundancy(self, tmp_path):
+        """The partial-write bug this whole module's docstring warns
+        about, applied to the two newest fields: setting reliability_weight
+        must not silently zero out an already-configured recency_weight or
+        redundancy_threshold."""
+        from commontrace import retrieval_io
+
+        retrieval_io.configure(
+            str(tmp_path), reliability_weight=0.2, recency_weight=0.4,
+            redundancy_threshold=0.3,
+        )
+        retrieval_io.configure(str(tmp_path), reliability_weight=0.5)
+        reloaded = retrieval_io.load_config(str(tmp_path))
+        assert reloaded.reliability_weight == 0.5
+        assert reloaded.recency_weight == 0.4
+        assert reloaded.redundancy_threshold == 0.3
+
+    def test_a_corrupt_config_falls_back_to_reliability_and_recency_off(self, tmp_path):
+        from commontrace import retrieval_io
+        from commontrace.cli import main
+
+        assert main(["init", "--dest", str(tmp_path)]) == 0
+        with open(retrieval_io.config_path(str(tmp_path)), "w", encoding="utf-8") as fh:
+            fh.write("{not json at all")
+        config = retrieval_io.load_config(str(tmp_path))
+        assert config.reliability_weight == 0.0
+        assert config.recency_weight == 0.0

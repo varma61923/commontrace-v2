@@ -81,6 +81,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machine without that exact database instead of skipping cleanly — same
   defect and fix as `conftest.py`'s own `_skip_if_no_db`.
 
+- **Reliability- and recency-weighted retrieval ranking**, closing the
+  standing gap that `commontrace/retrieval.py`'s `rank_lessons` never
+  consulted `commontrace/reliability.py`'s HELPS/HURTS verdicts or a
+  lesson's `last_hit` freshness — a lesson flagged HARMFUL ranked exactly
+  like everything else, every time, until a human read the reliability
+  report and manually rejected it.
+
+  - **`commontrace/reliability.py`** gains `ranking_adjustments`: a pure
+    verdict → adjustment map (HARMFUL -1.0, MISCALIBRATED -0.5, UNPROVEN
+    0.0, RELIABLE +1.0) — MISCALIBRATED is a real but smaller penalty than
+    HARMFUL, because firing too often and being actively wrong have
+    different remedies (same reasoning `score_lessons` already gives for
+    keeping four verdicts rather than two).
+
+  - **New `commontrace/recency.py`**: an exponential-decay ranking signal
+    over the existing `last_hit` frontmatter field (no new schema needed).
+    A lesson hit today scores +1.0, one exactly `half_life_days` (default
+    180) old scores 0.0, older still negative, floored so age alone is
+    never scored worse than never having been validated at all.
+
+  - **`retrieval.rank_lessons`** gains opt-in `reliability_lookup`/
+    `reliability_weight` and `recency_lookup`/`recency_weight`. Both
+    default to 0.0 (off), producing byte-for-byte identical output to
+    calling the function with neither argument. Critically, **this never
+    changes ELIGIBILITY**: the relevance floor is computed and gated on
+    the pure topical relevance alone, before either adjustment is
+    consulted, and the `relevance` recorded on every `RankedLesson` is
+    always that same unadjusted number — only the sort ORDER among
+    already-eligible lessons changes, in a new, separate `adjusted` key.
+    Configurable per store via `commontrace retrieval
+    --reliability-weight`/`--recency-weight`, wired identically through
+    `commontrace query` (both the lexical and hybrid paths) and MCP's
+    `retrieve()`, so the two surfaces cannot disagree about which order a
+    tied pair comes back in.
+
+  35 new tests across `tests/test_recency.py`, plus additions to
+  `tests/test_reliability.py`, `tests/test_retrieval.py`,
+  `tests/test_retrieval_field_robustness.py`, and
+  `tests/test_query_dosage_parity.py` (the last of these end-to-end
+  through `commontrace query`, not just at the `rank_lessons` unit level).
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

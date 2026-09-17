@@ -7,10 +7,12 @@ import sys
 
 from commontrace import (
     dosage,
+    evidence_io,
     frontmatter,
     holdout_io,
     lesson_cache,
     paths,
+    recency,
     redundancy,
     retrieval,
     retrieval_io,
@@ -113,6 +115,26 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
     return lesson_cache.load_active(
         root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+
+
+def _ranking_adjustments(
+    root: str,
+    lessons: list[tuple[str, dict]],
+    config: retrieval_io.RetrievalConfig,
+) -> tuple[dict[str, float] | None, dict[str, float] | None]:
+    """(reliability_lookup, recency_lookup) for `retrieval.rank_lessons`,
+    each None when this store has not opted in (weight <= 0) -- so a store
+    that has not configured either pays no extra cost at all: no evidence
+    glob, no `last_hit` parsing, matching `dosage.select`'s own "tokenized
+    lazily and only when the check is on" posture for redundancy.
+    """
+    reliability_lookup = (
+        evidence_io.reliability_snapshot(root) if config.reliability_weight > 0 else None
+    )
+    recency_lu = (
+        recency.recency_lookup(lessons) if config.recency_weight > 0 else None
+    )
+    return reliability_lookup, recency_lu
 
 
 def _apply_dosage(
@@ -277,9 +299,12 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     )
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
+    reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
         term_cache=term_cache,
+        reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
+        recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and
@@ -438,9 +463,12 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+    reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     lexical = retrieval.rank_lessons(
         args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
         term_cache=term_cache,
+        reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
+        recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
 
     rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)

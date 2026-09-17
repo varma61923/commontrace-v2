@@ -266,3 +266,70 @@ class TestHybridBudgetParity:
         records, unreadable = holdout_io.read_log(store)
         assert unreadable == 0
         assert len({r.lesson for r in records}) == 1
+
+
+class TestReliabilityAndRecencyWeightingThroughTheCliQueryCommand:
+    """End-to-end: `commontrace retrieval --reliability-weight`/
+    `--recency-weight`, configured on disk, must actually reorder what
+    `commontrace query` prints -- not just what the unit-level
+    tests/test_retrieval.py pins on `rank_lessons` directly."""
+
+    def _episode(self, store: str, name: str, verdict: str, retrieved: str, hit: str) -> None:
+        import yaml
+
+        eps_dir = os.path.join(store, "memory", "episodes")
+        os.makedirs(eps_dir, exist_ok=True)
+        fm = {"name": name, "verdict": verdict,
+              "lessons_retrieved_by_alpha": [retrieved], "lessons_hit": [hit]}
+        with open(os.path.join(eps_dir, f"{name}.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\n" + yaml.safe_dump(fm) + "---\n\nbody\n")
+
+    def test_reliability_weight_reorders_two_topically_tied_lessons(self, store, capsys):
+        # Identical description text -- these tie exactly on topical
+        # relevance, so any ordering difference is attributable to the
+        # reliability adjustment alone.
+        _lesson(store, "good", "refund policy for enterprise accounts",
+                "Follow the standard refund SOP.")
+        _lesson(store, "bad", "refund policy for enterprise accounts",
+                "An alternate, unreviewed refund approach.")
+        for i in range(12):
+            self._episode(store, f"good_ok{i}", "CONFORM", "good", "good")
+        for i in range(12):
+            self._episode(store, f"bad_fail{i}", "ABANDON", "bad", "bad")
+        retrieval_io.configure(store, reliability_weight=0.3)
+
+        rc = query_cmd.run(_args(store, "refund policy for enterprise accounts", top_k=2))
+        assert rc == 0
+        out = capsys.readouterr().out
+        first_slug_line = next(line for line in out.splitlines() if "rel=" in line)
+        assert first_slug_line.split()[0] == "good"
+
+    def test_recency_weight_reorders_two_topically_tied_lessons(self, store, capsys):
+        _lesson(store, "fresh", "refund policy for enterprise accounts",
+                "Follow the standard refund SOP.", last_hit="2026-06-01")
+        _lesson(store, "stale", "refund policy for enterprise accounts",
+                "An older refund approach.", last_hit="NEVER")
+        retrieval_io.configure(store, recency_weight=0.3)
+
+        rc = query_cmd.run(_args(store, "refund policy for enterprise accounts", top_k=2))
+        assert rc == 0
+        out = capsys.readouterr().out
+        first_slug_line = next(line for line in out.splitlines() if "rel=" in line)
+        assert first_slug_line.split()[0] == "fresh"
+
+    def test_off_by_default_tied_lessons_keep_their_insertion_tie_break(self, store, capsys):
+        """With neither weight configured, reliability/recency evidence on
+        disk must have zero effect -- confirms the feature is genuinely
+        opt-in end-to-end, not just at the unit level."""
+        _lesson(store, "good", "refund policy for enterprise accounts",
+                "Follow the standard refund SOP.")
+        _lesson(store, "bad", "refund policy for enterprise accounts",
+                "An alternate, unreviewed refund approach.")
+        for i in range(12):
+            self._episode(store, f"bad_fail{i}", "ABANDON", "bad", "bad")
+
+        rc = query_cmd.run(_args(store, "refund policy for enterprise accounts", top_k=2))
+        assert rc == 0
+        out = capsys.readouterr().out
+        slugs = {line.split()[0] for line in out.splitlines() if "rel=" in line}
+        assert slugs == {"good", "bad"}

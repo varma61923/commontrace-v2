@@ -386,6 +386,20 @@ the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
 
+Ranking can also weigh a lesson's own track record and freshness, not just
+today's topical match — opt-in, and never a change to which lessons are
+*eligible* at all (the relevance floor is unaffected either way):
+
+```bash
+commontrace retrieval --reliability-weight 0.2   # a HARMFUL/MISCALIBRATED verdict ranks lower
+commontrace retrieval --recency-weight 0.2       # a lesson nobody has hit in a year ranks lower
+```
+
+Both default to 0 (off). See `commontrace/reliability.py`'s
+`ranking_adjustments` and `commontrace/recency.py` for what feeds each one
+— the former reads the same `reliability` verdicts, the latter the
+existing `last_hit` field, no new schema required.
+
 ### 9 — Prove the lessons *cause* the improvement
 
 ```bash

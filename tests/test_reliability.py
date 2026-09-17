@@ -253,3 +253,46 @@ class TestReliabilityCLI:
         capsys.readouterr()
         assert main(["reliability", "--dest", str(store), "--strict"]) == 1
         assert main(["reliability", "--dest", str(store)]) == 0
+
+
+class TestRankingAdjustments:
+    """rel.ranking_adjustments -- the one place a verdict becomes a number
+    commontrace/retrieval.py's optional reliability_weight can use."""
+
+    def test_harmful_gets_the_largest_penalty(self):
+        scores = [rel.LessonReliability(
+            slug="x", n_retrieved=10, n_hit=2, precision=0.2, precision_lower=0.05,
+            success_rate=0.3, lift=-0.4, verdict=rel.VERDICT_HARMFUL, rationale="",
+        )]
+        assert rel.ranking_adjustments(scores) == {"x": -1.0}
+
+    def test_miscalibrated_penalty_is_real_but_smaller_than_harmful(self):
+        """A rule that fires too often still helps sometimes -- it must not
+        rank behind one that measurably makes tasks worse, by the same
+        amount (see the module docstring on why these are two verdicts)."""
+        scores = [rel.LessonReliability(
+            slug="x", n_retrieved=10, n_hit=2, precision=0.2, precision_lower=0.05,
+            success_rate=None, lift=None, verdict=rel.VERDICT_MISCALIBRATED, rationale="",
+        )]
+        adj = rel.ranking_adjustments(scores)["x"]
+        assert -1.0 < adj < 0.0
+
+    def test_unproven_is_neutral(self):
+        scores = [rel.LessonReliability(
+            slug="x", n_retrieved=2, n_hit=2, precision=1.0, precision_lower=0.2,
+            success_rate=None, lift=None, verdict=rel.VERDICT_UNPROVEN, rationale="",
+        )]
+        assert rel.ranking_adjustments(scores) == {"x": 0.0}
+
+    def test_reliable_gets_the_largest_boost(self):
+        scores = [rel.LessonReliability(
+            slug="x", n_retrieved=10, n_hit=9, precision=0.9, precision_lower=0.6,
+            success_rate=0.9, lift=0.1, verdict=rel.VERDICT_RELIABLE, rationale="",
+        )]
+        assert rel.ranking_adjustments(scores) == {"x": 1.0}
+
+    def test_a_slug_with_no_verdict_is_simply_absent(self):
+        """No evidence is not evidence of harm -- retrieval.rank_lessons
+        reads a missing slug as 0.0, the same as UNPROVEN, and this
+        function must not manufacture an entry to say so."""
+        assert rel.ranking_adjustments([]) == {}

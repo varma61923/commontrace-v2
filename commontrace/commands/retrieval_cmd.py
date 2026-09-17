@@ -55,6 +55,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "many of the eligible set are actually injected, so it does not start a "
              "new randomization.",
     )
+    p.add_argument(
+        "--reliability-weight", type=float, default=None,
+        help="How much a lesson's measured track record (commontrace/reliability.py's "
+             "RELIABLE/UNPROVEN/MISCALIBRATED/HARMFUL verdict) moves its rank among "
+             "lessons that already cleared --floor. 0 (the default) disables this. Does "
+             "not change which lessons are ELIGIBLE, only their order, but -- like the "
+             "budget -- that can change which of the eligible set the budget actually "
+             "admits, so it does not start a new randomization by itself.",
+    )
+    p.add_argument(
+        "--recency-weight", type=float, default=None,
+        help="How much a lesson's `last_hit` freshness (commontrace/recency.py) moves "
+             "its rank among lessons that already cleared --floor. 0 (the default) "
+             "disables this. Same non-eligibility-changing scope as --reliability-weight.",
+    )
     p.add_argument("--note", default="", help="Why these settings, recorded alongside them.")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -65,7 +80,7 @@ def run(args: argparse.Namespace) -> int:
 
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
-        args.redundancy_threshold,
+        args.redundancy_threshold, args.reliability_weight, args.recency_weight,
     )
     if all(value is None for value in setting):
         config = retrieval_io.load_config(root)
@@ -82,6 +97,14 @@ def run(args: argparse.Namespace) -> int:
                if config.redundancy_threshold <= 0
                else f"{config.redundancy_threshold:.2f} "
                     "(a lesson this similar to one already admitted is dropped)")
+        )
+        print(
+            "  reliability weight: "
+            + ("off" if config.reliability_weight <= 0 else f"{config.reliability_weight:.2f}")
+        )
+        print(
+            "  recency weight    : "
+            + ("off" if config.recency_weight <= 0 else f"{config.recency_weight:.2f}")
         )
         print(f"  logged as: {config.eligibility}")
         if config.note:
@@ -101,6 +124,8 @@ def run(args: argparse.Namespace) -> int:
             root, scorer=args.scorer, floor=args.floor, fusion=args.fusion,
             max_lessons=args.max_lessons, max_chars=args.max_chars,
             redundancy_threshold=args.redundancy_threshold,
+            reliability_weight=args.reliability_weight,
+            recency_weight=args.recency_weight,
             note=args.note,
         )
     except ValueError as exc:
@@ -110,7 +135,9 @@ def run(args: argparse.Namespace) -> int:
     print(
         f"[commontrace] retrieval: scorer={config.scorer} floor={config.floor:.2f} "
         f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,} "
-        f"redundancy={config.redundancy_threshold:.2f}"
+        f"redundancy={config.redundancy_threshold:.2f} "
+        f"reliability_weight={config.reliability_weight:.2f} "
+        f"recency_weight={config.recency_weight:.2f}"
     )
 
     # The consequence, stated at the moment it is caused -- the same posture
