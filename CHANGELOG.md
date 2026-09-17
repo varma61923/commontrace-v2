@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace export`**: the missing counterpart to
+  `commontrace/import_data.py`'s bulk importer. There was no way to get a
+  store's own corpus of lessons/traces OUT as one portable file — for a
+  backup, an inspection pass in a spreadsheet, a customer's own tooling,
+  or seeding a second store. Exported trace rows are written in exactly
+  the flat shape `commontrace import`'s GENERIC mapping already reads
+  (title/context/solution/tags/id, outcome fields inlined), so
+  `commontrace export --kind traces` on one store followed by
+  `commontrace import` on another is a real, tested round trip with no
+  field-mapping flags needed. Lesson rows carry this store's own
+  frontmatter/body as its interchange format — there is no bulk lesson
+  importer today (slug-collision handling, approval-status semantics, and
+  schema validation would be a separate, larger project), so a lesson row
+  is documented as such rather than implied to be import-ready. Reads
+  only what's on disk locally, the same boundary `consolidate`/
+  `reliability` already use; does not reach into the Hub (`commontrace
+  sync --pull` remains the way to move trace data between a store and the
+  Hub). 11 new tests in `tests/test_export_cmd.py`.
+
 - **Near-duplicate lesson detection (`commontrace/redundancy.py`) and its
   three consumers**, closing a gap competitor research surfaced: mem0's
   update-memory prompt resolves near-duplicate facts on write, and
