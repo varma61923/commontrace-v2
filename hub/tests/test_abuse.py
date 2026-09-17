@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import socket
 import time
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -30,9 +32,55 @@ PG_TEST_DATABASE_URL = os.environ.get(
 )
 
 
+# Memoized for the same reason hub/tests/conftest.py memoizes its own probe:
+# _skip_if_no_pg() runs on every test in this module, and a fresh connection
+# attempt each time adds real latency once the first one has answered the
+# question.
+_pg_reachable: bool | None = None
+
+
 def _skip_if_no_pg():
+    """Skip cleanly when no Postgres is actually listening at
+    PG_TEST_DATABASE_URL -- not just when the env var happens to be unset.
+
+    Same defect, and the same fix, as hub/tests/conftest.py's
+    `_skip_if_no_db` (see its docstring): `if not PG_TEST_DATABASE_URL` can
+    never be true, because the module-level default above is a non-empty
+    string. So on any machine without a Postgres matching that exact
+    hardcoded DSN -- a contributor laptop, a lightweight sandbox -- all 15
+    tests in this module failed with a raw ConnectionRefusedError raised
+    from inside PostgresRateLimiter's background thread, instead of the
+    clean skip this function's name promises.
+
+    A TCP connect, rather than conftest's real asyncpg connect, because
+    this function is called from inside async test bodies (where
+    asyncio.run() would raise "cannot be called from a running event
+    loop") as well as from a sync fixture. It answers the question that
+    actually distinguishes "no database here" from "database present":
+    whether anything is listening. A DSN that connects but rejects the
+    credentials is a misconfigured environment and still fails loudly,
+    which is the right outcome -- silently skipping it would hide a broken
+    CI database behind a green run.
+    """
+    global _pg_reachable
     if not PG_TEST_DATABASE_URL:
         pytest.skip("HUB_TEST_DATABASE_URL not set; PostgresRateLimiter tests need a real Postgres instance")
+    if _pg_reachable is None:
+        parts = urlsplit(PG_TEST_DATABASE_URL)
+        host = parts.hostname or "localhost"
+        port = parts.port or 5432
+        try:
+            with socket.create_connection((host, port), timeout=3):
+                pass
+            _pg_reachable = True
+        except OSError:
+            _pg_reachable = False
+    if not _pg_reachable:
+        pytest.skip(
+            f"Nothing is listening at the configured HUB_TEST_DATABASE_URL "
+            f"({PG_TEST_DATABASE_URL!r}); PostgresRateLimiter tests need a real, "
+            f"reachable Postgres instance."
+        )
 
 
 @pytest.fixture

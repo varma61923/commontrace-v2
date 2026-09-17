@@ -160,6 +160,12 @@ class TestThePolicyFileItself:
         with pytest.raises(approval.PolicyError, match="expected"):
             approval.load_policy(str(tmp_path))
 
+    def test_unrecognized_policy_keys_raise_policy_error(self, tmp_path):
+        _write_policy(tmp_path, "require-human: true\n")
+        with pytest.raises(approval.PolicyError, match="unrecognized policy key"):
+            approval.load_policy(str(tmp_path))
+
+
 
 class TestAuthorsOf:
     def test_authors_come_from_the_revision_journal_oldest_first(self, tmp_path):

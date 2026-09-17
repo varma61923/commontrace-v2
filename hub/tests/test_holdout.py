@@ -1044,7 +1044,18 @@ class TestWhatTheMemoryWasWorth:
     """
 
     async def _running_experiment(self, session_factory, org, n=120, helps=True):
-        traces = await _traces(session_factory, org, 1)
+        topic = _UNRELATED_TOPICS[0]
+        async with session_scope(session_factory) as session:
+            t = Trace(
+                id="22222222-2222-4222-8222-222222222222",
+                org_id=org, title="lesson 0",
+                context_text=topic,
+                solution_text=f"resolved by addressing {topic}",
+                tags=[], agent_type="code",
+            )
+            session.add(t)
+            await session.flush()
+            traces = [t.id]
         for i in range(n):
             result = await _assign(session_factory, org, traces, f"occ-{i}")
             injected = bool(result["inject"])

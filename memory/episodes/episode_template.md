@@ -7,7 +7,7 @@ tags: [tag1, tag2]
 project: project-name-from-cwd
 verdict: CONFORM
 importance: 3            # integer 1-5 REQUIRED, see rubric in protocol/PROTOCOL.md#10-importance-rubric
-importance_rationale: "" # string 1-sentence concrete REQUIRED — why this score
+importance_rationale: "1 sentence explaining why this score was assigned (concrete engineering impact)" # string 1-sentence concrete REQUIRED — why this score
 n_iterations: 1
 commit_sha: xxx
 duration_minutes: 0

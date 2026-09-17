@@ -93,6 +93,7 @@ from commontrace import (
     memory_guard,
     paths,
     receipts,
+    redundancy,
     retrieval,
     retrieval_io,
     revision,
@@ -306,12 +307,23 @@ def _apply_dosage(matched, active, config):
             core=bool(item.get("core", False)),
             importance=int(item.get("importance") or 0),
             revision=str(item.get("revision", "")),
+            # What redundancy is judged on -- description + applies_when +
+            # do_not_apply_when + body, same fields `commontrace consolidate`
+            # and the authoring-time check compare, via `_lesson_wire`'s own
+            # projection of the frontmatter rather than a second read of the
+            # file. See commontrace/redundancy.py's module docstring for why
+            # `tags`/`domain` are deliberately excluded.
+            compare_text=redundancy.comparable_text(item, item.get("body") or ""),
         )
         for item in considered
     ]
     dose = dosage.select(
         candidates,
-        dosage.Budget(max_lessons=config.max_lessons, max_chars=config.max_chars),
+        dosage.Budget(
+            max_lessons=config.max_lessons,
+            max_chars=config.max_chars,
+            redundancy_threshold=config.redundancy_threshold,
+        ),
     )
     admitted = [by_slug[c.slug] for c in dose.admitted if c.slug in by_slug]
     kept_core = [item for item in admitted if item.get("core")]
@@ -685,6 +697,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             result["not_injected"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.dropped
             ]
+        if dose.noted:
+            # A core lesson duplicates another admitted lesson. Never
+            # suppressed (see commontrace/dosage.py's module docstring), so
+            # both are still in `lessons` -- this is a configuration signal
+            # for `commontrace consolidate`, not a thing that happened to
+            # this occasion.
+            result["core_redundancy"] = [
+                {"slug": d.slug, "reason": d.reason} for d in dose.noted
+            ]
         if occasion_id:
             result["withheld"] = held
             result["holdout_rate"] = config.rate if config.running else 0.0
@@ -978,14 +999,17 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not write {slug!r}: {type(exc).__name__}: {exc}")
 
-        fm, body = frontmatter.read(path)
-        errors = validate.validate(fm, validate.load_schema("lesson.schema.json"))
-        return _ok(lesson=_lesson_wire(fm, body, include_body=True),
-                   schema_errors=errors,
-                   next_step=("Still scaffolding: "
-                              + ", ".join(templates.unfilled_placeholders(fm, body))
-                              if templates.unfilled_placeholders(fm, body)
-                              else "Ready. Call approve_lesson to activate it."))
+        try:
+            fm, body = frontmatter.read(path)
+            errors = validate.validate(fm, validate.load_schema("lesson.schema.json"))
+            return _ok(lesson=_lesson_wire(fm, body, include_body=True),
+                       schema_errors=errors,
+                       next_step=("Still scaffolding: "
+                                  + ", ".join(templates.unfilled_placeholders(fm, body))
+                                  if templates.unfilled_placeholders(fm, body)
+                                  else "Ready. Call approve_lesson to activate it."))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"could not validate {slug!r}: {type(exc).__name__}: {exc}")
 
     if allow_approval:
         @mcp.tool()
@@ -1080,6 +1104,43 @@ def build_server(root: str, *, allow_approval: bool = True):
                                 for f in guard.blocking_findings
                             ],
                         )
+
+                    # Near-duplicate check (commontrace/redundancy.py), same
+                    # gate and same reasoning as the CLI's `lesson approve`
+                    # (commontrace/commands/lesson_cmd.py:run_approve): this
+                    # is the first point the lesson's real content exists
+                    # rather than template scaffolding, and the first point
+                    # activating it actually starts competing with the rest
+                    # of the corpus for a retrieval slot. An agent curating
+                    # unattended re-derives the same rule from a second
+                    # trace cluster and has no reason to notice the corpus
+                    # already has it -- this is the notice.
+                    #
+                    # No --force equivalent here, for the same reason the
+                    # guard check above has none: an agent approving its own
+                    # draft has no interactive human to confirm a deliberate
+                    # override. Edit the content to genuinely differentiate
+                    # it, or archive the other lesson, and call
+                    # approve_lesson again.
+                    from commontrace.commands.lesson_cmd import _active_lesson_texts
+
+                    duplicate = redundancy.closest(
+                        redundancy.comparable_text(fm, body),
+                        _active_lesson_texts(root, exclude=slug),
+                        threshold=redundancy.DEFAULT_THRESHOLD,
+                    )
+                    if duplicate is not None:
+                        return _err(
+                            f"refusing to activate {slug!r}: it restates the active lesson "
+                            f"{duplicate.a!r} (similarity {duplicate.similarity:.2f}). Two "
+                            "lessons saying the same thing compete for the same retrieval "
+                            "slot forever, and neither wins reliably. Read the other one "
+                            f"with get_lesson({duplicate.a!r}) -- edit this draft to "
+                            "genuinely differentiate it, or reject it, and try again.",
+                            duplicate_of=duplicate.a,
+                            similarity=round(duplicate.similarity, 3),
+                        )
+
                     fm["status"] = "active"
                     safe_by = _sanitize_comment(approved_by)
                     safe_rationale = _sanitize_comment(rationale)

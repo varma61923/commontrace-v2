@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Near-duplicate lesson detection (`commontrace/redundancy.py`) and its
+  three consumers**, closing a gap competitor research surfaced: mem0's
+  update-memory prompt resolves near-duplicate facts on write, and
+  Graphiti ships an MMR reranker to keep a result set diverse; this
+  product had no equivalent anywhere in the pipeline. Built lexical
+  (token-set Jaccard over description/applies_when/do_not_apply_when/body,
+  an LSH fast path above 200 items) rather than embeddings-based, so it
+  works in the core install — the default `pip install commontrace`, one
+  dependency (PyYAML). Default threshold (0.30) is measured against the
+  two corpora shipped in this repo
+  (`commontrace/reference/measure_redundancy.py`): ~1.8× the loudest
+  similarity any genuinely distinct pair reaches in either one, and the
+  highest value at which synthetic-restatement recall is still 100%.
+
+  - **Injection budget** (`commontrace/dosage.py`): `Budget` gains an
+    opt-in `redundancy_threshold` — a candidate restating one already
+    admitted is dropped (naming what it duplicates) rather than spending a
+    slot on guidance the agent already received. Applied as a hard gate in
+    rank order, not Graphiti-style MMR re-scoring: retrieval already
+    ranked, and blending a second relevance opinion into it would be
+    invisible to whoever reads `commontrace query`. Off by default — a
+    treatment change, never an upgrade side effect. Core lessons are
+    checked but never suppressed, only reported. Configurable per store
+    via `commontrace retrieval --redundancy-threshold`.
+
+  - **CLI/MCP retrieval parity fix**: `commontrace query` applied only
+    `--top-k` and ignored the store's budget and `core: true` lessons
+    entirely — `commontrace/mcp_server.py`'s `retrieve()` already enforced
+    both. A fleet split across a human driving the CLI and agents
+    retrieving over MCP was serving two different treatments under one
+    experiment. Worse, the CLI logged a holdout assignment for every
+    ranked lesson up to `--top-k` regardless of whether the budget would
+    ever have let it reach the agent — exactly the "occasion counted as
+    treated where no memory was injected" failure that pulls a measured
+    effect toward zero, which `mcp_server.py`'s own docstring names.
+    `_run_lexical` and `_run_hybrid` now both apply the same budget before
+    randomizing, in the same order MCP already used.
+
+  - **Write-time reconciliation**: `commontrace lesson approve` and MCP's
+    `approve_lesson` now refuse to activate a lesson that restates one
+    already active, naming the duplicate. Same gate family as the existing
+    scaffolding and content-safety refusals — `--force` overrides on the
+    CLI (and warns); no override on MCP, matching its existing
+    content-safety refusal's reasoning (an agent approving its own draft
+    has no interactive human to confirm a deliberate bypass). Checked at
+    approval rather than creation, because a freshly scaffolded lesson's
+    body is template placeholder text, identical across every fresh
+    lesson and worthless to compare.
+
+  - **`commontrace consolidate`**: a corpus-hygiene report — fusion
+    candidates, contradiction candidates (delegates to the pre-existing
+    `commontrace/reliability.py:find_contradictions`, not reinvented), and
+    archive candidates (`uses: 0` / `last_hit: NEVER`, the narrowest
+    signal the schema supports without an unsupported age claim). This is
+    the "classic memory consolidation (archive/fuse/reformulate)" job
+    DOCUMENTATION.md §6.4 assigns to a companion skill outside this
+    repository, using the optional `attention` extra's embeddings — now
+    available in the core install. Reporting only, `--strict` for CI, same
+    "nothing changes automatically, the Validator gate stays human"
+    position as `commontrace reliability`.
+
+  93 new tests across `tests/test_redundancy.py`,
+  `tests/test_query_dosage_parity.py`, `tests/test_lesson_duplicate_gate.py`,
+  `tests/test_consolidate.py`, plus additions to
+  `tests/test_dosage_and_receipts.py` and `tests/test_hybrid_retrieval.py`.
+  Also fixes `hub/tests/test_abuse.py`'s Postgres skip guard, which could
+  never actually skip (`if not PG_TEST_DATABASE_URL` on a module-level
+  default that is always a non-empty string), so all 15
+  `PostgresRateLimiter` tests raised a raw `ConnectionRefusedError` on any
+  machine without that exact database instead of skipping cleanly — same
+  defect and fix as `conftest.py`'s own `_skip_if_no_db`.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

@@ -45,6 +45,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Character budget across all injected lessons. `top_k` bounds the count "
              "and says nothing about the size.",
     )
+    p.add_argument(
+        "--redundancy-threshold", type=float, default=None,
+        help="Similarity (0-1, commontrace/redundancy.py) at or above which a lesson "
+             "competing for the budget is dropped for restating one already admitted, "
+             "freeing its slot for the next distinct lesson. 0 (the default) disables "
+             "this -- see commontrace/dosage.py for why suppression is opt-in. Like "
+             "the budget, this does not change which lessons are ELIGIBLE, only how "
+             "many of the eligible set are actually injected, so it does not start a "
+             "new randomization.",
+    )
     p.add_argument("--note", default="", help="Why these settings, recorded alongside them.")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -55,6 +65,7 @@ def run(args: argparse.Namespace) -> int:
 
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
+        args.redundancy_threshold,
     )
     if all(value is None for value in setting):
         config = retrieval_io.load_config(root)
@@ -65,6 +76,13 @@ def run(args: argparse.Namespace) -> int:
               + (f"  (k={config.rrf_k})" if config.fusion == retrieval_io.FUSION_RRF
                  else ""))
         print(f"  budget : {config.max_lessons} lessons, {config.max_chars:,} chars")
+        print(
+            "  redundancy: "
+            + ("off (0 admits every ranked lesson regardless of overlap)"
+               if config.redundancy_threshold <= 0
+               else f"{config.redundancy_threshold:.2f} "
+                    "(a lesson this similar to one already admitted is dropped)")
+        )
         print(f"  logged as: {config.eligibility}")
         if config.note:
             print(f"  note   : {config.note}")
@@ -82,6 +100,7 @@ def run(args: argparse.Namespace) -> int:
         config = retrieval_io.configure(
             root, scorer=args.scorer, floor=args.floor, fusion=args.fusion,
             max_lessons=args.max_lessons, max_chars=args.max_chars,
+            redundancy_threshold=args.redundancy_threshold,
             note=args.note,
         )
     except ValueError as exc:
@@ -90,7 +109,8 @@ def run(args: argparse.Namespace) -> int:
 
     print(
         f"[commontrace] retrieval: scorer={config.scorer} floor={config.floor:.2f} "
-        f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,}"
+        f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,} "
+        f"redundancy={config.redundancy_threshold:.2f}"
     )
 
     # The consequence, stated at the moment it is caused -- the same posture
