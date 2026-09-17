@@ -158,6 +158,15 @@ class TestMcpApproveLessonRefusesARestatement:
 
     @pytest.fixture
     def server(self, store):
+        # The SDK is an optional extra (`pip install commontrace[serve]`) --
+        # the base client installs with PyYAML alone -- so this skips rather
+        # than fails on an install that deliberately does not have it,
+        # matching tests/test_mcp_server.py's own module-level guard and
+        # tests/test_hybrid_retrieval.py's per-test one. In a fixture rather
+        # than repeated in every test method: every test in this class needs
+        # the server, so one guard here covers all of them.
+        pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: "
+                                            "pip install 'commontrace[serve]'")
         return mcp_server.build_server(store)
 
     def _call(self, server, name: str, **arguments) -> dict:
