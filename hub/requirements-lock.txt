@@ -10,7 +10,7 @@
 # 40-package set installs every time rather than whatever the latest
 # compatible transitive versions happen to be on the day of a build.
 #
-# That is not a theoretical gap: `mcp==2.1.1` requires `httpx2` (a distinct
+# That is not a theoretical gap: `mcp==2.2.0` requires `httpx2` (a distinct
 # package from the `httpx` this Hub's own code uses directly in
 # hub/smoke.py / commontrace/hub_client.py -- both are legitimate, official
 # packages from the same original authors, not a typosquat) and
@@ -52,7 +52,7 @@
 # committing -- a lock file that pins an untested combination is worse than
 # no lock file, because it looks authoritative.
 
-alembic==1.19.2
+alembic==1.20.0
 annotated-types==0.8.0
 anyio==4.15.1
 argon2-cffi==25.1.0
@@ -74,14 +74,14 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 Mako==1.4.1
 MarkupSafe==3.0.3
-mcp==2.1.1
-mcp-types==2.1.1
+mcp==2.2.0
+mcp-types==2.2.0
 numpy==2.2.6
 opentelemetry-api==1.44.0
 pycparser==3.0
 pydantic==2.13.5
 pydantic_core==2.46.5
-PyJWT==2.13.0
+PyJWT==2.14.0
 python-multipart==0.0.32
 referencing==0.37.0
 rpds-py==2026.6.3
