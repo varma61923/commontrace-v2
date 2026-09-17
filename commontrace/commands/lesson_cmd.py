@@ -12,6 +12,7 @@ from commontrace import (
     lesson_io,
     memory_guard,
     paths,
+    redundancy,
     templates,
     validate,
 )
@@ -188,6 +189,41 @@ def _iter_lesson_paths(root: str, explicit: str | None):
         yield p
 
 
+def _active_lesson_texts(root: str, *, exclude: str = "") -> list[tuple[str, str]]:
+    """(slug, comparable text) for every ACTIVE lesson, for the
+    near-duplicate check `run_approve` runs before activating a new one.
+
+    Only `active` lessons -- the corpus a new activation actually starts
+    competing with for a retrieval slot. A candidate still at `review` is
+    not yet injected anywhere, so comparing against it would flag two
+    unrelated drafts that happen to share a slug prefix or be mid-edit, not
+    a real collision.
+
+    A fresh `frontmatter.read` per file rather than `lesson_cache`'s
+    projection: approval happens once per lesson activated, not once per
+    retrieval, so the incremental-cache machinery built for that hot path
+    buys nothing here, and the projection it caches omits
+    `do_not_apply_when` and the body -- two of the four fields
+    `redundancy.comparable_text` needs. `exclude` is the slug being
+    approved itself, in case a previous partial run already flipped it to
+    active (re-approving would otherwise match against itself at
+    similarity 1.0).
+    """
+    out = []
+    for path in _iter_lesson_paths(root, None):
+        parsed = read_or_warn(frontmatter.read, path)
+        if parsed is None:
+            continue
+        fm, body = parsed
+        if str(fm.get("status", "")) != "active":
+            continue
+        slug = str(fm.get("name", ""))
+        if not slug or slug == exclude:
+            continue
+        out.append((slug, redundancy.comparable_text(fm, body)))
+    return out
+
+
 def run_validate(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     schema = validate.load_schema("lesson.schema.json")
@@ -339,6 +375,35 @@ def run_approve(args: argparse.Namespace) -> int:
                 print(f"    - [{f.category}] {f.label} in {f.field}: {f.excerpt!r}", file=sys.stderr)
             return 1
 
+        # Near-duplicate check (commontrace/redundancy.py), run HERE rather
+        # than at `lesson new`: this is the first point at which the
+        # lesson's real content exists rather than template scaffolding
+        # ("## Rule\n[1 actionable sentence]", identical across every fresh
+        # lesson and worthless to compare), and the first point at which
+        # activating it actually starts competing with the rest of the
+        # corpus for a retrieval slot. An agent curating unattended can
+        # re-derive the same rule from a second trace cluster and never
+        # notice the corpus already has it -- catching that here is cheaper
+        # than noticing it later in `commontrace consolidate`, and cheaper
+        # still than the two lessons quietly splitting the same slot's
+        # relevance forever, with neither winning reliably.
+        duplicate = redundancy.closest(
+            redundancy.comparable_text(fm, body),
+            _active_lesson_texts(root, exclude=args.slug),
+            threshold=redundancy.DEFAULT_THRESHOLD,
+        )
+        if duplicate is not None and not args.force:
+            print(
+                f"[commontrace] refusing to approve {args.slug}: it restates the active "
+                f"lesson {duplicate.a!r} (similarity {duplicate.similarity:.2f}).\n"
+                "  Two lessons saying the same thing compete for the same retrieval slot\n"
+                "  forever, and neither wins reliably. Review the other one:\n"
+                f"    commontrace lesson history {duplicate.a}\n"
+                "  If this is genuinely a different rule, pass --force.",
+                file=sys.stderr,
+            )
+            return 1
+
         fm["status"] = "active"
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
@@ -354,6 +419,12 @@ def run_approve(args: argparse.Namespace) -> int:
         print(
             f"[commontrace] warning: approved {args.slug} with --force while the "
             f"content-safety scan still flagged it -- {guard.summary()}.",
+            file=sys.stderr,
+        )
+    if duplicate is not None:
+        print(
+            f"[commontrace] warning: approved {args.slug} with --force while it still "
+            f"restates the active lesson {duplicate.a!r} (similarity {duplicate.similarity:.2f}).",
             file=sys.stderr,
         )
     print(f"[commontrace] approved {args.slug} (status: review -> active)")

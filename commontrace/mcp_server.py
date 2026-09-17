@@ -1104,6 +1104,43 @@ def build_server(root: str, *, allow_approval: bool = True):
                                 for f in guard.blocking_findings
                             ],
                         )
+
+                    # Near-duplicate check (commontrace/redundancy.py), same
+                    # gate and same reasoning as the CLI's `lesson approve`
+                    # (commontrace/commands/lesson_cmd.py:run_approve): this
+                    # is the first point the lesson's real content exists
+                    # rather than template scaffolding, and the first point
+                    # activating it actually starts competing with the rest
+                    # of the corpus for a retrieval slot. An agent curating
+                    # unattended re-derives the same rule from a second
+                    # trace cluster and has no reason to notice the corpus
+                    # already has it -- this is the notice.
+                    #
+                    # No --force equivalent here, for the same reason the
+                    # guard check above has none: an agent approving its own
+                    # draft has no interactive human to confirm a deliberate
+                    # override. Edit the content to genuinely differentiate
+                    # it, or archive the other lesson, and call
+                    # approve_lesson again.
+                    from commontrace.commands.lesson_cmd import _active_lesson_texts
+
+                    duplicate = redundancy.closest(
+                        redundancy.comparable_text(fm, body),
+                        _active_lesson_texts(root, exclude=slug),
+                        threshold=redundancy.DEFAULT_THRESHOLD,
+                    )
+                    if duplicate is not None:
+                        return _err(
+                            f"refusing to activate {slug!r}: it restates the active lesson "
+                            f"{duplicate.a!r} (similarity {duplicate.similarity:.2f}). Two "
+                            "lessons saying the same thing compete for the same retrieval "
+                            "slot forever, and neither wins reliably. Read the other one "
+                            f"with get_lesson({duplicate.a!r}) -- edit this draft to "
+                            "genuinely differentiate it, or reject it, and try again.",
+                            duplicate_of=duplicate.a,
+                            similarity=round(duplicate.similarity, 3),
+                        )
+
                     fm["status"] = "active"
                     safe_by = _sanitize_comment(approved_by)
                     safe_rationale = _sanitize_comment(rationale)
