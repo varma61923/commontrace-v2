@@ -122,6 +122,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/test_query_dosage_parity.py` (the last of these end-to-end
   through `commontrace query`, not just at the `rank_lessons` unit level).
 
+- **`retrieval.apply_reranker`**: a pluggable second-stage scorer seam,
+  closing the gap that this codebase had no equivalent of mem0's
+  `BaseReranker` interface. A plain callable
+  (`Reranker = Callable[[str, list[RankedLesson]], list[RankedLesson]]`),
+  not a class hierarchy — the same shape `commontrace/redundancy.py`'s own
+  caller-supplied `similarity` parameter already uses, so the core install
+  gains no new hard dependency for an extension point most stores never
+  use. `apply_reranker(task, ranked, None)` is a no-op. A composition
+  point for a Python caller using `commontrace.retrieval` as a library
+  (see README's "Using CommonTrace as a library" note), not a CLI flag —
+  a reranker is code, and there is no honest way to name one from
+  `--reliability-weight`-style config.
+
 - **Two more fields in the cross-field retrieval corpus** —
   `commontrace/fixtures/fields/{clinical,finance}.json`, taking the gate from
   six fields to eight (48 lessons, 144 labelled queries). This answers

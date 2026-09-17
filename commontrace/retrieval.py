@@ -21,6 +21,7 @@ derived from the store's own corpus can, with nothing hardcoded per field.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -496,3 +497,52 @@ def reciprocal_rank_fusion(
             fused[item] = fused.get(item, 0.0) + weight / (k + position)
     ordered = sorted(fused.items(), key=lambda pair: (-pair[1], pair[0]))
     return ordered if top_k is None else ordered[: max(0, top_k)]
+
+
+# --- Second-stage reranking --------------------------------------------------
+#
+# `rank_lessons` (and `reciprocal_rank_fusion` for the hybrid path) is a
+# first-stage scorer: fast, dependency-free, and comparable across stores.
+# Nothing in this module ever runs a heavier second pass over the winners of
+# that first stage -- a cross-encoder, an LLM judge, or a bespoke scorer a
+# deployment already has. This was a real gap: mem0 ships a `BaseReranker`
+# interface with four concrete implementations selected by config, and this
+# module had no equivalent seam at all.
+#
+# The seam here is a plain callable, not a class hierarchy -- the same shape
+# `redundancy.find_near_duplicates`'s own `similarity` parameter already
+# uses for the identical reason: the core install (PyYAML only) must not
+# gain a hard dependency just to define an extension point nobody has to
+# use. A concrete embeddings-based reranker, when a caller wants one, is
+# exactly the kind of thing that belongs behind the optional `attention`
+# extra (see commontrace/reference/), not in this module.
+Reranker = Callable[[str, list[RankedLesson]], list[RankedLesson]]
+
+
+def apply_reranker(
+    task: str,
+    ranked: list[RankedLesson],
+    reranker: Reranker | None,
+) -> list[RankedLesson]:
+    """Apply an optional second-stage `reranker` to an already-ranked list.
+
+    `reranker=None` (the default) is a no-op: returns `ranked` unchanged,
+    so a caller that has not opted in pays no extra cost and sees no
+    behavior change at all -- calling this with `reranker=None` is
+    identical to not calling it.
+
+    A reranker receives `task` and the FULL ranked list (already past the
+    relevance floor -- eligibility is decided upstream, exactly as
+    `rank_lessons`'s own `reliability_weight`/`recency_weight` never touch
+    it either) and returns a re-ordered list over the SAME
+    `RankedLesson` objects. It is a caller error for a reranker to add,
+    drop, or duplicate an item -- this function does not defend against
+    that (validating a reranker's output on every call would be a real
+    cost every retrieval pays for a mistake only the reranker's author can
+    make), so a reranker's own tests are where that guarantee is checked,
+    the same trust boundary `redundancy.find_near_duplicates` places on a
+    caller-supplied `similarity` function.
+    """
+    if reranker is None:
+        return ranked
+    return reranker(task, ranked)

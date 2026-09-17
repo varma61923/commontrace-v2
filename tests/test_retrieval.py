@@ -235,3 +235,53 @@ class TestReliabilityAndRecencyWeighting:
             reliability_weight=0.2,
         )
         assert ranked[0].slug == "lesson_strong_match"
+
+
+class TestApplyReranker:
+    """retrieval.apply_reranker -- the seam for a second-stage scorer
+    (mem0's BaseReranker equivalent). A plain callable, not a class
+    hierarchy, matching redundancy.find_near_duplicates's own
+    caller-supplied `similarity` parameter."""
+
+    def _ranked(self):
+        lessons = [
+            _lesson("lesson_a", description="refund policy enterprise", importance=3),
+            _lesson("lesson_b", description="refund policy enterprise", importance=1),
+        ]
+        return retrieval.rank_lessons("refund policy enterprise", lessons)
+
+    def test_none_is_a_no_op_returns_the_exact_same_list(self):
+        ranked = self._ranked()
+        assert retrieval.apply_reranker("refund policy enterprise", ranked, None) is ranked
+
+    def test_a_reranker_can_reverse_the_order(self):
+        ranked = self._ranked()
+        assert [r.slug for r in ranked] == ["lesson_a", "lesson_b"]
+
+        def reverse_reranker(task, candidates):
+            return list(reversed(candidates))
+
+        reranked = retrieval.apply_reranker("refund policy enterprise", ranked, reverse_reranker)
+        assert [r.slug for r in reranked] == ["lesson_b", "lesson_a"]
+
+    def test_the_reranker_receives_the_task_string(self):
+        ranked = self._ranked()
+        seen = {}
+
+        def spy_reranker(task, candidates):
+            seen["task"] = task
+            return candidates
+
+        retrieval.apply_reranker("refund policy enterprise", ranked, spy_reranker)
+        assert seen["task"] == "refund policy enterprise"
+
+    def test_the_reranker_receives_every_candidate_the_first_stage_returned(self):
+        ranked = self._ranked()
+        seen = {}
+
+        def spy_reranker(task, candidates):
+            seen["slugs"] = [c.slug for c in candidates]
+            return candidates
+
+        retrieval.apply_reranker("refund policy enterprise", ranked, spy_reranker)
+        assert seen["slugs"] == [r.slug for r in ranked]

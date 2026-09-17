@@ -400,6 +400,25 @@ Both default to 0 (off). See `commontrace/reliability.py`'s
 — the former reads the same `reliability` verdicts, the latter the
 existing `last_hit` field, no new schema required.
 
+**Using CommonTrace as a library, not just a CLI:** a second-stage
+reranker (a cross-encoder, an LLM judge, a bespoke scorer) has no seam to
+plug into via a CLI flag — it's code, not a config value — so this is a
+composition point for a Python caller instead:
+
+```python
+from commontrace import lesson_cache, retrieval
+
+lessons, term_cache = lesson_cache.load_active_with_terms(root, agent_type=None, reader=...)
+ranked = retrieval.rank_lessons(task, lessons, term_cache=term_cache)
+ranked = retrieval.apply_reranker(task, ranked, my_reranker)  # my_reranker(task, candidates) -> candidates
+```
+
+`apply_reranker(task, ranked, None)` (the default) is a no-op. This is the
+same shape `commontrace/redundancy.py`'s own `similarity` parameter
+already uses — a plain callable, not a class hierarchy, so the core
+install never gains a hard dependency for an extension point most stores
+never use.
+
 ### 9 — Prove the lessons *cause* the improvement
 
 ```bash
