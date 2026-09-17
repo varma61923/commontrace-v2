@@ -6,12 +6,15 @@ import os
 import sys
 
 from commontrace import (
+    dosage,
     frontmatter,
     holdout_io,
     lesson_cache,
     paths,
+    redundancy,
     retrieval,
     retrieval_io,
+    revision,
     store_state,
 )
 from commontrace.commands._format import read_or_warn
@@ -110,6 +113,99 @@ def _iter_active_lessons(root: str, agent_type: str | None) -> list[tuple[str, d
     return lesson_cache.load_active(
         root, agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
     )
+
+
+def _apply_dosage(
+    active: list[tuple[str, dict]],
+    ranked: list[tuple[str, float]],
+    config: retrieval_io.RetrievalConfig,
+) -> tuple[dict[str, dict], "dosage.Dose"]:
+    """Admit core lessons and enforce this store's budget, CLI-side.
+
+    Mirrors `commontrace/mcp_server.py`'s `_apply_dosage` -- same core
+    admission, same budget, same optional redundancy suppression -- because
+    before this the two retrieval surfaces disagreed about what an agent
+    actually receives. An agent driving `commontrace query` by hand (or a
+    script wrapping it) got every ranked lesson up to `--top-k`, unbounded
+    by size and blind to `core: true`; the same store's agents retrieving
+    over MCP got the budgeted, core-aware set. A fleet split across both
+    surfaces was running two different treatments under one experiment.
+
+    `active` is (path, frontmatter) as `lesson_cache` projects it -- missing
+    `do_not_apply_when` and the body (see that module's docstring on what it
+    deliberately does not cache), so every candidate considered here is
+    re-read in full. That costs one `frontmatter.read` per candidate
+    considered, not per lesson in the store: bounded by `--top-k` plus this
+    store's core lessons, the same cost the MCP surface already pays per
+    `retrieve()` call.
+
+    `ranked` is (slug, relevance) in RANK ORDER for the matched set --
+    `[(r.slug, r.relevance) for r in ranked]` from the lexical arm, or the
+    fused `(slug, score)` pairs from `_run_hybrid`. Retrieval has already
+    ranked; this function does not re-sort it.
+
+    Returns (considered, dose) where `considered` maps slug -> the item
+    actually read (slug, path, relevance, core, fm, body) -- including ones
+    the dose dropped, so a caller can still describe what a dropped slug
+    was. Look up `dose.admitted` (by slug, against this dict) for what to
+    inject.
+    """
+    path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
+    core_slugs_all = {str(fm.get("name", "")) for path, fm in active if dosage.is_core(fm)}
+    ranked_slugs = {slug for slug, _ in ranked}
+
+    considered: dict[str, dict] = {}
+
+    def _consider(slug: str, relevance: float) -> None:
+        if slug in considered:
+            return
+        path = path_by_slug.get(slug)
+        if not path:
+            return
+        parsed = read_or_warn(frontmatter.read, path)
+        if parsed is None:
+            return
+        fm, body = parsed
+        considered[slug] = {
+            "slug": slug, "path": path, "relevance": relevance,
+            "core": slug in core_slugs_all, "fm": fm, "body": body,
+        }
+
+    # Core lessons that did not also match are considered first, so they
+    # compete for the budget ahead of the ranked set -- `dosage.select`
+    # re-sorts core candidates by importance regardless of this order, but
+    # feeding it their true priority keeps this function's own bookkeeping
+    # (and any caller that inspects `considered` before calling `select`)
+    # honest about why a core lesson is here at all.
+    for slug in sorted(core_slugs_all - ranked_slugs):
+        _consider(slug, 0.0)
+    for slug, relevance in ranked:
+        _consider(slug, relevance)
+
+    candidates = [
+        dosage.Candidate(
+            slug=item["slug"],
+            text=item["body"],
+            core=item["core"],
+            relevance=item["relevance"],
+            importance=int(item["fm"].get("importance") or 0),
+            revision=revision.revision_of(item["fm"], item["body"]) or "",
+            # Same fields `commontrace consolidate` and the MCP surface
+            # compare on -- see redundancy.py's module docstring for why
+            # tags/domain are deliberately excluded.
+            compare_text=redundancy.comparable_text(item["fm"], item["body"]),
+        )
+        for item in considered.values()
+    ]
+    dose = dosage.select(
+        candidates,
+        dosage.Budget(
+            max_lessons=config.max_lessons,
+            max_chars=config.max_chars,
+            redundancy_threshold=config.redundancy_threshold,
+        ),
+    )
+    return considered, dose
 
 
 def _apply_holdout(
@@ -212,6 +308,37 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         print(store_state.why_no_results(root, searched="query"))
         return 0
 
+    # Core lessons admitted, the budget enforced, redundant restatements
+    # dropped if this store opted in -- commontrace/dosage.py, the same
+    # allocation the MCP surface applies to every `retrieve()` call. Before
+    # this, `--top-k` was the only limit here: a store with `core: true`
+    # lessons or a character budget configured got a DIFFERENT set of
+    # lessons from this command than from its own agents retrieving over
+    # MCP, which is two treatments under one experiment.
+    ranked_by_slug = {r.slug: r for r in ranked}
+    considered, dose = _apply_dosage(
+        lessons, [(r.slug, r.relevance) for r in ranked], config,
+    )
+    if not dose.admitted:
+        print(
+            f"[commontrace] {len(ranked)} lesson(s) matched, but this store's injection "
+            f"budget ({dose.gauge()}) admitted none. Widen it with `commontrace retrieval "
+            "--max-lessons`/`--max-chars`. Dropped: "
+            + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
+        )
+        return 0
+
+    # BEFORE the arms are assigned, and in the same order MCP's own
+    # `retrieve()` uses (see that module's `_apply_dosage`): a lesson the
+    # budget crowds out is never administered, so it must never be eligible
+    # for randomization either. Assigning it an arm anyway would log an
+    # occasion as treated where no memory was actually injected, pulling
+    # the measured effect toward zero -- silently, and worse the tighter
+    # the budget. Core lessons stay excluded from randomization: they are
+    # unconditional by definition and present in both arms, so they cannot
+    # confound the comparison.
+    eligible = [c.slug for c in dose.admitted if not c.core]
+
     withheld: set[str] = set()
     if args.experiment:
         if not args.occasion_id:
@@ -222,24 +349,42 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             )
             return 1
         withheld = _apply_holdout(
-            args, root, [r.slug for r in ranked],
-            relevance={r.slug: r.relevance for r in ranked},
+            args, root, eligible,
+            relevance={c.slug: c.relevance for c in dose.admitted},
             scorer=config.scorer,
             floor=floor,
         )
 
-    for r in ranked:
-        if r.slug in withheld:
+    for c in dose.admitted:
+        if c.slug in withheld:
             # Printed rather than hidden so a human driving this can see the
             # experiment is running. An automated retriever should skip these.
-            print(f"{r.slug:45s} [WITHHELD - holdout]")
+            print(f"{c.slug:45s} [WITHHELD - holdout]")
             continue
-        print(f"{r.slug:45s} rel={r.relevance:4.2f}  {r.description}")
-        print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
+        r = ranked_by_slug.get(c.slug)
+        if r is not None:
+            print(f"{c.slug:45s} rel={r.relevance:4.2f}  {r.description}")
+            print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
+        else:
+            # A core lesson admitted alongside the ranked set rather than
+            # because it matched today's task -- see commontrace/dosage.py.
+            item = considered[c.slug]
+            print(f"{c.slug:45s} [core]  {item['fm'].get('description', '')}")
+            print(f"  ({item['path']})")
+
+    if dose.dropped:
+        # Never silent: an agent given nine of ten lessons and told it was
+        # given ten acts on the missing one's absence as though it were the
+        # fleet's position.
+        print(
+            "\n[commontrace] not injected: "
+            + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
+        )
+    print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
         print(
-            f"\n[commontrace] experiment: {len(ranked) - len(withheld)} injected, "
+            f"\n[commontrace] experiment: {len(dose.admitted) - len(withheld)} injected, "
             f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
             f"{args.occasion_id!r}. Record the outcome under that id, then run "
             "`commontrace experiment`."
@@ -329,6 +474,23 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         for path, fm in lessons
     }
 
+    # Same budget the lexical path and the MCP surface apply -- see
+    # `_apply_dosage`'s docstring and `_run_lexical` above, which this
+    # mirrors line for line. `described` (built from the full active set
+    # above) already covers a core-only admission, so the `considered` map
+    # `_apply_dosage` returns is not needed again here.
+    _considered, dose = _apply_dosage(lessons, fused, config)
+    if not dose.admitted:
+        print(
+            f"[commontrace] {len(fused)} lesson(s) matched, but this store's injection "
+            f"budget ({dose.gauge()}) admitted none. Widen it with `commontrace retrieval "
+            "--max-lessons`/`--max-chars`. Dropped: "
+            + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
+        )
+        return 0
+
+    eligible = [c.slug for c in dose.admitted if not c.core]
+
     withheld: set[str] = set()
     if args.experiment:
         if not args.occasion_id:
@@ -339,16 +501,18 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             )
             return 1
         withheld = _apply_holdout(
-            args, root, [slug for slug, _ in fused],
+            args, root, eligible,
             # The FUSED score, which is what actually decided the order --
             # recording the lexical relevance would describe a ranking this
             # query did not perform.
-            relevance={slug: score for slug, score in fused},
+            relevance={c.slug: c.relevance for c in dose.admitted},
             scorer=config.eligibility,
             floor=floor,
         )
 
-    for slug, score in fused:
+    fused_score_by_slug = dict(fused)
+    for c in dose.admitted:
+        slug = c.slug
         if slug in withheld:
             print(f"{slug:45s} [WITHHELD - holdout]")
             continue
@@ -358,12 +522,25 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             arms.append("lexical")
         if slug in semantic:
             arms.append("semantic")
-        print(f"{slug:45s} rrf={score:5.3f}  {description}")
+        score_label = (
+            f"rrf={fused_score_by_slug[slug]:5.3f}" if slug in fused_score_by_slug
+            # A core lesson admitted alongside the fused set rather than
+            # because either arm ranked it -- see commontrace/dosage.py.
+            else "[core]     "
+        )
+        print(f"{slug:45s} {score_label}  {description}")
         print(f"  arms: {'+'.join(arms) or 'none'}  ({path})")
+
+    if dose.dropped:
+        print(
+            "\n[commontrace] not injected: "
+            + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
+        )
+    print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
         print(
-            f"\n[commontrace] experiment: {len(fused) - len(withheld)} injected, "
+            f"\n[commontrace] experiment: {len(dose.admitted) - len(withheld)} injected, "
             f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "
             f"{args.occasion_id!r}. Record the outcome under that id, then run "
             "`commontrace experiment`."
