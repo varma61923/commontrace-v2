@@ -535,3 +535,47 @@ async def test_key_hmac_is_never_the_raw_key_or_the_argon2_hash(session_factory,
     assert issued.raw_key not in row.key_hmac
     assert row.key_hmac != row.key_hash
     assert len(row.key_hmac) == 64  # hex sha256
+
+
+class TestPepperCanComeFromAFile:
+    """HUB_API_KEY_PEPPER is read at import time (module docstring: kept
+    identical across every replica and every restart), so verifying it
+    actually goes through hub/secrets_provider.py's env_secret -- and not
+    just that env_secret itself works, already covered directly in
+    hub/tests/test_secrets_provider.py -- means reloading the module under
+    a controlled environment. The fixture reloads it again afterward so no
+    other test in the suite runs against a pepper this test chose."""
+
+    @pytest.fixture
+    def reload_auth(self, monkeypatch, tmp_path):
+        import importlib
+
+        yield tmp_path
+        monkeypatch.delenv("HUB_API_KEY_PEPPER", raising=False)
+        monkeypatch.delenv("HUB_API_KEY_PEPPER_FILE", raising=False)
+        importlib.reload(auth)
+
+    async def test_pepper_file_is_read_into_the_module_level_pepper(self, monkeypatch, reload_auth):
+        import importlib
+
+        pepper_file = reload_auth / "pepper"
+        pepper_file.write_text("a-fixed-pepper-for-this-test\n")
+        monkeypatch.delenv("HUB_API_KEY_PEPPER", raising=False)
+        monkeypatch.setenv("HUB_API_KEY_PEPPER_FILE", str(pepper_file))
+
+        importlib.reload(auth)
+        assert auth._pepper_env == "a-fixed-pepper-for-this-test"
+        assert auth._PEPPER == b"a-fixed-pepper-for-this-test"
+
+    async def test_pepper_file_wins_over_a_plain_env_var_set_alongside_it(
+        self, monkeypatch, reload_auth
+    ):
+        import importlib
+
+        pepper_file = reload_auth / "pepper"
+        pepper_file.write_text("from-the-secret-store")
+        monkeypatch.setenv("HUB_API_KEY_PEPPER", "stale-plaintext-pepper")
+        monkeypatch.setenv("HUB_API_KEY_PEPPER_FILE", str(pepper_file))
+
+        importlib.reload(auth)
+        assert auth._pepper_env == "from-the-secret-store"

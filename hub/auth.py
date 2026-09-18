@@ -54,7 +54,6 @@ import asyncio
 import contextvars
 import hashlib
 import hmac
-import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -82,6 +81,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub import scopes as scopes_module
 from hub.models import ApiKey, Organization, User
+from hub.secrets_provider import env_secret
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ else:
 # such requests simply fall through to the always-correct legacy path below
 # -- a throughput regression for that key on that request, never a security
 # or correctness one.
-_pepper_env = os.environ.get("HUB_API_KEY_PEPPER", "")
+_pepper_env = env_secret("HUB_API_KEY_PEPPER")
 _PEPPER = _pepper_env.encode("utf-8") if _pepper_env else secrets.token_bytes(32)
 
 

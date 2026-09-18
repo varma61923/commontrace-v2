@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pluggable secrets provider** (`hub/secrets_provider.py`): every
+  genuinely secret `HUB_*` setting (`HUB_DATABASE_URL`,
+  `HUB_API_KEY_PEPPER`, `HUB_ADMIN_TOKEN`, `HUB_CONSOLE_SECRET`, the
+  Stripe keys, `HUB_LEDGER_SIGNING_KEY`, `HUB_ENCRYPTION_KEY`/`_PREVIOUS`)
+  can now be supplied via a `{VAR}_FILE` variable naming a file to read
+  the value from, instead of the plain env var — the file variant wins if
+  both are set. Deliberately a file convention rather than one vendor's
+  SDK (no new dependency, no vendor picked over another): a Vault Agent
+  sidecar, any cloud provider's Kubernetes Secrets Store CSI driver, a
+  plain Kubernetes Secret volume, and Docker/Swarm secrets all already
+  write a secret's value to a file, so all of them now work with zero
+  further code. Operational settings (`HUB_HOST`, rate limits,
+  `HUB_OIDC_ISSUER`, ...) are unaffected — this only applies to the
+  fields marked `(secret)` in `hub/.env.example`. 15 new tests across
+  `hub/tests/test_secrets_provider.py` (the helper itself),
+  `hub/tests/test_config_and_limits.py` (end-to-end through
+  `HubConfig.from_env()`), and `hub/tests/test_auth.py` (the
+  import-time `HUB_API_KEY_PEPPER` read).
+
 - **Encryption at rest for `WebhookEndpoint.url`** (`hub/encryption.py`),
   opt-in via `HUB_ENCRYPTION_KEY` (AES-256-GCM, with
   `HUB_ENCRYPTION_KEY_PREVIOUS` for rotation) — `python -m hub.manage
