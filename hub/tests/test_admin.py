@@ -289,24 +289,51 @@ class TestRendering:
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert "reversibility" in r.text
-        assert "Nothing on this page or an organization page changes" in r.text
+        assert "Nothing on THIS page changes state" in r.text
 
-    async def test_the_org_facing_pages_stay_read_only(self, session_factory):
-        """The line is reversibility, not squeamishness. Irreversible and
-        credential-bearing actions -- purge-org, issue-key -- stay in the CLI,
-        so the pages that would host them carry no control at all. Asserted
-        structurally rather than by reading the templates."""
-        org_id, _ = await self._seed(session_factory)
+    async def test_the_overview_page_stays_fully_read_only(self, session_factory):
+        """The overview lists organizations; it has no id-scoped context to
+        act on, so unlike an organization's own page it carries no control
+        at all."""
         async with _client(_app(session_factory=session_factory)) as c:
-            pages = [
-                await c.get("/admin", headers=_basic("op", "s3cret")),
-                await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret")),
-            ]
-        for r in pages:
-            assert r.status_code == 200
-            lowered = r.text.lower()
-            for forbidden in ("<form", "<button", 'method="post"', "fetch(", "xmlhttprequest"):
-                assert forbidden not in lowered, f"{forbidden} on a page that must stay read-only"
+            r = await c.get("/admin", headers=_basic("op", "s3cret"))
+        assert r.status_code == 200
+        lowered = r.text.lower()
+        for forbidden in ("<form", "<button", 'method="post"', "fetch(", "xmlhttprequest"):
+            assert forbidden not in lowered, f"{forbidden} on a page that must stay read-only"
+
+    async def test_the_org_page_offers_only_reversible_actions(self, session_factory):
+        """The line is reversibility, not squeamishness. Irreversible and
+        credential-bearing actions -- purge-org, issue-key,
+        generate-encryption-key, the digest-confirmed retention-apply --
+        stay in the CLI, so no form on this page may target them. Legal
+        holds, retention policy, and quarantine release ARE reversible and
+        are deliberately buttons here."""
+        from hub import retention as retention_module
+        from hub.db import session_scope
+
+        org_id, _ = await self._seed(session_factory)
+        # Placed directly rather than through the console under test, so a
+        # release/clear form has an existing row to target -- both only
+        # render for a row that exists.
+        async with session_scope(session_factory) as session:
+            await retention_module.place_hold(
+                session, org_id, reason="litigation", placed_by="test-setup")
+            await retention_module.set_policy(session, org_id, "trace", 90)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret"))
+        assert r.status_code == 200
+        lowered = r.text.lower()
+        for allowed_action in (
+            "quarantine/release", "legal-hold/place", "legal-hold/release",
+            "retention/set", "retention/clear",
+        ):
+            assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
+        for forbidden in (
+            "/purge", "retention/apply", "/issue", "generate-encryption-key",
+            "fetch(", "xmlhttprequest",
+        ):
+            assert forbidden not in lowered, f"{forbidden} reachable from the org page"
 
     async def test_no_destructive_action_is_reachable_from_any_page(self, session_factory):
         """The irreversible commands must never become a POST target. If one
@@ -621,3 +648,178 @@ class TestRetractionIsReversible:
         async with session_scope(session_factory) as session:
             actors = (await session.execute(select(AuditLogEntry.actor))).scalars().all()
         assert admin._ADMIN_ACTOR in actors
+
+
+class TestOrgScopedMutationsAreReversible:
+    """Legal holds, retention policy, and quarantine release: the org page's
+    own set of reversible actions (hub/admin.py's module docstring). Every
+    one of these can be undone by a second click, which is what makes it
+    safe to expose here at all -- unlike purge-org or retention-apply,
+    which stay in the CLI.
+    """
+
+    async def _seed(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            trace = Trace(
+                org_id=org.id, title="A trace", context_text="c", solution_text="s",
+                tags=[], agent_type="support", agent_id="w1",
+                quarantined=True, quarantine_reason="looked like spam",
+            )
+            session.add(trace)
+            await session.flush()
+            return org.id, trace.id
+
+    async def test_releasing_a_quarantine(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/quarantine/release", headers=_basic("op", "s3cret"),
+                data={
+                    "trace_id": trace_id,
+                    "csrf": admin._csrf_token("s3cret", "release_quarantine", trace_id),
+                },
+            )
+        assert r.status_code == 303
+        assert r.headers["location"].startswith(f"/admin/org/{org_id}?done=")
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+        assert trace.quarantined is False
+        assert trace.quarantine_reason == ""
+
+    async def test_releasing_a_quarantine_wrong_csrf_token_is_refused(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/quarantine/release", headers=_basic("op", "s3cret"),
+                data={"trace_id": trace_id, "csrf": "wrong"},
+            )
+        assert r.status_code == 403
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+        assert trace.quarantined is True
+
+    async def test_placing_and_releasing_a_legal_hold_round_trips(self, session_factory):
+        from hub import retention as retention_module
+        from hub.db import session_scope
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/legal-hold/place", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "reason": "litigation hold",
+                    "csrf": admin._csrf_token("s3cret", "place_hold", org_id),
+                },
+            )
+            assert r.status_code == 303
+            async with session_scope(session_factory) as session:
+                holds = await retention_module.active_holds(session, org_id)
+            assert len(holds) == 1
+            hold_id = holds[0].id
+
+            r = await c.post(
+                f"/admin/org/{org_id}/legal-hold/release", headers=_basic("op", "s3cret"),
+                data={
+                    "hold_id": hold_id,
+                    "csrf": admin._csrf_token("s3cret", "release_hold", hold_id),
+                },
+            )
+            assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            holds = await retention_module.active_holds(session, org_id)
+        assert holds == []
+
+    async def test_setting_and_clearing_a_retention_policy_round_trips(self, session_factory):
+        from hub import retention as retention_module
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/set", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "object_type": "trace", "status": "any", "days": "90",
+                    "csrf": admin._csrf_token("s3cret", "set_retention", org_id),
+                },
+            )
+            assert r.status_code == 303
+            from hub.db import session_scope
+            async with session_scope(session_factory) as session:
+                policies = await retention_module.policies_for(session, org_id)
+            assert len(policies) == 1 and policies[0].max_age_days == 90
+
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/clear", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "object_type": "trace", "status": "any",
+                    "target": "trace/any",
+                    "csrf": admin._csrf_token("s3cret", f"clear_retention:{org_id}", "trace/any"),
+                },
+            )
+            assert r.status_code == 303
+        from hub.db import session_scope
+        async with session_scope(session_factory) as session:
+            policies = await retention_module.policies_for(session, org_id)
+        assert policies == []
+
+    async def test_an_unknown_object_type_is_refused_with_a_flash_message(self, session_factory):
+        from urllib.parse import unquote
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/set", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "object_type": "not-a-real-kind", "days": "90",
+                    "csrf": admin._csrf_token("s3cret", "set_retention", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "Could not set policy" in unquote(r.headers["location"])
+
+    async def test_org_scoped_mutations_are_audited_as_operator_console(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                f"/admin/org/{org_id}/quarantine/release", headers=_basic("op", "s3cret"),
+                data={
+                    "trace_id": trace_id,
+                    "csrf": admin._csrf_token("s3cret", "release_quarantine", trace_id),
+                },
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "release_quarantine")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+    async def test_wrong_password_is_rejected_on_a_mutating_route(self, session_factory):
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/quarantine/release", headers=_basic("op", "wrong"),
+                data={
+                    "trace_id": trace_id,
+                    "csrf": admin._csrf_token("s3cret", "release_quarantine", trace_id),
+                },
+            )
+        assert r.status_code == 401

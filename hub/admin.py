@@ -1,4 +1,4 @@
-"""A read-only operator console, served by the Hub itself at /admin.
+"""The operator console, served by the Hub itself at /admin.
 
 WHY THIS EXISTS
 ---------------
@@ -11,27 +11,35 @@ actually needs, which is *noticing*: a retrieval miss rate climbing, an org
 sitting at its trace cap, a review queue growing. Nobody runs a command for
 a question they have not thought to ask yet.
 
-WHY IT IS READ-ONLY, DELIBERATELY
----------------------------------
+READ-WRITE FOR REVERSIBLE ACTIONS, NEVER FOR IRREVERSIBLE ONES
+----------------------------------------------------------------
 Before this module the Hub had NO browser-facing surface at all. Its whole
 security posture follows from that: bearer tokens, no cookies, no sessions,
-no CSRF surface, and hub/observability.py sets `X-Frame-Options: DENY` with
-a comment noting there is nothing browser-rendered to protect.
+and hub/observability.py sets `X-Frame-Options: DENY` with a comment noting
+there was nothing browser-rendered to protect.
 
-Putting *mutating* operator actions behind a web session would change that
-materially, and the actions in question are the worst ones to get wrong:
-`purge-org` irreversibly destroys one customer's entire history, and
-`issue-key` renders a raw credential that would then live in browser
-history, in the page cache, and in any screenshot of it. A hijacked console
-session is a wiped tenant.
+A mutating operator action belongs here only if undoing a mistake made
+through it costs nothing more than clicking the undo action: approving,
+retracting, and restoring a Knowledge Base entry; releasing a quarantine;
+placing and releasing a legal hold; setting and clearing a retention
+policy. Every one of those calls the SAME `hub/crud.py`/`hub/retention.py`
+function the CLI does, audited as `_ADMIN_ACTOR` ("operator-console") so
+the trail distinguishes a web click from a terminal command, and is
+protected the same way: authentication (HTTP Basic, the shared operator
+token), an action-and-target-scoped CSRF token (`_csrf_token`/`_csrf_ok`),
+and a `Sec-Fetch-Site` check (`_same_site`) as defence in depth behind it
+-- CSRF matters specifically because Basic auth means a browser re-sends
+the credential on every request, cross-site or not.
 
-So this console renders state and, for anything that changes state, shows
-the exact `hub.manage` command to run. The operator still sees everything in
-one place; the last keystroke happens in a terminal that already has an
-explicit confirmation prompt (`_confirm_destructive`) and writes an audit
-row. Making it read-write is a deliberate second phase with its own security
-work -- session management, CSRF tokens, and a re-authentication step in
-front of the destructive commands -- not a flag flip.
+What stays CLI-only is drawn on the same line, not a shorter list because
+this module grew: `purge-org`/`purge-trace`/`purge-subject-traces`
+irreversibly destroy history, `retention-apply` permanently deletes
+whatever a plan describes, and `issue-key`/`generate-encryption-key`
+render a raw secret that would then live in browser history, in the page
+cache, and in any screenshot of it. Those stay in a terminal that already
+has an explicit confirmation prompt (`_confirm_destructive`) and writes an
+audit row -- a hijacked BROWSER session must not be able to do what a
+hijacked terminal session can.
 
 ESCAPING IS THE SECURITY-CRITICAL PART OF THIS FILE
 ---------------------------------------------------
@@ -51,13 +59,14 @@ import html
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
-from hub import crud, plans
+from hub import audit as audit_module
+from hub import crud, plans, retention
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.db import session_scope
 from hub.models import (
@@ -416,9 +425,13 @@ async def _org_detail(session, org_id: str) -> dict | None:
         .limit(_AUDIT_ROWS)
     )).scalars().all()
 
+    policies = await retention.policies_for(session, org_id)
+    holds = await retention.active_holds(session, org_id)
+
     return {
         "org": org, "entitlements": ent, "agents": agents, "health": health,
         "keys": keys, "quarantined": quarantined, "audit": audit,
+        "policies": policies, "holds": holds,
     }
 
 
@@ -545,13 +558,15 @@ def _render_overview(data: dict) -> str:
         f'<section><div class="tiles">{tiles}</div></section>'
         f'<section><h2>Organizations</h2>{table}</section>'
         '<section><h2>Operator commands</h2>'
-        '<div class="note">Nothing on this page or an organization page changes '
-        'state. The line is <b>reversibility</b>: withdrawing a Knowledge Base entry '
-        'can be undone, so it is a button on the Knowledge Base page — but deleting '
-        'an organization cannot be, and issuing a key would put a live credential in '
-        'your browser history. Those stay in the CLI, where they prompt for '
-        'confirmation and write an audit row. See <b>hub/admin.py</b> for the '
-        'reasoning.</div>'
+        '<div class="note">Nothing on THIS page changes state -- it only lists '
+        'organizations. An organization\'s own page has buttons for its reversible '
+        'actions (releasing a quarantine, placing or releasing a legal hold, setting '
+        'or clearing a retention policy). The line is <b>reversibility</b>: those can '
+        'all be undone, so they are buttons -- but deleting an organization cannot be, '
+        'applying a retention plan permanently deletes rows, and issuing a key would '
+        'put a live credential in your browser history. Those stay in the CLI, where '
+        'they prompt for confirmation and write an audit row. See <b>hub/admin.py</b> '
+        'for the reasoning.</div>'
         '<div class="cmds" style="margin-top:1rem">'
         + _cmd("Create an organization", 'python -m hub.manage create-org "Acme"')
         + _cmd("Issue a key (90-day)", "python -m hub.manage issue-key <org_id> 90")
@@ -562,7 +577,7 @@ def _render_overview(data: dict) -> str:
     )
 
 
-def _render_org(d: dict) -> str:
+def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
     org, ent, agents, health = d["org"], d["entitlements"], d["agents"], d["health"]
     q = ent.get("commons_queries", {})
     tr = ent.get("traces", {})
@@ -620,14 +635,108 @@ def _render_org(d: dict) -> str:
         rows = "".join(
             f'<tr><td>{h(t.title)}</td><td>{h(t.quarantine_reason)}</td>'
             f'<td class="n">{_iso(t.created_at)}</td>'
-            f'<td class="m" style="color:var(--muted)">{h(t.id)}</td></tr>'
+            f'<td class="m" style="color:var(--muted)">{h(t.id)}</td>'
+            f'<td><form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/quarantine/release" '
+            'class="act">'
+            f'<input type="hidden" name="trace_id" value="{h(t.id)}">'
+            f'<input type="hidden" name="csrf" '
+            f'value="{h(_csrf_token(admin_token, "release_quarantine", str(t.id)))}">'
+            '<button type="submit" class="btn">Release</button></form></td></tr>'
             for t in d["quarantined"]
         )
         quar_tbl = ('<div class="scroll"><table><thead><tr><th>Title</th><th>Why</th>'
-                    f'<th>Captured</th><th>Trace id</th></tr></thead><tbody>{rows}</tbody>'
-                    '</table></div>')
+                    '<th>Captured</th><th>Trace id</th><th>Action</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table></div>')
     else:
         quar_tbl = '<p class="empty">Nothing quarantined.</p>'
+
+    holds = d.get("holds") or []
+    if holds:
+        rows = "".join(
+            f'<tr><td>{h(hold.object_type or "everything")}'
+            f'{("/" + h(hold.target_id)) if hold.target_id else ""}</td>'
+            f'<td>{h(hold.reason)}</td><td class="n">{_iso(hold.placed_at)}</td>'
+            f'<td class="m">{h(hold.placed_by)}</td>'
+            f'<td><form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/legal-hold/release" '
+            'class="act">'
+            f'<input type="hidden" name="hold_id" value="{h(hold.id)}">'
+            f'<input type="hidden" name="csrf" '
+            f'value="{h(_csrf_token(admin_token, "release_hold", str(hold.id)))}">'
+            f'<label class="sr-only" for="hold-reason-{h(hold.id)}">Release reason</label>'
+            f'<input type="text" id="hold-reason-{h(hold.id)}" name="reason" maxlength="200" '
+            'placeholder="reason (optional)">'
+            '<button type="submit" class="btn">Release</button></form></td></tr>'
+            for hold in holds
+        )
+        holds_tbl = ('<div class="scroll"><table><thead><tr><th>Scope</th><th>Reason</th>'
+                     '<th>Placed</th><th>By</th><th>Action</th></tr></thead>'
+                     f'<tbody>{rows}</tbody></table></div>')
+    else:
+        holds_tbl = '<p class="empty">No legal holds in force.</p>'
+    hold_object_options = "".join(
+        f'<option value="{h(name)}">{h(name)}</option>' for name in retention.KINDS
+    )
+    holds_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/legal-hold/place" '
+        'class="act" style="margin-top:.75rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "place_hold", org.id))}">'
+        '<label class="sr-only" for="hold-object-type">Object type (optional)</label>'
+        f'<select id="hold-object-type" name="object_type"><option value="">everything</option>'
+        f'{hold_object_options}</select> '
+        '<label class="sr-only" for="hold-target-id">Specific id (optional)</label>'
+        '<input type="text" id="hold-target-id" name="target_id" placeholder="specific id (optional)"> '
+        '<label class="sr-only" for="hold-reason">Reason</label>'
+        '<input type="text" id="hold-reason" name="reason" placeholder="reason" required maxlength="500" '
+        'style="min-width:16rem"> '
+        '<button type="submit" class="btn warn">Place hold</button></form>'
+    )
+
+    policies = d.get("policies") or []
+    if policies:
+        rows = "".join(
+            f'<tr><td>{h(p.object_type)}</td><td>{h(p.status)}</td>'
+            f'<td class="n">{_num(p.max_age_days)}d</td><td>{h(p.note or "—")}</td>'
+            f'<td><form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/retention/clear" '
+            'class="act">'
+            f'<input type="hidden" name="object_type" value="{h(p.object_type)}">'
+            f'<input type="hidden" name="status" value="{h(p.status)}">'
+            f'<input type="hidden" name="target" value="{h(p.object_type)}/{h(p.status)}">'
+            f'<input type="hidden" name="csrf" value="'
+            f'{h(_csrf_token(admin_token, f"clear_retention:{org.id}", f"{p.object_type}/{p.status}"))}">'
+            '<button type="submit" class="btn">Clear</button></form></td></tr>'
+            for p in policies
+        )
+        policies_tbl = ('<div class="scroll"><table><thead><tr><th>Object type</th><th>Status</th>'
+                        '<th>Keep for</th><th>Note</th><th>Action</th></tr></thead>'
+                        f'<tbody>{rows}</tbody></table></div>')
+    else:
+        policies_tbl = '<p class="empty">No retention policy: nothing expires on its own.</p>'
+    policy_object_options = "".join(
+        f'<option value="{h(name)}">{h(name)}</option>' for name in retention.KINDS
+    )
+    policy_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/retention/set" '
+        'class="act" style="margin-top:.75rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "set_retention", org.id))}">'
+        '<label class="sr-only" for="policy-object-type">Object type</label>'
+        f'<select id="policy-object-type" name="object_type">{policy_object_options}</select> '
+        '<label class="sr-only" for="policy-status">Status (blank = any)</label>'
+        '<input type="text" id="policy-status" name="status" placeholder="status (blank = any)"> '
+        '<label class="sr-only" for="policy-days">Keep for N days</label>'
+        '<input type="number" id="policy-days" name="days" min="1" placeholder="keep for N days" '
+        'required> '
+        '<button type="submit" class="btn">Set policy</button></form>'
+        '<p class="empty" style="margin-top:.4rem">Setting a policy only changes what a plan '
+        f'WOULD delete. <code>python -m hub.manage retention-plan {h(org.id)}</code> previews it; '
+        'deleting still requires the CLI\'s digest-confirmed '
+        f'<code>retention-apply {h(org.id)} &lt;digest&gt;</code> -- irreversible, so it stays a '
+        'terminal action with an explicit confirmation.</p>'
+    )
+    flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
 
     if d["audit"]:
         rows = "".join(
@@ -646,18 +755,24 @@ def _render_org(d: dict) -> str:
     return (
         f'<section><h1>{h(org.name)}</h1>'
         f'<p class="sub m">{h(org.id)} · created {_iso(org.created_at)} · '
-        f'billing period {h(ent.get("period"))}</p></section>'
+        f'billing period {h(ent.get("period"))}</p>{flash_html}</section>'
         f'<section><div class="tiles">{tiles}</div>{floor_note}</section>'
         f'<section><h2>API keys</h2>{keys_tbl}</section>'
         f'<section><h2>Quarantined traces</h2>{quar_tbl}</section>'
+        f'<section><h2>Legal holds</h2>{holds_tbl}{holds_form}</section>'
+        f'<section><h2>Retention policy</h2>{policies_tbl}{policy_form}</section>'
         f'<section><h2>Recent audited actions</h2>{audit_tbl}</section>'
-        '<section><h2>Operator commands for this org</h2><div class="cmds">'
+        '<section><h2>Operator commands for this org</h2>'
+        '<div class="note">Reversible actions above are buttons. What stays here is what '
+        'cannot be undone (<code>purge-org</code>, <code>retention-apply</code>) or would put a '
+        'live credential in your browser history (issuing a key).</div>'
+        '<div class="cmds" style="margin-top:1rem">'
         + _cmd("Rotate a key", "python -m hub.manage rotate-key <key_id>")
         + _cmd("Revoke a key", "python -m hub.manage revoke-key <key_id>")
         + _cmd("Change plan", f"python -m hub.manage set-plan {org.id} team")
-        + _cmd("Release a quarantine", "python -m hub.manage release-quarantine <trace_id>")
         + _cmd("Is it working?", f"python -m hub.manage outcomes {org.id}")
         + _cmd("Start a holdout", f"python -m hub.manage start-experiment {org.id} 0.2")
+        + _cmd("Apply a retention plan", f"python -m hub.manage retention-apply {org.id} <digest>")
         + _cmd("Delete this org", f"python -m hub.manage purge-org {org.id}")
         + '</div></section>'
     )
@@ -902,7 +1017,8 @@ def add_admin_routes(
             return _page("Not found", '<section><h1>No such organization</h1>'
                                       f'<p class="sub">Nothing on this Hub has that id. '
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
-        return _page(data["org"].name, _render_org(data))
+        flash = request.query_params.get("done", "")[:200]
+        return _page(data["org"].name, _render_org(data, admin_token, flash=flash))
 
     _COMMONS_OFF = (
         '<section><h1>Knowledge Base</h1><p class="sub">This deployment runs with '
@@ -922,7 +1038,7 @@ def add_admin_routes(
         return _page("Knowledge Base",
                      _render_kb(data, admin_token, operator_org_id, flash=flash))
 
-    async def _moderate(request: Request, target_field: str, action_of=None):
+    async def _moderate(request: Request, target_field: str, action_of=None, *, require_commons=False):
         """Shared front half of every mutating handler: authenticate, refuse
         a cross-site post, then check the action-scoped CSRF token.
 
@@ -933,12 +1049,17 @@ def add_admin_routes(
         read before the token can be checked, which is why the ordering here
         is deliberate rather than incidental.
 
+        `require_commons` is the Knowledge Base handlers' own gate (KB
+        moderation is meaningless with `HUB_COMMONS_ENABLED=false`, since
+        there is no commons for a submission or an entry to belong to);
+        every other mutating handler below leaves it False.
+
         Returns (form, target, None) to proceed, or (None, None, response).
         """
         denied = await _guard(request)
         if denied is not None:
             return None, None, denied
-        if not commons_enabled:
+        if require_commons and not commons_enabled:
             return None, None, _page("Knowledge Base", _COMMONS_OFF)
         if not _same_site(request):
             return None, None, Response("cross-site request refused", status_code=403)
@@ -951,16 +1072,17 @@ def add_admin_routes(
             return None, None, Response("invalid or missing request token", status_code=403)
         return form, target, None
 
-    def _back(message: str) -> Response:
+    def _back(path: str, message: str) -> Response:
         # POST-then-redirect: without it a reload re-submits the decision,
         # and a moderation decision is not something to repeat by accident.
         from urllib.parse import quote
-        return Response(status_code=303,
-                        headers={"Location": f"{ADMIN_PATH}/kb?done={quote(message)}"})
+        return Response(status_code=303, headers={"Location": f"{path}?done={quote(message)}"})
 
     async def kb_review(request: Request) -> Response:
         form, submission_id, denied = await _moderate(
-            request, "submission_id", action_of=lambda f: str(f.get("decision", "")))
+            request, "submission_id", action_of=lambda f: str(f.get("decision", "")),
+            require_commons=True,
+        )
         if denied is not None:
             return denied
         decision = str(form.get("decision", ""))
@@ -984,12 +1106,13 @@ def add_admin_routes(
                 rejection_reason=str(form.get("reason", ""))[:200],
             )
         if result is None:
-            return _back("That submission was already decided, or no longer exists.")
-        return _back("Published to the Knowledge Base." if decision == "approve"
+            return _back(f"{ADMIN_PATH}/kb", "That submission was already decided, or no longer exists.")
+        return _back(f"{ADMIN_PATH}/kb", "Published to the Knowledge Base." if decision == "approve"
                      else "Proposal declined. No entry, no credit.")
 
     async def kb_retract(request: Request) -> Response:
-        form, trace_id, denied = await _moderate(request, "trace_id", action_of="retract")
+        form, trace_id, denied = await _moderate(
+            request, "trace_id", action_of="retract", require_commons=True)
         if denied is not None:
             return denied
         async with session_scope(session_factory) as session:
@@ -998,22 +1121,157 @@ def add_admin_routes(
                 actor=_ADMIN_ACTOR,
             )
         if result is None:
-            return _back("That entry is not a published Knowledge Base entry.")
-        return _back("Withdrawn. It stops being served immediately; the row and its "
-                     "history are kept, and Restore puts it back.")
+            return _back(f"{ADMIN_PATH}/kb", "That entry is not a published Knowledge Base entry.")
+        return _back(f"{ADMIN_PATH}/kb", "Withdrawn. It stops being served immediately; the row and "
+                     "its history are kept, and Restore puts it back.")
 
     async def kb_restore(request: Request) -> Response:
-        _form, trace_id, denied = await _moderate(request, "trace_id", action_of="restore")
+        _form, trace_id, denied = await _moderate(
+            request, "trace_id", action_of="restore", require_commons=True)
         if denied is not None:
             return denied
         async with session_scope(session_factory) as session:
             result = await crud.restore_kb_entry(session, trace_id, actor=_ADMIN_ACTOR)
         if result is None:
-            return _back("That entry is not currently withdrawn.")
-        return _back("Restored. It is being served again.")
+            return _back(f"{ADMIN_PATH}/kb", "That entry is not currently withdrawn.")
+        return _back(f"{ADMIN_PATH}/kb", "Restored. It is being served again.")
+
+    # --- Org-scoped mutations -----------------------------------------------
+    #
+    # Legal holds, retention policy, and quarantine release are all
+    # REVERSIBLE (a hold is released, a policy is cleared, a release does
+    # not delete anything), which is the line drawn in _render_overview's
+    # own note: reversible state changes get a button here, and what
+    # cannot be undone (`purge-org`, the digest-confirmed `retention-apply`)
+    # or would put a live credential in the browser (`issue-key`) stays in
+    # the CLI. Every handler below calls the SAME `hub/retention.py`
+    # functions the CLI does, audited as `_ADMIN_ACTOR` rather than
+    # `operator-cli` -- the same distinction kb_review/_retract/_restore
+    # already draw above.
+    #
+    # CSRF tokens here bind to the ORG rather than to each row the way KB's
+    # tokens bind to one submission/entry: an operator viewing one org's
+    # page is already scoped to that org, and the threat this defends
+    # against is a forged cross-site POST, not one row's token being
+    # replayed against a sibling row in the SAME org the operator is
+    # already looking at.
+
+    async def quarantine_release(request: Request) -> Response:
+        _form, trace_id, denied = await _moderate(
+            request, "trace_id", action_of="release_quarantine")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+            if trace is None:
+                return _back(ADMIN_PATH, "No such trace.")
+            org_id = trace.org_id
+            previous_reason = trace.quarantine_reason
+            await session.execute(
+                update(Trace).where(Trace.id == trace_id)
+                .values(quarantined=False, quarantine_reason="")
+            )
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="release_quarantine",
+                org_id=org_id, target_type="trace", target_id=trace_id,
+                summary=f"was={previous_reason[:100]}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Released from quarantine.")
+
+    async def legal_hold_place(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="place_hold")
+        if denied is not None:
+            return denied
+        reason = str(form.get("reason", ""))[:500]
+        object_type = str(form.get("object_type", ""))
+        target_id = str(form.get("target_id", ""))
+        async with session_scope(session_factory) as session:
+            try:
+                hold = await retention.place_hold(
+                    session, org_id, reason=reason, placed_by=_ADMIN_ACTOR,
+                    object_type=object_type, target_id=target_id,
+                )
+            except retention.RetentionError as exc:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", f"Could not place hold: {exc}")
+            await session.flush()
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="retention.place_hold",
+                org_id=org_id, target_type="legal_hold", target_id=hold.id,
+                summary=f"{object_type or 'everything'}: {reason[:200]}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Legal hold placed.")
+
+    async def legal_hold_release(request: Request) -> Response:
+        form, hold_id, denied = await _moderate(request, "hold_id", action_of="release_hold")
+        if denied is not None:
+            return denied
+        reason = str(form.get("reason", ""))[:200]
+        async with session_scope(session_factory) as session:
+            try:
+                hold = await retention.release_hold(session, hold_id, reason=reason)
+            except retention.RetentionError as exc:
+                return _back(ADMIN_PATH, f"Could not release hold: {exc}")
+            org_id = hold.org_id
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="retention.release_hold",
+                org_id=org_id, target_type="legal_hold", target_id=hold_id,
+                summary=reason or "released",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Legal hold released.")
+
+    async def retention_set(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="set_retention")
+        if denied is not None:
+            return denied
+        object_type = str(form.get("object_type", ""))
+        status = str(form.get("status", "")).strip() or retention.STATUS_ANY
+        try:
+            max_age_days = int(str(form.get("days", "")))
+        except ValueError:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Days must be a whole number.")
+        async with session_scope(session_factory) as session:
+            try:
+                await retention.set_policy(session, org_id, object_type, max_age_days, status=status)
+            except retention.RetentionError as exc:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", f"Could not set policy: {exc}")
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="retention.set_policy",
+                org_id=org_id, target_type="retention_policy",
+                target_id=f"{object_type}/{status}", summary=f"keep {max_age_days}d",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}",
+                     f"{object_type} [{status}]: keep {max_age_days} days. Nothing is deleted "
+                     "until a plan is applied from the CLI.")
+
+    async def retention_clear(request: Request) -> Response:
+        form, _target, denied = await _moderate(
+            request, "target", action_of=lambda f: f"clear_retention:{f.get('org_id', '')}")
+        if denied is not None:
+            return denied
+        org_id = str(form.get("org_id", ""))
+        object_type = str(form.get("object_type", ""))
+        status = str(form.get("status", "")) or retention.STATUS_ANY
+        async with session_scope(session_factory) as session:
+            try:
+                removed = await retention.remove_policy(session, org_id, object_type, status=status)
+            except retention.RetentionError as exc:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", f"Could not clear policy: {exc}")
+            if not removed:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", "No matching policy to clear.")
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="retention.clear_policy",
+                org_id=org_id, target_type="retention_policy",
+                target_id=f"{object_type}/{status}", summary="removed",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Retention policy cleared.")
 
     app.add_route(ADMIN_PATH, overview, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}", org_detail, methods=["GET"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/quarantine/release", quarantine_release, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/legal-hold/place", legal_hold_place, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/legal-hold/release", legal_hold_release, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/set", retention_set, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/clear", retention_clear, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb", kb, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/kb/review", kb_review, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb/retract", kb_retract, methods=["POST"])
