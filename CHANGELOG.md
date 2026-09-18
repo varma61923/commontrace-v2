@@ -39,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **User management, SSO linking, and subject-rights lookup in the
+  `/admin` console** (`hub/admin.py`): an organization's own page now
+  lists its individual `User` rows (distinct from its shared API key)
+  with buttons to create a user, change a role, disable/enable, and
+  link/unlink an SSO identity, plus a "find traces by subject" lookup and
+  a "tag a trace's subjects" form — previously `hub.manage create-user`/
+  `set-user-role`/`disable-user`/`enable-user`/`link-sso`/`unlink-sso`/
+  `find-subject-traces`/`tag-trace-subjects` only, for an operator acting
+  on a tenant's behalf (distinct from the customer console's own
+  self-service user management at `/app`). Every mutation here is
+  reversible — a role or SSO link/unlink round-trips, and tagging a
+  trace's subjects REPLACES rather than accumulates — while
+  `purge-subject-traces` (irreversible erasure) stays CLI-only. 9 new
+  tests (`TestUserAndSubjectRightsManagement`).
+
 - **Organization creation and plan changes in the `/admin` console**
   (`hub/admin.py`): a "Create organization" form on the Overview page and
   a "Change plan" form on each organization's own page, previously
