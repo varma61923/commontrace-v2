@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Organization creation and plan changes in the `/admin` console**
+  (`hub/admin.py`): a "Create organization" form on the Overview page and
+  a "Change plan" form on each organization's own page, previously
+  `hub.manage create-org`/`set-plan` only. Creating an org is additive
+  (nothing yet exists for a mistaken click to lose) and a plan change is
+  reversible by changing it again, so both fit the same reversibility line
+  the rest of this console draws. 7 new tests
+  (`TestCreateOrgFromTheConsole`, plus plan-change cases in
+  `TestOrgScopedMutationsAreReversible`).
+
 - **Reversible operator actions in the `/admin` console** (`hub/admin.py`):
   releasing a quarantined trace, placing and releasing a legal hold, and
   setting and clearing a retention policy are now buttons on an
