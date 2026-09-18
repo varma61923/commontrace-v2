@@ -39,6 +39,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Key issuance and a confirmed danger zone in the `/admin` console**
+  (`hub/admin.py`): issue/rotate/revoke-key buttons on an organization's
+  own page (needed for onboarding — a brand-new org has no key yet, so
+  it cannot sign into its own console to issue one itself), plus a
+  "danger zone" exposing the previously CLI-only, genuinely irreversible
+  actions — `purge-trace`, `purge-org`, `purge-subject-traces`, and
+  `retention-apply` (preview, then apply with the same digest) — each
+  gated behind retyping the EXACT id/name being destroyed, on top of the
+  same CSRF token every other mutation here needs. That retype
+  requirement is a stronger bar than `hub.manage`'s own
+  `_confirm_destructive`, which only asks for the literal word "yes".
+  Also added: a stateless "generate a new encryption key" utility
+  (no database write at all). `hub/manage.py`'s `purge_trace`/`purge_org`
+  gained an `actor` parameter (default unchanged for every CLI caller) so
+  a console-initiated purge is audited under `operator-console`. 29 new
+  tests (`TestKeyIssuanceFromTheConsole`, `TestGeneratingAnEncryptionKey`,
+  `TestTheDangerZoneRequiresRetypedConfirmation`,
+  `TestRetentionApplyFromTheConsole` — including the stale-plan-refuses
+  case, where a row arriving between preview and apply is caught by
+  `retention.apply`'s own digest check rather than silently deleting more
+  than was reviewed).
+
+- **User management, SSO linking, and subject-rights lookup in the
+  `/admin` console** (`hub/admin.py`): an organization's own page now
+  lists its individual `User` rows (distinct from its shared API key)
+  with buttons to create a user, change a role, disable/enable, and
+  link/unlink an SSO identity, plus a "find traces by subject" lookup and
+  a "tag a trace's subjects" form — previously `hub.manage create-user`/
+  `set-user-role`/`disable-user`/`enable-user`/`link-sso`/`unlink-sso`/
+  `find-subject-traces`/`tag-trace-subjects` only, for an operator acting
+  on a tenant's behalf (distinct from the customer console's own
+  self-service user management at `/app`). Every mutation here is
+  reversible — a role or SSO link/unlink round-trips, and tagging a
+  trace's subjects REPLACES rather than accumulates. 9 new
+  tests (`TestUserAndSubjectRightsManagement`).
+
+- **Organization creation and plan changes in the `/admin` console**
+  (`hub/admin.py`): a "Create organization" form on the Overview page and
+  a "Change plan" form on each organization's own page, previously
+  `hub.manage create-org`/`set-plan` only. Creating an org is additive
+  (nothing yet exists for a mistaken click to lose) and a plan change is
+  reversible by changing it again, so both fit the same reversibility line
+  the rest of this console draws. 7 new tests
+  (`TestCreateOrgFromTheConsole`, plus plan-change cases in
+  `TestOrgScopedMutationsAreReversible`).
+
+- **Reversible operator actions in the `/admin` console** (`hub/admin.py`):
+  releasing a quarantined trace, placing and releasing a legal hold, and
+  setting and clearing a retention policy are now buttons on an
+  organization's own page, previously reachable only via
+  `hub.manage release-quarantine`/`legal-hold`/`release-hold`/
+  `set-retention`/`clear-retention`. This module's own docstring drew the
+  line at reversibility (its Knowledge Base review/retract/restore actions
+  already crossed it, protected by an action-and-target-scoped CSRF token
+  plus a same-site check); this extends that already-proven pattern to the
+  rest of the reversible surface rather than inventing a second one.
+  (A later entry in this changelog closes the remaining `retention-apply`/
+  `purge-*`/`issue-key`/`generate-encryption-key` gap via a confirmed
+  danger zone, rather than leaving it CLI-only forever.) Every new handler
+  calls the SAME `hub/retention.py`
+  function `hub.manage` does, audited as `operator-console` rather than
+  `operator-cli`. 9 new tests in `hub/tests/test_admin.py`
+  (`TestOrgScopedMutationsAreReversible`), plus two existing tests that
+  encoded "the org page has zero forms" rewritten to assert the org page's
+  forms are exactly the reversible set and never a destructive one.
+
 - **Self-service webhook management, an audit log page, and randomized
   holdout control in the customer console** (`hub/console.py`). Four
   `hub/manage.py` operator-CLI-only surfaces are now reachable from the
