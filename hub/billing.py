@@ -54,7 +54,7 @@ from starlette.responses import PlainTextResponse, Response
 
 from hub import plans
 from hub.db import session_scope
-from hub.models import Organization
+from hub.models import Organization, ProcessedWebhookEvent
 
 logger = logging.getLogger("commontrace.hub.billing")
 
@@ -246,14 +246,39 @@ def _looks_like_org_id(value: str | None) -> bool:
 
 
 async def apply_webhook_event(session: AsyncSession, settings: StripeSettings, event: dict) -> str:
-    """Mutate `Organization` state from one already signature-verified
-    Stripe event. Returns a short human-readable description of what
-    happened (or why nothing did), for the webhook route to log -- never
-    raises on an event type or shape this integration does not act on.
-    Stripe sends far more event types than this integration cares about,
-    and treating an unhandled one as an error would make this endpoint
-    fragile against Stripe adding new event types over time, which is
-    exactly the kind of change that should be a silent no-op here.
+    """Apply one already signature-verified Stripe event, exactly once.
+
+    Checks `processed_webhook_events` for this event's id BEFORE calling
+    `_apply_webhook_event_once` below, and records it after -- structural
+    idempotency against Stripe's at-least-once delivery, not an accident
+    of the handlers underneath happening to be pure overwrites (see
+    alembic revision 37d2580be8db's own docstring for why that distinction
+    matters). Events with no `id` (malformed, or a test fixture that
+    omitted one) are applied but never deduplicated -- there is nothing to
+    key a ledger row on.
+    """
+    event_id = str(event.get("id") or "")
+    event_type = str(event.get("type") or "")
+    if event_id:
+        already = await session.get(ProcessedWebhookEvent, event_id)
+        if already is not None:
+            return f"ignored {event_type}: event {event_id} already processed -- {already.outcome}"
+    outcome = await _apply_webhook_event_once(session, settings, event)
+    if event_id:
+        session.add(ProcessedWebhookEvent(id=event_id, event_type=event_type, outcome=outcome[:500]))
+    return outcome
+
+
+async def _apply_webhook_event_once(session: AsyncSession, settings: StripeSettings, event: dict) -> str:
+    """The actual per-event-type logic, run at most once per event id by
+    `apply_webhook_event` above. Returns a short human-readable
+    description of what happened (or why nothing did), for the webhook
+    route to log -- never raises on an event type or shape this
+    integration does not act on. Stripe sends far more event types than
+    this integration cares about, and treating an unhandled one as an
+    error would make this endpoint fragile against Stripe adding new
+    event types over time, which is exactly the kind of change that
+    should be a silent no-op here.
     """
     event_type = str(event.get("type") or "")
     obj = ((event.get("data") or {}).get("object")) or {}

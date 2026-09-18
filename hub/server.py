@@ -703,27 +703,16 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         about to do -- and, IF an operator has started a randomized
         holdout for your org, the response also carries a `holdout` block
         naming which of the returned traces you must NOT use on this
-        occasion. Every trace is still returned either way, so this never
-        changes what search finds; it only tells you which results are in
-        the control arm. Report the result afterwards with
-        `record_occasion_outcome(occasion_id, succeeded)`.
+        occasion (every trace is still returned either way; report the
+        result with `record_occasion_outcome(occasion_id, succeeded)`).
+        Omitting `occasion_id`, or running with no experiment configured,
+        behaves exactly as before -- no `holdout` block, nothing recorded.
 
-        Omit `occasion_id`, or run with no experiment configured, and the
-        behaviour is exactly as before -- no `holdout` block, nothing
-        recorded.
-
-        Honouring `holdout.withhold` is the whole experiment: using a
-        withheld trace anyway does not fail loudly, it moves that occasion
-        into the treated arm without the record saying so, which biases the
-        measured effect toward zero.
-
-        `pinned` is how you avoid doing exactly that by accident. If you
-        pasted a `working_set` block into your system prompt, pass its
-        `entries[].trace_id` here on every call for the rest of the session.
-        Those traces are excluded from the randomization instead of being
-        drawn into the control arm, because a trace sitting in your prompt
-        cannot serve as its own control -- it is being used on every
-        occasion whether or not the experiment says so.
+        This is the same holdout mechanic `holdout_assign` documents in
+        full (why using a withheld trace anyway silently biases the
+        result, and why `pinned` -- your `working_set` entries -- must be
+        passed on every call): read that docstring once for the mechanics,
+        which apply here identically.
         """
         try:
             org_id = auth.get_current_org_id()

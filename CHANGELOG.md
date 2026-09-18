@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Trimmed `hub/server.py`'s `search_traces` MCP tool docstring** —
+  every registered tool's docstring is sent to every connected agent's
+  system context on every session, so a near-verbatim restatement of the
+  holdout mechanic (occasion_id, `withhold`, `pinned`, why using a
+  withheld trace silently biases the result) already documented in full
+  by `holdout_assign` was a pure, permanent token cost with no added
+  value once both tools' docstrings sit in the same tool listing.
+  `search_traces` now states its own distinct behavior (the `holdout`
+  block arrives inline with search results, no separate call needed) and
+  points to `holdout_assign` for the shared mechanics, instead of
+  re-explaining them — cutting that paragraph from ~200 words to ~70
+  with no loss of the actionable behavioral contract.
+
+### Fixed
+
+- **`hub/console.py`'s `alerts_create` could 500 on a malformed request
+  instead of returning its intended validation error.** `form.get(...)`
+  can return an `UploadFile` when a field arrives as a multipart file
+  part rather than plain text; `float()`/`int()` raise `TypeError` on
+  that, not `ValueError`, which the handler's `except ValueError` alone
+  did not catch. Fixed by coercing to `str(...)` first, matching the
+  sibling `expires_days` field's already-correct pattern. Regression
+  tests in `hub/tests/test_console.py` reproduce the exact `TypeError`
+  against the pre-fix code before asserting the fix.
+- **`hub/config.py`'s `HubConfig.extra` field was dead code** — declared,
+  never populated by `from_env()`, never read anywhere. Removed, along
+  with the now-unused `field` import.
+
 ### Added
+
+- **A Stripe webhook event-id idempotency ledger** (`processed_webhook_events`,
+  migration `37d2580be8db`). `hub/billing.py`'s `apply_webhook_event` was
+  idempotent against Stripe's at-least-once delivery only by accident —
+  every branch happened to be a pure `org.plan = plan` overwrite, never an
+  increment, so a replay landed on the same state with nothing actually
+  checking whether the event had been seen before. A future edit that made
+  any branch additive (crediting something per event, say) would have
+  silently reintroduced double-application with no guard in place. Now the
+  webhook route checks `processed_webhook_events` for the event's id
+  before re-running any handler and records it after, keyed on Stripe's
+  own globally-unique event id — a structural guarantee independent of
+  whether the handler underneath happens to be idempotent on its own. 4
+  new tests in `hub/tests/test_billing.py::TestEventIdempotency`.
 
 - **Pluggable secrets provider** (`hub/secrets_provider.py`): every
   genuinely secret `HUB_*` setting (`HUB_DATABASE_URL`,

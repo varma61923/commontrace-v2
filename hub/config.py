@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from hub.secrets_provider import env_secret
 
@@ -513,7 +513,6 @@ class HubConfig:
 
     # --- Misc ---
     log_level: str = "INFO"
-    extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.rate_limit_backend not in ("memory", "postgres"):

@@ -248,6 +248,100 @@ class TestCheckoutSessionCompleted:
             assert (await session.get(Organization, org)).plan == "free"
 
 
+class TestEventIdempotency:
+    """apply_webhook_event must not re-run a handler for an event id it
+    has already applied -- Stripe's delivery guarantee is at-least-once,
+    and this is what stops a replay from being a structural non-issue
+    rather than an accident of every handler currently being a pure
+    overwrite (see alembic revision 37d2580be8db)."""
+
+    async def test_replaying_the_same_event_id_does_not_reapply_it(
+        self, session_factory, org
+    ):
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        event = _event("checkout.session.completed", {
+            "client_reference_id": org, "customer": "cus_replay", "subscription": "sub_replay",
+            "metadata": {"org_id": org, "plan": "team"},
+        })
+        event["id"] = "evt_replay_1"
+
+        async with session_scope(session_factory) as session:
+            first = await billing.apply_webhook_event(session, settings, event)
+        assert "plan -> team" in first
+
+        # A second org, unrelated, so a re-applied handler would be
+        # detectable: if the event were re-run against this SAME event
+        # dict, nothing would even change (same org_id in the payload) --
+        # the real assertion is on the returned outcome string saying it
+        # was skipped, not just on the plan value being (still) correct.
+        async with session_scope(session_factory) as session:
+            second = await billing.apply_webhook_event(session, settings, event)
+        assert "already processed" in second
+        assert "evt_replay_1" in second
+
+    async def test_a_processed_event_is_recorded_in_the_ledger(self, session_factory, org):
+        from hub.models import ProcessedWebhookEvent
+
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        event = _event("checkout.session.completed", {
+            "client_reference_id": org, "customer": "cus_ledger", "subscription": "sub_ledger",
+            "metadata": {"org_id": org, "plan": "team"},
+        })
+        event["id"] = "evt_ledger_1"
+
+        async with session_scope(session_factory) as session:
+            await billing.apply_webhook_event(session, settings, event)
+
+        async with session_scope(session_factory) as session:
+            row = await session.get(ProcessedWebhookEvent, "evt_ledger_1")
+        assert row is not None
+        assert row.event_type == "checkout.session.completed"
+        assert "plan -> team" in row.outcome
+
+    async def test_different_event_ids_are_both_applied(self, session_factory, org):
+        """The ledger keys on event id, not on event content -- two
+        genuinely distinct events with the same effect must both land,
+        not get collapsed into one because they look alike."""
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        event_a = _event("checkout.session.completed", {
+            "client_reference_id": org, "customer": "cus_a", "subscription": "sub_a",
+            "metadata": {"org_id": org, "plan": "team"},
+        })
+        event_a["id"] = "evt_a"
+        event_b = dict(event_a)
+        event_b["id"] = "evt_b"
+
+        async with session_scope(session_factory) as session:
+            outcome_a = await billing.apply_webhook_event(session, settings, event_a)
+        async with session_scope(session_factory) as session:
+            outcome_b = await billing.apply_webhook_event(session, settings, event_b)
+        assert "already processed" not in outcome_a
+        assert "already processed" not in outcome_b
+
+    async def test_an_event_with_no_id_is_applied_but_never_deduplicated(
+        self, session_factory, org
+    ):
+        """A malformed event (or a hand-built test fixture) with no `id`
+        has nothing to key a ledger row on -- it is still applied (never
+        silently dropped), just not protected against a replay, since
+        there is no identifier to detect one by."""
+        settings = StripeSettings(secret_key="sk", price_team="price_t")
+        event = _event("checkout.session.completed", {
+            "client_reference_id": org, "customer": "cus_noid", "subscription": "sub_noid",
+            "metadata": {"org_id": org, "plan": "team"},
+        })
+        assert "id" not in event
+
+        async with session_scope(session_factory) as session:
+            first = await billing.apply_webhook_event(session, settings, event)
+        assert "plan -> team" in first
+        async with session_scope(session_factory) as session:
+            second = await billing.apply_webhook_event(session, settings, event)
+        # Applied again, not "already processed" -- there is no id to
+        # have deduplicated it by.
+        assert "plan -> team" in second
+
+
 class TestSubscriptionLifecycle:
     async def test_deletion_reverts_the_org_to_the_free_plan(self, session_factory, org):
         settings = StripeSettings(secret_key="sk", price_team="price_t")

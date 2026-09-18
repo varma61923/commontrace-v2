@@ -1340,3 +1340,43 @@ class AlertRule(Base):
     __table_args__ = (
         Index("ix_alert_rules_org_enabled", "org_id", "enabled"),
     )
+
+
+class ProcessedWebhookEvent(Base):
+    """One row per Stripe event id `hub/billing.py` has already applied.
+
+    Stripe's own delivery guarantee is AT-LEAST-ONCE, and today every
+    `apply_webhook_event` branch happens to be idempotent by construction
+    (a pure `org.plan = plan` overwrite, never an increment) -- so a
+    replayed event is currently harmless by accident, not by a guarantee
+    this table enforces. That is fragile: a future edit that makes any
+    branch additive (crediting something per event, say) would silently
+    reintroduce double-application with nothing here to catch it. This
+    table makes "already handled" a structural check the webhook route
+    makes BEFORE re-running any handler, independent of whether that
+    handler happens to be idempotent on its own.
+
+    Not org-scoped, deliberately -- matching `organizations`/`api_keys`/
+    `audit_log`'s exclusion from row-level security (see migration
+    d5c8b3a91e77's own module docstring): this row has to be checked
+    BEFORE any org is resolved from the event, for event types this
+    integration does not otherwise act on at all.
+    """
+
+    __tablename__ = "processed_webhook_events"
+
+    # Stripe's own event id ("evt_..."), globally unique by construction --
+    # the natural primary key, not a synthesized UUID. A duplicate INSERT
+    # (two redeliveries landing within the same race window) raises a
+    # real IntegrityError rather than silently overwriting a previous
+    # row's outcome, which is the correct failure mode here: Stripe reads
+    # a non-2xx as "retry me," and a retry of an event already fully
+    # applied is exactly as safe as the original accidental idempotency
+    # this table exists to stop depending on.
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # apply_webhook_event's own human-readable outcome string, truncated
+    # to fit -- kept so a replay's log line and `hub.manage audit-log`-style
+    # inspection can show WHY a duplicate was ignored, not just that it was.
+    outcome: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
