@@ -39,6 +39,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reversible operator actions in the `/admin` console** (`hub/admin.py`):
+  releasing a quarantined trace, placing and releasing a legal hold, and
+  setting and clearing a retention policy are now buttons on an
+  organization's own page, previously reachable only via
+  `hub.manage release-quarantine`/`legal-hold`/`release-hold`/
+  `set-retention`/`clear-retention`. This module's own docstring drew the
+  line at reversibility (its Knowledge Base review/retract/restore actions
+  already crossed it, protected by an action-and-target-scoped CSRF token
+  plus a same-site check); this extends that already-proven pattern to the
+  rest of the reversible surface rather than inventing a second one.
+  Deliberately unchanged: `retention-apply` (permanently deletes whatever a
+  plan describes), `purge-org`/`purge-trace`/`purge-subject-traces`
+  (irreversible), and `issue-key`/`generate-encryption-key` (would render a
+  raw secret into browser history) all stay CLI-only, restated explicitly
+  in the module's docstring rather than left to erode silently as the
+  console grows. Every new handler calls the SAME `hub/retention.py`
+  function `hub.manage` does, audited as `operator-console` rather than
+  `operator-cli`. 9 new tests in `hub/tests/test_admin.py`
+  (`TestOrgScopedMutationsAreReversible`), plus two existing tests that
+  encoded "the org page has zero forms" rewritten to assert the org page's
+  forms are exactly the reversible set and never a destructive one.
+
 - **A Stripe webhook event-id idempotency ledger** (`processed_webhook_events`,
   migration `37d2580be8db`). `hub/billing.py`'s `apply_webhook_event` was
   idempotent against Stripe's at-least-once delivery only by accident —
