@@ -296,7 +296,31 @@ _FAVICON_LINK = (
 )
 
 
-def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
+def _auto_refresh_script(seconds: int) -> str:
+    """A dependency-free "this page is live" mechanism -- see
+    hub/admin.py's own copy of this helper for the full reasoning
+    (reload on a timer; skip and retry shortly while a form control is
+    focused, so a half-typed search or reason is never silently wiped;
+    round-trip scroll position through sessionStorage so a reload does
+    not snap back to the top of the page).
+    """
+    return (
+        "<script>(function(){"
+        f"var KEY='ct-scroll-'+location.pathname+location.search;"
+        "var y=sessionStorage.getItem(KEY);"
+        "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
+        "function isEditing(){var el=document.activeElement;"
+        "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
+        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
+        "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
+        f"setTimeout(tick,{int(seconds)}*1000);"
+        "})();</script>"
+    )
+
+
+def _page(
+    title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
+) -> HTMLResponse:
     nav = (
         f'<nav><a href="{CONSOLE_PATH}">Overview</a>'
         f'<a href="{CONSOLE_PATH}/proof">Proof</a>'
@@ -310,6 +334,12 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
         if signed_in else ""
     )
+    live_badge = (
+        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
+        'unless you are typing in a field">live</span>'
+        if auto_refresh_seconds else ""
+    )
+    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -317,7 +347,8 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">your fleet</span>'
-        f"{nav}</div></header><main>{body}</main></body></html>",
+        f"{live_badge}"
+        f"{nav}</div></header><main>{body}</main>{refresh_script}</body></html>",
         # A customer console renders that org's own operational data. A cached
         # copy in a shared or kiosk browser is one more place it sits at rest,
         # and it outlives the session cookie that was supposed to gate it.
@@ -1428,7 +1459,14 @@ def add_console_routes(
                 if stripe.price_for_plan(name) and name != current_plan
             ],
         }
-        return _page("Your fleet", _render_overview(data, causal, billing_state))
+        return _page(
+            "Your fleet", _render_overview(data, causal, billing_state),
+            # Longer than the other auto-refreshing pages: causal_effects is
+            # real statistical work (hub/SCALING.md measures it up to 1.4s on
+            # a large org), and this is the page most likely left open in a
+            # background tab.
+            auto_refresh_seconds=45,
+        )
 
     async def billing_checkout(request: Request) -> Response:
         """Mints a fresh Checkout Session for a plan the signed-in org does
@@ -2108,7 +2146,10 @@ def add_console_routes(
                 )
             ).scalars().all())
         has_more = len(rows) > limit
-        return _page("Audit log", _render_audit_log(rows[:limit], offset, limit, has_more))
+        return _page(
+            "Audit log", _render_audit_log(rows[:limit], offset, limit, has_more),
+            auto_refresh_seconds=20,
+        )
 
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])

@@ -1586,3 +1586,83 @@ class TestRetentionApplyFromTheConsole:
         async with session_scope(session_factory) as session:
             row = await session.get(Trace, trace_id)
         assert row is not None
+
+
+class TestAutoRefresh:
+    """The "this console is for noticing things" pages reload themselves,
+    so an operator watching a queue or a quarantine count does not have
+    to remember to hit reload -- but never on a page currently showing a
+    just-issued, shown-once secret, since a reload before it's copied
+    loses it for good."""
+
+    async def _seed(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_the_overview_page_auto_refreshes(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get("/admin", headers=_basic("op", "s3cret"))
+        assert "<script>" in r.text
+        assert "location.reload" in r.text
+
+    async def test_the_org_page_auto_refreshes(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret"))
+        assert "location.reload" in r.text
+
+    async def test_the_kb_page_auto_refreshes(self, session_factory):
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
+        assert "location.reload" in r.text
+
+    async def test_a_freshly_issued_key_disables_auto_refresh(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["read"],
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text
+
+    async def test_a_freshly_rotated_key_disables_auto_refresh(self, session_factory):
+        from hub import auth as auth_module
+        from hub.db import session_scope
+
+        org_id = await self._seed(session_factory)
+        async with session_scope(session_factory) as session:
+            issued = await auth_module.issue_api_key(session, org_id)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/rotate", headers=_basic("op", "s3cret"),
+                data={
+                    "key_id": issued.key_id,
+                    "csrf": admin._csrf_token("s3cret", "rotate_key", issued.key_id),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text
+
+    async def test_a_freshly_generated_encryption_key_disables_auto_refresh(
+        self, session_factory
+    ):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/generate-encryption-key", headers=_basic("op", "s3cret"),
+                data={
+                    "target": "new",
+                    "csrf": admin._csrf_token("s3cret", "generate_encryption_key", "new"),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text

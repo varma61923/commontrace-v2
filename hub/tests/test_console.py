@@ -2091,3 +2091,41 @@ class TestAssignmentsCsvExport:
                 f"{console.CONSOLE_PATH}/proof/assignments.csv", follow_redirects=False,
             )
         assert response.status_code in (302, 303)
+
+
+class TestAutoRefresh:
+    """The pages built for noticing something changing -- Overview's "is
+    the memory working" and the org's own audit trail -- reload
+    themselves, so a customer doesn't have to remember to hit reload.
+    Never on a page that can show a just-issued, shown-once API key: a
+    reload before it's copied loses it for good."""
+
+    async def test_the_overview_page_auto_refreshes(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(console.CONSOLE_PATH)
+        assert "location.reload" in response.text
+
+    async def test_the_audit_log_page_auto_refreshes(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert "location.reload" in response.text
+
+    async def test_the_keys_page_never_auto_refreshes(self, session_factory, org_and_key):
+        """This is the one page that can render a raw, shown-once API
+        key -- it must never carry the auto-refresh script at all,
+        regardless of which action led to it."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            plain = await client.get(f"{console.CONSOLE_PATH}/keys")
+            issued = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+            )
+        assert "location.reload" not in plain.text
+        assert "shown once" in issued.text
+        assert "location.reload" not in issued.text

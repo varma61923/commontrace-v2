@@ -215,17 +215,52 @@ form.act input[type=text]{font:inherit;font-size:.85rem;padding:.3rem .45rem;
 """
 
 
-def _page(title: str, body: str) -> HTMLResponse:
+def _auto_refresh_script(seconds: int) -> str:
+    """A dependency-free "this page is live" mechanism: reloads on a
+    timer, so an operator watching for a queue to grow or a rate to
+    climb (this console's whole reason to exist -- see the module
+    docstring's "actually needs, which is *noticing*") does not have to
+    remember to hit reload.
+
+    Skipped, and retried shortly after, while the visitor has a form
+    control focused -- a background reload that wiped a half-typed
+    reason or subject id would make "live" read as "broken", and this
+    page has more forms on it than most. Scroll position round-trips
+    through sessionStorage because a plain reload otherwise snaps back
+    to the top of what can be a long page.
+    """
+    return (
+        "<script>(function(){"
+        f"var KEY='ct-scroll-'+location.pathname+location.search;"
+        "var y=sessionStorage.getItem(KEY);"
+        "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
+        "function isEditing(){var el=document.activeElement;"
+        "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
+        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
+        "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
+        f"setTimeout(tick,{int(seconds)}*1000);"
+        "})();</script>"
+    )
+
+
+def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
+    live_badge = (
+        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
+        'unless you are typing in a field">live</span>'
+        if auto_refresh_seconds else ""
+    )
+    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>{h(title)} · CommonTrace Hub</title><style>{_CSS}</style></head><body>"
         "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
         "<span class=\"ro\">operator console</span>"
+        f"{live_badge}"
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
-        f"<main>{body}</main></body></html>",
+        f"<main>{body}</main>{refresh_script}</body></html>",
         # No caching: this is live operational state, and a cached copy in a
         # shared browser is one more place tenant data sits at rest.
         headers={"Cache-Control": "no-store"},
@@ -1277,7 +1312,13 @@ def add_admin_routes(
     async def _overview_view(*, flash: str = "", fresh_key: str = "") -> Response:
         async with session_scope(session_factory) as session:
             data = await _overview(session)
-        return _page("Overview", _render_overview(data, admin_token, flash=flash, fresh_key=fresh_key))
+        return _page(
+            "Overview", _render_overview(data, admin_token, flash=flash, fresh_key=fresh_key),
+            # Never auto-refresh a page currently showing a just-issued,
+            # shown-once secret -- a reload before it's copied loses it
+            # for good, since this Hub keeps no other record of it.
+            auto_refresh_seconds=0 if fresh_key else 20,
+        )
 
     async def overview(request: Request) -> Response:
         denied = await _guard(request)
@@ -1334,7 +1375,10 @@ def add_admin_routes(
             data["retention_preview"] = {
                 "render": plan.render(), "digest": plan.digest, "n_doomed": plan.n_doomed,
             }
-        return _page(data["org"].name, _render_org(data, admin_token, flash=flash))
+        return _page(
+            data["org"].name, _render_org(data, admin_token, flash=flash),
+            auto_refresh_seconds=25,
+        )
 
     _COMMONS_OFF = (
         '<section><h1>Knowledge Base</h1><p class="sub">This deployment runs with '
@@ -1351,8 +1395,10 @@ def add_admin_routes(
         flash = request.query_params.get("done", "")[:200]
         async with session_scope(session_factory) as session:
             data = await _kb_data(session)
-        return _page("Knowledge Base",
-                     _render_kb(data, admin_token, operator_org_id, flash=flash))
+        return _page(
+            "Knowledge Base", _render_kb(data, admin_token, operator_org_id, flash=flash),
+            auto_refresh_seconds=15,
+        )
 
     async def _moderate(request: Request, target_field: str, action_of=None, *, require_commons=False):
         """Shared front half of every mutating handler: authenticate, refuse
@@ -1804,7 +1850,12 @@ def add_admin_routes(
             return _page("Not found", '<section><h1>No such organization</h1>'
                                       f'<p class="sub">Nothing on this Hub has that id. '
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
-        return _page(data["org"].name, _render_org(data, admin_token, flash=flash, fresh_key=fresh_key))
+        return _page(
+            data["org"].name, _render_org(data, admin_token, flash=flash, fresh_key=fresh_key),
+            # Same rule as the overview page: never auto-refresh out from
+            # under a shown-once secret.
+            auto_refresh_seconds=0 if fresh_key else 25,
+        )
 
     async def keys_issue(request: Request) -> Response:
         form, org_id, denied = await _moderate(request, "org_id", action_of="issue_key")
