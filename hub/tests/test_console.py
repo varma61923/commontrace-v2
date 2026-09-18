@@ -1489,6 +1489,51 @@ class TestAlertRuleManagement:
             rules = await alerts_module.list_rules(session, org_id)
         assert rules == []
 
+    async def test_a_non_numeric_threshold_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/alerts/create",
+                data={
+                    "metric": alerts_module.METRIC_QUARANTINE_RATE,
+                    "comparator": alerts_module.COMPARATOR_GT,
+                    "threshold": "not-a-number",
+                },
+            )
+        assert "Threshold must be a number" in response.text
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert rules == []
+
+    async def test_threshold_submitted_as_a_file_part_is_refused_not_a_500(
+        self, session_factory, org_and_key
+    ):
+        """Regression test: `form.get("threshold")` can return an
+        UploadFile if the field arrives as a multipart file part rather
+        than plain text, and float()/int() raise TypeError -- not
+        ValueError -- on that, which the handler's `except ValueError`
+        alone did not catch. That turned a malformed request into an
+        unhandled 500 instead of this same clean validation error."""
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/alerts/create",
+                data={
+                    "metric": alerts_module.METRIC_QUARANTINE_RATE,
+                    "comparator": alerts_module.COMPARATOR_GT,
+                },
+                files={"threshold": ("threshold.txt", b"0.2", "text/plain")},
+            )
+        assert response.status_code == 200
+        assert "Threshold must be a number" in response.text
+        async with session_scope(session_factory) as session:
+            rules = await alerts_module.list_rules(session, org_id)
+        assert rules == []
+
     async def test_deleting_a_rule(self, session_factory, org_and_key):
         org_id, raw_key = org_and_key
         async with session_scope(session_factory) as session:

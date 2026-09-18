@@ -1652,13 +1652,19 @@ def add_console_routes(
         metric = str(form.get("metric") or "")
         comparator = str(form.get("comparator") or "")
         try:
-            threshold = float(form.get("threshold") or "")
+            # str(...) first, like expires_days below: form.get() can return
+            # an UploadFile (a form field submitted as a file part rather
+            # than plain text), and float()/int() raise TypeError -- not
+            # ValueError -- on that, which this except would not catch,
+            # turning a malformed request into an unhandled 500 instead of
+            # the clean validation error this branch exists to return.
+            threshold = float(str(form.get("threshold") or ""))
         except ValueError:
             rules = await _list_alert_rules(org_id)
             return _page("Alerts", _render_alerts(
                 rules, True, error="Threshold must be a number."))
         try:
-            cooldown_minutes = int(form.get("cooldown_minutes") or alerts.DEFAULT_COOLDOWN_MINUTES)
+            cooldown_minutes = int(str(form.get("cooldown_minutes") or alerts.DEFAULT_COOLDOWN_MINUTES))
         except ValueError:
             cooldown_minutes = alerts.DEFAULT_COOLDOWN_MINUTES
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
