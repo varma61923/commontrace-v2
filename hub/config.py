@@ -511,6 +511,21 @@ class HubConfig:
     alert_scheduler_enabled: bool = False
     alert_scheduler_interval_seconds: int = 300
 
+    # --- Webhook delivery scheduler (hub/scheduler.py) ---
+    # Same shape as the alert scheduler above, for the other sweep
+    # hub/events.py's own module docstring otherwise assumes an operator
+    # points external cron at: `hub.manage webhook-deliver`. False
+    # (default): no change for a deployment already doing that. True: the
+    # Hub process drains its own pending-delivery queue every
+    # webhook_scheduler_interval_seconds, so an org's webhook subscriber
+    # hears about a quarantine or an experiment verdict without waiting on
+    # an external cron's own schedule.
+    webhook_scheduler_enabled: bool = False
+    webhook_scheduler_interval_seconds: int = 30
+    #: How many queued deliveries one sweep attempts -- see
+    #: hub/manage.py's webhook_deliver, whose own default this matches.
+    webhook_scheduler_batch_size: int = 100
+
     # --- Misc ---
     log_level: str = "INFO"
 
@@ -667,5 +682,10 @@ class HubConfig:
             alert_scheduler_enabled=_env_bool("HUB_ALERT_SCHEDULER_ENABLED", False),
             alert_scheduler_interval_seconds=_env_int_in_range(
                 "HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", 300, 10, 86_400),
+            webhook_scheduler_enabled=_env_bool("HUB_WEBHOOK_SCHEDULER_ENABLED", False),
+            webhook_scheduler_interval_seconds=_env_int_in_range(
+                "HUB_WEBHOOK_SCHEDULER_INTERVAL_SECONDS", 30, 5, 86_400),
+            webhook_scheduler_batch_size=_env_int_in_range(
+                "HUB_WEBHOOK_SCHEDULER_BATCH_SIZE", 100, 1, 10_000),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )

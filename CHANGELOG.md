@@ -39,6 +39,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An in-process webhook-delivery scheduler** (`hub/scheduler.py`'s
+  `run_webhook_delivery`, opt-in via `HUB_WEBHOOK_SCHEDULER_ENABLED`):
+  the same pattern the existing alert scheduler already used for
+  `hub.manage check-alerts`, now applied to `hub.manage webhook-deliver`
+  — a deployment that would rather not run cron next to the Hub process
+  can have it drain `hub/events.py`'s pending-delivery queue on its own
+  heartbeat instead, on a much shorter default interval
+  (`HUB_WEBHOOK_SCHEDULER_INTERVAL_SECONDS`, default 30s) than any cron
+  entry would sanely use, since a subscriber hearing about a quarantine
+  or an experiment verdict promptly is the whole point of having
+  webhooks at all. A deployment that already points cron at
+  `webhook-deliver` sees no change — this is off by default and
+  `build_app` never starts the loop unless asked to. `build_app`'s
+  lifespan now joins however many of the two schedulers are enabled via
+  `asyncio.gather` on shutdown, rather than assuming at most one.
+  New tests in `hub/tests/test_scheduler.py`
+  (`TestWebhookDeliveryRunLoop`, `TestWebhookSweepReachesRealDeliveries`)
+  and `hub/tests/test_build_app_startup.py` (both schedulers enabled
+  together, boots and shuts down cleanly).
+
+- **Auto-refreshing pages in both consoles.** The customer console's
+  Overview and audit log pages, and the operator console's Overview,
+  organization, and knowledge-base pages, now reload themselves every
+  15–45 seconds (vanilla JS, no new dependency) so a page left open in a
+  background tab stays live instead of showing a stale snapshot until
+  the next manual reload. Refresh pauses (and retries in 3s) while the
+  viewer is actively typing in a field, and scroll position round-trips
+  across the reload via `sessionStorage`. Deliberately excluded: any
+  page that can render a shown-once secret (an API key or encryption
+  key) — auto-refresh is switched off exactly when a fresh key is being
+  displayed, so a background timer can never wipe a credential from the
+  screen before the operator or customer has copied it. New
+  `TestAutoRefresh` classes in `hub/tests/test_console.py` and
+  `hub/tests/test_admin.py` cover both the presence of the refresh
+  script on the intended pages and its absence whenever a fresh key is
+  in the response.
+
 - **Key issuance and a confirmed danger zone in the `/admin` console**
   (`hub/admin.py`): issue/rotate/revoke-key buttons on an organization's
   own page (needed for onboarding — a brand-new org has no key yet, so

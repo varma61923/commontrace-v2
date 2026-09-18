@@ -1680,25 +1680,39 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
-            if not config.alert_scheduler_enabled:
+            # Each loop is independently opt-in (hub/scheduler.py's own
+            # docstring) -- a deployment relying on `hub.manage
+            # check-alerts`/`webhook-deliver` via its own cron for either
+            # one, or both, is unaffected either way.
+            stop_event = asyncio.Event()
+            tasks = []
+            if config.alert_scheduler_enabled:
+                tasks.append(asyncio.create_task(
+                    scheduler.run(
+                        session_factory,
+                        interval_seconds=config.alert_scheduler_interval_seconds,
+                        stop_event=stop_event,
+                    )
+                ))
+            if config.webhook_scheduler_enabled:
+                tasks.append(asyncio.create_task(
+                    scheduler.run_webhook_delivery(
+                        session_factory,
+                        interval_seconds=config.webhook_scheduler_interval_seconds,
+                        stop_event=stop_event,
+                        signing_key=config.ledger_signing_key,
+                        cipher=config.cipher(),
+                        batch_size=config.webhook_scheduler_batch_size,
+                    )
+                ))
+            if not tasks:
                 yield
                 return
-            # See hub/scheduler.py's own docstring: off unless explicitly
-            # enabled, so a deployment relying on `hub.manage check-alerts`
-            # via its own cron is unaffected either way.
-            stop_event = asyncio.Event()
-            task = asyncio.create_task(
-                scheduler.run(
-                    session_factory,
-                    interval_seconds=config.alert_scheduler_interval_seconds,
-                    stop_event=stop_event,
-                )
-            )
             try:
                 yield
             finally:
                 stop_event.set()
-                await task
+                await asyncio.gather(*tasks)
 
     inner_app.router.lifespan_context = _lifespan_with_scheduler
     inner_app.add_middleware(

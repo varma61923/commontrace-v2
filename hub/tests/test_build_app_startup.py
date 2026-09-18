@@ -122,6 +122,36 @@ class TestTheProductionAppBoots:
         assert "lifespan.shutdown.complete" in types
         assert "lifespan.startup.failed" not in types
 
+    async def test_it_boots_and_shuts_down_cleanly_with_the_webhook_scheduler_enabled(
+        self, config, session_factory
+    ):
+        """The webhook-delivery counterpart to the alert scheduler test
+        above: also off by default, also a background asyncio task the
+        lifespan must join on shutdown."""
+        cfg = dataclasses.replace(
+            config, webhook_scheduler_enabled=True, webhook_scheduler_interval_seconds=5,
+        )
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        types = [m["type"] for m in messages]
+        assert "lifespan.startup.complete" in types
+        assert "lifespan.shutdown.complete" in types
+        assert "lifespan.startup.failed" not in types
+
+    async def test_it_boots_with_both_schedulers_enabled(self, config, session_factory):
+        """Both loops run from the same lifespan concurrently -- proves
+        `asyncio.gather` on shutdown joins both tasks rather than only
+        the first one wired in."""
+        cfg = dataclasses.replace(
+            config,
+            alert_scheduler_enabled=True, alert_scheduler_interval_seconds=5,
+            webhook_scheduler_enabled=True, webhook_scheduler_interval_seconds=5,
+        )
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        types = [m["type"] for m in messages]
+        assert "lifespan.startup.complete" in types
+        assert "lifespan.shutdown.complete" in types
+        assert "lifespan.startup.failed" not in types
+
     async def test_it_boots_with_an_ip_allowlist_configured(self, config, session_factory):
         """IpAllowlistMiddleware is only mounted when HUB_IP_ALLOWLIST is
         set -- proves the conditional wiring in build_app itself doesn't
