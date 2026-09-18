@@ -289,18 +289,23 @@ class TestRendering:
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert "reversibility" in r.text
-        assert "Nothing on THIS page changes state" in r.text
+        assert "Creating an organization is additive and reversible" in r.text
 
-    async def test_the_overview_page_stays_fully_read_only(self, session_factory):
-        """The overview lists organizations; it has no id-scoped context to
-        act on, so unlike an organization's own page it carries no control
-        at all."""
+    async def test_the_overview_page_offers_only_org_creation(self, session_factory):
+        """Creating an organization is additive and reversible (there is
+        nothing yet on a brand-new org for a mistaken click to lose), so it
+        is the one button on this page. Every other action needs an
+        existing organization to act on and lives on that org's own page."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
         lowered = r.text.lower()
-        for forbidden in ("<form", "<button", 'method="post"', "fetch(", "xmlhttprequest"):
-            assert forbidden not in lowered, f"{forbidden} on a page that must stay read-only"
+        assert 'action="/admin/create-org"' in lowered
+        for forbidden in (
+            "/purge", "retention/", "/issue", "generate-encryption-key",
+            "/legal-hold", "/quarantine", "/set-plan", "fetch(", "xmlhttprequest",
+        ):
+            assert forbidden not in lowered, f"{forbidden} on the overview page"
 
     async def test_the_org_page_offers_only_reversible_actions(self, session_factory):
         """The line is reversibility, not squeamishness. Irreversible and
@@ -326,7 +331,7 @@ class TestRendering:
         lowered = r.text.lower()
         for allowed_action in (
             "quarantine/release", "legal-hold/place", "legal-hold/release",
-            "retention/set", "retention/clear",
+            "retention/set", "retention/clear", "set-plan",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
         for forbidden in (
@@ -823,3 +828,121 @@ class TestOrgScopedMutationsAreReversible:
                 },
             )
         assert r.status_code == 401
+
+    async def test_changing_a_plan(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/set-plan", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "plan_name": "team",
+                    "csrf": admin._csrf_token("s3cret", "set_plan", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.plan == "team"
+
+    async def test_an_unknown_plan_is_refused(self, session_factory):
+        from urllib.parse import unquote
+
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/set-plan", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "plan_name": "not-a-real-plan",
+                    "csrf": admin._csrf_token("s3cret", "set_plan", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "Unknown plan" in unquote(r.headers["location"])
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.plan != "not-a-real-plan"
+
+
+class TestCreateOrgFromTheConsole:
+    async def test_creating_an_organization(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/create-org", headers=_basic("op", "s3cret"),
+                data={
+                    "name": "Brand New Org", "target": "new",
+                    "csrf": admin._csrf_token("s3cret", "create_org", "new"),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            org = (
+                await session.execute(select(Organization).where(Organization.name == "Brand New Org"))
+            ).scalars().first()
+        assert org is not None
+        assert r.headers["location"].startswith(f"/admin/org/{org.id}")
+
+    async def test_an_empty_name_is_refused(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/create-org", headers=_basic("op", "s3cret"),
+                data={"name": "", "target": "new", "csrf": admin._csrf_token("s3cret", "create_org", "new")},
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            count = len((await session.execute(select(Organization))).scalars().all())
+        assert count == 0
+
+    async def test_creation_is_audited_as_operator_console(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                "/admin/create-org", headers=_basic("op", "s3cret"),
+                data={
+                    "name": "Audited Org", "target": "new",
+                    "csrf": admin._csrf_token("s3cret", "create_org", "new"),
+                },
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "create_org")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+    async def test_wrong_csrf_token_is_refused(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/create-org", headers=_basic("op", "s3cret"),
+                data={"name": "Should Not Exist", "target": "new", "csrf": "wrong"},
+            )
+        assert r.status_code == 403
+        async with session_scope(session_factory) as session:
+            count = len((await session.execute(select(Organization))).scalars().all())
+        assert count == 0

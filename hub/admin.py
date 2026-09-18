@@ -509,7 +509,7 @@ async def _kb_data(session) -> dict:
 # --- Rendering --------------------------------------------------------------
 
 
-def _render_overview(data: dict) -> str:
+def _render_overview(data: dict, admin_token: str, flash: str = "") -> str:
     tiles = "".join([
         _tile("organizations", _num(data.get("total_orgs", len(data["orgs"])))),
         _tile("traces", _num(data["total_traces"])),
@@ -552,25 +552,36 @@ def _render_overview(data: dict) -> str:
                   f'{_num(data["total_orgs"])}. Use <code>python -m hub.manage list-orgs</code> '
                   f'for the full list.</p>')
 
+    flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
+    create_form = (
+        f'<form method="post" action="{ADMIN_PATH}/create-org" class="act" '
+        'style="margin-top:1rem">'
+        '<input type="hidden" name="target" value="new">'
+        f'<input type="hidden" name="csrf" value="{h(_csrf_token(admin_token, "create_org", "new"))}">'
+        '<label class="sr-only" for="new-org-name">Organization name</label>'
+        '<input type="text" id="new-org-name" name="name" placeholder="Organization name" '
+        'required style="min-width:16rem">'
+        '<button type="submit" class="btn">Create organization</button></form>'
+    )
+
     return (
-        '<section><h1>Overview</h1>'
-        '<p class="sub">Every organization on this Hub, and what it is using.</p></section>'
+        f'<section><h1>Overview</h1>'
+        f'<p class="sub">Every organization on this Hub, and what it is using.</p>{flash_html}</section>'
         f'<section><div class="tiles">{tiles}</div></section>'
-        f'<section><h2>Organizations</h2>{table}</section>'
+        f'<section><h2>Organizations</h2>{table}{create_form}</section>'
         '<section><h2>Operator commands</h2>'
-        '<div class="note">Nothing on THIS page changes state -- it only lists '
-        'organizations. An organization\'s own page has buttons for its reversible '
-        'actions (releasing a quarantine, placing or releasing a legal hold, setting '
-        'or clearing a retention policy). The line is <b>reversibility</b>: those can '
+        '<div class="note">Creating an organization is additive and reversible '
+        '(there is nothing yet to lose), so it is a button above. An organization\'s '
+        'own page has buttons for its other reversible actions (releasing a '
+        'quarantine, placing or releasing a legal hold, setting or clearing a '
+        'retention policy, changing plan). The line is <b>reversibility</b>: those can '
         'all be undone, so they are buttons -- but deleting an organization cannot be, '
         'applying a retention plan permanently deletes rows, and issuing a key would '
         'put a live credential in your browser history. Those stay in the CLI, where '
         'they prompt for confirmation and write an audit row. See <b>hub/admin.py</b> '
         'for the reasoning.</div>'
         '<div class="cmds" style="margin-top:1rem">'
-        + _cmd("Create an organization", 'python -m hub.manage create-org "Acme"')
         + _cmd("Issue a key (90-day)", "python -m hub.manage issue-key <org_id> 90")
-        + _cmd("Change a plan", "python -m hub.manage set-plan <org_id> team")
         + _cmd("Fleet-wide counts", "python -m hub.manage stats")
         + _cmd("Revenue by plan", "python -m hub.manage revenue")
         + '</div></section>'
@@ -606,6 +617,20 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
             '<code>agent_id</code>, and an unknown number of real agents hides behind '
             'the single sentinel they collapse into.</div>'
         )
+
+    plan_options = "".join(
+        f'<option value="{h(name)}"{" selected" if name == ent.get("plan") else ""}>{h(name)}</option>'
+        for name in plans.PLANS
+    )
+    plan_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/set-plan" class="act" '
+        'style="margin-top:.75rem">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "set_plan", org.id))}">'
+        '<label class="sr-only" for="org-plan-select">Plan</label>'
+        f'<select id="org-plan-select" name="plan_name">{plan_options}</select> '
+        '<button type="submit" class="btn">Change plan</button></form>'
+    )
 
     if d["keys"]:
         rows = []
@@ -756,7 +781,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         f'<section><h1>{h(org.name)}</h1>'
         f'<p class="sub m">{h(org.id)} · created {_iso(org.created_at)} · '
         f'billing period {h(ent.get("period"))}</p>{flash_html}</section>'
-        f'<section><div class="tiles">{tiles}</div>{floor_note}</section>'
+        f'<section><div class="tiles">{tiles}</div>{floor_note}{plan_form}</section>'
         f'<section><h2>API keys</h2>{keys_tbl}</section>'
         f'<section><h2>Quarantined traces</h2>{quar_tbl}</section>'
         f'<section><h2>Legal holds</h2>{holds_tbl}{holds_form}</section>'
@@ -769,7 +794,6 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         '<div class="cmds" style="margin-top:1rem">'
         + _cmd("Rotate a key", "python -m hub.manage rotate-key <key_id>")
         + _cmd("Revoke a key", "python -m hub.manage revoke-key <key_id>")
-        + _cmd("Change plan", f"python -m hub.manage set-plan {org.id} team")
         + _cmd("Is it working?", f"python -m hub.manage outcomes {org.id}")
         + _cmd("Start a holdout", f"python -m hub.manage start-experiment {org.id} 0.2")
         + _cmd("Apply a retention plan", f"python -m hub.manage retention-apply {org.id} <digest>")
@@ -989,9 +1013,10 @@ def add_admin_routes(
         denied = await _guard(request)
         if denied is not None:
             return denied
+        flash = request.query_params.get("done", "")[:200]
         async with session_scope(session_factory) as session:
             data = await _overview(session)
-        return _page("Overview", _render_overview(data))
+        return _page("Overview", _render_overview(data, admin_token, flash=flash))
 
     async def org_detail(request: Request) -> Response:
         denied = await _guard(request)
@@ -1265,13 +1290,64 @@ def add_admin_routes(
             )
         return _back(f"{ADMIN_PATH}/org/{org_id}", "Retention policy cleared.")
 
+    async def create_org(request: Request) -> Response:
+        """Additive and reversible in the sense that matters here: there is
+        nothing yet on a brand-new org for a mistaken click to lose. Unlike
+        purge-org, undoing a wrong create-org is `purge-org` on an org with
+        zero traces, keys, or history -- a fundamentally different risk."""
+        form, _target, denied = await _moderate(request, "target", action_of="create_org")
+        if denied is not None:
+            return denied
+        name = str(form.get("name", "")).strip()
+        if not name:
+            return _back(ADMIN_PATH, "Organization name is required.")
+        async with session_scope(session_factory) as session:
+            existing = (
+                await session.execute(select(Organization.id).where(Organization.name == name))
+            ).scalars().all()
+            org = Organization(name=name)
+            session.add(org)
+            await session.flush()
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="create_org",
+                org_id=org.id, target_type="org", target_id=org.id, summary=f"name={name!r}",
+            )
+            org_id = org.id
+        if existing:
+            return _back(
+                ADMIN_PATH,
+                f"Created {org_id} -- note another org already uses the name {name!r}.",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Organization created.")
+
+    async def set_plan(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="set_plan")
+        if denied is not None:
+            return denied
+        key = str(form.get("plan_name", "")).strip().lower()
+        if key not in plans.PLANS:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", f"Unknown plan {key!r}.")
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            if org is None:
+                return _back(ADMIN_PATH, "No such organization.")
+            was, org.plan = org.plan, key
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="set_plan",
+                org_id=org_id, target_type="org", target_id=org_id,
+                summary=f"{was!r} -> {key!r}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", f"Plan changed: {was} → {key}.")
+
     app.add_route(ADMIN_PATH, overview, methods=["GET"])
+    app.add_route(f"{ADMIN_PATH}/create-org", create_org, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}", org_detail, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/quarantine/release", quarantine_release, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/legal-hold/place", legal_hold_place, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/legal-hold/release", legal_hold_release, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/set", retention_set, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/clear", retention_clear, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/set-plan", set_plan, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb", kb, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/kb/review", kb_review, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb/retract", kb_retract, methods=["POST"])
