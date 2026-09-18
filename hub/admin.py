@@ -66,7 +66,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
-from hub import crud, events, plans, rbac, retention
+from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.db import session_scope
 from hub.models import (
@@ -514,7 +514,7 @@ async def _kb_data(session) -> dict:
 # --- Rendering --------------------------------------------------------------
 
 
-def _render_overview(data: dict, admin_token: str, flash: str = "") -> str:
+def _render_overview(data: dict, admin_token: str, flash: str = "", fresh_key: str = "") -> str:
     tiles = "".join([
         _tile("organizations", _num(data.get("total_orgs", len(data["orgs"])))),
         _tile("traces", _num(data["total_traces"])),
@@ -558,6 +558,17 @@ def _render_overview(data: dict, admin_token: str, flash: str = "") -> str:
                   f'for the full list.</p>')
 
     flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
+    fresh_key_html = ""
+    if fresh_key:
+        fresh_key_html = (
+            '<div class="flash" style="border-color:var(--warn)">'
+            '<b>New encryption key -- shown once, not stored anywhere</b><br>'
+            f'<code style="user-select:all">{h(fresh_key)}</code>'
+            '<p class="empty" style="margin-top:.4rem">Set as <code>HUB_ENCRYPTION_KEY</code> in '
+            "this deployment's secret store. Rotating: move the current value into "
+            '<code>HUB_ENCRYPTION_KEY_PREVIOUS</code> first, so values already encrypted under '
+            'it still decrypt.</p></div>'
+        )
     create_form = (
         f'<form method="post" action="{ADMIN_PATH}/create-org" class="act" '
         'style="margin-top:1rem">'
@@ -568,32 +579,42 @@ def _render_overview(data: dict, admin_token: str, flash: str = "") -> str:
         'required style="min-width:16rem">'
         '<button type="submit" class="btn">Create organization</button></form>'
     )
+    generate_key_form = (
+        f'<form method="post" action="{ADMIN_PATH}/generate-encryption-key" class="act">'
+        '<input type="hidden" name="target" value="new">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "generate_encryption_key", "new"))}">'
+        '<button type="submit" class="btn">Generate a new encryption key</button></form>'
+        '<p class="empty" style="margin-top:.4rem">A deployment-wide utility, not tied to any '
+        'organization or row in this database -- generating one changes nothing until you set '
+        'it as <code>HUB_ENCRYPTION_KEY</code> yourself.</p>'
+    )
 
     return (
         f'<section><h1>Overview</h1>'
-        f'<p class="sub">Every organization on this Hub, and what it is using.</p>{flash_html}</section>'
+        f'<p class="sub">Every organization on this Hub, and what it is using.</p>{flash_html}'
+        f'{fresh_key_html}</section>'
         f'<section><div class="tiles">{tiles}</div></section>'
         f'<section><h2>Organizations</h2>{table}{create_form}</section>'
+        f'<section><h2>Encryption key</h2>{generate_key_form}</section>'
         '<section><h2>Operator commands</h2>'
-        '<div class="note">Creating an organization is additive and reversible '
-        '(there is nothing yet to lose), so it is a button above. An organization\'s '
-        'own page has buttons for its other reversible actions (releasing a '
-        'quarantine, placing or releasing a legal hold, setting or clearing a '
-        'retention policy, changing plan). The line is <b>reversibility</b>: those can '
-        'all be undone, so they are buttons -- but deleting an organization cannot be, '
-        'applying a retention plan permanently deletes rows, and issuing a key would '
-        'put a live credential in your browser history. Those stay in the CLI, where '
-        'they prompt for confirmation and write an audit row. See <b>hub/admin.py</b> '
-        'for the reasoning.</div>'
+        '<div class="note">The line this console draws is <b>reversibility</b>: every '
+        'mutating action reachable from a button here (creating an org, changing a plan, '
+        'issuing/rotating a key, a legal hold, a retention policy, purging a specific trace '
+        'or organization) can be undone or is itself the undo of a mistake, and the '
+        'irreversible ones (purge-org, purge-trace, purge-subject-traces, retention-apply) '
+        'require retyping the exact id/name being destroyed on top of the same CSRF token '
+        'every action here needs. What is NOT here: anything with no organization or row to '
+        'scope it to, or that this Hub has no way to make more confirmable than a terminal '
+        'already is. See <b>hub/admin.py</b> for the full reasoning.</div>'
         '<div class="cmds" style="margin-top:1rem">'
-        + _cmd("Issue a key (90-day)", "python -m hub.manage issue-key <org_id> 90")
         + _cmd("Fleet-wide counts", "python -m hub.manage stats")
         + _cmd("Revenue by plan", "python -m hub.manage revenue")
         + '</div></section>'
     )
 
 
-def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
+def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "") -> str:
     org, ent, agents, health = d["org"], d["entitlements"], d["agents"], d["health"]
     q = ent.get("commons_queries", {})
     tr = ent.get("traces", {})
@@ -648,18 +669,63 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
                 state = '<span class="pill warn">never expires</span>'
             else:
                 state = '<span class="pill ok">active</span>'
+            key_actions = ""
+            if k.revoked_at is None:
+                key_actions = (
+                    f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/rotate" '
+                    'class="act" style="display:inline">'
+                    f'<input type="hidden" name="key_id" value="{h(k.id)}">'
+                    f'<input type="hidden" name="csrf" '
+                    f'value="{h(_csrf_token(admin_token, "rotate_key", str(k.id)))}">'
+                    '<button type="submit" class="btn">Rotate</button></form> '
+                    f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/revoke" '
+                    'class="act" style="display:inline">'
+                    f'<input type="hidden" name="key_id" value="{h(k.id)}">'
+                    f'<input type="hidden" name="csrf" '
+                    f'value="{h(_csrf_token(admin_token, "revoke_key", str(k.id)))}">'
+                    '<button type="submit" class="btn">Revoke</button></form>'
+                )
             rows.append(
                 f'<tr><td class="m">{h(k.key_prefix)}…</td><td>{state}</td>'
                 f'<td class="n">{_iso(k.created_at)}</td>'
                 f'<td class="n">{_iso(k.expires_at)}</td>'
                 f'<td class="n">{_iso(k.last_used_at)}</td>'
-                f'<td class="m" style="color:var(--muted)">{h(k.id)}</td></tr>'
+                f'<td class="m" style="color:var(--muted)">{h(k.id)}</td>'
+                f'<td>{key_actions}</td></tr>'
             )
         keys_tbl = ('<div class="scroll"><table><thead><tr><th>Prefix</th><th>State</th>'
                     '<th>Created</th><th>Expires</th><th>Last used</th><th>Key id</th>'
-                    f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+                    f'<th>Action</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     else:
         keys_tbl = '<p class="empty">No keys issued — this org cannot reach the Hub yet.</p>'
+    fresh_key_html = ""
+    if fresh_key:
+        fresh_key_html = (
+            '<div class="flash" style="border-color:var(--warn)">'
+            '<b id="fresh-key-label">New key -- shown once, never stored anywhere as plaintext</b><br>'
+            f'<code style="user-select:all">{h(fresh_key)}</code></div>'
+        )
+    key_scope_options = "".join(
+        f'<label><input type="checkbox" name="scopes" value="{h(s)}"'
+        f'{" checked" if s != scopes.SCOPE_SCIM else ""}> {h(s)}</label> '
+        for s in scopes.ALL_SCOPES
+    )
+    issue_key_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/issue" class="act" '
+        'style="margin-top:.75rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "issue_key", org.id))}">'
+        f'<fieldset style="border:0;padding:0;display:contents"><legend class="sr-only">Scopes'
+        f'</legend>{key_scope_options}</fieldset>'
+        '<label class="sr-only" for="issue-key-expires">Expires in N days</label>'
+        '<input type="number" id="issue-key-expires" name="expires_days" min="1" '
+        'placeholder="expires in N days (blank = never)">'
+        '<button type="submit" class="btn warn">Issue a key</button></form>'
+        '<p class="empty" style="margin-top:.4rem">Needed once, at onboarding: a brand-new '
+        "organization has no key yet, so it cannot sign into its own console to issue one "
+        "itself.</p>"
+    )
 
     if d["quarantined"]:
         rows = "".join(
@@ -761,11 +827,36 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         'required> '
         '<button type="submit" class="btn">Set policy</button></form>'
         '<p class="empty" style="margin-top:.4rem">Setting a policy only changes what a plan '
-        f'WOULD delete. <code>python -m hub.manage retention-plan {h(org.id)}</code> previews it; '
-        'deleting still requires the CLI\'s digest-confirmed '
-        f'<code>retention-apply {h(org.id)} &lt;digest&gt;</code> -- irreversible, so it stays a '
-        'terminal action with an explicit confirmation.</p>'
+        'WOULD delete.</p>'
     )
+    preview = d.get("retention_preview")
+    if preview:
+        if preview["n_doomed"]:
+            apply_form = (
+                f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/retention/apply" '
+                'class="act" style="margin-top:.5rem">'
+                f'<input type="hidden" name="digest" value="{h(preview["digest"])}">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, "retention_apply", preview["digest"]))}">'
+                '<label class="sr-only" for="retention-confirm">Type the digest to confirm</label>'
+                '<input type="text" id="retention-confirm" name="confirm_digest" '
+                'placeholder="paste the digest above to confirm" required style="width:20rem">'
+                '<button type="submit" class="btn warn">Permanently delete these rows</button>'
+                '</form>'
+            )
+        else:
+            apply_form = ""
+        retention_preview_html = (
+            '<div class="flash" style="border-color:var(--warn)">'
+            f'<pre style="white-space:pre-wrap;margin:0">{h(preview["render"])}</pre>'
+            f'{apply_form}</div>'
+        )
+    else:
+        retention_preview_html = (
+            f'<form method="get" action="{ADMIN_PATH}/org/{h(org.id)}" class="act">'
+            '<input type="hidden" name="preview_retention" value="1">'
+            '<button type="submit" class="btn">Preview what a plan would delete</button></form>'
+        )
     flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
 
     users = d.get("users") or []
@@ -890,6 +981,52 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         'placeholder="subject ids, comma-separated (blank clears)" style="width:20rem">'
         '<button type="submit" class="btn">Tag</button></form>'
     )
+    purge_subject_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-subject-traces" '
+        'class="act" style="margin-top:1rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "purge_subject_traces", org.id))}">'
+        '<label class="sr-only" for="purge-subject-id">Subject id</label>'
+        '<input type="text" id="purge-subject-id" name="subject_id" placeholder="subject id" '
+        'required style="width:20rem">'
+        '<label class="sr-only" for="purge-subject-confirm">Retype the subject id to confirm'
+        '</label>'
+        '<input type="text" id="purge-subject-confirm" name="confirm_subject_id" '
+        'placeholder="retype the subject id to confirm" required style="width:20rem">'
+        '<button type="submit" class="btn warn">Permanently erase these traces</button></form>'
+        '<p class="empty" style="margin-top:.4rem">Irreversible: deletes every trace tagged with '
+        'this subject id, plus each one\'s full amendment chain.</p>'
+    )
+
+    danger_zone = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-trace" class="act">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "purge_trace", org.id))}">'
+        '<label class="sr-only" for="purge-trace-id">Trace id</label>'
+        '<input type="text" id="purge-trace-id" name="trace_id" placeholder="trace id" required '
+        'style="width:20rem">'
+        '<label class="sr-only" for="purge-trace-confirm">Retype the trace id to confirm</label>'
+        '<input type="text" id="purge-trace-confirm" name="confirm_trace_id" '
+        'placeholder="retype the trace id to confirm" required style="width:20rem">'
+        '<button type="submit" class="btn warn">Permanently delete this trace</button></form>'
+        '<p class="empty" style="margin:.4rem 0 1rem">Deletes one trace and its full amendment '
+        'chain.</p>'
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge" class="act">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "purge_org", org.id))}">'
+        '<label class="sr-only" for="purge-org-confirm">Retype the organization name to confirm'
+        '</label>'
+        f'<input type="text" id="purge-org-confirm" name="confirm_name" '
+        f'placeholder="retype {h(org.name)!r} to confirm" required style="width:20rem">'
+        '<button type="submit" class="btn warn">Permanently delete this organization</button>'
+        '</form>'
+        '<p class="empty" style="margin-top:.4rem">Deletes this organization and everything '
+        'scoped to it -- api keys, traces, votes. Cancels its Stripe subscription first, if it '
+        'has one.</p>'
+    )
 
     if d["audit"]:
         rows = "".join(
@@ -910,26 +1047,22 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         f'<p class="sub m">{h(org.id)} · created {_iso(org.created_at)} · '
         f'billing period {h(ent.get("period"))}</p>{flash_html}</section>'
         f'<section><div class="tiles">{tiles}</div>{floor_note}{plan_form}</section>'
-        f'<section><h2>API keys</h2>{keys_tbl}</section>'
+        f'<section><h2>API keys</h2>{fresh_key_html}{keys_tbl}{issue_key_form}</section>'
         f'<section><h2>Users</h2>{users_tbl}{create_user_form}</section>'
         f'<section><h2>Quarantined traces</h2>{quar_tbl}</section>'
         f'<section><h2>Legal holds</h2>{holds_tbl}{holds_form}</section>'
-        f'<section><h2>Retention policy</h2>{policies_tbl}{policy_form}</section>'
-        f'<section><h2>Subject rights</h2>{find_subject_form}{tag_subject_form}</section>'
+        f'<section><h2>Retention policy</h2>{policies_tbl}{policy_form}{retention_preview_html}</section>'
+        f'<section><h2>Subject rights</h2>{find_subject_form}{tag_subject_form}{purge_subject_form}</section>'
         f'<section><h2>Recent audited actions</h2>{audit_tbl}</section>'
-        '<section><h2>Operator commands for this org</h2>'
-        '<div class="note">Reversible actions above are buttons. What stays here is what '
-        'cannot be undone (<code>purge-org</code>, <code>purge-subject-traces</code>, '
-        '<code>retention-apply</code>) or would put a live credential in your browser history '
-        '(issuing a key).</div>'
-        '<div class="cmds" style="margin-top:1rem">'
-        + _cmd("Rotate a key", "python -m hub.manage rotate-key <key_id>")
-        + _cmd("Revoke a key", "python -m hub.manage revoke-key <key_id>")
+        '<section><h2>Danger zone</h2>'
+        '<div class="note">Nothing above this line can lose data permanently. Everything '
+        'below is irreversible -- retyping the exact id/name is required, in addition to the '
+        'same CSRF token every other action here needs, so a wrong click cannot reach it.'
+        '</div>'
+        f'<div style="margin-top:1rem">{danger_zone}</div></section>'
+        '<section><h2>Operator commands for this org</h2><div class="cmds">'
         + _cmd("Is it working?", f"python -m hub.manage outcomes {org.id}")
         + _cmd("Start a holdout", f"python -m hub.manage start-experiment {org.id} 0.2")
-        + _cmd("Apply a retention plan", f"python -m hub.manage retention-apply {org.id} <digest>")
-        + _cmd("Erase a subject's traces", f"python -m hub.manage purge-subject-traces {org.id} <subject_id>")
-        + _cmd("Delete this org", f"python -m hub.manage purge-org {org.id}")
         + '</div></section>'
     )
 
@@ -1141,14 +1274,29 @@ def add_admin_routes(
             return _unauthorized()
         return None
 
+    async def _overview_view(*, flash: str = "", fresh_key: str = "") -> Response:
+        async with session_scope(session_factory) as session:
+            data = await _overview(session)
+        return _page("Overview", _render_overview(data, admin_token, flash=flash, fresh_key=fresh_key))
+
     async def overview(request: Request) -> Response:
         denied = await _guard(request)
         if denied is not None:
             return denied
         flash = request.query_params.get("done", "")[:200]
-        async with session_scope(session_factory) as session:
-            data = await _overview(session)
-        return _page("Overview", _render_overview(data, admin_token, flash=flash))
+        return await _overview_view(flash=flash)
+
+    async def generate_encryption_key_route(request: Request) -> Response:
+        """A stateless utility -- see hub/encryption.py's generate_key. No
+        database write, no org, and nothing to audit: this changes
+        nothing until an operator sets the printed value as
+        HUB_ENCRYPTION_KEY themselves."""
+        from hub.encryption import generate_key
+
+        _form, _target, denied = await _moderate(request, "target", action_of="generate_encryption_key")
+        if denied is not None:
+            return denied
+        return await _overview_view(fresh_key=generate_key())
 
     async def org_detail(request: Request) -> Response:
         denied = await _guard(request)
@@ -1180,6 +1328,12 @@ def add_admin_routes(
             async with session_scope(session_factory) as session:
                 results = await crud.find_traces_by_subject(session, org_id, subject_id)
             data["subject_search"] = {"subject_id": subject_id, "results": results}
+        if request.query_params.get("preview_retention"):
+            async with session_scope(session_factory) as session:
+                plan = await retention.plan(session, org_id)
+            data["retention_preview"] = {
+                "render": plan.render(), "digest": plan.digest, "n_doomed": plan.n_doomed,
+            }
         return _page(data["org"].name, _render_org(data, admin_token, flash=flash))
 
     _COMMONS_OFF = (
@@ -1628,8 +1782,156 @@ def add_admin_routes(
         return _back(
             f"{ADMIN_PATH}/org/{org_id}", f"Tagged with {len(result['subject_ids'])} subject id(s).")
 
+    # --- Issuing/rotating/revoking keys, and the irreversible danger zone --
+    #
+    # Issuing and rotating are shown-once, never-cached (this whole
+    # console sends Cache-Control: no-store) -- the same property that
+    # already made hub/console.py's customer-facing key issuance safe to
+    # ship. Needed here specifically for onboarding: a brand-new org has
+    # no key yet, so it cannot sign into ITS OWN console to issue one.
+    #
+    # purge-trace/purge-org/purge-subject-traces retype the exact
+    # id/name being destroyed -- a STRONGER confirmation than the CLI's
+    # own `_confirm_destructive` (which only asks for the literal word
+    # "yes"), on top of the same CSRF token every other mutation here
+    # requires. Every one of them calls the SAME hub/manage.py or
+    # hub/crud.py function the CLI does.
+
+    async def _org_view(org_id: str, admin_token: str, *, flash: str = "", fresh_key: str = "") -> Response:
+        async with session_scope(session_factory) as session:
+            data = await _org_detail(session, org_id)
+        if data is None:
+            return _page("Not found", '<section><h1>No such organization</h1>'
+                                      f'<p class="sub">Nothing on this Hub has that id. '
+                                      f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
+        return _page(data["org"].name, _render_org(data, admin_token, flash=flash, fresh_key=fresh_key))
+
+    async def keys_issue(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="issue_key")
+        if denied is not None:
+            return denied
+        chosen_scopes = form.getlist("scopes")
+        if not chosen_scopes:
+            return await _org_view(org_id, admin_token, flash="Select at least one scope.")
+        raw_days = str(form.get("expires_days", "")).strip()
+        try:
+            expires_days = int(raw_days) if raw_days else None
+        except ValueError:
+            expires_days = None
+        async with session_scope(session_factory) as session:
+            issued = await auth.issue_api_key(
+                session, org_id, expires_days=expires_days, scopes=chosen_scopes)
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="issue_key",
+                org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                summary=f"prefix={issued.key_prefix} scopes={','.join(issued.scopes)}",
+            )
+        return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
+
+    async def keys_rotate(request: Request) -> Response:
+        form, key_id, denied = await _moderate(request, "key_id", action_of="rotate_key")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, key_id)
+        if key is None:
+            return _back(ADMIN_PATH, "No such key.")
+        org_id = key.org_id
+        async with session_scope(session_factory) as session:
+            issued = await auth.rotate_api_key(session, key_id)
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="rotate_key",
+                org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                summary=f"replaces={key_id}",
+            )
+        return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
+
+    async def keys_revoke(request: Request) -> Response:
+        form, key_id, denied = await _moderate(request, "key_id", action_of="revoke_key")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            key = await session.get(ApiKey, key_id)
+            if key is None:
+                return _back(ADMIN_PATH, "No such key.")
+            org_id = key.org_id
+            await auth.revoke_api_key(session, key_id)
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="revoke_key",
+                org_id=org_id, target_type="api_key", target_id=key_id,
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Key revoked.")
+
+    async def retention_apply_route(request: Request) -> Response:
+        form, digest, denied = await _moderate(request, "digest", action_of="retention_apply")
+        if denied is not None:
+            return denied
+        org_id = request.path_params["org_id"]
+        confirm = str(form.get("confirm_digest", "")).strip()
+        if confirm != digest:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Digest confirmation did not match.")
+        async with session_scope(session_factory) as session:
+            try:
+                await retention.apply(session, org_id, digest, actor=_ADMIN_ACTOR)
+            except retention.StalePlanError as exc:
+                return _back(
+                    f"{ADMIN_PATH}/org/{org_id}",
+                    f"The store moved since this plan was printed: {exc}. Preview again.",
+                )
+            except retention.RetentionError as exc:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", f"Could not apply: {exc}")
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Retention plan applied.")
+
+    async def purge_trace_route(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="purge_trace")
+        if denied is not None:
+            return denied
+        trace_id = str(form.get("trace_id", "")).strip()
+        confirm = str(form.get("confirm_trace_id", "")).strip()
+        if not trace_id or confirm != trace_id:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Trace id confirmation did not match.")
+        ok = await manage.purge_trace(trace_id, session_factory=session_factory, actor=_ADMIN_ACTOR)
+        if not ok:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "No such trace.")
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Trace permanently deleted.")
+
+    async def purge_org_route(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="purge_org")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        if org is None:
+            return _back(ADMIN_PATH, "No such organization.")
+        confirm = str(form.get("confirm_name", "")).strip()
+        if confirm != org.name:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Organization name confirmation did not match.")
+        ok = await manage.purge_org(org_id, session_factory=session_factory, actor=_ADMIN_ACTOR)
+        if not ok:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Could not delete this organization.")
+        return _back(ADMIN_PATH, "Organization permanently deleted.")
+
+    async def purge_subject_traces_route(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="purge_subject_traces")
+        if denied is not None:
+            return denied
+        subject_id = str(form.get("subject_id", "")).strip()
+        confirm = str(form.get("confirm_subject_id", "")).strip()
+        if not subject_id or confirm != subject_id:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Subject id confirmation did not match.")
+        async with session_scope(session_factory) as session:
+            result = await crud.purge_traces_by_subject(
+                session, org_id, subject_id, actor=_ADMIN_ACTOR)
+        return _back(
+            f"{ADMIN_PATH}/org/{org_id}",
+            f"Permanently deleted {result.get('purged', 0)} trace(s).",
+        )
+
     app.add_route(ADMIN_PATH, overview, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/create-org", create_org, methods=["POST"])
+    app.add_route(
+        f"{ADMIN_PATH}/generate-encryption-key", generate_encryption_key_route, methods=["POST"],
+    )
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}", org_detail, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/quarantine/release", quarantine_release, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/legal-hold/place", legal_hold_place, methods=["POST"])
@@ -1644,6 +1946,16 @@ def add_admin_routes(
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/link-sso", users_link_sso, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/unlink-sso", users_unlink_sso, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/tag-subjects", tag_subjects, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/issue", keys_issue, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/rotate", keys_rotate, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/revoke", keys_revoke, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/apply", retention_apply_route, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/purge-trace", purge_trace_route, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/purge", purge_org_route, methods=["POST"])
+    app.add_route(
+        f"{ADMIN_PATH}/org/{{org_id}}/purge-subject-traces", purge_subject_traces_route,
+        methods=["POST"],
+    )
     app.add_route(f"{ADMIN_PATH}/kb", kb, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/kb/review", kb_review, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb/retract", kb_retract, methods=["POST"])

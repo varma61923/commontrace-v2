@@ -289,31 +289,34 @@ class TestRendering:
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert "reversibility" in r.text
-        assert "Creating an organization is additive and reversible" in r.text
+        assert "retyping the exact id/name being destroyed" in r.text
 
-    async def test_the_overview_page_offers_only_org_creation(self, session_factory):
-        """Creating an organization is additive and reversible (there is
-        nothing yet on a brand-new org for a mistaken click to lose), so it
-        is the one button on this page. Every other action needs an
-        existing organization to act on and lives on that org's own page."""
+    async def test_the_overview_page_offers_org_creation_and_key_generation(
+        self, session_factory
+    ):
+        """Both are additive/stateless -- creating an org has nothing yet
+        to lose, and generating a key writes nothing until an operator
+        sets it as HUB_ENCRYPTION_KEY themselves -- so both are safe as
+        the only two buttons that need no existing organization to act
+        on. Nothing here can bypass the form flow."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
         lowered = r.text.lower()
         assert 'action="/admin/create-org"' in lowered
-        for forbidden in (
-            "/purge", "retention/", "/issue", "generate-encryption-key",
-            "/legal-hold", "/quarantine", "/set-plan", "fetch(", "xmlhttprequest",
-        ):
+        assert 'action="/admin/generate-encryption-key"' in lowered
+        for forbidden in ("fetch(", "xmlhttprequest"):
             assert forbidden not in lowered, f"{forbidden} on the overview page"
 
-    async def test_the_org_page_offers_only_reversible_actions(self, session_factory):
-        """The line is reversibility, not squeamishness. Irreversible and
-        credential-bearing actions -- purge-org, issue-key,
-        generate-encryption-key, the digest-confirmed retention-apply --
-        stay in the CLI, so no form on this page may target them. Legal
-        holds, retention policy, and quarantine release ARE reversible and
-        are deliberately buttons here."""
+    async def test_the_org_page_offers_its_full_reversible_and_confirmed_action_set(
+        self, session_factory
+    ):
+        """Every mutating action on this page is either reversible outright
+        (a role, a hold, a policy, a plan, releasing a quarantine) or
+        irreversible but gated behind retyping the exact id/name being
+        destroyed on top of the same CSRF token every action here needs
+        (purge-trace/purge-org/purge-subject-traces/retention-apply) --
+        never a bare, single-click destructive action."""
         from hub import retention as retention_module
         from hub.db import session_scope
         from hub.models import User
@@ -338,13 +341,15 @@ class TestRendering:
             "quarantine/release", "legal-hold/place", "legal-hold/release",
             "retention/set", "retention/clear", "set-plan",
             "users/create", "users/set-role", "users/disable", "users/unlink-sso",
-            "tag-subjects",
+            "tag-subjects", "keys/issue", "keys/rotate", "keys/revoke",
+            "purge-trace", "purge", "purge-subject-traces",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
-        for forbidden in (
-            "/purge", "retention/apply", "/issue", "generate-encryption-key",
-            "fetch(", "xmlhttprequest",
-        ):
+        # Every retype-to-confirm field is present -- a bare button alone
+        # would let one click destroy data.
+        for confirm_field in ("confirm_trace_id", "confirm_name", "confirm_subject_id"):
+            assert f'name="{confirm_field}"' in lowered
+        for forbidden in ("fetch(", "xmlhttprequest"):
             assert forbidden not in lowered, f"{forbidden} reachable from the org page"
 
     async def test_no_destructive_action_is_reachable_from_any_page(self, session_factory):
@@ -1163,3 +1168,421 @@ class TestUserAndSubjectRightsManagement:
             ).scalars().first()
         assert entry is not None
         assert entry.actor == admin._ADMIN_ACTOR
+
+
+class TestKeyIssuanceFromTheConsole:
+    """The onboarding gap this closes: a brand-new organization has no key
+    yet, so it cannot sign into ITS OWN console (hub/console.py) to issue
+    one -- something has to be able to mint the first one."""
+
+    async def _seed(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_issuing_a_key_shows_it_once(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["read", "write"], "expires_days": "90",
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        assert r.status_code == 200
+        assert "shown once" in r.text
+        assert "ct_" in r.text
+
+    async def test_issuing_with_no_scopes_checked_issues_nothing(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import ApiKey
+
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={"org_id": org_id, "csrf": admin._csrf_token("s3cret", "issue_key", org_id)},
+            )
+        async with session_scope(session_factory) as session:
+            keys = (
+                await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))
+            ).scalars().all()
+        assert keys == []
+
+    async def test_rotating_a_key_shows_the_new_one_once(self, session_factory):
+        from hub import auth as auth_module
+        from hub.db import session_scope
+
+        org_id = await self._seed(session_factory)
+        async with session_scope(session_factory) as session:
+            issued = await auth_module.issue_api_key(session, org_id)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/rotate", headers=_basic("op", "s3cret"),
+                data={
+                    "key_id": issued.key_id,
+                    "csrf": admin._csrf_token("s3cret", "rotate_key", issued.key_id),
+                },
+            )
+        assert r.status_code == 200
+        assert "shown once" in r.text
+        async with session_scope(session_factory) as session:
+            from hub.models import ApiKey
+
+            old_row = await session.get(ApiKey, issued.key_id)
+        assert old_row.revoked_at is not None
+
+    async def test_revoking_a_key(self, session_factory):
+        from hub import auth as auth_module
+        from hub.db import session_scope
+        from hub.models import ApiKey
+
+        org_id = await self._seed(session_factory)
+        async with session_scope(session_factory) as session:
+            issued = await auth_module.issue_api_key(session, org_id)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/revoke", headers=_basic("op", "s3cret"),
+                data={
+                    "key_id": issued.key_id,
+                    "csrf": admin._csrf_token("s3cret", "revoke_key", issued.key_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(ApiKey, issued.key_id)
+        assert row.revoked_at is not None
+
+    async def test_issued_and_rotated_keys_are_audited_as_operator_console(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["read"],
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "issue_key")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+
+class TestGeneratingAnEncryptionKey:
+    async def test_generating_a_key(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/generate-encryption-key", headers=_basic("op", "s3cret"),
+                data={"target": "new", "csrf": admin._csrf_token("s3cret", "generate_encryption_key", "new")},
+            )
+        assert r.status_code == 200
+        assert "shown once" in r.text
+        assert "HUB_ENCRYPTION_KEY" in r.text
+
+    async def test_wrong_csrf_token_is_refused(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/generate-encryption-key", headers=_basic("op", "s3cret"),
+                data={"target": "new", "csrf": "wrong"},
+            )
+        assert r.status_code == 403
+
+
+class TestTheDangerZoneRequiresRetypedConfirmation:
+    """Every irreversible action here needs the exact id/name typed a
+    second time, on top of the same CSRF token every other mutation
+    needs -- a stronger bar than hub.manage's own `_confirm_destructive`,
+    which only asks for the literal word 'yes'."""
+
+    async def _seed(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme Corp", plan="team")
+            session.add(org)
+            await session.flush()
+            trace = Trace(
+                org_id=org.id, title="A trace", context_text="c", solution_text="s",
+                tags=[], agent_type="support", agent_id="w1", subject_ids=["cust-1"],
+            )
+            session.add(trace)
+            await session.flush()
+            return org.id, trace.id
+
+    async def test_purging_a_trace_with_the_correct_confirmation(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "confirm_trace_id": trace_id,
+                    "csrf": admin._csrf_token("s3cret", "purge_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is None
+
+    async def test_purging_a_trace_with_a_mismatched_confirmation_is_refused(
+        self, session_factory
+    ):
+        from urllib.parse import unquote
+
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "confirm_trace_id": "not-the-id",
+                    "csrf": admin._csrf_token("s3cret", "purge_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "did not match" in unquote(r.headers["location"])
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is not None
+
+    async def test_purging_an_org_with_the_correct_confirmation(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "confirm_name": "Acme Corp",
+                    "csrf": admin._csrf_token("s3cret", "purge_org", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(Organization, org_id)
+        assert row is None
+
+    async def test_purging_an_org_with_a_mismatched_confirmation_is_refused(
+        self, session_factory
+    ):
+        from urllib.parse import unquote
+
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "confirm_name": "wrong name",
+                    "csrf": admin._csrf_token("s3cret", "purge_org", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "did not match" in unquote(r.headers["location"])
+        async with session_scope(session_factory) as session:
+            row = await session.get(Organization, org_id)
+        assert row is not None
+
+    async def test_purging_subject_traces_with_the_correct_confirmation(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge-subject-traces", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "subject_id": "cust-1", "confirm_subject_id": "cust-1",
+                    "csrf": admin._csrf_token("s3cret", "purge_subject_traces", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is None
+
+    async def test_purging_subject_traces_with_a_mismatched_confirmation_is_refused(
+        self, session_factory
+    ):
+        from urllib.parse import unquote
+
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/purge-subject-traces", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "subject_id": "cust-1", "confirm_subject_id": "cust-2",
+                    "csrf": admin._csrf_token("s3cret", "purge_subject_traces", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "did not match" in unquote(r.headers["location"])
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is not None
+
+    async def test_purges_are_audited_as_operator_console(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                f"/admin/org/{org_id}/purge-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "confirm_trace_id": trace_id,
+                    "csrf": admin._csrf_token("s3cret", "purge_trace", org_id),
+                },
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "purge_trace")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+
+class TestRetentionApplyFromTheConsole:
+    async def _seed_with_doomed_trace(self, session_factory):
+        import datetime
+
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            # Older than the "trace" kind's 30-day floor (hub/retention.py),
+            # so a policy can actually doom it -- a fresh trace never can.
+            old = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=400)
+            trace = Trace(
+                org_id=org.id, title="Stale", context_text="c", solution_text="s",
+                tags=[], agent_type="support", agent_id="w1", created_at=old,
+            )
+            session.add(trace)
+            await session.flush()
+            return org.id, trace.id
+
+    async def test_previewing_then_applying_deletes_the_doomed_rows(self, session_factory):
+        from hub import retention as retention_module
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed_with_doomed_trace(session_factory)
+        async with session_scope(session_factory) as session:
+            await retention_module.set_policy(session, org_id, "trace", 30)
+            plan = await retention_module.plan(session, org_id)
+        assert plan.n_doomed >= 1
+        digest = plan.digest
+        async with _client(_app(session_factory=session_factory)) as c:
+            preview = await c.get(
+                f"/admin/org/{org_id}", headers=_basic("op", "s3cret"),
+                params={"preview_retention": "1"},
+            )
+            assert digest in preview.text
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/apply", headers=_basic("op", "s3cret"),
+                data={
+                    "digest": digest, "confirm_digest": digest,
+                    "csrf": admin._csrf_token("s3cret", "retention_apply", digest),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is None
+
+    async def test_a_mismatched_confirmation_is_refused(self, session_factory):
+        from urllib.parse import unquote
+
+        from hub import retention as retention_module
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed_with_doomed_trace(session_factory)
+        async with session_scope(session_factory) as session:
+            await retention_module.set_policy(session, org_id, "trace", 30)
+            plan = await retention_module.plan(session, org_id)
+        digest = plan.digest
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/apply", headers=_basic("op", "s3cret"),
+                data={
+                    "digest": digest, "confirm_digest": "not-the-digest",
+                    "csrf": admin._csrf_token("s3cret", "retention_apply", digest),
+                },
+            )
+        assert r.status_code == 303
+        assert "did not match" in unquote(r.headers["location"])
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is not None
+
+    async def test_a_stale_plan_is_refused(self, session_factory):
+        """The store moved (a new trace arrived) between preview and
+        apply -- retention.apply's own digest check refuses rather than
+        deleting a set the operator never actually reviewed."""
+        from hub import retention as retention_module
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id = await self._seed_with_doomed_trace(session_factory)
+        async with session_scope(session_factory) as session:
+            await retention_module.set_policy(session, org_id, "trace", 30)
+            plan = await retention_module.plan(session, org_id)
+        digest = plan.digest
+        async with session_scope(session_factory) as session:
+            import datetime
+
+            old = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=400)
+            session.add(Trace(
+                org_id=org_id, title="Another stale one", context_text="c", solution_text="s",
+                tags=[], agent_type="support", agent_id="w1", created_at=old,
+            ))
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/retention/apply", headers=_basic("op", "s3cret"),
+                data={
+                    "digest": digest, "confirm_digest": digest,
+                    "csrf": admin._csrf_token("s3cret", "retention_apply", digest),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            row = await session.get(Trace, trace_id)
+        assert row is not None

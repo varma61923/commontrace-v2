@@ -1779,7 +1779,9 @@ async def purge_subject_traces(org_id: str, subject_id: str, session_factory=Non
     return True
 
 
-async def purge_trace(trace_id: str, session_factory=None) -> bool:
+async def purge_trace(
+    trace_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     """Permanently deletes one trace AND every trace in its amendment chain
     (see crud.amendment_chain -- shared with the self-service delete_trace
     MCP tool, which walks the identical lineage at a lower trust level).
@@ -1805,7 +1807,7 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
         # chain, not one call per row.
         await crud._adjust_trace_count(session, org_id, -len(chain_ids))
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_trace",
+            session, actor=actor, action="purge_trace",
             org_id=org_id, target_type="trace", target_id=trace_id,
             summary=f"irreversible n_amendment_chain={len(chain_ids)}",
         )
@@ -1815,7 +1817,10 @@ async def purge_trace(trace_id: str, session_factory=None) -> bool:
     return True
 
 
-async def purge_org(org_id: str, session_factory=None, stripe: StripeSettings | None = None) -> bool:
+async def purge_org(
+    org_id: str, session_factory=None, stripe: StripeSettings | None = None,
+    actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     """Permanently deletes an org and everything scoped to it (api_keys,
     traces, and traces' votes/trace_relations all cascade via FK
     ondelete=CASCADE). Irreversible -- see DATA_RETENTION.md §3.
@@ -1864,7 +1869,7 @@ async def purge_org(org_id: str, session_factory=None, stripe: StripeSettings | 
         # it -- see AuditLogEntry's docstring: the purge is exactly the event
         # the trail must retain.
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="purge_org",
+            session, actor=actor, action="purge_org",
             org_id=org_id, target_type="org", target_id=org_id,
             summary=f"name={org_name!r} n_traces={len(trace_ids)} "
                     f"stripe_subscription_cancelled={had_subscription} irreversible",
