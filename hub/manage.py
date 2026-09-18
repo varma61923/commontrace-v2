@@ -123,6 +123,13 @@
                                        reason, created_at), optionally filtered to one org
     release-quarantine <trace_id>  -> operator reviewed it and it's fine: clears the
                                        quarantine flag, trace becomes search_traces-eligible
+    amend-trace <trace_id> [title] [context_text] [solution_text] [tags_csv]
+                                   -> operator counterpart to the amend_trace MCP tool: creates
+                                       a new trace superseding <trace_id>, carrying forward any
+                                       field left as "". For a support-ticket-driven correction
+                                       on the org's behalf. Reversible in the sense that nothing
+                                       is overwritten -- the original stays in the amendment
+                                       chain, exactly like a self-service amendment would
     search-content <org_id> <pattern> [literal|regex]
                                    -> locate traces (including quarantined ones) whose
                                        title/context/solution text literally contain
@@ -268,7 +275,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from commontrace import experiment, prereg, raw_export
-from hub import alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
+from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
 from hub.db import make_engine, make_session_factory, session_scope
@@ -1679,6 +1686,76 @@ async def release_quarantine(trace_id: str, session_factory=None) -> bool:
     return True
 
 
+async def amend_trace(
+    trace_id: str,
+    title: str = "",
+    context_text: str = "",
+    solution_text: str = "",
+    tags_csv: str = "",
+    session_factory=None,
+    config: HubConfig | None = None,
+    actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> dict | bool:
+    """Operator counterpart to the `amend_trace` MCP tool (hub/server.py),
+    for a support-ticket-driven correction where the org itself cannot or
+    has not amended its own trace -- a typo cleaned up on their behalf, a
+    title fixed after a misconfigured client mis-titled it.
+
+    Every field here is a plain CLI string rather than the MCP tool's
+    Optional[str]: an empty string means "leave this field unchanged", the
+    same as omitting it entirely. There is no way to explicitly set a
+    field TO the empty string from this command -- an acceptable gap for
+    an operator escape hatch that exists for support corrections, not for
+    an org's own routine self-service amendments (which use the MCP tool
+    directly and keep the real None-vs-"" distinction).
+
+    Calls the SAME `crud.amend_trace` the MCP tool does -- same validation,
+    same rate limit, same plan storage cap -- so this cannot do anything
+    the org's own key could not already do to its own trace. Reversible in
+    the sense that matters here: `amend_trace` INSERTs a new trace onto
+    the amendment chain rather than mutating the original in place, so
+    nothing is destroyed even by a mistaken call (see crud.amend_trace's
+    own docstring).
+    """
+    # Checked before touching the database: a malformed (non-UUID) id bound
+    # against Trace.id's UUID column raises asyncpg.DataError, not a clean
+    # "not found" -- crud._is_uuid exists for exactly this (see its own
+    # docstring), and this function's session.get below is one more
+    # caller-supplied id reaching that column before crud.amend_trace's own
+    # internal check would ever run.
+    if not crud._is_uuid(trace_id):
+        print(f"error: no such trace: {trace_id}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    config = config or HubConfig.from_env()
+    rate_limiter = abuse.make_rate_limiter(config)
+    tags = [t.strip() for t in tags_csv.split(",") if t.strip()] if tags_csv else None
+    async with session_scope(session_factory) as session:
+        trace = await session.get(Trace, trace_id)
+        if trace is None:
+            print(f"error: no such trace: {trace_id}", file=sys.stderr)
+            return False
+        org_id = trace.org_id
+        try:
+            amended = await crud.amend_trace(
+                session, org_id, trace_id, config, rate_limiter,
+                title=title or None,
+                context_text=context_text or None,
+                solution_text=solution_text or None,
+                tags=tags,
+                actor=actor,
+            )
+        except (abuse.TraceRejected, abuse.RateLimited, crud.IdempotencyKeyConflict,
+                plans.EntitlementExceeded) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+    if amended is None:
+        print(f"error: no such trace: {trace_id}", file=sys.stderr)
+        return False
+    print(f"amended trace {trace_id} -> new trace {amended['id']}")
+    return amended
+
+
 async def search_content(
     org_id: str, pattern: str, mode: str = "literal", session_factory=None,
 ) -> bool:
@@ -2636,6 +2713,7 @@ _COMMANDS = {
     "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),
     "release-quarantine": (release_quarantine, 1, 1),
+    "amend-trace": (amend_trace, 1, 5),
     "search-content": (search_content, 2, 3),
     "tag-trace-subjects": (tag_trace_subjects, 2, 3),
     "find-subject-traces": (find_subject_traces, 2, 2),

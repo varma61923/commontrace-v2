@@ -39,6 +39,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Amending a trace from the `/admin` console, plus a new `hub.manage
+  amend-trace` CLI command** (`hub/manage.py:amend_trace`,
+  `hub/admin.py`): the operator counterpart to the `amend_trace` MCP tool
+  an org's own agents already use — for a support-ticket-driven
+  correction where the org itself cannot or has not amended its own
+  trace (a typo cleaned up on their behalf, a title fixed after a
+  misconfigured client mis-titled it). Calls the SAME `crud.amend_trace`
+  the MCP tool does, so it cannot do anything the org's own key could
+  not already do to its own trace, and is reversible in the same sense:
+  it INSERTs a new trace onto the amendment chain rather than mutating
+  the original in place, so nothing is lost even from a wrong trace id.
+  A malformed (non-UUID) id — realistic on a form an operator types into
+  directly, unlike a CLI arg — is now caught before it reaches asyncpg's
+  UUID column check as a raw, unhandled `DataError`. 9 new tests across
+  `hub/tests/test_manage.py` and `hub/tests/test_admin.py`, plus an
+  end-to-end browser smoke test against a live server.
+
+- **A double-submit guard on every form in both consoles**
+  (`hub/admin.py`, `hub/console.py`): every mutation here is
+  POST-then-redirect, so a double click or an impatient second click
+  while the first request is still in flight could fire the same
+  mutation twice before either response comes back. A small,
+  dependency-free script now disables every submit button (and relabels
+  the clicked one "Working…") the instant a form actually submits — the
+  browser's native submit still proceeds unchanged, this only closes the
+  window for a second one starting before the redirect navigates away.
+
 - **An in-process webhook-delivery scheduler** (`hub/scheduler.py`'s
   `run_webhook_delivery`, opt-in via `HUB_WEBHOOK_SCHEDULER_ENABLED`):
   the same pattern the existing alert scheduler already used for

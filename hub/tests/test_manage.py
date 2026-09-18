@@ -189,6 +189,72 @@ async def test_release_quarantine_unknown_id_reports_error(session_factory, caps
     assert result is False
 
 
+async def test_amend_trace_creates_a_superseding_trace(session_factory, config, two_orgs):
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        original = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="original", context_text="c", solution_text="s", tags=["a"], agent_type="code",
+        )
+
+    result = await manage.amend_trace(
+        original["id"], "corrected title", session_factory=session_factory, config=config,
+    )
+    assert result is not False
+    assert result["title"] == "corrected title"
+    # Blank fields carry the original forward unchanged, not overwritten
+    # with empty strings.
+    assert result["context_text"] == "c"
+    assert result["solution_text"] == "s"
+
+    async with session_scope(session_factory) as session:
+        original_row = await session.get(Trace, original["id"])
+    assert original_row.superseded_at is not None
+    assert original_row.superseded_by_trace_id == result["id"]
+
+
+async def test_amend_trace_is_audited_as_operator_cli_by_default(session_factory, config, two_orgs):
+    rate_limiter = make_rate_limiter(config)
+    async with session_scope(session_factory) as session:
+        original = await contribute_trace(
+            session, two_orgs["org_a"], config, rate_limiter,
+            title="original", context_text="c", solution_text="s", tags=[], agent_type="code",
+        )
+
+    await manage.amend_trace(original["id"], "corrected", session_factory=session_factory, config=config)
+
+    async with session_scope(session_factory) as session:
+        entry = (
+            await session.execute(select(audit.AuditLogEntry).where(
+                audit.AuditLogEntry.action == "amend_trace"
+            ))
+        ).scalars().first()
+    assert entry is not None
+    assert entry.actor == audit.ACTOR_OPERATOR_CLI
+
+
+async def test_amend_trace_unknown_id_reports_error(session_factory, config, capsys):
+    result = await manage.amend_trace(
+        "00000000-0000-0000-0000-000000000000", "x", session_factory=session_factory, config=config,
+    )
+    assert "no such trace" in capsys.readouterr().err
+    assert result is False
+
+
+async def test_amend_trace_malformed_id_reports_error_cleanly(session_factory, config, capsys):
+    """A non-UUID string bound against Trace.id's UUID column raises
+    asyncpg.DataError, not a clean not-found -- this is the one caller of
+    session.get(Trace, ...) reachable from a form an operator types
+    directly into (hub/admin.py's "Amend a trace"), so a fat-fingered id
+    must report the same clean error every other bad id here gets, not a
+    500 from a raw DBAPIError."""
+    result = await manage.amend_trace(
+        "not-a-real-id", "x", session_factory=session_factory, config=config,
+    )
+    assert "no such trace" in capsys.readouterr().err
+    assert result is False
+
+
 async def test_purge_trace_deletes_it_permanently(session_factory, config, two_orgs):
     rate_limiter = make_rate_limiter(config)
     async with session_scope(session_factory) as session:

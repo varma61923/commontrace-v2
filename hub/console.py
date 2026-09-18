@@ -318,6 +318,20 @@ def _auto_refresh_script(seconds: int) -> str:
     )
 
 
+# See hub/admin.py's identical copy of this guard for the full reasoning:
+# every form here is POST-then-redirect, so disabling the clicked submit
+# button (and every other one on the page) the instant a form actually
+# submits closes the double-click/impatient-second-click window without
+# a network call of its own -- the browser's native submit still proceeds.
+_FORM_GUARD_SCRIPT = (
+    "<script>document.addEventListener('submit',function(ev){"
+    "if(ev.defaultPrevented)return;"
+    "document.querySelectorAll('button[type=submit]').forEach(function(b){"
+    "if(b===ev.submitter){b.textContent='Working…';}b.disabled=true;});"
+    "},true);</script>"
+)
+
+
 def _page(
     title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
 ) -> HTMLResponse:
@@ -348,7 +362,7 @@ def _page(
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">your fleet</span>'
         f"{live_badge}"
-        f"{nav}</div></header><main>{body}</main>{refresh_script}</body></html>",
+        f"{nav}</div></header><main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
         # A customer console renders that org's own operational data. A cached
         # copy in a shared or kiosk browser is one more place it sits at rest,
         # and it outlives the session cookie that was supposed to gate it.

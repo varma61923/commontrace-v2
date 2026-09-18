@@ -210,6 +210,15 @@ form.act input[type=text]{font:inherit;font-size:.85rem;padding:.3rem .45rem;
 .disabled{color:var(--muted);font-size:.85rem;font-style:italic}
 .flash{background:var(--surface);border:1px solid var(--ok);border-left:3px solid var(--ok);
   padding:.75rem 1.1rem;font-size:.9rem}
+form.stack{display:flex;flex-direction:column;gap:.7rem;margin:0;max-width:40rem}
+form.stack label{font-family:ui-monospace,monospace;font-size:.62rem;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--muted);display:block;margin-bottom:.2rem}
+form.stack input[type=text],form.stack textarea{font:inherit;font-size:.9rem;
+  padding:.4rem .55rem;border:1px solid var(--rule);border-radius:2px;
+  background:var(--paper);color:var(--ink);width:100%}
+form.stack textarea{min-height:5rem;resize:vertical;font-family:inherit}
+form.stack input:focus-visible,form.stack textarea:focus-visible{
+  outline:2px solid var(--accent);outline-offset:1px}
 @media (max-width:640px){.cmd{grid-template-columns:1fr}
   form.act{flex-wrap:wrap}form.act input[type=text]{min-width:0;flex:1}}
 """
@@ -243,6 +252,25 @@ def _auto_refresh_script(seconds: int) -> str:
     )
 
 
+# Every form here is POST-then-redirect (see _back's own comment), so a
+# double click or an impatient second click while the first request is
+# still in flight would fire the SAME mutation twice before either
+# response comes back -- harmless for an idempotent one, but a second
+# "issue a key" or "purge" click is not a no-op. Disabling the clicked
+# button (and every other submit button on the page, since a slow
+# request blocks the whole page anyway) the instant a form actually
+# submits closes that window without a network call of its own: the
+# browser's native submit still proceeds normally, this only prevents a
+# second one starting before navigation away from this page happens.
+_FORM_GUARD_SCRIPT = (
+    "<script>document.addEventListener('submit',function(ev){"
+    "if(ev.defaultPrevented)return;"
+    "document.querySelectorAll('button[type=submit]').forEach(function(b){"
+    "if(b===ev.submitter){b.textContent='Working…';}b.disabled=true;});"
+    "},true);</script>"
+)
+
+
 def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
     live_badge = (
         f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
@@ -260,7 +288,7 @@ def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLRespon
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
-        f"<main>{body}</main>{refresh_script}</body></html>",
+        f"<main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
         # No caching: this is live operational state, and a cached copy in a
         # shared browser is one more place tenant data sits at rest.
         headers={"Cache-Control": "no-store"},
@@ -781,6 +809,27 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
     else:
         quar_tbl = '<p class="empty">Nothing quarantined.</p>'
 
+    amend_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/amend-trace" class="stack">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "amend_trace", org.id))}">'
+        '<div><label for="amend-trace-id">Trace id</label>'
+        '<input type="text" id="amend-trace-id" name="trace_id" required></div>'
+        '<div><label for="amend-title">Title (blank = unchanged)</label>'
+        '<input type="text" id="amend-title" name="title"></div>'
+        '<div><label for="amend-context">Context (blank = unchanged)</label>'
+        '<textarea id="amend-context" name="context_text"></textarea></div>'
+        '<div><label for="amend-solution">Solution (blank = unchanged)</label>'
+        '<textarea id="amend-solution" name="solution_text"></textarea></div>'
+        '<div><label for="amend-tags">Tags, comma-separated (blank = unchanged)</label>'
+        '<input type="text" id="amend-tags" name="tags_csv"></div>'
+        '<div><button type="submit" class="btn">Amend trace</button></div></form>'
+        '<p class="empty" style="margin-top:.4rem">Creates a new trace that supersedes this '
+        "one, carrying forward any field left blank -- the original is kept, not overwritten, "
+        'so nothing is lost even if this is the wrong trace id.</p>'
+    )
+
     holds = d.get("holds") or []
     if holds:
         rows = "".join(
@@ -1085,6 +1134,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
         f'<section><h2>API keys</h2>{fresh_key_html}{keys_tbl}{issue_key_form}</section>'
         f'<section><h2>Users</h2>{users_tbl}{create_user_form}</section>'
         f'<section><h2>Quarantined traces</h2>{quar_tbl}</section>'
+        f'<section><h2>Amend a trace</h2>{amend_form}</section>'
         f'<section><h2>Legal holds</h2>{holds_tbl}{holds_form}</section>'
         f'<section><h2>Retention policy</h2>{policies_tbl}{policy_form}{retention_preview_html}</section>'
         f'<section><h2>Subject rights</h2>{find_subject_form}{tag_subject_form}{purge_subject_form}</section>'
@@ -1933,6 +1983,26 @@ def add_admin_routes(
                 return _back(f"{ADMIN_PATH}/org/{org_id}", f"Could not apply: {exc}")
         return _back(f"{ADMIN_PATH}/org/{org_id}", "Retention plan applied.")
 
+    async def amend_trace_route(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="amend_trace")
+        if denied is not None:
+            return denied
+        trace_id = str(form.get("trace_id", "")).strip()
+        if not trace_id:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Trace id is required.")
+        result = await manage.amend_trace(
+            trace_id,
+            str(form.get("title", "")),
+            str(form.get("context_text", "")),
+            str(form.get("solution_text", "")),
+            str(form.get("tags_csv", "")),
+            session_factory=session_factory,
+            actor=_ADMIN_ACTOR,
+        )
+        if not result:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "No such trace in this org.")
+        return _back(f"{ADMIN_PATH}/org/{org_id}", f"Amended trace {trace_id} -> new trace {result['id']}.")
+
     async def purge_trace_route(request: Request) -> Response:
         form, org_id, denied = await _moderate(request, "org_id", action_of="purge_trace")
         if denied is not None:
@@ -1997,6 +2067,7 @@ def add_admin_routes(
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/link-sso", users_link_sso, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/unlink-sso", users_unlink_sso, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/tag-subjects", tag_subjects, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/amend-trace", amend_trace_route, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/issue", keys_issue, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/rotate", keys_rotate, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/keys/revoke", keys_revoke, methods=["POST"])

@@ -341,7 +341,7 @@ class TestRendering:
             "quarantine/release", "legal-hold/place", "legal-hold/release",
             "retention/set", "retention/clear", "set-plan",
             "users/create", "users/set-role", "users/disable", "users/unlink-sso",
-            "tag-subjects", "keys/issue", "keys/rotate", "keys/revoke",
+            "tag-subjects", "amend-trace", "keys/issue", "keys/rotate", "keys/revoke",
             "purge-trace", "purge", "purge-subject-traces",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
@@ -1284,6 +1284,107 @@ class TestKeyIssuanceFromTheConsole:
             ).scalars().first()
         assert entry is not None
         assert entry.actor == admin._ADMIN_ACTOR
+
+
+class TestAmendingATraceFromTheConsole:
+    """The operator counterpart to the `amend_trace` MCP tool
+    (hub/manage.py:amend_trace) -- for a support-ticket-driven correction
+    on an org's behalf. Reversible in the sense that matters: it INSERTs a
+    new trace onto the amendment chain rather than mutating the original,
+    so a wrong trace id or a bad edit costs nothing more than a second
+    amendment."""
+
+    async def _seed(self, session_factory) -> tuple[str, str]:
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            trace = Trace(
+                org_id=org.id, title="Original title", context_text="original context",
+                solution_text="original solution", tags=["a"], agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            return org.id, trace.id
+
+    async def test_amending_a_trace_creates_a_new_superseding_trace(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry, Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "title": "Corrected title",
+                    "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            original = await session.get(Trace, trace_id)
+            amended = (
+                await session.execute(
+                    select(Trace).where(Trace.supersedes_trace_id == trace_id)
+                )
+            ).scalars().one()
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "amend_trace")
+                )
+            ).scalars().first()
+        assert original.superseded_at is not None
+        assert original.superseded_by_trace_id == amended.id
+        assert amended.title == "Corrected title"
+        # Blank fields carry the original forward unchanged rather than
+        # being overwritten with empty strings.
+        assert amended.context_text == "original context"
+        assert amended.solution_text == "original solution"
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+    async def test_amending_an_unknown_trace_id_is_a_no_op(self, session_factory):
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": "00000000-0000-0000-0000-000000000000",
+                    "title": "x", "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
+
+    async def test_a_fat_fingered_non_uuid_trace_id_is_a_clean_no_op_not_a_500(self, session_factory):
+        """This form is where an operator types a trace id directly, unlike
+        a CLI arg that is usually copy-pasted -- a malformed id must not
+        reach asyncpg's UUID column check as a raw, unhandled DBAPIError."""
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": "not-a-real-id", "title": "x",
+                    "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
+
+    async def test_wrong_csrf_token_is_refused(self, session_factory):
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={"org_id": org_id, "trace_id": trace_id, "title": "x", "csrf": "wrong"},
+            )
+        assert r.status_code == 403
 
 
 class TestGeneratingAnEncryptionKey:
