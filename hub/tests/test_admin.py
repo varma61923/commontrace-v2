@@ -39,12 +39,13 @@ def _explode(*a, **kw):
     raise AssertionError("no database access should happen for an unauthenticated request")
 
 
-def _app(token: str = "s3cret", session_factory=_explode) -> Starlette:
+def _app(token: str = "s3cret", session_factory=_explode, config: HubConfig | None = None) -> Starlette:
     app = Starlette()
     admin.add_admin_routes(
         app, session_factory, admin_token=token,
         # High limits: these tests assert auth and rendering, not throttling.
         rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+        config=config,
     )
     return app
 
@@ -1310,14 +1311,14 @@ class TestAmendingATraceFromTheConsole:
             await session.flush()
             return org.id, trace.id
 
-    async def test_amending_a_trace_creates_a_new_superseding_trace(self, session_factory):
+    async def test_amending_a_trace_creates_a_new_superseding_trace(self, session_factory, config):
         from sqlalchemy import select
 
         from hub.db import session_scope
         from hub.models import AuditLogEntry, Trace
 
         org_id, trace_id = await self._seed(session_factory)
-        async with _client(_app(session_factory=session_factory)) as c:
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
             r = await c.post(
                 f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
                 data={
@@ -1348,9 +1349,9 @@ class TestAmendingATraceFromTheConsole:
         assert entry is not None
         assert entry.actor == admin._ADMIN_ACTOR
 
-    async def test_amending_an_unknown_trace_id_is_a_no_op(self, session_factory):
+    async def test_amending_an_unknown_trace_id_is_a_no_op(self, session_factory, config):
         org_id, _trace_id = await self._seed(session_factory)
-        async with _client(_app(session_factory=session_factory)) as c:
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
             r = await c.post(
                 f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
                 data={
@@ -1361,12 +1362,12 @@ class TestAmendingATraceFromTheConsole:
         assert r.status_code == 303
         assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
 
-    async def test_a_fat_fingered_non_uuid_trace_id_is_a_clean_no_op_not_a_500(self, session_factory):
+    async def test_a_fat_fingered_non_uuid_trace_id_is_a_clean_no_op_not_a_500(self, session_factory, config):
         """This form is where an operator types a trace id directly, unlike
         a CLI arg that is usually copy-pasted -- a malformed id must not
         reach asyncpg's UUID column check as a raw, unhandled DBAPIError."""
         org_id, _trace_id = await self._seed(session_factory)
-        async with _client(_app(session_factory=session_factory)) as c:
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
             r = await c.post(
                 f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
                 data={

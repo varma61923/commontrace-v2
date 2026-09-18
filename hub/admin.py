@@ -68,6 +68,7 @@ from starlette.responses import HTMLResponse, Response
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
 from hub.abuse import RateLimiter, resolve_client_key
+from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import (
     ApiKey,
@@ -1329,6 +1330,7 @@ def add_admin_routes(
     trusted_proxy_hops: int = 0,
     commons_enabled: bool = True,
     operator_org_id: str = "",
+    config: HubConfig | None = None,
 ) -> None:
     """Register the console. Call ONLY when an admin token is configured.
 
@@ -1337,6 +1339,18 @@ def add_admin_routes(
     the same "absent, not merely refused" treatment the Knowledge Base tools
     get from `HUB_COMMONS_ENABLED`. An unauthenticated prober gets a 404 from
     the router, which is a stronger property than a 401 from a handler.
+
+    `config` is only needed for the "Amend a trace" form, which calls
+    `manage.amend_trace` -- the one action here that validates and stores
+    trace content (`crud.amend_trace`'s size/rate limits), unlike every
+    other handler, which only ever touches rows that already exist.
+    Passing it explicitly, rather than letting `manage.amend_trace` fall
+    back to its own `HubConfig.from_env()`, matters specifically for
+    tests: they build a `HubConfig` from fixtures and never set
+    `HUB_DATABASE_URL` as a real process environment variable, so that
+    fallback raises in exactly the harness this module's own tests run
+    in. `None` (the default) preserves the pre-existing from-env fallback
+    for a caller that has no config object handy.
     """
     if not admin_token:
         raise ValueError("add_admin_routes requires a non-empty admin token")
@@ -1997,6 +2011,7 @@ def add_admin_routes(
             str(form.get("solution_text", "")),
             str(form.get("tags_csv", "")),
             session_factory=session_factory,
+            config=config,
             actor=_ADMIN_ACTOR,
         )
         if not result:

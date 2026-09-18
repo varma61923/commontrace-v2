@@ -1581,6 +1581,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
             operator_org_id=config.operator_org_id,
+            config=config,
         )
 
     # The customer-facing console, gated on its own secret. Distinct from the
