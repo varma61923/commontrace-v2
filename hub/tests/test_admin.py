@@ -316,15 +316,20 @@ class TestRendering:
         are deliberately buttons here."""
         from hub import retention as retention_module
         from hub.db import session_scope
+        from hub.models import User
 
         org_id, _ = await self._seed(session_factory)
-        # Placed directly rather than through the console under test, so a
-        # release/clear form has an existing row to target -- both only
-        # render for a row that exists.
+        # Placed/created directly rather than through the console under
+        # test, so a release/clear/per-user form has an existing row to
+        # target -- these only render for a row that exists.
         async with session_scope(session_factory) as session:
             await retention_module.place_hold(
                 session, org_id, reason="litigation", placed_by="test-setup")
             await retention_module.set_policy(session, org_id, "trace", 90)
+            session.add(User(
+                org_id=org_id, email="linked@example.com", role="viewer",
+                issuer="https://idp.example", external_subject="sub-1",
+            ))
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret"))
         assert r.status_code == 200
@@ -332,6 +337,8 @@ class TestRendering:
         for allowed_action in (
             "quarantine/release", "legal-hold/place", "legal-hold/release",
             "retention/set", "retention/clear", "set-plan",
+            "users/create", "users/set-role", "users/disable", "users/unlink-sso",
+            "tag-subjects",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
         for forbidden in (
@@ -946,3 +953,213 @@ class TestCreateOrgFromTheConsole:
         async with session_scope(session_factory) as session:
             count = len((await session.execute(select(Organization))).scalars().all())
         assert count == 0
+
+
+class TestUserAndSubjectRightsManagement:
+    async def _seed_with_user(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization, Trace, User
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            trace = Trace(
+                org_id=org.id, title="A trace", context_text="c", solution_text="s",
+                tags=[], agent_type="support", agent_id="w1", subject_ids=["cust-42"],
+            )
+            user = User(org_id=org.id, email="person@example.com", role="viewer")
+            session.add_all([trace, user])
+            await session.flush()
+            return org.id, trace.id, user.id
+
+    async def test_creating_a_user(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import User
+
+        org_id, _trace_id, _user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/create", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "email": "new@example.com", "role": "analyst",
+                    "csrf": admin._csrf_token("s3cret", "create_user", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            created = (
+                await session.execute(select(User).where(User.email == "new@example.com"))
+            ).scalars().first()
+        assert created is not None
+        assert created.role == "analyst"
+        assert created.created_by == admin._ADMIN_ACTOR
+
+    async def test_an_unknown_role_is_refused(self, session_factory):
+        org_id, _trace_id, _user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/create", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "email": "x@example.com", "role": "not-a-role",
+                    "csrf": admin._csrf_token("s3cret", "create_user", org_id),
+                },
+            )
+        assert r.status_code == 303
+
+    async def test_setting_a_users_role(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import User
+
+        org_id, _trace_id, user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/set-role", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id, "role": "curator",
+                    "csrf": admin._csrf_token("s3cret", "set_user_role", user_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+        assert user.role == "curator"
+
+    async def test_disabling_and_enabling_a_user_round_trips(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import User
+
+        org_id, _trace_id, user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/disable", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id,
+                    "csrf": admin._csrf_token("s3cret", "disable_user", user_id),
+                },
+            )
+            assert r.status_code == 303
+            async with session_scope(session_factory) as session:
+                user = await session.get(User, user_id)
+            assert user.disabled_at is not None
+
+            r = await c.post(
+                f"/admin/org/{org_id}/users/enable", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id,
+                    "csrf": admin._csrf_token("s3cret", "enable_user", user_id),
+                },
+            )
+            assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+        assert user.disabled_at is None
+
+    async def test_linking_and_unlinking_sso_round_trips(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import User
+
+        org_id, _trace_id, user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/link-sso", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id, "issuer": "https://idp.example", "external_subject": "sub-1",
+                    "csrf": admin._csrf_token("s3cret", "link_sso", user_id),
+                },
+            )
+            assert r.status_code == 303
+            async with session_scope(session_factory) as session:
+                user = await session.get(User, user_id)
+            assert user.issuer == "https://idp.example"
+            assert user.external_subject == "sub-1"
+
+            r = await c.post(
+                f"/admin/org/{org_id}/users/unlink-sso", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id,
+                    "csrf": admin._csrf_token("s3cret", "unlink_sso", user_id),
+                },
+            )
+            assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+        assert user.external_subject == ""
+
+    async def test_linking_a_duplicate_identity_is_refused(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import User
+
+        org_id, _trace_id, user_id = await self._seed_with_user(session_factory)
+        async with session_scope(session_factory) as session:
+            other = User(
+                org_id=org_id, email="other@example.com", role="viewer",
+                issuer="https://idp.example", external_subject="taken",
+            )
+            session.add(other)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/users/link-sso", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id, "issuer": "https://idp.example", "external_subject": "taken",
+                    "csrf": admin._csrf_token("s3cret", "link_sso", user_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+        assert user.external_subject == ""
+
+    async def test_finding_traces_by_subject(self, session_factory):
+        org_id, trace_id, _user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get(
+                f"/admin/org/{org_id}", headers=_basic("op", "s3cret"),
+                params={"subject_id": "cust-42"},
+            )
+        assert r.status_code == 200
+        assert trace_id in r.text
+
+    async def test_tagging_a_traces_subjects(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Trace
+
+        org_id, trace_id, _user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/tag-subjects", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "subject_ids": "cust-99, cust-100",
+                    "csrf": admin._csrf_token("s3cret", "tag_trace_subjects", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+        assert sorted(trace.subject_ids) == ["cust-100", "cust-99"]
+
+    async def test_user_mutations_are_audited_as_operator_console(self, session_factory):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry
+
+        org_id, _trace_id, user_id = await self._seed_with_user(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            await c.post(
+                f"/admin/org/{org_id}/users/disable", headers=_basic("op", "s3cret"),
+                data={
+                    "user_id": user_id,
+                    "csrf": admin._csrf_token("s3cret", "disable_user", user_id),
+                },
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "disable_user")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR

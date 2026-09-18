@@ -60,13 +60,13 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
-from hub import crud, plans, retention
+from hub import crud, events, plans, rbac, retention
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.db import session_scope
 from hub.models import (
@@ -76,6 +76,7 @@ from hub.models import (
     Organization,
     Trace,
     UsageCounter,
+    User,
     Vote,
 )
 
@@ -428,10 +429,14 @@ async def _org_detail(session, org_id: str) -> dict | None:
     policies = await retention.policies_for(session, org_id)
     holds = await retention.active_holds(session, org_id)
 
+    users = (await session.execute(
+        select(User).where(User.org_id == org_id).order_by(User.created_at)
+    )).scalars().all()
+
     return {
         "org": org, "entitlements": ent, "agents": agents, "health": health,
         "keys": keys, "quarantined": quarantined, "audit": audit,
-        "policies": policies, "holds": holds,
+        "policies": policies, "holds": holds, "users": users,
     }
 
 
@@ -763,6 +768,129 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
     )
     flash_html = f'<div class="flash">{h(flash)}</div>' if flash else ""
 
+    users = d.get("users") or []
+    role_options = "".join(f'<option value="{h(r)}">{h(r)}</option>' for r in rbac.ROLES)
+    if users:
+        rows = []
+        for u in users:
+            sso = f"{h(u.issuer)} / {h(u.external_subject)}" if u.external_subject else "not linked"
+            state = "disabled" if u.disabled_at is not None else "active"
+            role_form = (
+                f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/users/set-role" '
+                'class="act">'
+                f'<input type="hidden" name="user_id" value="{h(u.id)}">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, "set_user_role", str(u.id)))}">'
+                f'<label class="sr-only" for="role-{h(u.id)}">Role for {h(u.email)}</label>'
+                f'<select id="role-{h(u.id)}" name="role">'
+                + "".join(
+                    f'<option value="{h(r)}"{" selected" if r == u.role else ""}>{h(r)}</option>'
+                    for r in rbac.ROLES
+                )
+                + '</select> <button type="submit" class="btn">Set</button></form>'
+            )
+            toggle_action = "enable" if u.disabled_at is not None else "disable"
+            toggle_form = (
+                f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/users/{toggle_action}" '
+                'class="act">'
+                f'<input type="hidden" name="user_id" value="{h(u.id)}">'
+                f'<input type="hidden" name="csrf" '
+                f'value="{h(_csrf_token(admin_token, f"{toggle_action}_user", str(u.id)))}">'
+                f'<button type="submit" class="btn">{toggle_action.capitalize()}</button></form>'
+            )
+            if u.external_subject:
+                sso_form = (
+                    f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/users/unlink-sso" '
+                    'class="act">'
+                    f'<input type="hidden" name="user_id" value="{h(u.id)}">'
+                    f'<input type="hidden" name="csrf" '
+                    f'value="{h(_csrf_token(admin_token, "unlink_sso", str(u.id)))}">'
+                    '<button type="submit" class="btn">Unlink SSO</button></form>'
+                )
+            else:
+                sso_form = (
+                    f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/users/link-sso" '
+                    'class="act">'
+                    f'<input type="hidden" name="user_id" value="{h(u.id)}">'
+                    f'<input type="hidden" name="csrf" '
+                    f'value="{h(_csrf_token(admin_token, "link_sso", str(u.id)))}">'
+                    f'<label class="sr-only" for="issuer-{h(u.id)}">Issuer</label>'
+                    f'<input type="text" id="issuer-{h(u.id)}" name="issuer" placeholder="issuer" '
+                    'style="width:8rem">'
+                    f'<label class="sr-only" for="subject-{h(u.id)}">Subject</label>'
+                    f'<input type="text" id="subject-{h(u.id)}" name="external_subject" '
+                    'placeholder="subject" style="width:8rem">'
+                    '<button type="submit" class="btn">Link</button></form>'
+                )
+            rows.append(
+                f'<tr><td>{h(u.email)}</td><td>{role_form}</td><td>{sso}<br>{sso_form}</td>'
+                f'<td>{state}<br>{toggle_form}</td>'
+                f'<td class="n">{_iso(u.created_at)}</td></tr>'
+            )
+        users_tbl = ('<div class="scroll"><table><thead><tr><th>Email</th><th>Role</th>'
+                    '<th>SSO identity</th><th>State</th><th>Created</th></tr></thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></div>')
+    else:
+        users_tbl = '<p class="empty">No individual users yet -- only the org\'s shared API key(s).</p>'
+    create_user_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/users/create" class="act" '
+        'style="margin-top:.75rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "create_user", org.id))}">'
+        '<label class="sr-only" for="new-user-email">Email</label>'
+        '<input type="email" id="new-user-email" name="email" placeholder="email" required>'
+        '<label class="sr-only" for="new-user-role">Role</label>'
+        f'<select id="new-user-role" name="role">{role_options}</select>'
+        '<button type="submit" class="btn">Add user</button></form>'
+    )
+
+    search = d.get("subject_search")
+    if search:
+        results = search.get("results") or []
+        if results:
+            rows = "".join(
+                f'<tr><td>{h(r["title"])}</td>'
+                f'<td>{"quarantined" if r["quarantined"] else "active"}</td>'
+                f'<td class="n">{h(str(r["created_at"])[:16])}</td>'
+                f'<td class="m" style="color:var(--muted)">{h(r["id"])}</td></tr>'
+                for r in results
+            )
+            subject_results_html = (
+                f'<p class="sub">{_num(len(results))} trace(s) tagged with '
+                f'{h(search["subject_id"])!r}.</p>'
+                '<div class="scroll"><table><thead><tr><th>Title</th><th>State</th>'
+                f'<th>Captured</th><th>Trace id</th></tr></thead><tbody>{rows}</tbody></table></div>'
+            )
+        else:
+            subject_results_html = (
+                f'<p class="empty">No traces in this org are tagged with '
+                f'{h(search["subject_id"])!r}.</p>'
+            )
+    else:
+        subject_results_html = ""
+    find_subject_form = (
+        f'<form method="get" action="{ADMIN_PATH}/org/{h(org.id)}" class="act">'
+        '<label class="sr-only" for="find-subject-id">Subject id</label>'
+        '<input type="text" id="find-subject-id" name="subject_id" placeholder="subject id" required>'
+        '<button type="submit" class="btn">Find traces</button></form>'
+        f'{subject_results_html}'
+    )
+    tag_subject_form = (
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/tag-subjects" class="act" '
+        'style="margin-top:.75rem">'
+        f'<input type="hidden" name="org_id" value="{h(org.id)}">'
+        f'<input type="hidden" name="csrf" '
+        f'value="{h(_csrf_token(admin_token, "tag_trace_subjects", org.id))}">'
+        '<label class="sr-only" for="tag-trace-id">Trace id</label>'
+        '<input type="text" id="tag-trace-id" name="trace_id" placeholder="trace id" required '
+        'style="width:20rem">'
+        '<label class="sr-only" for="tag-subject-ids">Subject ids (comma-separated)</label>'
+        '<input type="text" id="tag-subject-ids" name="subject_ids" '
+        'placeholder="subject ids, comma-separated (blank clears)" style="width:20rem">'
+        '<button type="submit" class="btn">Tag</button></form>'
+    )
+
     if d["audit"]:
         rows = "".join(
             f'<tr><td class="n">{_iso(a.created_at)}</td><td class="m">{h(a.actor)}</td>'
@@ -783,20 +911,24 @@ def _render_org(d: dict, admin_token: str, flash: str = "") -> str:
         f'billing period {h(ent.get("period"))}</p>{flash_html}</section>'
         f'<section><div class="tiles">{tiles}</div>{floor_note}{plan_form}</section>'
         f'<section><h2>API keys</h2>{keys_tbl}</section>'
+        f'<section><h2>Users</h2>{users_tbl}{create_user_form}</section>'
         f'<section><h2>Quarantined traces</h2>{quar_tbl}</section>'
         f'<section><h2>Legal holds</h2>{holds_tbl}{holds_form}</section>'
         f'<section><h2>Retention policy</h2>{policies_tbl}{policy_form}</section>'
+        f'<section><h2>Subject rights</h2>{find_subject_form}{tag_subject_form}</section>'
         f'<section><h2>Recent audited actions</h2>{audit_tbl}</section>'
         '<section><h2>Operator commands for this org</h2>'
         '<div class="note">Reversible actions above are buttons. What stays here is what '
-        'cannot be undone (<code>purge-org</code>, <code>retention-apply</code>) or would put a '
-        'live credential in your browser history (issuing a key).</div>'
+        'cannot be undone (<code>purge-org</code>, <code>purge-subject-traces</code>, '
+        '<code>retention-apply</code>) or would put a live credential in your browser history '
+        '(issuing a key).</div>'
         '<div class="cmds" style="margin-top:1rem">'
         + _cmd("Rotate a key", "python -m hub.manage rotate-key <key_id>")
         + _cmd("Revoke a key", "python -m hub.manage revoke-key <key_id>")
         + _cmd("Is it working?", f"python -m hub.manage outcomes {org.id}")
         + _cmd("Start a holdout", f"python -m hub.manage start-experiment {org.id} 0.2")
         + _cmd("Apply a retention plan", f"python -m hub.manage retention-apply {org.id} <digest>")
+        + _cmd("Erase a subject's traces", f"python -m hub.manage purge-subject-traces {org.id} <subject_id>")
         + _cmd("Delete this org", f"python -m hub.manage purge-org {org.id}")
         + '</div></section>'
     )
@@ -1043,6 +1175,11 @@ def add_admin_routes(
                                       f'<p class="sub">Nothing on this Hub has that id. '
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
         flash = request.query_params.get("done", "")[:200]
+        subject_id = request.query_params.get("subject_id", "")[:200]
+        if subject_id:
+            async with session_scope(session_factory) as session:
+                results = await crud.find_traces_by_subject(session, org_id, subject_id)
+            data["subject_search"] = {"subject_id": subject_id, "results": results}
         return _page(data["org"].name, _render_org(data, admin_token, flash=flash))
 
     _COMMONS_OFF = (
@@ -1339,6 +1476,158 @@ def add_admin_routes(
             )
         return _back(f"{ADMIN_PATH}/org/{org_id}", f"Plan changed: {was} → {key}.")
 
+    # --- Users, SSO linking, and subject rights -----------------------------
+    #
+    # All reversible: a role can be set again, disable/enable round-trips,
+    # SSO link/unlink round-trips, and tagging a trace's subjects REPLACES
+    # rather than accumulates (same idempotent-under-retry shape
+    # crud.tag_trace_subjects already gives set_user_role). Erasing a
+    # subject's traces (`purge-subject-traces`) is the one irreversible
+    # action in this family and stays CLI-only, same as purge-org.
+
+    async def users_create(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="create_user")
+        if denied is not None:
+            return denied
+        email = str(form.get("email", "")).strip()
+        role = str(form.get("role", "")).strip()
+        if not email:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "Email is required.")
+        try:
+            rbac.check_role(role)
+        except rbac.RoleError as exc:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", str(exc))
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            if org is None:
+                return _back(ADMIN_PATH, "No such organization.")
+            user = User(org_id=org_id, email=email, role=role, created_by=_ADMIN_ACTOR)
+            session.add(user)
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                return _back(f"{ADMIN_PATH}/org/{org_id}", f"{email!r} already exists in this org.")
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="create_user",
+                org_id=org_id, target_type="user", target_id=user.id, summary=f"email={email} role={role}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "User added.")
+
+    async def users_set_role(request: Request) -> Response:
+        form, user_id, denied = await _moderate(request, "user_id", action_of="set_user_role")
+        if denied is not None:
+            return denied
+        role = str(form.get("role", "")).strip()
+        try:
+            rbac.check_role(role)
+        except rbac.RoleError as exc:
+            return _back(ADMIN_PATH, str(exc))
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+            if user is None:
+                return _back(ADMIN_PATH, "No such user.")
+            org_id, previous = user.org_id, user.role
+            user.role = role
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="set_user_role",
+                org_id=org_id, target_type="user", target_id=user_id,
+                summary=f"{previous} -> {role}",
+            )
+            if role in rbac.PRIVILEGED_ROLES:
+                await events.emit(session, org_id, "user.privileged_role_granted", {
+                    "user_id": user_id, "role": role, "actor": _ADMIN_ACTOR,
+                })
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "Role updated.")
+
+    async def _toggle_user(request: Request, *, disable: bool) -> Response:
+        action = "disable_user" if disable else "enable_user"
+        _form, user_id, denied = await _moderate(request, "user_id", action_of=action)
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+            if user is None:
+                return _back(ADMIN_PATH, "No such user.")
+            org_id = user.org_id
+            user.disabled_at = datetime.now(timezone.utc) if disable else None
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action=action,
+                org_id=org_id, target_type="user", target_id=user_id,
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "User disabled." if disable else "User enabled.")
+
+    async def users_disable(request: Request) -> Response:
+        return await _toggle_user(request, disable=True)
+
+    async def users_enable(request: Request) -> Response:
+        return await _toggle_user(request, disable=False)
+
+    async def users_link_sso(request: Request) -> Response:
+        form, user_id, denied = await _moderate(request, "user_id", action_of="link_sso")
+        if denied is not None:
+            return denied
+        issuer = str(form.get("issuer", "")).strip()
+        external_subject = str(form.get("external_subject", "")).strip()
+        if not issuer or not external_subject:
+            return _back(ADMIN_PATH, "Issuer and subject are both required.")
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+            if user is None:
+                return _back(ADMIN_PATH, "No such user.")
+            org_id = user.org_id
+            user.issuer = issuer
+            user.external_subject = external_subject
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                return _back(
+                    f"{ADMIN_PATH}/org/{org_id}",
+                    "That issuer/subject is already linked to a different user.",
+                )
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="link_sso",
+                org_id=org_id, target_type="user", target_id=user_id,
+                summary=f"{issuer}/{external_subject}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "SSO identity linked.")
+
+    async def users_unlink_sso(request: Request) -> Response:
+        _form, user_id, denied = await _moderate(request, "user_id", action_of="unlink_sso")
+        if denied is not None:
+            return denied
+        async with session_scope(session_factory) as session:
+            user = await session.get(User, user_id)
+            if user is None:
+                return _back(ADMIN_PATH, "No such user.")
+            org_id = user.org_id
+            previous = f"{user.issuer}/{user.external_subject}"
+            user.issuer = ""
+            user.external_subject = ""
+            await audit_module.record(
+                session, actor=_ADMIN_ACTOR, action="unlink_sso",
+                org_id=org_id, target_type="user", target_id=user_id, summary=f"was {previous}",
+            )
+        return _back(f"{ADMIN_PATH}/org/{org_id}", "SSO identity unlinked.")
+
+    async def tag_subjects(request: Request) -> Response:
+        form, org_id, denied = await _moderate(request, "org_id", action_of="tag_trace_subjects")
+        if denied is not None:
+            return denied
+        trace_id = str(form.get("trace_id", "")).strip()
+        subject_ids = [s.strip() for s in str(form.get("subject_ids", "")).split(",") if s.strip()]
+        async with session_scope(session_factory) as session:
+            try:
+                result = await crud.tag_trace_subjects(
+                    session, org_id, trace_id, subject_ids, actor=_ADMIN_ACTOR)
+            except ValueError as exc:
+                return _back(f"{ADMIN_PATH}/org/{org_id}", str(exc))
+        if result is None:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", "No such trace in this org.")
+        return _back(
+            f"{ADMIN_PATH}/org/{org_id}", f"Tagged with {len(result['subject_ids'])} subject id(s).")
+
     app.add_route(ADMIN_PATH, overview, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/create-org", create_org, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}", org_detail, methods=["GET"])
@@ -1348,6 +1637,13 @@ def add_admin_routes(
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/set", retention_set, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/retention/clear", retention_clear, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/set-plan", set_plan, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/create", users_create, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/set-role", users_set_role, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/disable", users_disable, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/enable", users_enable, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/link-sso", users_link_sso, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/users/unlink-sso", users_unlink_sso, methods=["POST"])
+    app.add_route(f"{ADMIN_PATH}/org/{{org_id}}/tag-subjects", tag_subjects, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb", kb, methods=["GET"])
     app.add_route(f"{ADMIN_PATH}/kb/review", kb_review, methods=["POST"])
     app.add_route(f"{ADMIN_PATH}/kb/retract", kb_retract, methods=["POST"])
