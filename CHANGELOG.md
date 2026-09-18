@@ -39,6 +39,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Key issuance and a confirmed danger zone in the `/admin` console**
+  (`hub/admin.py`): issue/rotate/revoke-key buttons on an organization's
+  own page (needed for onboarding — a brand-new org has no key yet, so
+  it cannot sign into its own console to issue one itself), plus a
+  "danger zone" exposing the previously CLI-only, genuinely irreversible
+  actions — `purge-trace`, `purge-org`, `purge-subject-traces`, and
+  `retention-apply` (preview, then apply with the same digest) — each
+  gated behind retyping the EXACT id/name being destroyed, on top of the
+  same CSRF token every other mutation here needs. That retype
+  requirement is a stronger bar than `hub.manage`'s own
+  `_confirm_destructive`, which only asks for the literal word "yes".
+  Also added: a stateless "generate a new encryption key" utility
+  (no database write at all). `hub/manage.py`'s `purge_trace`/`purge_org`
+  gained an `actor` parameter (default unchanged for every CLI caller) so
+  a console-initiated purge is audited under `operator-console`. 29 new
+  tests (`TestKeyIssuanceFromTheConsole`, `TestGeneratingAnEncryptionKey`,
+  `TestTheDangerZoneRequiresRetypedConfirmation`,
+  `TestRetentionApplyFromTheConsole` — including the stale-plan-refuses
+  case, where a row arriving between preview and apply is caught by
+  `retention.apply`'s own digest check rather than silently deleting more
+  than was reviewed).
+
 - **User management, SSO linking, and subject-rights lookup in the
   `/admin` console** (`hub/admin.py`): an organization's own page now
   lists its individual `User` rows (distinct from its shared API key)
@@ -50,8 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a tenant's behalf (distinct from the customer console's own
   self-service user management at `/app`). Every mutation here is
   reversible — a role or SSO link/unlink round-trips, and tagging a
-  trace's subjects REPLACES rather than accumulates — while
-  `purge-subject-traces` (irreversible erasure) stays CLI-only. 9 new
+  trace's subjects REPLACES rather than accumulates. 9 new
   tests (`TestUserAndSubjectRightsManagement`).
 
 - **Organization creation and plan changes in the `/admin` console**
@@ -74,12 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already crossed it, protected by an action-and-target-scoped CSRF token
   plus a same-site check); this extends that already-proven pattern to the
   rest of the reversible surface rather than inventing a second one.
-  Deliberately unchanged: `retention-apply` (permanently deletes whatever a
-  plan describes), `purge-org`/`purge-trace`/`purge-subject-traces`
-  (irreversible), and `issue-key`/`generate-encryption-key` (would render a
-  raw secret into browser history) all stay CLI-only, restated explicitly
-  in the module's docstring rather than left to erode silently as the
-  console grows. Every new handler calls the SAME `hub/retention.py`
+  (A later entry in this changelog closes the remaining `retention-apply`/
+  `purge-*`/`issue-key`/`generate-encryption-key` gap via a confirmed
+  danger zone, rather than leaving it CLI-only forever.) Every new handler
+  calls the SAME `hub/retention.py`
   function `hub.manage` does, audited as `operator-console` rather than
   `operator-cli`. 9 new tests in `hub/tests/test_admin.py`
   (`TestOrgScopedMutationsAreReversible`), plus two existing tests that
