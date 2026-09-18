@@ -39,6 +39,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Self-service webhook management and an audit log page in the
+  customer console** (`hub/console.py`). Two `hub/manage.py`
+  operator-CLI-only surfaces are now reachable from the browser: a
+  customer can add, list, rotate, and disable their own webhook
+  endpoints (`/app/webhooks`) and read their own organization's audit
+  trail (`/app/audit`), including the actions taken from this console
+  itself. Webhooks follow the same admin-scope-gate-plus-ownership-check
+  discipline as the existing Users/API Keys/Alerts pages and call the
+  SAME `hub/events.py` functions the CLI does (`add_endpoint`,
+  `rotate_secret`) — no second implementation, and every mutation is
+  audited with the console session's own credential rather than a
+  borrowed `operator-cli` label. The Audit log page is read-only for
+  every signed-in user regardless of scope, matching Overview/Proof/
+  Memory/Knowledge Base's existing read-only posture. 15 new tests in
+  `hub/tests/test_console.py` (`TestWebhookManagement`,
+  `TestAuditLogPage`), including cross-tenant isolation on both new
+  routes and the fail-closed case when no `HUB_LEDGER_SIGNING_KEY` is
+  configured.
+
 - **A Stripe webhook event-id idempotency ledger** (`processed_webhook_events`,
   migration `37d2580be8db`). `hub/billing.py`'s `apply_webhook_event` was
   idempotent against Stripe's at-least-once delivery only by accident —
