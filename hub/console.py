@@ -33,20 +33,20 @@ the isolation argument should rest on the one set of filters that
 `hub/tests/test_tenant_isolation.py` already exercises rather than on a
 second set that a new file introduced.
 
-MOSTLY READ-ONLY, ON PURPOSE, WITH ONE NAMED EXCEPTION
+MOSTLY READ-ONLY, ON PURPOSE, WITH NAMED EXCEPTIONS
 --------------------------------------------------------
-Overview/Proof/Memory/Knowledge Base change nothing. Not because mutation
-is hard, but because of what those mutations WOULD be: altering a
-measurement (the experiment, an outcome) or a shared corpus (a Knowledge
-Base submission). Both already have audited, authenticated paths through
-MCP and the CLI that record who did what, and adding a second way in
-through a browser session widens that surface for a convenience nobody
-has asked for.
+Overview/Memory/Knowledge Base change nothing. Not because mutation is
+hard, but because of what those mutations WOULD be: altering an outcome
+or a shared corpus (a Knowledge Base submission). Both already have
+audited, authenticated paths through MCP and the CLI that record who did
+what, and adding a second way in through a browser session widens that
+surface for a convenience nobody has asked for.
 
-Users & Roles, API Keys, Alerts, and Webhooks (below) are the deliberate
-exception -- this Hub's own identity/credential/alerting/egress
-management (audit 1.2, 8.3), previously CLI-only, gated behind the SAME
-check every one of those CLI commands already enforces
+Users & Roles, API Keys, Alerts, Webhooks, and starting/stopping the
+randomized holdout on the Proof page (below) are the deliberate
+exceptions -- this Hub's own identity/credential/alerting/egress/
+experiment management (audit 1.2, 8.3), previously CLI-only, gated
+behind the SAME check every one of those CLI commands already enforces
 (`scopes.SCOPE_ADMIN` on the signed-in session's own key) plus an
 explicit org-ownership check on every id-addressed mutation, since
 `auth.revoke_api_key`/`rotate_api_key`, `alerts.delete_rule`, and
@@ -56,11 +56,15 @@ customer's browser session is not. Every mutation here calls the SAME
 `hub/manage.py`/`hub/auth.py`/`hub/alerts.py`/`hub/events.py` functions
 the CLI does (no second implementation) and is audited with the ACTUAL
 originating credential (`audit.actor_for_api_key`), not a borrowed
-`operator-cli` label. A merely `read`- or `write`-scoped session sees
-these pages exist but cannot act on them -- the same `satisfies()` check
-`hub/rbac.py` uses everywhere else in this Hub. The Audit log page is
-read-only for every signed-in user, admin or not: it renders this same
-trail rather than adding to it.
+`operator-cli` label -- `start_experiment`/`stop_experiment` take an
+`actor` parameter for exactly this reason, the same pattern
+`create_user`/`set_user_role` already used. A merely `read`- or
+`write`-scoped session sees these pages exist but cannot act on them --
+the same `satisfies()` check `hub/rbac.py` uses everywhere else in this
+Hub. The Audit log page, and the assignments CSV export on Proof, are
+read-only for every signed-in user, admin or not: an org's own record of
+what happened, or of its own experiment's raw arm decisions, is not a
+credential.
 
 Read-only pages need no CSRF token: `hub/admin.py` needed one precisely
 because it moderates; a route with no state-changing request has no
@@ -85,6 +89,7 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from commontrace import raw_export
 from hub import alerts, audit, auth, crud, events, manage, plans, rbac, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
@@ -676,7 +681,58 @@ def _render_share_form(share_url: str | None) -> str:
     )
 
 
-def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> str:
+def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = "") -> str:
+    """Self-service start/stop for the randomized holdout -- the same
+    mutation `hub.manage start-experiment`/`stop-experiment` performs,
+    admin-scope-gated like every other mutating page in this console.
+    Absent entirely for a non-admin viewer, same as this file's other
+    admin-only forms: showing a disabled form still tells a non-admin
+    viewer these actions exist and invites a permission-escalation
+    attempt for no reader benefit.
+    """
+    if not is_admin:
+        return ""
+    body = ['<div class="share-box">']
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
+    if causal.get("experiment_running"):
+        body.append(
+            "<b>Experiment control</b><br>"
+            '<span class="muted">Stopping keeps every observation recorded so far -- it '
+            "only stops withholding memory on new occasions.</span><br>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/stop" '
+            "onsubmit=\"return confirm('Stop the running experiment?')\">"
+            '<button type="submit">Stop experiment</button></form>'
+        )
+    else:
+        body.append(
+            "<b>Start a randomized holdout</b><br>"
+            '<span class="muted">Starts a NEW experiment with a fresh randomization -- any '
+            "prior observations stop being pooled with what comes next. Your agents must "
+            "call <code>holdout_assign</code> before injecting and "
+            "<code>record_occasion_outcome</code> afterwards, or nothing is measured."
+            "</span><br>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/start">'
+            '<label for="exp-rate">Holdout rate</label> '
+            f'<input type="number" id="exp-rate" name="rate" step="0.01" min="0.01" '
+            f'max="0.99" value="{manage.DEFAULT_HOLDOUT_RATE}" required> '
+            '<span class="muted">fraction of eligible injections withheld</span><br>'
+            '<label for="exp-outcome">Primary outcome label</label> '
+            '<input type="text" id="exp-outcome" name="outcome" value="resolved" required> '
+            '<span class="muted">what <code>succeeded=true</code> means when your agents '
+            "call <code>record_occasion_outcome</code></span><br>"
+            '<label for="exp-notes">Notes</label> '
+            '<input type="text" id="exp-notes" name="notes" placeholder="optional"><br>'
+            '<button type="submit">Start experiment</button></form>'
+        )
+    body.append("</div>")
+    return "".join(body)
+
+
+def _render_proof(
+    outcomes: dict, causal: dict, worth: dict | None = None,
+    *, is_admin: bool = False, experiment_error: str = "",
+) -> str:
     body = ["<h1>Proof</h1>",
             '<p class="sub">Two different questions, deliberately not merged: what changed '
             "since your baseline, and what this memory <em>caused</em>.</p>"]
@@ -684,6 +740,13 @@ def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> st
 
     integrity = causal.get("integrity") or {}
     body.append("<h2>Caused by the memory (randomized holdout)</h2>")
+    body.append(
+        f'<p class="muted"><a href="{CONSOLE_PATH}/proof/assignments.csv">Download every arm '
+        "decision as CSV</a> -- the signed artifact your own analyst re-runs the comparison "
+        "from, including the occasions the estimate above had to drop for never reporting an "
+        "outcome.</p>"
+    )
+    body.append(_render_experiment_controls(causal, is_admin, error=experiment_error))
     if not causal.get("experiment_running"):
         body.append('<p class="sub">No experiment is running, so nothing in this section '
                     "is causal. The observed change below is real but confounded with "
@@ -1441,11 +1504,9 @@ def add_console_routes(
             return RedirectResponse(f"{CONSOLE_PATH}?billing_error=1", status_code=303)
         return RedirectResponse(portal_url, status_code=303)
 
-    async def proof(request: Request) -> Response:
-        claims = await _claims(request)
-        if claims is None:
-            return _redirect_to_signin()
-        org_id = str(claims["org"])
+    async def _proof_view(
+        request: Request, org_id: str, is_admin: bool, *, experiment_error: str = "",
+    ) -> Response:
         # An optional rate the reader supplies in the URL. Never stored: this
         # product ships the quantity and takes the price from whoever is
         # reading, which is what keeps a number nobody agreed to out of the
@@ -1464,7 +1525,15 @@ def add_console_routes(
         # re-displaying a link that may since have been superseded.
         share_url = request.query_params.get("share_url")
         share_box = _render_share_form(share_url)
-        return _page("Proof", share_box + _render_proof(outcomes, causal, worth))
+        return _page("Proof", share_box + _render_proof(
+            outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
+        ))
+
+    async def proof(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        return await _proof_view(request, str(claims["org"]), _is_admin(claims))
 
     async def proof_share(request: Request) -> Response:
         """Mints a new share link for the signed-in org and redirects back
@@ -1515,6 +1584,76 @@ def add_console_routes(
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id)
         return _shared_page(_render_proof(outcomes, causal, worth), expires_at=int(claims["exp"]))
+
+    async def assignments_csv(request: Request) -> Response:
+        """Every arm decision for this org's current experiment, as CSV --
+        the browser counterpart to `hub.manage export-assignments`. Not
+        admin-gated: read-only, and this org's own record of its own
+        experiment is not a credential, same reasoning as Overview/Proof/
+        Memory/Knowledge Base above."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        async with session_scope(session_factory) as session:
+            assignments = await crud.holdout_assignments(session, org_id)
+        result = raw_export.export(assignments)
+        return Response(
+            result.csv_text, media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="commontrace-assignments.csv"',
+                "Cache-Control": "no-store, private",
+            },
+        )
+
+    async def experiment_start(request: Request) -> Response:
+        """Calls hub/manage.py's start_experiment directly -- the same
+        function `hub.manage start-experiment` calls -- audited with the
+        console session's own credential via the `actor` parameter that
+        function accepts for exactly this reason, same as create_user/
+        set_user_role above."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _proof_view(request, org_id, False)
+        form = await request.form()
+        rate_raw = str(form.get("rate") or "")
+        outcome = str(form.get("outcome") or "").strip() or "resolved"
+        notes = str(form.get("notes") or "").strip()
+        try:
+            rate = float(rate_raw)
+        except ValueError:
+            return await _proof_view(
+                request, org_id, True, experiment_error="Holdout rate must be a number.")
+        if not 0 < rate < 1:
+            return await _proof_view(
+                request, org_id, True,
+                experiment_error="Holdout rate must be strictly between 0 and 1.")
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        ok = await manage.start_experiment(
+            org_id, rate=str(rate), outcome=outcome, notes=notes,
+            session_factory=session_factory, actor=actor,
+        )
+        if not ok:
+            return await _proof_view(
+                request, org_id, True, experiment_error="Could not start the experiment.")
+        return RedirectResponse(f"{CONSOLE_PATH}/proof", status_code=303)
+
+    async def experiment_stop(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _proof_view(request, org_id, False)
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        ok = await manage.stop_experiment(org_id, session_factory=session_factory, actor=actor)
+        if not ok:
+            return await _proof_view(
+                request, org_id, True, experiment_error="No experiment is running.")
+        return RedirectResponse(f"{CONSOLE_PATH}/proof", status_code=303)
 
     async def memory(request: Request) -> Response:
         claims = await _claims(request)
@@ -1978,6 +2117,9 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/share", proof_share, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/proof/assignments.csv", assignments_csv, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/start", experiment_start, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/stop", experiment_stop, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/billing/checkout", billing_checkout, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])

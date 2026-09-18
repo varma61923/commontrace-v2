@@ -39,24 +39,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Self-service webhook management and an audit log page in the
-  customer console** (`hub/console.py`). Two `hub/manage.py`
-  operator-CLI-only surfaces are now reachable from the browser: a
-  customer can add, list, rotate, and disable their own webhook
-  endpoints (`/app/webhooks`) and read their own organization's audit
-  trail (`/app/audit`), including the actions taken from this console
-  itself. Webhooks follow the same admin-scope-gate-plus-ownership-check
-  discipline as the existing Users/API Keys/Alerts pages and call the
-  SAME `hub/events.py` functions the CLI does (`add_endpoint`,
-  `rotate_secret`) — no second implementation, and every mutation is
-  audited with the console session's own credential rather than a
-  borrowed `operator-cli` label. The Audit log page is read-only for
-  every signed-in user regardless of scope, matching Overview/Proof/
-  Memory/Knowledge Base's existing read-only posture. 15 new tests in
-  `hub/tests/test_console.py` (`TestWebhookManagement`,
-  `TestAuditLogPage`), including cross-tenant isolation on both new
-  routes and the fail-closed case when no `HUB_LEDGER_SIGNING_KEY` is
-  configured.
+- **Self-service webhook management, an audit log page, and randomized
+  holdout control in the customer console** (`hub/console.py`). Four
+  `hub/manage.py` operator-CLI-only surfaces are now reachable from the
+  browser: a customer can add, list, rotate, and disable their own
+  webhook endpoints (`/app/webhooks`), read their own organization's
+  audit trail (`/app/audit`), start and stop their own randomized
+  holdout experiment, and download every arm decision as signed CSV,
+  both now on `/app/proof`. All four follow the same
+  admin-scope-gate-plus-ownership-check discipline as the existing
+  Users/API Keys/Alerts pages and call the SAME `hub/events.py`/
+  `hub/manage.py` functions the CLI does (`add_endpoint`,
+  `rotate_secret`, `start_experiment`, `stop_experiment`) — no second
+  implementation. `start_experiment`/`stop_experiment` gained an
+  `actor` parameter (default `audit.ACTOR_OPERATOR_CLI`, unchanged for
+  every existing CLI caller) so a console-initiated start/stop is
+  audited with the console session's own credential instead of a
+  borrowed `operator-cli` label, the same pattern `create_user`/
+  `set_user_role` already used. The Audit log page and the assignments
+  CSV export are read-only for every signed-in user regardless of
+  scope, matching Overview/Memory/Knowledge Base's existing read-only
+  posture. 33 new tests in `hub/tests/test_console.py`
+  (`TestWebhookManagement`, `TestAuditLogPage`,
+  `TestExperimentControlFromTheConsole`, `TestAssignmentsCsvExport`,
+  plus unit tests on `_render_proof`'s new admin-only controls),
+  including cross-tenant isolation, the fail-closed case when no
+  `HUB_LEDGER_SIGNING_KEY` is configured, and a direct assertion that a
+  console-started experiment is audited under the real API-key actor
+  rather than `operator-cli`.
 
 - **A Stripe webhook event-id idempotency ledger** (`processed_webhook_events`,
   migration `37d2580be8db`). `hub/billing.py`'s `apply_webhook_event` was

@@ -1082,7 +1082,7 @@ async def plan_experiment(
 async def start_experiment(
     org_id: str, rate: str = str(DEFAULT_HOLDOUT_RATE),
     outcome: str = "resolved", notes: str = "",
-    session_factory=None,
+    session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
 ) -> bool:
     """Begin a randomized holdout for one org: withhold `rate` of eligible
     memory injections so the fleet generates its own control arm.
@@ -1157,7 +1157,7 @@ async def start_experiment(
                 "rate": value, "salt": org.holdout_salt, "outcome": outcome,
             })
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="start_experiment",
+            session, actor=actor, action="start_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
             summary=(
                 f"rate={value} salt={org.holdout_salt} previous_salt={previous or '-'} "
@@ -1250,7 +1250,9 @@ async def export_assignments(
     return True
 
 
-async def stop_experiment(org_id: str, session_factory=None) -> bool:
+async def stop_experiment(
+    org_id: str, session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
     """End the holdout. Observations are kept; nothing further is withheld.
 
     Deliberately does not clear the salt: `experiment` still needs it to
@@ -1271,7 +1273,7 @@ async def stop_experiment(org_id: str, session_factory=None) -> bool:
             await events.emit(session, org_id, "experiment.stopped",
                               {"salt": org.holdout_salt})
         await audit.record(
-            session, actor=audit.ACTOR_OPERATOR_CLI, action="stop_experiment",
+            session, actor=actor, action="stop_experiment",
             org_id=org_id, target_type="org", target_id=org_id,
             summary=f"salt={org.holdout_salt}",
         )

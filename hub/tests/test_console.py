@@ -555,6 +555,20 @@ class TestAccessibleFormControls:
             response = await client.get(f"{console.CONSOLE_PATH}/alerts")
         assert _every_visible_input_has_a_label(response.text)
 
+    async def test_the_webhooks_page_forms_are_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/webhooks")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_the_proof_pages_experiment_form_is_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof")
+        assert _every_visible_input_has_a_label(response.text)
+
 
 # --- Escaping ---------------------------------------------------------------
 
@@ -698,6 +712,46 @@ class TestTheProofPageLeadsWithValidity:
         # n beside every rate: 100% of two and 100% of two thousand are the
         # same number on a slide and different facts.
         assert "n=100" in html and "n=120" in html
+
+    async def test_a_non_admin_viewer_sees_no_experiment_controls(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=False,
+        )
+        assert "Start experiment" not in html
+        assert "Stop experiment" not in html
+
+    async def test_an_admin_viewer_sees_a_start_form_when_nothing_is_running(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=True,
+        )
+        assert "Start experiment" in html
+        assert "Stop experiment" not in html
+
+    async def test_an_admin_viewer_sees_a_stop_button_when_running(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []},
+            {"experiment_running": True, "n_observations": 0, "n_occasions": 0,
+             "integrity": {"verdict": "SOUND", "effects_readable": True, "findings": [],
+                           "projections": [], "n_assignments": 0, "n_resolved": 0},
+             "effects": []},
+            is_admin=True,
+        )
+        assert "Stop experiment" in html
+        assert "Start experiment" not in html
+
+    async def test_an_experiment_error_is_shown_inline(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=True,
+            experiment_error="Holdout rate must be a number.",
+        )
+        assert "Holdout rate must be a number." in html
+
+    async def test_the_shared_view_never_shows_experiment_controls(self):
+        """_render_proof defaults is_admin to False, which proof_shared's
+        call relies on -- a public link must never expose the ability to
+        start or stop this org's experiment."""
+        html = console._render_proof({"headline": "", "metrics": []}, {"experiment_running": False})
+        assert "Start experiment" not in html
 
 
 class TestTheOverviewIsHonestAboutMissingData:
@@ -1880,3 +1934,160 @@ class TestAuditLogPage:
             await _signed_in(client, raw_key)
             response = await client.get(f"{console.CONSOLE_PATH}/audit")
         assert "Older" in response.text
+
+
+class TestExperimentControlFromTheConsole:
+    async def test_starting_an_experiment_sets_the_holdout_rate(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+                follow_redirects=True,
+            )
+        assert response.status_code == 200
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.25
+        assert org.holdout_salt
+
+    async def test_starting_an_experiment_is_audited_with_the_real_actor(
+        self, session_factory, org_and_key
+    ):
+        """Not the borrowed `operator-cli` label hub.manage's own CLI
+        callers get -- manage.start_experiment takes an `actor` parameter
+        for exactly this reason."""
+        from hub.models import AuditLogEntry
+
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.org_id == org_id,
+                        AuditLogEntry.action == "start_experiment",
+                    )
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor.startswith("api-key:")
+        assert entry.actor != "operator-cli"
+
+    async def test_an_invalid_rate_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "1.5", "outcome": "resolved"},
+            )
+        assert "strictly between 0 and 1" in response.text
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_a_non_numeric_rate_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "not-a-number", "outcome": "resolved"},
+            )
+        assert "must be a number" in response.text
+
+    async def test_a_read_only_key_cannot_start_an_experiment(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_stopping_an_experiment_clears_the_holdout_rate(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/stop", follow_redirects=True,
+            )
+        assert response.status_code == 200
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_stopping_when_nothing_is_running_shows_an_error(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/proof/experiment/stop")
+        assert "No experiment is running" in response.text
+
+    async def test_a_read_only_key_cannot_stop_an_experiment(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.holdout_rate = 0.3
+            org.holdout_salt = "existing-salt"
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/proof/experiment/stop")
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.3
+
+    async def test_starting_is_not_reachable_by_get(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/experiment/start")
+        assert response.status_code == 405
+
+
+class TestAssignmentsCsvExport:
+    async def test_downloading_the_csv(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.holdout_rate = 0.3
+            org.holdout_salt = "csv-test-salt"
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/assignments.csv")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "attachment" in response.headers["content-disposition"]
+
+    async def test_requires_sign_in(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/proof/assignments.csv", follow_redirects=False,
+            )
+        assert response.status_code in (302, 303)
