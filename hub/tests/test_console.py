@@ -39,7 +39,7 @@ from hub import auth, console, rbac
 from hub import events as events_module
 from hub.billing import StripeSettings
 from hub.db import session_scope
-from hub.models import ApiKey, Organization, Trace, User
+from hub.models import ApiKey, Organization, Trace, User, WebhookEndpoint
 
 
 async def _fake_public_resolve(hostname: str) -> list:
@@ -64,10 +64,15 @@ def _explode(*a, **kw):
     raise AssertionError("no database access should happen for this request")
 
 
-def _app(secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None) -> Starlette:
+def _app(
+    secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None,
+    signing_key: str = "",
+) -> Starlette:
     app = Starlette()
     if secret:
-        console.add_console_routes(app, session_factory, console_secret=secret, stripe=stripe)
+        console.add_console_routes(
+            app, session_factory, console_secret=secret, stripe=stripe, signing_key=signing_key,
+        )
     return app
 
 
@@ -550,6 +555,20 @@ class TestAccessibleFormControls:
             response = await client.get(f"{console.CONSOLE_PATH}/alerts")
         assert _every_visible_input_has_a_label(response.text)
 
+    async def test_the_webhooks_page_forms_are_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/webhooks")
+        assert _every_visible_input_has_a_label(response.text)
+
+    async def test_the_proof_pages_experiment_form_is_labeled(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof")
+        assert _every_visible_input_has_a_label(response.text)
+
 
 # --- Escaping ---------------------------------------------------------------
 
@@ -693,6 +712,46 @@ class TestTheProofPageLeadsWithValidity:
         # n beside every rate: 100% of two and 100% of two thousand are the
         # same number on a slide and different facts.
         assert "n=100" in html and "n=120" in html
+
+    async def test_a_non_admin_viewer_sees_no_experiment_controls(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=False,
+        )
+        assert "Start experiment" not in html
+        assert "Stop experiment" not in html
+
+    async def test_an_admin_viewer_sees_a_start_form_when_nothing_is_running(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=True,
+        )
+        assert "Start experiment" in html
+        assert "Stop experiment" not in html
+
+    async def test_an_admin_viewer_sees_a_stop_button_when_running(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []},
+            {"experiment_running": True, "n_observations": 0, "n_occasions": 0,
+             "integrity": {"verdict": "SOUND", "effects_readable": True, "findings": [],
+                           "projections": [], "n_assignments": 0, "n_resolved": 0},
+             "effects": []},
+            is_admin=True,
+        )
+        assert "Stop experiment" in html
+        assert "Start experiment" not in html
+
+    async def test_an_experiment_error_is_shown_inline(self):
+        html = console._render_proof(
+            {"headline": "", "metrics": []}, {"experiment_running": False}, is_admin=True,
+            experiment_error="Holdout rate must be a number.",
+        )
+        assert "Holdout rate must be a number." in html
+
+    async def test_the_shared_view_never_shows_experiment_controls(self):
+        """_render_proof defaults is_admin to False, which proof_shared's
+        call relies on -- a public link must never expose the ability to
+        start or stop this org's experiment."""
+        html = console._render_proof({"headline": "", "metrics": []}, {"experiment_running": False})
+        assert "Start experiment" not in html
 
 
 class TestTheOverviewIsHonestAboutMissingData:
@@ -1638,3 +1697,397 @@ class TestUsageReportFromTheConsole:
             await _signed_in(client, raw_key)
             response = await client.get(f"{console.CONSOLE_PATH}/alerts/generate-report")
         assert response.status_code == 405
+
+
+class TestWebhookManagement:
+    async def test_adding_an_endpoint_shows_the_secret_once(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        app = _app(session_factory=session_factory, signing_key="test-signing-key")
+        async with _client(app) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create",
+                data={"url": "https://example.invalid/hooks/commontrace"},
+            )
+        assert "shown once" in response.text
+        assert "example.invalid" in response.text
+
+    async def test_adding_an_endpoint_with_no_signing_key_configured_shows_the_error(
+        self, session_factory, org_and_key
+    ):
+        """The Hub fails closed here (hub/events.py:derive_secret): with no
+        HUB_LEDGER_SIGNING_KEY configured, a webhook cannot be signed at
+        all, and this console must surface that as an inline error rather
+        than a 500 or a silently unsigned endpoint."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create",
+                data={"url": "https://example.invalid/hooks/commontrace"},
+            )
+        assert response.status_code == 200
+        assert "no HUB_LEDGER_SIGNING_KEY" in response.text
+
+    async def test_an_added_endpoints_subscriptions_persist(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create",
+                data={
+                    "url": "https://example.invalid/hooks/commontrace",
+                    "events": ["trace.quarantined", "experiment.verdict"],
+                },
+            )
+        async with session_scope(session_factory) as session:
+            endpoints = await events_module.endpoints_for(session, org_id)
+        assert len(endpoints) == 1
+        assert sorted(endpoints[0].events) == ["experiment.verdict", "trace.quarantined"]
+
+    async def test_a_non_https_url_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create",
+                data={"url": "http://example.invalid/hooks"},
+            )
+        assert "must be https" in response.text
+
+    async def test_a_read_only_key_cannot_add_an_endpoint(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/webhooks/create",
+                data={"url": "https://example.invalid/hooks"},
+            )
+        async with session_scope(session_factory) as session:
+            endpoints = await events_module.endpoints_for(session, org_id)
+        assert endpoints == []
+
+    async def test_rotating_an_endpoints_secret_shows_it_once(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            endpoint, _secret = await events_module.add_endpoint(
+                session, org_id, "https://example.invalid/hooks",
+                signing_key="test-signing-key",
+            )
+            endpoint_id, original_version = endpoint.id, endpoint.key_version
+        app = _app(session_factory=session_factory, signing_key="test-signing-key")
+        async with _client(app) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/webhooks/{endpoint_id}/rotate")
+        assert "shown once" in response.text
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint_id)
+        assert row.key_version == original_version + 1
+
+    async def test_cannot_rotate_another_orgs_endpoint(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            endpoint, _secret = await events_module.add_endpoint(
+                session, other_org_id, "https://example.invalid/hooks",
+                signing_key="test-signing-key",
+            )
+            endpoint_id, original_version = endpoint.id, endpoint.key_version
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/webhooks/{endpoint_id}/rotate")
+        assert "shown once" not in response.text
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint_id)
+        assert row.key_version == original_version
+
+    async def test_disabling_an_endpoint(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            endpoint, _secret = await events_module.add_endpoint(
+                session, org_id, "https://example.invalid/hooks",
+                signing_key="test-signing-key",
+            )
+            endpoint_id = endpoint.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/webhooks/{endpoint_id}/disable")
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint_id)
+        assert row.enabled is False
+
+    async def test_cannot_disable_another_orgs_endpoint(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            endpoint, _secret = await events_module.add_endpoint(
+                session, other_org_id, "https://example.invalid/hooks",
+                signing_key="test-signing-key",
+            )
+            endpoint_id = endpoint.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/webhooks/{endpoint_id}/disable")
+        async with session_scope(session_factory) as session:
+            row = await session.get(WebhookEndpoint, endpoint_id)
+        assert row.enabled is True
+
+    async def test_the_page_shows_only_this_orgs_endpoints(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            await events_module.add_endpoint(
+                session, org_id, "https://mine.invalid/hooks", signing_key="test-signing-key",
+            )
+            await events_module.add_endpoint(
+                session, other_org_id, "https://theirs.invalid/hooks",
+                signing_key="test-signing-key",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/webhooks")
+        assert "mine.invalid" in response.text
+        assert "theirs.invalid" not in response.text
+
+
+class TestAuditLogPage:
+    async def test_shows_entries_for_this_org(self, session_factory, org_and_key):
+        from hub import audit as audit_module
+
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            await audit_module.record(
+                session, actor="api-key:ct_test", action="issue_key",
+                org_id=org_id, target_type="api_key", target_id="abc123",
+                summary="prefix=ct_test scopes=read",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert "issue_key" in response.text
+        assert "abc123" in response.text
+
+    async def test_does_not_show_another_orgs_entries(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        from hub import audit as audit_module
+
+        _org_id, raw_key = org_and_key
+        other_org_id, _other_raw_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            await audit_module.record(
+                session, actor="api-key:ct_other", action="revoke_key",
+                org_id=other_org_id, target_type="api_key", target_id="xyz789",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert "xyz789" not in response.text
+
+    async def test_visible_to_a_read_only_key(self, session_factory, org_and_readonly_key):
+        from hub import audit as audit_module
+
+        org_id, raw_key = org_and_readonly_key
+        async with session_scope(session_factory) as session:
+            await audit_module.record(
+                session, actor="api-key:ct_ro", action="issue_key",
+                org_id=org_id, target_type="api_key", target_id="ro123",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert response.status_code == 200
+        assert "ro123" in response.text
+
+    async def test_console_actions_are_themselves_audited(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+            )
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert "issue_key" in response.text
+
+    async def test_pagination_links_appear_past_a_page(self, session_factory, org_and_key):
+        from hub import audit as audit_module
+
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            for i in range(55):
+                await audit_module.record(
+                    session, actor="api-key:ct_test", action="issue_key",
+                    org_id=org_id, target_type="api_key", target_id=f"k{i}",
+                )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/audit")
+        assert "Older" in response.text
+
+
+class TestExperimentControlFromTheConsole:
+    async def test_starting_an_experiment_sets_the_holdout_rate(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+                follow_redirects=True,
+            )
+        assert response.status_code == 200
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.25
+        assert org.holdout_salt
+
+    async def test_starting_an_experiment_is_audited_with_the_real_actor(
+        self, session_factory, org_and_key
+    ):
+        """Not the borrowed `operator-cli` label hub.manage's own CLI
+        callers get -- manage.start_experiment takes an `actor` parameter
+        for exactly this reason."""
+        from hub.models import AuditLogEntry
+
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.org_id == org_id,
+                        AuditLogEntry.action == "start_experiment",
+                    )
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.actor.startswith("api-key:")
+        assert entry.actor != "operator-cli"
+
+    async def test_an_invalid_rate_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "1.5", "outcome": "resolved"},
+            )
+        assert "strictly between 0 and 1" in response.text
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_a_non_numeric_rate_is_refused_with_an_inline_error(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "not-a-number", "outcome": "resolved"},
+            )
+        assert "must be a number" in response.text
+
+    async def test_a_read_only_key_cannot_start_an_experiment(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_stopping_an_experiment_clears_the_holdout_rate(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/start",
+                data={"rate": "0.25", "outcome": "resolved"},
+            )
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/proof/experiment/stop", follow_redirects=True,
+            )
+        assert response.status_code == 200
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.0
+
+    async def test_stopping_when_nothing_is_running_shows_an_error(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(f"{console.CONSOLE_PATH}/proof/experiment/stop")
+        assert "No experiment is running" in response.text
+
+    async def test_a_read_only_key_cannot_stop_an_experiment(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.holdout_rate = 0.3
+            org.holdout_salt = "existing-salt"
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/proof/experiment/stop")
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.holdout_rate == 0.3
+
+    async def test_starting_is_not_reachable_by_get(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/experiment/start")
+        assert response.status_code == 405
+
+
+class TestAssignmentsCsvExport:
+    async def test_downloading_the_csv(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.holdout_rate = 0.3
+            org.holdout_salt = "csv-test-salt"
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/assignments.csv")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "attachment" in response.headers["content-disposition"]
+
+    async def test_requires_sign_in(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/proof/assignments.csv", follow_redirects=False,
+            )
+        assert response.status_code in (302, 303)

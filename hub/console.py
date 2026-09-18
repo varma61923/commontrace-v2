@@ -33,31 +33,38 @@ the isolation argument should rest on the one set of filters that
 `hub/tests/test_tenant_isolation.py` already exercises rather than on a
 second set that a new file introduced.
 
-MOSTLY READ-ONLY, ON PURPOSE, WITH ONE NAMED EXCEPTION
+MOSTLY READ-ONLY, ON PURPOSE, WITH NAMED EXCEPTIONS
 --------------------------------------------------------
-Overview/Proof/Memory/Knowledge Base change nothing. Not because mutation
-is hard, but because of what those mutations WOULD be: altering a
-measurement (the experiment, an outcome) or a shared corpus (a Knowledge
-Base submission). Both already have audited, authenticated paths through
-MCP and the CLI that record who did what, and adding a second way in
-through a browser session widens that surface for a convenience nobody
-has asked for.
+Overview/Memory/Knowledge Base change nothing. Not because mutation is
+hard, but because of what those mutations WOULD be: altering an outcome
+or a shared corpus (a Knowledge Base submission). Both already have
+audited, authenticated paths through MCP and the CLI that record who did
+what, and adding a second way in through a browser session widens that
+surface for a convenience nobody has asked for.
 
-Users & Roles, API Keys, and Alerts (below) are the one deliberate
-exception -- this Hub's own identity/credential/alerting management
-(audit 1.2, 8.3), previously CLI-only, gated behind the SAME check every
-one of those CLI commands already enforces (`scopes.SCOPE_ADMIN` on the
-signed-in session's own key) plus an explicit org-ownership check on
-every id-addressed mutation, since `auth.revoke_api_key`/`rotate_api_key`
-and `alerts.delete_rule` take no org_id argument at all -- they trust an
+Users & Roles, API Keys, Alerts, Webhooks, and starting/stopping the
+randomized holdout on the Proof page (below) are the deliberate
+exceptions -- this Hub's own identity/credential/alerting/egress/
+experiment management (audit 1.2, 8.3), previously CLI-only, gated
+behind the SAME check every one of those CLI commands already enforces
+(`scopes.SCOPE_ADMIN` on the signed-in session's own key) plus an
+explicit org-ownership check on every id-addressed mutation, since
+`auth.revoke_api_key`/`rotate_api_key`, `alerts.delete_rule`, and
+`events.rotate_secret` take no org_id argument at all -- they trust an
 operator's own direct DB access to be scoped correctly already, which a
 customer's browser session is not. Every mutation here calls the SAME
-`hub/manage.py`/`hub/auth.py`/`hub/alerts.py` functions the CLI does (no
-second implementation) and is audited with the ACTUAL originating
-credential (`audit.actor_for_api_key`), not a borrowed `operator-cli`
-label. A merely `read`- or `write`-scoped session sees these pages exist
-but cannot act on them -- the same `satisfies()` check `hub/rbac.py`
-uses everywhere else in this Hub.
+`hub/manage.py`/`hub/auth.py`/`hub/alerts.py`/`hub/events.py` functions
+the CLI does (no second implementation) and is audited with the ACTUAL
+originating credential (`audit.actor_for_api_key`), not a borrowed
+`operator-cli` label -- `start_experiment`/`stop_experiment` take an
+`actor` parameter for exactly this reason, the same pattern
+`create_user`/`set_user_role` already used. A merely `read`- or
+`write`-scoped session sees these pages exist but cannot act on them --
+the same `satisfies()` check `hub/rbac.py` uses everywhere else in this
+Hub. The Audit log page, and the assignments CSV export on Proof, are
+read-only for every signed-in user, admin or not: an org's own record of
+what happened, or of its own experiment's raw arm decisions, is not a
+credential.
 
 Read-only pages need no CSRF token: `hub/admin.py` needed one precisely
 because it moderates; a route with no state-changing request has no
@@ -82,12 +89,14 @@ from sqlalchemy import or_, select
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from hub import alerts, audit, auth, crud, manage, plans, rbac, scopes
+from commontrace import raw_export
+from hub import alerts, audit, auth, crud, events, manage, plans, rbac, scopes
 from hub.abuse import RateLimiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.db import session_scope
-from hub.models import AlertRule, ApiKey, Organization, User
+from hub.encryption import NULL_CIPHER, EnvelopeCipher
+from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
 
 logger = logging.getLogger("commontrace.hub.console")
 
@@ -296,6 +305,8 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f'<a href="{CONSOLE_PATH}/users">Users</a>'
         f'<a href="{CONSOLE_PATH}/keys">API Keys</a>'
         f'<a href="{CONSOLE_PATH}/alerts">Alerts</a>'
+        f'<a href="{CONSOLE_PATH}/webhooks">Webhooks</a>'
+        f'<a href="{CONSOLE_PATH}/audit">Audit log</a>'
         f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
         if signed_in else ""
     )
@@ -670,7 +681,58 @@ def _render_share_form(share_url: str | None) -> str:
     )
 
 
-def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> str:
+def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = "") -> str:
+    """Self-service start/stop for the randomized holdout -- the same
+    mutation `hub.manage start-experiment`/`stop-experiment` performs,
+    admin-scope-gated like every other mutating page in this console.
+    Absent entirely for a non-admin viewer, same as this file's other
+    admin-only forms: showing a disabled form still tells a non-admin
+    viewer these actions exist and invites a permission-escalation
+    attempt for no reader benefit.
+    """
+    if not is_admin:
+        return ""
+    body = ['<div class="share-box">']
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
+    if causal.get("experiment_running"):
+        body.append(
+            "<b>Experiment control</b><br>"
+            '<span class="muted">Stopping keeps every observation recorded so far -- it '
+            "only stops withholding memory on new occasions.</span><br>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/stop" '
+            "onsubmit=\"return confirm('Stop the running experiment?')\">"
+            '<button type="submit">Stop experiment</button></form>'
+        )
+    else:
+        body.append(
+            "<b>Start a randomized holdout</b><br>"
+            '<span class="muted">Starts a NEW experiment with a fresh randomization -- any '
+            "prior observations stop being pooled with what comes next. Your agents must "
+            "call <code>holdout_assign</code> before injecting and "
+            "<code>record_occasion_outcome</code> afterwards, or nothing is measured."
+            "</span><br>"
+            f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/start">'
+            '<label for="exp-rate">Holdout rate</label> '
+            f'<input type="number" id="exp-rate" name="rate" step="0.01" min="0.01" '
+            f'max="0.99" value="{manage.DEFAULT_HOLDOUT_RATE}" required> '
+            '<span class="muted">fraction of eligible injections withheld</span><br>'
+            '<label for="exp-outcome">Primary outcome label</label> '
+            '<input type="text" id="exp-outcome" name="outcome" value="resolved" required> '
+            '<span class="muted">what <code>succeeded=true</code> means when your agents '
+            "call <code>record_occasion_outcome</code></span><br>"
+            '<label for="exp-notes">Notes</label> '
+            '<input type="text" id="exp-notes" name="notes" placeholder="optional"><br>'
+            '<button type="submit">Start experiment</button></form>'
+        )
+    body.append("</div>")
+    return "".join(body)
+
+
+def _render_proof(
+    outcomes: dict, causal: dict, worth: dict | None = None,
+    *, is_admin: bool = False, experiment_error: str = "",
+) -> str:
     body = ["<h1>Proof</h1>",
             '<p class="sub">Two different questions, deliberately not merged: what changed '
             "since your baseline, and what this memory <em>caused</em>.</p>"]
@@ -678,6 +740,13 @@ def _render_proof(outcomes: dict, causal: dict, worth: dict | None = None) -> st
 
     integrity = causal.get("integrity") or {}
     body.append("<h2>Caused by the memory (randomized holdout)</h2>")
+    body.append(
+        f'<p class="muted"><a href="{CONSOLE_PATH}/proof/assignments.csv">Download every arm '
+        "decision as CSV</a> -- the signed artifact your own analyst re-runs the comparison "
+        "from, including the occasions the estimate above had to drop for never reporting an "
+        "outcome.</p>"
+    )
+    body.append(_render_experiment_controls(causal, is_admin, error=experiment_error))
     if not causal.get("experiment_running"):
         body.append('<p class="sub">No experiment is running, so nothing in this section '
                     "is causal. The observed change below is real but confounded with "
@@ -1076,6 +1145,117 @@ def _render_alerts(
     return "".join(body)
 
 
+def _render_webhooks(
+    endpoints: list[dict], pending: int, failed: list[dict], is_admin: bool,
+    *, error: str = "", fresh: dict | None = None,
+) -> str:
+    body = ["<h1>Webhooks</h1>",
+            '<p class="sub">Tell your own systems what happened here — a trace quarantined, '
+            "an experiment reaching a verdict — without polling for it. Every payload carries "
+            "only ids, counts and verdicts; a webhook is egress to a third party, and this "
+            "product's memory content never is.</p>"]
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
+    if fresh and fresh.get("secret"):
+        body.append(
+            '<div class="share-box"><b id="webhook-secret-label">Signing secret '
+            "(shown once)</b><br>"
+            '<span class="muted">Verify the delivery signature with this. It cannot be shown '
+            "again — rotate the endpoint to get a new one.</span>"
+            f'<input type="text" readonly aria-labelledby="webhook-secret-label" '
+            f'value="{h(fresh["secret"])}" onclick="this.select()"></div>'
+        )
+    body.append(_tiles([
+        ("Endpoints", _num(len(endpoints))),
+        ("Deliveries pending", _num(pending)),
+    ]))
+    if endpoints:
+        rows = []
+        for e in endpoints:
+            state = "enabled" if e["enabled"] else "DISABLED"
+            subscribed = ", ".join(e["events"]) or "(none)"
+            actions = ""
+            if is_admin and e["enabled"]:
+                actions = (
+                    f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/rotate" '
+                    f'style="display:inline"><button type="submit">Rotate secret</button>'
+                    "</form> "
+                    f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/disable" '
+                    f'style="display:inline"><button type="submit">Disable</button></form>'
+                )
+            rows.append(
+                f"<tr><td>{h(e['url'])}</td><td>{h(state)}</td><td>{h(subscribed)}</td>"
+                f"<td>v{h(e['key_version'])}</td><td>{actions}</td></tr>"
+            )
+        body.append(
+            "<table><thead><tr><th>URL</th><th>State</th><th>Subscribed to</th>"
+            f"<th>Key</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
+    else:
+        body.append('<p class="sub">No webhook endpoints configured.</p>')
+    if failed:
+        frows = "".join(
+            f"<tr><td>{h(str(d['created_at'])[:16])}</td><td>{h(d['event_type'])}</td>"
+            f"<td>{h(d['last_error'] or '')}</td></tr>"
+            for d in failed
+        )
+        body.append(
+            "<h2>Gave up on delivering</h2>"
+            '<p class="sub">Retried and failed enough times that this stopped retrying — a '
+            "misconfigured endpoint, not a transient blip.</p>"
+            "<table><thead><tr><th>When</th><th>Event</th><th>Last error</th></tr></thead>"
+            f"<tbody>{frows}</tbody></table>"
+        )
+    if is_admin:
+        event_boxes = "".join(
+            f'<label><input type="checkbox" name="events" value="{h(name)}"> {h(name)}</label> '
+            for name in events.EVENT_NAMES
+        )
+        body.append(
+            "<h2>Add an endpoint</h2>"
+            '<p class="sub">HTTPS only. Leave every box unchecked to subscribe to '
+            "everything.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/webhooks/create">'
+            '<label for="new-webhook-url" class="sr-only">URL</label>'
+            '<input type="url" id="new-webhook-url" name="url" '
+            'placeholder="https://…" required><br>'
+            f'<fieldset><legend>Events</legend>{event_boxes}</fieldset>'
+            '<button type="submit">Add endpoint</button></form>'
+        )
+    else:
+        body.append('<p class="muted">Sign in with an admin-scoped key to add, rotate, or '
+                    "disable a webhook endpoint.</p>")
+    return "".join(body)
+
+
+def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has_more: bool) -> str:
+    body = ["<h1>Audit log</h1>",
+            '<p class="sub">Consequential actions on your organisation — writes through the '
+            "MCP tools and every admin action, including the ones taken from this console "
+            "itself. Ordinary reads (searches, lookups) are not logged here.</p>"]
+    if not entries:
+        body.append('<p class="sub">No audit entries yet.</p>')
+        return "".join(body)
+    rows = "".join(
+        f"<tr><td>{h(str(e.created_at)[:19])}</td><td>{h(e.actor)}</td><td>{h(e.action)}</td>"
+        f"<td>{h(f'{e.target_type}:{e.target_id}' if e.target_type else '—')}</td>"
+        f"<td>{h(e.summary)}</td></tr>"
+        for e in entries
+    )
+    body.append(
+        "<table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th>"
+        f"<th>Detail</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
+    nav = []
+    if offset > 0:
+        nav.append(f'<a href="{CONSOLE_PATH}/audit?offset={max(0, offset - limit)}">&larr; Newer</a>')
+    if has_more:
+        nav.append(f'<a href="{CONSOLE_PATH}/audit?offset={offset + limit}">Older &rarr;</a>')
+    if nav:
+        body.append(f'<p class="muted">{" · ".join(nav)}</p>')
+    return "".join(body)
+
+
 _SIGNIN = """
 <div class="signin">
   <h1>Sign in</h1>
@@ -1104,6 +1284,8 @@ def add_console_routes(
     trusted_proxy_hops: int = 0,
     commons_enabled: bool = True,
     stripe: StripeSettings | None = None,
+    signing_key: str = "",
+    cipher: EnvelopeCipher = NULL_CIPHER,
 ) -> None:
     """Mount the customer console. Registered only when a secret is set."""
     stripe = stripe or StripeSettings()
@@ -1322,11 +1504,9 @@ def add_console_routes(
             return RedirectResponse(f"{CONSOLE_PATH}?billing_error=1", status_code=303)
         return RedirectResponse(portal_url, status_code=303)
 
-    async def proof(request: Request) -> Response:
-        claims = await _claims(request)
-        if claims is None:
-            return _redirect_to_signin()
-        org_id = str(claims["org"])
+    async def _proof_view(
+        request: Request, org_id: str, is_admin: bool, *, experiment_error: str = "",
+    ) -> Response:
         # An optional rate the reader supplies in the URL. Never stored: this
         # product ships the quantity and takes the price from whoever is
         # reading, which is what keeps a number nobody agreed to out of the
@@ -1345,7 +1525,15 @@ def add_console_routes(
         # re-displaying a link that may since have been superseded.
         share_url = request.query_params.get("share_url")
         share_box = _render_share_form(share_url)
-        return _page("Proof", share_box + _render_proof(outcomes, causal, worth))
+        return _page("Proof", share_box + _render_proof(
+            outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
+        ))
+
+    async def proof(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        return await _proof_view(request, str(claims["org"]), _is_admin(claims))
 
     async def proof_share(request: Request) -> Response:
         """Mints a new share link for the signed-in org and redirects back
@@ -1396,6 +1584,76 @@ def add_console_routes(
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id)
         return _shared_page(_render_proof(outcomes, causal, worth), expires_at=int(claims["exp"]))
+
+    async def assignments_csv(request: Request) -> Response:
+        """Every arm decision for this org's current experiment, as CSV --
+        the browser counterpart to `hub.manage export-assignments`. Not
+        admin-gated: read-only, and this org's own record of its own
+        experiment is not a credential, same reasoning as Overview/Proof/
+        Memory/Knowledge Base above."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        async with session_scope(session_factory) as session:
+            assignments = await crud.holdout_assignments(session, org_id)
+        result = raw_export.export(assignments)
+        return Response(
+            result.csv_text, media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="commontrace-assignments.csv"',
+                "Cache-Control": "no-store, private",
+            },
+        )
+
+    async def experiment_start(request: Request) -> Response:
+        """Calls hub/manage.py's start_experiment directly -- the same
+        function `hub.manage start-experiment` calls -- audited with the
+        console session's own credential via the `actor` parameter that
+        function accepts for exactly this reason, same as create_user/
+        set_user_role above."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _proof_view(request, org_id, False)
+        form = await request.form()
+        rate_raw = str(form.get("rate") or "")
+        outcome = str(form.get("outcome") or "").strip() or "resolved"
+        notes = str(form.get("notes") or "").strip()
+        try:
+            rate = float(rate_raw)
+        except ValueError:
+            return await _proof_view(
+                request, org_id, True, experiment_error="Holdout rate must be a number.")
+        if not 0 < rate < 1:
+            return await _proof_view(
+                request, org_id, True,
+                experiment_error="Holdout rate must be strictly between 0 and 1.")
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        ok = await manage.start_experiment(
+            org_id, rate=str(rate), outcome=outcome, notes=notes,
+            session_factory=session_factory, actor=actor,
+        )
+        if not ok:
+            return await _proof_view(
+                request, org_id, True, experiment_error="Could not start the experiment.")
+        return RedirectResponse(f"{CONSOLE_PATH}/proof", status_code=303)
+
+    async def experiment_stop(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _proof_view(request, org_id, False)
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        ok = await manage.stop_experiment(org_id, session_factory=session_factory, actor=actor)
+        if not ok:
+            return await _proof_view(
+                request, org_id, True, experiment_error="No experiment is running.")
+        return RedirectResponse(f"{CONSOLE_PATH}/proof", status_code=303)
 
     async def memory(request: Request) -> Response:
         claims = await _claims(request)
@@ -1720,6 +1978,138 @@ def add_console_routes(
         rules = await _list_alert_rules(org_id)
         return _page("Alerts", _render_alerts(rules, True, report=report))
 
+    async def _webhooks_view(
+        org_id: str, is_admin: bool, *, error: str = "", fresh: dict | None = None,
+    ) -> Response:
+        async with session_scope(session_factory) as session:
+            endpoints = await events.endpoints_for(session, org_id)
+            pending = await events.pending_count(session, org_id)
+            failed = await events.failed_deliveries(session, org_id, limit=10)
+        rows = [
+            {
+                "id": e.id, "url": cipher.decrypt(e.url), "enabled": e.enabled,
+                "events": list(e.events), "key_version": e.key_version,
+            }
+            for e in endpoints
+        ]
+        frows = [
+            {"created_at": d.created_at, "event_type": d.event_type, "last_error": d.last_error}
+            for d in failed
+        ]
+        return _page(
+            "Webhooks", _render_webhooks(rows, pending, frows, is_admin, error=error, fresh=fresh)
+        )
+
+    async def webhooks_page(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        return await _webhooks_view(org_id, _is_admin(claims))
+
+    async def webhooks_create(request: Request) -> Response:
+        """Calls hub/events.py's add_endpoint directly -- the same function
+        `hub.manage webhook-add` calls -- audited with the console
+        session's own credential rather than a borrowed operator-cli
+        label, same discipline as keys_issue/users_create above."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _webhooks_view(org_id, False)
+        form = await request.form()
+        url = str(form.get("url") or "").strip()
+        chosen_events = form.getlist("events") or None
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            try:
+                endpoint, secret = await events.add_endpoint(
+                    session, org_id, url, events=chosen_events,
+                    signing_key=signing_key, cipher=cipher,
+                )
+            except events.EventError as exc:
+                return await _webhooks_view(org_id, True, error=str(exc))
+            await audit.record(
+                session, actor=actor, action="webhook.add",
+                org_id=org_id, target_type="webhook_endpoint", target_id=endpoint.id,
+                # The URL, not the secret. Never the secret.
+                summary=f"{url} ({len(endpoint.events)} event types)",
+            )
+        return await _webhooks_view(org_id, True, fresh={"secret": secret})
+
+    async def webhooks_rotate(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _webhooks_view(org_id, False)
+        endpoint_id = request.path_params["endpoint_id"]
+        async with session_scope(session_factory) as session:
+            endpoint = await session.get(WebhookEndpoint, endpoint_id)
+        # Explicit org-ownership check -- events.rotate_secret takes only a
+        # bare endpoint_id and, like the API-key routes above, trusts a
+        # cross-tenant operator caller to have already scoped it.
+        if endpoint is None or endpoint.org_id != org_id:
+            return await _webhooks_view(org_id, True)
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            secret = await events.rotate_secret(session, endpoint_id, signing_key=signing_key)
+            endpoint = await session.get(WebhookEndpoint, endpoint_id)
+            await audit.record(
+                session, actor=actor, action="webhook.rotate",
+                org_id=org_id, target_type="webhook_endpoint",
+                target_id=endpoint_id, summary=f"key v{endpoint.key_version}",
+            )
+        return await _webhooks_view(org_id, True, fresh={"secret": secret})
+
+    async def webhooks_disable(request: Request) -> Response:
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
+        endpoint_id = request.path_params["endpoint_id"]
+        async with session_scope(session_factory) as session:
+            endpoint = await session.get(WebhookEndpoint, endpoint_id)
+            if endpoint is None or endpoint.org_id != org_id:
+                return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
+            endpoint.enabled = False
+            actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+            await audit.record(
+                session, actor=actor, action="webhook.disable",
+                org_id=org_id, target_type="webhook_endpoint",
+                target_id=endpoint_id, summary=cipher.decrypt(endpoint.url),
+            )
+        return RedirectResponse(f"{CONSOLE_PATH}/webhooks", status_code=303)
+
+    async def audit_page(request: Request) -> Response:
+        """Read-only for every signed-in user, like Proof/Memory/Knowledge
+        Base -- an org's own audit trail is not a credential and gating it
+        behind admin scope would hide from a non-admin viewer the very
+        actions an admin took on their behalf."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        try:
+            offset = max(0, int(request.query_params.get("offset") or 0))
+        except ValueError:
+            offset = 0
+        limit = 50
+        async with session_scope(session_factory) as session:
+            rows = list((
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.org_id == org_id)
+                    .order_by(AuditLogEntry.created_at.desc())
+                    .limit(limit + 1).offset(offset)
+                )
+            ).scalars().all())
+        has_more = len(rows) > limit
+        return _page("Audit log", _render_audit_log(rows[:limit], offset, limit, has_more))
+
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
@@ -1727,6 +2117,9 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/share", proof_share, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/proof/assignments.csv", assignments_csv, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/start", experiment_start, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/stop", experiment_stop, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/billing/checkout", billing_checkout, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
@@ -1744,6 +2137,11 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/alerts/create", alerts_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", alerts_delete, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/alerts/generate-report", alerts_generate_report, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/webhooks", webhooks_page, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/webhooks/create", webhooks_create, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/rotate", webhooks_rotate, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", webhooks_disable, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/audit", audit_page, methods=["GET"])
 
 
 __all__ = ["CONSOLE_PATH", "add_console_routes", "issue_session", "read_session"]
