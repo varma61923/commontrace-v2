@@ -198,6 +198,69 @@ class TestSignupAndBillingDefaultOff:
             HubConfig.from_env()
 
 
+class TestSecretsCanComeFromAFileInsteadOfAPlainEnvVar:
+    """from_env() routes every genuinely secret setting through
+    hub/secrets_provider.py's env_secret -- see that module's docstring
+    for why a `{NAME}_FILE` variable, not a vendor SDK, is what lets a
+    real secret store (Vault Agent, a cloud Secrets Store CSI driver,
+    Kubernetes Secret volumes, Docker secrets) supply these values."""
+
+    def test_database_url_can_come_from_a_file(self, monkeypatch, tmp_path):
+        secret_file = tmp_path / "database_url"
+        secret_file.write_text("postgresql+asyncpg://u:p@localhost/db\n")
+        monkeypatch.delenv("HUB_DATABASE_URL", raising=False)
+        monkeypatch.setenv("HUB_DATABASE_URL_FILE", str(secret_file))
+        config = HubConfig.from_env()
+        assert config.database_url == "postgresql+asyncpg://u:p@localhost/db"
+
+    def test_missing_database_url_file_is_a_clear_startup_error(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HUB_DATABASE_URL", raising=False)
+        monkeypatch.setenv("HUB_DATABASE_URL_FILE", str(tmp_path / "missing"))
+        with pytest.raises(RuntimeError, match="HUB_DATABASE_URL_FILE"):
+            HubConfig.from_env()
+
+    def test_encryption_key_can_come_from_a_file_and_the_cipher_works(
+        self, monkeypatch, tmp_path
+    ):
+        from hub.encryption import generate_key
+
+        key = generate_key()
+        secret_file = tmp_path / "encryption_key"
+        secret_file.write_text(key)
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.delenv("HUB_ENCRYPTION_KEY", raising=False)
+        monkeypatch.setenv("HUB_ENCRYPTION_KEY_FILE", str(secret_file))
+        config = HubConfig.from_env()
+        assert config.encryption_key == key
+        cipher = config.cipher()
+        assert cipher.decrypt(cipher.encrypt("secret-url")) == "secret-url"
+
+    def test_admin_token_file_wins_over_a_plain_env_var_set_alongside_it(
+        self, monkeypatch, tmp_path
+    ):
+        secret_file = tmp_path / "admin_token"
+        secret_file.write_text("from-the-secret-store")
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_ADMIN_TOKEN", "stale-plaintext-value")
+        monkeypatch.setenv("HUB_ADMIN_TOKEN_FILE", str(secret_file))
+        config = HubConfig.from_env()
+        assert config.admin_token == "from-the-secret-store"
+
+    def test_stripe_price_ids_are_not_secrets_and_ignore_the_file_convention(
+        self, monkeypatch, tmp_path
+    ):
+        """Sanity check on the boundary hub/secrets_provider.py's docstring
+        draws: a reference id like a Stripe price id is read directly, so
+        setting its _FILE variant has no effect -- it would be silently
+        misleading if operational, non-secret settings honored this
+        convention inconsistently with the rest of hub/config.py."""
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM", "price_team_123")
+        monkeypatch.setenv("HUB_STRIPE_PRICE_TEAM_FILE", str(tmp_path / "unused"))
+        config = HubConfig.from_env()
+        assert config.stripe_price_team == "price_team_123"
+
+
 class TestRateLimiterReportsWhenToComeBack:
     @pytest.mark.asyncio
     async def test_an_allowed_call_asks_for_no_wait(self):

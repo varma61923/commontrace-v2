@@ -12,6 +12,8 @@ import ipaddress
 import os
 from dataclasses import dataclass, field
 
+from hub.secrets_provider import env_secret
+
 # search_traces pagination. MAX is a hard ceiling applied to whatever a
 # client asks for: an unbounded limit lets one caller pull an org's entire
 # trace store in a single request, which is both a performance and a
@@ -590,7 +592,15 @@ class HubConfig:
 
     @classmethod
     def from_env(cls) -> HubConfig:
-        database_url = os.environ.get("HUB_DATABASE_URL")
+        # env_secret, not a plain os.environ.get: every setting below that
+        # is an actual secret (as opposed to operational config like
+        # HUB_HOST or a rate limit) additionally honors a `{NAME}_FILE`
+        # variable naming a file to read the value from instead -- see
+        # hub/secrets_provider.py for why this, rather than one vendor's
+        # SDK, is what lets a real secret store (Vault, any cloud
+        # provider's Secrets Store CSI driver, Kubernetes Secret volumes,
+        # Docker secrets) supply these values with no further code here.
+        database_url = env_secret("HUB_DATABASE_URL")
         if not database_url:
             raise RuntimeError(
                 "HUB_DATABASE_URL is required (see hub/.env.example). "
@@ -623,20 +633,22 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
-            encryption_key=os.environ.get("HUB_ENCRYPTION_KEY", ""),
-            encryption_key_previous=os.environ.get("HUB_ENCRYPTION_KEY_PREVIOUS", ""),
-            admin_token=os.environ.get("HUB_ADMIN_TOKEN", ""),
+            encryption_key=env_secret("HUB_ENCRYPTION_KEY"),
+            encryption_key_previous=env_secret("HUB_ENCRYPTION_KEY_PREVIOUS"),
+            admin_token=env_secret("HUB_ADMIN_TOKEN"),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
-            console_secret=os.environ.get("HUB_CONSOLE_SECRET", ""),
+            console_secret=env_secret("HUB_CONSOLE_SECRET"),
             data_region=os.environ.get("HUB_DATA_REGION", ""),
             operator_legal_name=os.environ.get("HUB_OPERATOR_LEGAL_NAME", ""),
             operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
-            stripe_secret_key=os.environ.get("HUB_STRIPE_SECRET_KEY", ""),
-            stripe_webhook_secret=os.environ.get("HUB_STRIPE_WEBHOOK_SECRET", ""),
+            stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
+            stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
+            # Price ids ("price_...") are references, not credentials --
+            # safe to read directly, same as operator_org_id above.
             stripe_price_team=os.environ.get("HUB_STRIPE_PRICE_TEAM", ""),
             stripe_price_scale=os.environ.get("HUB_STRIPE_PRICE_SCALE", ""),
-            ledger_signing_key=os.environ.get("HUB_LEDGER_SIGNING_KEY", ""),
+            ledger_signing_key=env_secret("HUB_LEDGER_SIGNING_KEY"),
             oidc_issuer=os.environ.get("HUB_OIDC_ISSUER", ""),
             oidc_audience=os.environ.get("HUB_OIDC_AUDIENCE", ""),
             oidc_jwks=os.environ.get("HUB_OIDC_JWKS", ""),

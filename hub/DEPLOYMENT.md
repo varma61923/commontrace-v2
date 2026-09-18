@@ -126,6 +126,39 @@ Sizing note: `HUB_DB_POOL_SIZE` (default 10) is **per replica**. The product
 `max_connections`, or a rolling deploy will exhaust connections while old
 and new replicas overlap.
 
+### Secrets from a real secret store (`hub/secrets_provider.py`)
+
+Every genuinely secret setting (`HUB_DATABASE_URL`, `HUB_API_KEY_PEPPER`,
+`HUB_ADMIN_TOKEN`, `HUB_CONSOLE_SECRET`, the Stripe keys,
+`HUB_LEDGER_SIGNING_KEY`, `HUB_ENCRYPTION_KEY`/`_PREVIOUS` — marked
+`(secret)` in `hub/.env.example`) can instead be supplied by pointing a
+`{VAR}_FILE` variable at a file holding the value:
+
+```bash
+HUB_DATABASE_URL_FILE=/run/secrets/db_url
+```
+
+The file variant wins if the plain variable is also set, so a deployment
+that wired up a real secret store never silently falls back to a stale
+plaintext value left over from an earlier configuration.
+
+This is deliberately a file convention, not one vendor's SDK — see
+`hub/secrets_provider.py`'s module docstring for the full reasoning. It
+means every one of these already works with no further code:
+
+- A Vault Agent (or External Secrets Operator) sidecar writing to a shared volume.
+- Any cloud provider's Kubernetes Secrets Store CSI driver (AWS, GCP, Azure).
+- A plain Kubernetes `Secret` volume mount — `deploy/k8s/deployment.yaml`
+  currently uses `envFrom` instead, which is simpler for a first
+  deployment; switch to a mounted volume plus `_FILE` variables to keep
+  secret values out of `kubectl describe pod`/the container's own
+  environment listing.
+- Docker/Swarm secrets, which are always files under `/run/secrets/`.
+
+Operational settings (`HUB_HOST`, rate limits, `HUB_OIDC_ISSUER`, ...) are
+not secrets and are read directly — the `_FILE` convention only applies to
+the fields listed above.
+
 ## 3. Migrations
 
 Run them as a **separate step before** rolling out new app instances, never
@@ -820,7 +853,10 @@ rather than implied by this section existing.
 ## 10. Security checklist before a client's data lands
 
 - [ ] TLS terminated in front of the Hub (API keys are bearer credentials).
-- [ ] `HUB_DATABASE_URL` from a secret store, not a file in the repo.
+- [ ] `HUB_DATABASE_URL` from a secret store, not a file in the repo —
+      `HUB_DATABASE_URL_FILE` (§2, "Secrets from a real secret store")
+      lets your platform's actual secret manager supply it with no
+      plaintext env var anywhere.
 - [ ] `HUB_DATABASE_URL` points at the **runtime** role, not the owner — a
       `NOSUPERUSER`/`NOBYPASSRLS` role with DML grants only, so the
       tenant-isolation policies actually apply (§2.1). The Hub refuses to

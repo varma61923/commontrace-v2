@@ -52,6 +52,15 @@ Vault/AWS Secrets Manager/etc., or Sealed Secrets — never a plaintext
 Secret manifest committed to a repository, which is exactly the mistake
 `hub/.env` being gitignored exists to prevent for the single-host case.
 
+`deployment.yaml` reads these via `envFrom`, which is the simplest setup
+for a first deployment but puts every value into the container's own
+environment (visible to anything with exec access, and to `kubectl
+describe pod` if the Secret backing it is ever misconfigured as
+non-confidential). For a stronger boundary, mount the Secret as a volume
+instead and point `hub/secrets_provider.py`'s `{VAR}_FILE` convention at
+the mounted paths (e.g. `HUB_DATABASE_URL_FILE=/etc/commontrace-secrets/database-url`)
+— see `hub/DEPLOYMENT.md`'s "Secrets from a real secret store" section.
+
 ## Order of operations
 
 ```bash
