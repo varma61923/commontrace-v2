@@ -2419,8 +2419,41 @@ action, while the corpus needs it attached to the *actor*, so that the next
 shared signal inherits the bar instead of quietly starting without one.
 
 *Falsifier:* a third shared number, added later, that moves without passing
-`org_is_established`. Nothing in the type system enforces this yet; the
-defence is that the predicate is now one function with the reasoning at its
-call sites, rather than a rule re-derived per feature. If a fourth signal
-appears and drifts anyway, the right fix is structural — routing every
-shared-number write through one gate — not another section like this one.
+`org_is_established`.
+
+### 26.5 The falsifier, run rather than predicted
+
+Leaving that as a prediction would have repeated the mistake the section is
+about. So it is a test: `hub/tests/test_shared_number_gates.py` parses
+`hub/crud.py` and collects every `update(Trace).values(...)` statement —
+the path all four existing counters are written by, deliberately, since
+each one is an atomic in-database UPDATE rather than a read-modify-write —
+and holds the result against a declared map of column → gate.
+
+The audit it encodes is now complete and small. Exactly four writes reach a
+`Trace` row from customer-facing code: `retrievals` from `search_traces`
+and `get_trace`, both scoped `Trace.org_id == org_id` and therefore
+owner-private; and the two shared counters, both gated. A `commons_visible`
+row is owned by the operator org, so no customer path reaches one except
+through those two.
+
+One side of the comparison is generated from the code and only the other is
+written down, which is the specific thing that went wrong the last time
+this repository kept an inventory: `hub/smoke.py` and
+`install_cmd._HUB_TOOLS` were pinned to *each other* rather than to the
+running server, so they drifted together and stayed mutually consistent
+while both were wrong. Two hand-kept lists agreeing is not evidence.
+
+Verified by breaking it both ways, since a guard nobody has seen fail is a
+guard nobody has tested: adding a fabricated `endorsements=1` to
+`vote_trace`'s write fails with the new column named, and replacing the
+establishment call in `commons_overlap` with something that always returns
+true fails separately.
+
+What it does not do is enforce the gate — a test cannot distinguish a
+correct authorization check from a plausible-looking one, and it is
+scoped to one write pattern in one module. What it removes is the failure
+mode that actually occurred, twice, both times identically: a signal was
+added, the author reasonably did not think of it as *shared*, and nothing
+anywhere disagreed. The honest claim is not "this cannot happen again" but
+"this can no longer happen quietly."
