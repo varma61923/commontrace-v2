@@ -39,6 +39,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Correcting a Knowledge Base entry no longer deletes it.**
+  `commons_visible()` excludes superseded rows and `amend_trace` INSERTs a
+  new row rather than mutating the original, so amending a Knowledge Base
+  entry removed it from the Knowledge Base: the original went invisible the
+  moment it was superseded, and the new row was a plain org trace
+  (`commons_source` defaults to `"org"`, `shared_with_commons` to `False`).
+  Measured on a seeded entry with 42 hits and 5 votes, the corpus went from
+  1 entry to 0 — with no error, and nothing in the audit log saying an
+  entry had left the corpus.
+
+  This sat directly on the path the governance model is built around:
+  `kb-review` tells an operator "this entry is disputed" or "this entry is
+  stale", the natural remedy is to amend it, and amending it deleted it.
+  The operator console's own "Amend a trace" form is exactly how that
+  remedy would be applied. Correcting an article is the most ordinary act
+  in a wiki and has to leave the article in place.
+
+  Amendments of `commons_source == "seed"` originals now carry Knowledge
+  Base membership forward, along with `commons_hits` (which measures how
+  often the corpus was asked this question — a property of the topic, not
+  the wording, and resetting it would drop a corrected entry into the
+  review queue's "never hit" bucket). `commons_signature` is **recomputed**
+  from the amended text rather than copied, since carrying the old one
+  forward would leave a corrected entry answering to the old failure's
+  fingerprint.
+
+  `trust`/`commons_votes` deliberately do **not** carry forward: they are
+  aggregates over `Vote` rows that stay keyed to the text they judged, so
+  copying the numbers onto a row with no underlying votes would contradict
+  itself and then be silently overwritten by the next voter's recomputed
+  tally. A corrected entry re-enters as `unproven`, which is honest —
+  nobody has tried the corrected text yet. Stated rather than left to be
+  discovered: this also clears any `security_concern` the old text had
+  accumulated, so amending is not a neutral act on a flagged entry. Only
+  the operator can do it, and `audit.record` is what makes it reviewable.
+
+  A customer's own trace keeps the previous behaviour, because the
+  reasoning behind it still applies there: re-sharing a correction is an
+  explicit decision `amend_trace` must not make on the org's behalf. That
+  is right for content that is the org's to publish and inverted for
+  content the operator has already published to everyone.
+
 - **The Knowledge Base catalogue now shows the grounds for a verdict, not
   just the verdict.** `standing` says the field rejected an entry; it does
   not say whether the entry is stale, wrong, or dangerous, which are three

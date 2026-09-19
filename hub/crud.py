@@ -2422,6 +2422,89 @@ async def confirm_org_deletion(
     return True
 
 
+def _carry_commons_forward(
+    original: Trace, title: str, context_text: str, tags: list[str]
+) -> dict:
+    """The Knowledge Base fields an amendment inherits, if any.
+
+    `commons_visible()` excludes superseded rows, and `amend_trace` INSERTs
+    a new row rather than mutating the original. So without this, amending
+    a Knowledge Base entry REMOVED IT FROM THE KNOWLEDGE BASE: the original
+    stopped being visible the moment it was superseded, and the new row was
+    a plain org trace (`commons_source` defaults to "org",
+    `shared_with_commons` to False). Measured on a seeded entry with 42
+    hits and 5 votes: the corpus went from 1 entry to 0, and the hits and
+    votes went with it, with no error and nothing in the audit log saying
+    an entry had left the corpus.
+
+    That is a workflow bug, not a theoretical one, and it sits directly on
+    the path this product's governance is built around:
+    `hub/manage.py kb-review` tells an operator "this entry is disputed"
+    or "this entry is stale", and the natural remedy -- amend it -- is what
+    deleted it. Correcting an article is the single most ordinary act in a
+    wiki, and it has to leave the article in place.
+
+    WHICH AMENDMENTS INHERIT, AND WHY ONLY THOSE
+    --------------------------------------------
+    Only `commons_source == "seed"` originals: operator-curated Knowledge
+    Base entries, owned by the operator org and ALREADY published. For
+    those, dropping the entry is not the conservative choice, it is the
+    destructive one -- the conservative choice for already-published
+    content is that it stays published, corrected.
+
+    A customer's own trace keeps the existing behaviour, and
+    `commons_visible()`'s docstring already says why: re-sharing a
+    correction is a separate, explicit decision this function must not make
+    on the org's behalf. That reasoning is right for content that is the
+    org's to publish, and inverted for content the operator has already
+    published to everyone.
+
+    WHAT IS DELIBERATELY NOT CARRIED FORWARD
+    ----------------------------------------
+    `trust` and `commons_votes`. They are aggregates OVER `Vote` rows, and
+    those rows are keyed to the original's trace id -- they stay with the
+    text they judged. Copying the two numbers onto a row with no underlying
+    votes would produce a state that contradicts itself and then silently
+    self-destructs: the next vote recomputes the tally from the new row's
+    own `Vote` rows (`vote_trace`), so the carried figures would be
+    overwritten by whatever that single voter said. A corrected entry
+    therefore re-enters as `unproven`, which is honest -- nobody has tried
+    the corrected text yet.
+
+    The cost of that, stated plainly rather than discovered later: a
+    substantive correction also clears any `security_concern` the old text
+    had accumulated, so a cosmetic amendment can launder a warning. The
+    actor who can do this is the operator, who can already retract or edit
+    any entry outright, so it widens nothing -- but it does mean "amend"
+    is not a neutral act on a flagged entry, and `audit.record` is what
+    makes it reviewable.
+
+    `commons_hits` DOES carry forward: it measures how often the corpus was
+    asked this question, which is a property of the topic rather than of
+    the wording, and resetting it would drop a corrected entry into
+    `kb_review_queue`'s "never hit" bucket as though nobody had ever needed
+    it.
+
+    `commons_signature` is RECOMPUTED from the amended text rather than
+    copied. The signature is what `commons_overlap`/`commons_search` match
+    a caller's failure against; carrying the old one forward would leave a
+    corrected entry answering to the old failure's fingerprint, which is
+    the quiet wrong-answer failure mode hub/commons.py refuses to risk.
+    """
+    if original.commons_source != "seed":
+        return {}
+    return {
+        "shared_with_commons": original.shared_with_commons,
+        "shared_at": original.shared_at,
+        "shared_rationale": original.shared_rationale,
+        "commons_source": original.commons_source,
+        "commons_signature": commons.signature_for(title, context_text, tags),
+        "commons_hits": original.commons_hits,
+        "commons_review_after": original.commons_review_after,
+        "commons_retracted_at": original.commons_retracted_at,
+    }
+
+
 async def amend_trace(
     session: AsyncSession,
     org_id: str,
@@ -2600,6 +2683,9 @@ async def amend_trace(
             if idempotency_key is not None
             else None
         ),
+        # Knowledge Base membership carries forward; a customer's own
+        # sharing decision does not. See _carry_commons_forward.
+        **_carry_commons_forward(original, resolved_title, resolved_context, resolved_tags),
     )
     # Bi-temporal supersession (hub/models.py:Trace.superseded_at, adapted
     # from Zep/Graphiti's bi-temporal fact model): the row being amended
