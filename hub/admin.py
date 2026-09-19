@@ -177,6 +177,7 @@ tr:last-child td{border-bottom:1px solid var(--rule)}
   letter-spacing:.04em;padding:.1rem .4rem;border-radius:2px;border:1px solid currentColor}
 .pill.ok{color:var(--ok)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)}
 .pill.mute{color:var(--muted)}
+.concerns{margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.25rem}
 .cmds{display:flex;flex-direction:column;gap:.5rem}
 .cmd{display:grid;grid-template-columns:minmax(11rem,auto) 1fr;gap:.3rem 1rem;align-items:baseline}
 .cmd .what{color:var(--muted);font-size:.88rem}

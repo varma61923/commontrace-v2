@@ -1839,6 +1839,80 @@ async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict |
     return await _hydrate_one(session, trace)
 
 
+def _established_voters_only(stmt):
+    """Restrict a Vote-selecting statement to votes from established orgs.
+
+    Shared by BOTH numbers a reader sees about an entry: its standing
+    (`vote_trace`'s tally) and the concern breakdown behind that standing
+    (`_concerns_for`). Shared rather than repeated because those two are
+    read side by side -- somebody looking at "disputed · 2 orgs flagged
+    security_concern" will reasonably assume the same set of voters
+    produced both, and a filter that drifted on one side would quietly
+    make that false. It would also reopen, in the second place, exactly
+    the hole the first one closes: minting orgs to smear an entry with
+    flags is the same attack as minting them to vote it down.
+
+    See hub/commons.py's `vote_counts_toward_standing` for the thresholds
+    and the reasoning; this is the SQL form of the same rule.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        hours=commons.COMMONS_VOTER_MIN_AGE_HOURS
+    )
+    return stmt.join(Organization, Organization.id == Vote.org_id).where(
+        Organization.trace_count >= commons.COMMONS_VOTER_MIN_TRACES,
+        Organization.created_at <= cutoff,
+    )
+
+
+async def _concerns_for(
+    session: AsyncSession, trace_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Why the field thinks what it thinks: per entry, how many established
+    orgs attached each `feedback_tag`.
+
+    A standing with no evidence behind it is a verdict a reader has to take
+    on faith, which is the opposite of what makes a wiki's judgements worth
+    anything -- "disputed" tells you the field rejected this, and nothing
+    about whether it is stale, wrong, or dangerous. Those are very
+    different things to a person deciding whether to apply a fix.
+
+    Two things are deliberately NOT returned, and both are boundaries
+    rather than omissions:
+
+    - WHICH org attached a tag. Naming the voter would leak that that
+      customer uses this Hub and hit this specific failure -- a
+      cross-tenant disclosure through the governance layer, which is
+      precisely where nobody would think to look for one.
+    - `feedback_text`. It is free text written by one customer and would
+      be rendered to every other, so it carries both a leak surface (a
+      pasted stack trace naming internal hosts) and an injection surface.
+      The closed vocabulary (hub/models.py's VALID_FEEDBACK_TAGS) carries
+      the actionable signal without either; the free text stays where it
+      already goes, to the operator's review queue, read by a human.
+
+    Counted across every vote type, not down-votes only, and deliberately:
+    an org that says "this worked, but it worries me" has still raised a
+    security concern, and dropping it because the vote was an up-vote
+    would silently discard the most safety-relevant report this system can
+    receive. This matches `kb_review_queue`'s existing treatment.
+    """
+    if not trace_ids:
+        return {}
+    stmt = _established_voters_only(
+        select(Vote.trace_id, Vote.feedback_tag, func.count()).where(
+            Vote.trace_id.in_(trace_ids),
+            Vote.feedback_tag != "",
+        )
+    )
+    rows = (
+        await session.execute(stmt.group_by(Vote.trace_id, Vote.feedback_tag))
+    ).all()
+    concerns: dict[str, dict[str, int]] = {}
+    for trace_id, tag, count in rows:
+        concerns.setdefault(trace_id, {})[tag] = int(count)
+    return concerns
+
+
 async def vote_trace(
     session: AsyncSession,
     org_id: str,
@@ -1976,13 +2050,7 @@ async def vote_trace(
     tally_is_public = trace.commons_source == "seed"
     counted = select(Vote.vote_type, func.count()).where(Vote.trace_id == trace_id)
     if tally_is_public:
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            hours=commons.COMMONS_VOTER_MIN_AGE_HOURS
-        )
-        counted = counted.join(Organization, Organization.id == Vote.org_id).where(
-            Organization.trace_count >= commons.COMMONS_VOTER_MIN_TRACES,
-            Organization.created_at <= cutoff,
-        )
+        counted = _established_voters_only(counted)
     counts = (await session.execute(counted.group_by(Vote.vote_type))).all()
     tally = dict(counts)
     up_count, down_count = tally.get("up", 0), tally.get("down", 0)
@@ -5259,6 +5327,11 @@ async def browse_commons(
         ).all()
         my_votes = {trace_id: vote_type for trace_id, vote_type in vote_rows}
 
+    # Why each entry stands where it does, in one grouped query rather than
+    # one per row. A catalogue that shows "disputed" and stops there asks
+    # the reader to trust a verdict it will not justify.
+    concerns = await _concerns_for(session, [trace.id for trace in rows])
+
     now = datetime.now(timezone.utc)
     entries = []
     for trace in rows:
@@ -5280,6 +5353,7 @@ async def browse_commons(
             "votes": trace.commons_votes or 0,
             "hits": trace.commons_hits or 0,
             "my_vote": my_votes.get(trace.id, ""),
+            "concerns": concerns.get(trace.id, {}),
             "created_at": _iso(trace.created_at),
         })
     entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))

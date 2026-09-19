@@ -35,12 +35,12 @@ from sqlalchemy import update as sa_update
 from starlette.applications import Starlette
 
 from hub import alerts as alerts_module
-from hub import auth, console, rbac
+from hub import auth, console, crud, rbac
 from hub import commons as commons_module
 from hub import events as events_module
 from hub.billing import StripeSettings
 from hub.db import session_scope
-from hub.models import ApiKey, Organization, Trace, User, WebhookEndpoint
+from hub.models import ApiKey, Organization, Trace, User, Vote, WebhookEndpoint
 
 
 async def _fake_public_resolve(hostname: str) -> list:
@@ -2723,3 +2723,97 @@ class TestTheConsoleSaysWhenAVoteDoesNotCountYet:
             await _signed_in(client, raw_key)
             response = await client.get(f"{console.CONSOLE_PATH}/kb")
         assert "recorded but not yet counted" not in response.text
+
+
+class TestTheCatalogueShowsTheGroundsForAVerdict:
+    """The console half of `crud._concerns_for`.
+
+    Standing alone tells a reader the field rejected an entry and nothing
+    about whether it is stale, wrong, or dangerous -- three very different
+    decisions for somebody about to apply the fix.
+    """
+
+    async def _operator_entry(self, session_factory, title="Someone else's entry"):
+        from hub import commons
+        tags = ["substrate"]
+        async with session_scope(session_factory) as session:
+            operator = Organization(name="operator-org")
+            session.add(operator)
+            await session.flush()
+            trace = Trace(
+                org_id=operator.id, title=title, context_text="ctx", solution_text="fix",
+                tags=tags, agent_type="code", shared_with_commons=True,
+                shared_at=datetime.now(timezone.utc), shared_rationale="seed",
+                commons_signature=commons.signature_for(title, "ctx", tags),
+                commons_source="seed",
+            )
+            session.add(trace)
+            await session.flush()
+            return trace.id
+
+    async def test_a_security_concern_is_shown_even_on_an_unproven_entry(
+        self, session_factory, org_and_key, establish_orgs
+    ):
+        """The safety case. Standing stays `unproven` on a single flag --
+        one voice never condemns an entry -- so without the reason
+        rendered, the page tells a reader "not enough votes yet to say
+        either way" about a fix somebody flagged as dangerous."""
+        org_id, raw_key = org_and_key
+        entry_id = await self._operator_entry(session_factory)
+        await establish_orgs(org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "down",
+                      "feedback_tag": "security_concern"})
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "unproven" in response.text
+        assert "security concern" in response.text
+
+    async def test_an_unflagged_entry_shows_no_concern_pills(
+        self, session_factory, org_and_key
+    ):
+        await self._operator_entry(session_factory)
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert 'class="concerns"' not in response.text
+
+    async def test_free_text_feedback_is_never_rendered_to_the_catalogue(
+        self, session_factory, org_and_key, establish_orgs
+    ):
+        """The leak this boundary exists for: one customer's free text,
+        rendered to every other reader of the repository.
+
+        The text is stored through `crud.vote_trace` directly rather than
+        through the console form, and deliberately: the form has no
+        free-text field, so posting one would assert that a string which
+        was never stored is absent -- a test that passes whether or not
+        the boundary holds. The MCP tool DOES accept `feedback_text`, so
+        this is the reachable path that puts real text on a real vote, and
+        the question worth asking is whether the catalogue then renders
+        it.
+        """
+        secret = "internal-host-db7.corp.example"
+        org_id, raw_key = org_and_key
+        entry_id = await self._operator_entry(session_factory)
+        await establish_orgs(org_id)
+        async with session_scope(session_factory) as session:
+            await crud.vote_trace(
+                session, org_id, entry_id, "down",
+                feedback_tag="wrong", feedback_text=secret, actor="mcp",
+            )
+        async with session_scope(session_factory) as session:
+            stored = (
+                await session.execute(select(Vote).where(Vote.trace_id == entry_id))
+            ).scalars().one()
+        assert stored.feedback_text == secret, "premise: the text really is on the vote"
+
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert secret not in response.text
+        # ...while the actionable part of the same vote did come through.
+        assert "does not work" in response.text

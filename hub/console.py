@@ -1007,6 +1007,65 @@ _STANDING_MEANING = {
 }
 
 
+# What each closed-vocabulary feedback tag means to a READER, as opposed to
+# what it means to the operator's review queue. Phrased as the thing the
+# reader has to decide: whether to apply this fix.
+_CONCERN_LABEL = {
+    "security_concern": "security concern",
+    "outdated": "outdated",
+    "wrong": "does not work",
+    "spam": "spam",
+}
+
+# `security_concern` is the one tag that is never merely informational, and
+# it is rendered as a warning at ANY standing -- see _render_kb_concerns.
+_CONCERN_TONE = {
+    "security_concern": "bad",
+    "wrong": "bad",
+    "outdated": "warn",
+    "spam": "mute",
+}
+
+
+def _render_kb_concerns(entry: dict) -> str:
+    """The evidence behind an entry's standing, as pills.
+
+    A verdict with no reason attached is something a reader must take on
+    faith, and "disputed" flattens three very different situations --
+    stale, wrong, or dangerous -- into one word. Each is a different
+    decision for someone about to apply the fix.
+
+    The safety case this exists for: an entry two orgs flagged
+    `security_concern` but which has fewer votes than
+    MIN_VOTES_FOR_STANDING still reads as `unproven`, because standing is
+    deliberately conservative about calling the field's verdict. A reader
+    would see "not enough votes yet to say either way" and apply a fix
+    somebody had explicitly flagged as dangerous. So a security concern is
+    surfaced at ANY standing and at any count, including one -- the
+    thresholds that govern *standing* are about not letting a single voice
+    condemn an entry, which is the right rule for a verdict and the wrong
+    one for a warning.
+
+    Counts are aggregates from established voters only, and name no
+    organisation -- see crud._concerns_for for why both.
+    """
+    concerns = entry.get("concerns") or {}
+    if not concerns:
+        return ""
+    # Most-reported first, with security always leading regardless of count.
+    ordered = sorted(
+        concerns.items(),
+        key=lambda kv: (kv[0] != "security_concern", -kv[1], kv[0]),
+    )
+    pills = "".join(
+        f'<span class="pill {_CONCERN_TONE.get(tag, "")}" '
+        f'title="{_num(count)} organisation(s) reported this">'
+        f'{h(_CONCERN_LABEL.get(tag, tag))} &times;{_num(count)}</span> '
+        for tag, count in ordered
+    )
+    return f'<div class="concerns">{pills}</div>'
+
+
 def _render_kb_vote(entry: dict, can_vote: bool) -> str:
     """The governance control: this org's verdict on one entry.
 
@@ -1056,7 +1115,7 @@ def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
         f"<tr><td><b>{h(entry.get('title'))}</b><br>"
         f'<span class="muted">{h(entry.get("solution_preview"))}</span><br>{tags}</td>'
         f'<td><span class="pill {tone}" title="{h(_STANDING_MEANING.get(standing, ""))}">'
-        f"{h(standing)}</span></td>"
+        f"{h(standing)}</span>{_render_kb_concerns(entry)}</td>"
         f'<td class="rev">{_num(entry.get("votes", 0))} vote(s)</td>'
         f'<td class="rev">{_num(entry.get("hits", 0))}</td>'
         f"<td>{_render_kb_vote(entry, can_vote)}</td>"

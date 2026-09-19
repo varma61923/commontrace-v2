@@ -39,6 +39,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Knowledge Base catalogue now shows the grounds for a verdict, not
+  just the verdict.** `standing` says the field rejected an entry; it does
+  not say whether the entry is stale, wrong, or dangerous, which are three
+  very different decisions for someone about to apply the fix. Votes have
+  always carried a closed-vocabulary `feedback_tag`, but only the
+  operator's review queue ever saw it. `crud.browse_commons` now returns
+  `concerns` -- per entry, how many established orgs attached each tag --
+  and the console renders them beside the standing.
+
+  This closes a real safety gap, not only a UX one. Standing is
+  deliberately conservative and one voice never condemns an entry, so an
+  entry a single org flagged `security_concern` still read `unproven`:
+  "not enough votes yet to say either way". A reader would apply a fix
+  somebody had explicitly flagged as dangerous and see no warning at all.
+  A security concern is now surfaced at any standing and any count,
+  including one -- the thresholds that govern a *verdict* are the wrong
+  rule for a *warning*.
+
+  Three boundaries, each pinned by a test in
+  `hub/tests/test_commons_browse.py`. Concerns are counted only from
+  established orgs, through the same `crud._established_voters_only`
+  filter the standing tally uses -- extracted and shared precisely so the
+  two numbers, which are read side by side, cannot drift apart, and so
+  that counting flags from any org cannot reopen the sockpuppet hole one
+  field over (mint five orgs, brand a rival's entry a security risk).
+  The counts never name an organisation, since that would leak that a
+  customer uses this Hub and hit that failure -- a cross-tenant
+  disclosure through the governance layer. And `feedback_text` is never
+  surfaced: free text from one customer rendered to every other carries
+  both a leak surface and an injection surface, so it stays with the
+  operator's review queue, read by a human.
+
 - **Sockpuppet resistance for Knowledge Base voting** — the open
   repository now follows the wiki model all the way down, not just in
   who may contribute. `MIN_VOTES_FOR_STANDING = 3` defended against one

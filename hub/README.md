@@ -398,6 +398,47 @@ Two deliberate exemptions and one obligation:
   move and is told nothing has learned that the feature is broken, not
   that it has not qualified yet.
 
+### The grounds for a verdict, not just the verdict
+
+`standing` says the field rejected an entry. It does not say whether the
+entry is stale, wrong, or dangerous -- three very different decisions for
+someone about to apply the fix. So the catalogue also carries `concerns`:
+per entry, how many established orgs attached each `feedback_tag` from the
+closed vocabulary in `hub/models.py` (`outdated`, `wrong`,
+`security_concern`, `spam`).
+
+The safety case this exists for: standing is deliberately conservative,
+and one voice never condemns an entry. An entry a single org flagged
+`security_concern` therefore still reads `unproven` -- "not enough votes
+yet to say either way" -- and without the reason surfaced, a reader would
+apply a fix somebody explicitly flagged as dangerous and see no warning at
+all. A security concern is shown at any standing and at any count,
+including one: the thresholds that govern a *verdict* are the wrong rule
+for a *warning*.
+
+Three boundaries, each with a test:
+
+- **Same anti-abuse bar as standing.** Concerns are counted only from
+  established orgs, through the same `crud._established_voters_only`
+  filter the tally uses. Counting them from any org would reopen the
+  sockpuppet hole one field over: mint five orgs, brand a rival's entry a
+  security risk. The filter is shared rather than repeated so the two
+  numbers, which are read side by side, cannot drift apart.
+- **Never which org.** Naming a voter would leak that that customer uses
+  this Hub and hit that specific failure -- a cross-tenant disclosure
+  through the governance layer, which is exactly where nobody would think
+  to look for one.
+- **Never `feedback_text`.** It is free text written by one customer that
+  would be rendered to every other, carrying both a leak surface (a pasted
+  stack trace naming internal hosts) and an injection surface. It stays
+  where it already goes: the operator's review queue, read by a human. The
+  closed vocabulary carries the actionable signal without either risk.
+
+Counted across every vote type rather than down-votes only, deliberately:
+an org reporting "this worked, but it worries me" has still raised a
+security concern, and dropping it for being attached to an up-vote would
+discard the most safety-relevant report this system can receive.
+
 ### Community submissions: review, not opt-in
 
 `submit_kb_entry` reopens a contribution channel the retired `share_trace`

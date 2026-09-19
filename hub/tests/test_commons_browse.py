@@ -23,6 +23,7 @@ shared content could quietly lose:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -256,3 +257,191 @@ class TestGovernanceIsVisible:
         )
         result = await _browse(session_factory, orgs["reader"])
         assert result["entries"][0]["standing"] == commons.STANDING_STALE
+
+
+# --- The grounds for a verdict, not just the verdict --------------------
+
+
+async def _vote(session_factory, org_id, trace_id, vote_type, **kw):
+    async with session_scope(session_factory) as session:
+        return await crud.vote_trace(session, org_id, trace_id, vote_type, actor="test", **kw)
+
+
+async def _fresh_org(session_factory, name):
+    async with session_scope(session_factory) as session:
+        org = Organization(name=name)
+        session.add(org)
+        await session.flush()
+        return org.id
+
+
+async def _first(session_factory, org_id):
+    return (await _browse(session_factory, org_id))["entries"][0]
+
+
+class TestTheCatalogueShowsWhyNotJustWhat:
+    """Standing is a verdict; these are its grounds.
+
+    "disputed" flattens three very different situations -- stale, wrong,
+    dangerous -- into one word, and each is a different decision for
+    somebody about to apply the fix. A repository that publishes a verdict
+    and withholds the reason asks to be trusted rather than read, which is
+    the opposite of what makes a wiki's judgements worth anything.
+    """
+
+    async def test_a_vote_reason_reaches_the_catalogue(
+        self, session_factory, orgs, establish_orgs
+    ):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down", feedback_tag="outdated")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {"outdated": 1}
+
+    async def test_reasons_are_counted_per_tag_not_lumped_together(
+        self, session_factory, orgs, establish_orgs
+    ):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        third = await _fresh_org(session_factory, "third")
+        await establish_orgs(orgs["reader"], orgs["other"], third)
+        await _vote(session_factory, orgs["reader"], entry_id, "down", feedback_tag="outdated")
+        await _vote(session_factory, orgs["other"], entry_id, "down", feedback_tag="outdated")
+        await _vote(session_factory, third, entry_id, "down", feedback_tag="wrong")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {
+            "outdated": 2, "wrong": 1,
+        }
+
+    async def test_a_security_concern_raised_alongside_an_upvote_still_counts(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """"It worked, but it worries me" is still a security report, and
+        the most safety-relevant thing this system can receive. Counting
+        reasons only on down-votes would silently discard it."""
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "up",
+                    feedback_tag="security_concern")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {
+            "security_concern": 1,
+        }
+
+    async def test_a_security_concern_shows_even_while_standing_is_unproven(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """The safety case this whole feature exists for. Standing is
+        deliberately conservative -- one voice never condemns an entry --
+        so a single security flag leaves it reading `unproven`, "not
+        enough votes yet to say either way". Without the reason surfaced,
+        a reader applies a fix somebody explicitly flagged as dangerous
+        and sees no warning at all."""
+        entry_id = await _seed_entry(session_factory, orgs["operator"], trust=0.5, votes=0)
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down",
+                    feedback_tag="security_concern")
+
+        entry = await _first(session_factory, orgs["reader"])
+        assert entry["standing"] == commons.STANDING_UNPROVEN
+        assert entry["concerns"] == {"security_concern": 1}
+
+    async def test_an_untagged_vote_contributes_no_reason(
+        self, session_factory, orgs, establish_orgs
+    ):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {}
+
+    async def test_changing_a_vote_replaces_its_reason_rather_than_adding_one(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """vote_trace upserts on (trace, org), so one org holds one reason.
+        A count that grew per click would let a single org manufacture a
+        pile of flags by itself."""
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down", feedback_tag="outdated")
+        await _vote(session_factory, orgs["reader"], entry_id, "down", feedback_tag="wrong")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {"wrong": 1}
+
+
+class TestReasonsObeyTheSameAntiAbuseBarAsStanding:
+    """The boundary that keeps this from becoming a new smear vector.
+
+    If flags counted from any org, minting five would let one person brand
+    a rival's entry a security risk -- the same attack the standing bar
+    stops, reopened one field over. Both numbers read through
+    `crud._established_voters_only` precisely so they cannot drift apart.
+    """
+
+    async def test_a_fresh_orgs_flag_does_not_appear(self, session_factory, orgs):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        sock = await _fresh_org(session_factory, "sock")
+        await _vote(session_factory, sock, entry_id, "down", feedback_tag="security_concern")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {}
+
+    async def test_five_minted_orgs_cannot_brand_an_entry_a_security_risk(
+        self, session_factory, orgs
+    ):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        for i in range(5):
+            sock = await _fresh_org(session_factory, f"smear-{i}")
+            await _vote(session_factory, sock, entry_id, "down",
+                        feedback_tag="security_concern")
+
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {}
+
+    async def test_a_flag_starts_counting_once_its_org_qualifies(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """Withheld, never discarded -- the same property the standing bar
+        has, so a legitimate newcomer's report is delayed rather than
+        thrown away."""
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down",
+                    feedback_tag="security_concern")
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {}
+
+        await establish_orgs(orgs["reader"])
+        assert (await _first(session_factory, orgs["reader"]))["concerns"] == {
+            "security_concern": 1,
+        }
+
+
+class TestNoCrossTenantDisclosureThroughTheReasons:
+    """The governance layer is exactly where nobody would think to look for
+    a tenant leak, which is why it is checked explicitly."""
+
+    async def test_the_reasons_never_name_an_organisation(
+        self, session_factory, orgs, establish_orgs
+    ):
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down",
+                    feedback_tag="wrong", feedback_text="broke our billing service")
+
+        blob = json.dumps(await _first(session_factory, orgs["other"]))
+        assert orgs["reader"] not in blob
+
+    async def test_free_text_feedback_never_reaches_another_org(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """`feedback_text` is written by one customer and would be rendered
+        to every other: a leak surface (a pasted trace naming internal
+        hosts) and an injection surface. It stays with the operator's
+        review queue, read by a human. The closed vocabulary carries the
+        actionable part without either risk."""
+        secret = "internal-host-db7.corp.example"
+        entry_id = await _seed_entry(session_factory, orgs["operator"])
+        await establish_orgs(orgs["reader"])
+        await _vote(session_factory, orgs["reader"], entry_id, "down",
+                    feedback_tag="wrong", feedback_text=secret)
+
+        entry = await _first(session_factory, orgs["other"])
+        assert secret not in json.dumps(entry)
+        # ...while the actionable part did come through.
+        assert entry["concerns"] == {"wrong": 1}
