@@ -1072,6 +1072,7 @@ def _render_kb(
     tag: str = "",
     can_submit: bool = False,
     can_vote: bool = False,
+    auto_contribute: bool = False,
     error: str = "",
     flash: str = "",
 ) -> str:
@@ -1149,6 +1150,28 @@ def _render_kb(
             body.append('<p class="sub">The Knowledge Base has no published entries yet.</p>')
 
     # --- Contributing back ---------------------------------------------
+    body.append("<h2>Contribute back</h2>")
+    if can_submit:
+        state = "on" if auto_contribute else "off"
+        turning = "off" if auto_contribute else "on"
+        body.append(
+            '<p class="sub">Automatic contribution is currently '
+            f"<b>{state}</b>. When it is on, every trace your agents capture is also "
+            "proposed to the Knowledge Base — you stop having to remember to propose "
+            "them one at a time. Nothing is published by this: an operator still reviews "
+            "every proposal, and until one is accepted no other organisation can see it. "
+            "Quarantined traces are never proposed.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/kb/auto-contribute" class="act">'
+            f'<input type="hidden" name="enabled" value="{"0" if auto_contribute else "1"}">'
+            f"<button type=\"submit\">Turn automatic contribution {turning}</button></form>"
+        )
+    else:
+        body.append(
+            '<p class="sub">Automatic contribution is '
+            f"<b>{'on' if auto_contribute else 'off'}</b> for this organisation. "
+            "Changing it needs an admin-scoped key.</p>"
+        )
+
     body.append("<h2>Propose an entry</h2>")
     if can_submit:
         body.append(
@@ -1966,6 +1989,10 @@ def add_console_routes(
         async with session_scope(session_factory) as session:
             submissions = await crud.list_my_kb_submissions(session, org_id)
             ent = await crud.entitlements(session, org_id)
+            organization = await session.get(Organization, org_id)
+            auto_contribute = bool(
+                organization is not None and organization.commons_auto_contribute
+            )
             try:
                 browse = await crud.browse_commons(session, org_id, tag=tag, offset=offset)
             except plans.EntitlementExceeded:
@@ -1985,6 +2012,7 @@ def add_console_routes(
                 # it behind an admin key is how a governance signal ends up
                 # coming from the one person who least often runs the fix.
                 can_vote=scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE),
+                auto_contribute=auto_contribute,
                 error=error, flash=flash,
             ),
         )
@@ -2063,6 +2091,49 @@ def add_console_routes(
         return RedirectResponse(
             f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
         )
+
+    async def kb_auto_contribute(request: Request) -> Response:
+        """Turn this org's automatic contribution on or off.
+
+        Admin-scoped, and audited, because it is the one setting that
+        changes whether this organisation's own incident text leaves its
+        tenant at all. Everything downstream of the flag is unchanged: an
+        auto-proposed entry goes into the same operator-review queue a
+        hand-written one does (see `Organization.commons_auto_contribute`),
+        so this grants no new visibility to anyone -- it only stops a
+        participating org having to remember to propose each trace.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return await _kb_view(
+                org_id, claims,
+                error="Changing automatic contribution needs an admin-scoped key.",
+            )
+        form = await request.form()
+        enabled = str(form.get("enabled") or "").strip() == "1"
+        async with session_scope(session_factory) as session:
+            organization = await session.get(Organization, org_id)
+            if organization is None:
+                return _redirect_to_signin()
+            organization.commons_auto_contribute = enabled
+            await audit.record(
+                session,
+                actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                action="set_commons_auto_contribute",
+                org_id=org_id, target_type="org", target_id=org_id,
+                summary=f"enabled={enabled}",
+            )
+        done = (
+            "Automatic+contribution+is+on.+New+traces+will+also+be+proposed."
+            if enabled else
+            "Automatic+contribution+is+off."
+        )
+        return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def kb_vote(request: Request) -> Response:
         """Cast this org's verdict on one Knowledge Base entry.
@@ -2553,6 +2624,8 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb/submit", kb_submit, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/kb/vote", kb_vote, methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/kb/auto-contribute", kb_auto_contribute, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])

@@ -22,6 +22,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import math
 import secrets
 import uuid
@@ -74,6 +75,9 @@ from hub.schema_validation import validate_trace
 # verbatim rather than silently omitted: an audit row that can't name
 # its actor should be visibly incomplete, not invisible.
 AUDIT_ACTOR_UNKNOWN = "unknown"
+
+
+logger = logging.getLogger("commontrace.hub.crud")
 
 
 class IdempotencyKeyConflict(ValueError):
@@ -1358,12 +1362,87 @@ async def contribute_trace(
     possible_duplicates = await _possible_duplicates(
         session, org_id, trace.id, title, context_text, solution_text, tags, agent_type,
     )
+    auto_proposed = await _maybe_auto_contribute(
+        session, org_id, trace, config, rate_limiter,
+        title=title, context_text=context_text, solution_text=solution_text,
+        tags=tags, agent_type=agent_type, actor=actor,
+    )
     return {
         "id": trace.id,
         "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
         "possible_duplicates": possible_duplicates,
+        "auto_proposed_to_commons": auto_proposed,
     }
+
+
+async def _maybe_auto_contribute(
+    session: AsyncSession,
+    org_id: str,
+    trace: Trace,
+    config: HubConfig,
+    rate_limiter: RateLimiter,
+    *,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+    actor: str,
+) -> bool:
+    """Propose this trace to the Knowledge Base if its org opted in.
+
+    Returns whether a proposal was created, so the caller can say so rather
+    than leaving an org to discover its own content in a review queue.
+
+    THREE THINGS THIS DELIBERATELY WILL NOT DO
+    ------------------------------------------
+    1. **Propose a quarantined trace.** `suspicion_reason` flagged it as
+       probable spam; the entire point of that gate is that such content
+       does not travel, and an opt-in that forwarded it anyway would make
+       every participating org a spam relay into the operator's queue.
+    2. **Fail the contribution.** The trace is the primary artifact and it
+       is already committed by this point. A rate-limited, oversized or
+       plan-exhausted PROPOSAL must not turn a successful capture into an
+       error the caller has to retry -- retrying would re-contribute the
+       trace, not just re-propose it. Every failure here is swallowed and
+       logged, and the org's next contribution tries again.
+    3. **Publish anything.** This creates the same `KnowledgeBaseSubmission`
+       a hand-written proposal creates, invisible to every other org until
+       an operator accepts it. The flag changes who proposes, never what
+       gets published -- see `Organization.commons_auto_contribute`.
+
+    The idempotency key is derived from the trace id, so the proposal
+    inherits the contribution's own idempotency: a client retrying a
+    contribute that already succeeded cannot produce a second proposal for
+    the same trace.
+    """
+    if trace.quarantined:
+        return False
+    opted_in = await session.scalar(
+        select(Organization.commons_auto_contribute).where(Organization.id == org_id)
+    )
+    if not opted_in:
+        return False
+    try:
+        await submit_kb_entry(
+            session, org_id, config, rate_limiter,
+            title=title,
+            context_text=context_text,
+            solution_text=solution_text,
+            tags=tags,
+            agent_type=agent_type,
+            rationale="auto-proposed: this organization opted in to contributing",
+            actor=actor,
+            idempotency_key=f"auto-contribute:{trace.id}",
+        )
+    except Exception:  # noqa: BLE001 - see point 2 above; never fail the capture
+        logger.warning(
+            "auto-contribute proposal failed for org=%s trace=%s", org_id, trace.id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _idempotent_replay_or_conflict(

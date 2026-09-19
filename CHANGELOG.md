@@ -39,6 +39,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-org opt-in to contributing back** (`Organization
+  .commons_auto_contribute`, migration `a1c7e4f93d2b`). An org can now turn
+  on automatic contribution from `/app/kb`: every trace its agents capture
+  is also proposed to the Knowledge Base, instead of someone remembering to
+  propose each one by hand. This is the participation half of the
+  open-repository model — the consumption half (browsing, consulting) was
+  already there.
+
+  It changes **who proposes, never what is published**. An auto-proposed
+  entry lands in exactly the same `KnowledgeBaseSubmission` queue a
+  hand-written one does and stays invisible to every other organisation
+  until an operator accepts it, which is what keeps this from re-opening
+  the org-to-org sharing design `hub/plans.py` retired over adverse
+  selection: volume arriving automatically is still volume a human reads
+  before anyone else sees it.
+
+  Off by default in the column default, the server default and the
+  migration backfill — this is the one flag that lets an org's own incident
+  text leave its tenant, so it is never inferred from a plan or a role, and
+  changing it is admin-scoped and audited. Quarantined traces are never
+  proposed (`suspicion_reason` flagged them as probable spam, and
+  forwarding them would make every participating org a spam relay into the
+  operator's queue). A failed proposal never fails the capture: the trace
+  is already committed, and surfacing a rate-limited proposal as a
+  contribute error would make the caller retry the whole contribution. The
+  proposal keys its idempotency off the trace id, so a retried contribution
+  cannot produce a second proposal. 14 new tests
+  (`hub/tests/test_commons_auto_contribute.py`, plus
+  `TestAutoContributeToggleFromTheConsole`).
+
+- **Customers can vote on Knowledge Base entries from the console**
+  (`hub/console.py`). The catalogue displayed each entry's standing, but
+  standing is computed from votes and a vote could only be cast by an agent
+  through the MCP tool — a repository that shows a verdict and offers no way
+  to change it is a read-only encyclopedia. Voting goes through the same
+  `crud.vote_trace` the tool calls, so an org still cannot vote on content
+  it cannot see, and voting twice changes a vote rather than stuffing the
+  ballot. Gated on `write` rather than `admin`: reporting whether a
+  published fix worked is ordinary use of the repository, and requiring an
+  admin key would source the governance signal from whoever holds the most
+  privileged credential instead of whoever ran the fix.
+
 - **The Knowledge Base is now browsable and contributable from the
   customer console** (`crud.browse_commons`, `hub/console.py`). The open
   repository had two query surfaces, both agent-facing MCP tools that take

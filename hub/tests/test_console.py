@@ -2547,3 +2547,77 @@ class TestTheDoubleSubmitGuardDoesNotBreakForms:
             response = await client.get(f"{console.CONSOLE_PATH}/kb")
         assert 'name="vote" value="up"' in response.text
         assert 'name="vote" value="down"' in response.text
+
+
+class TestAutoContributeToggleFromTheConsole:
+    """The opt IN, from the browser.
+
+    This is the one console control that changes whether an organisation's
+    own incident text leaves its tenant, so it is admin-scoped and audited,
+    and the tests below check the state actually round-trips rather than
+    just that the page renders a button.
+    """
+
+    async def test_it_is_off_for_a_new_org_and_says_so(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "Turn automatic contribution on" in response.text
+
+    async def test_turning_it_on_and_off_round_trips(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/auto-contribute", data={"enabled": "1"})
+            async with session_scope(session_factory) as session:
+                org = await session.get(Organization, org_id)
+                assert org.commons_auto_contribute is True
+
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/auto-contribute", data={"enabled": "0"})
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.commons_auto_contribute is False
+
+    async def test_it_is_audited(self, session_factory, org_and_key):
+        """A setting that changes where a tenant's content can travel is
+        not one to change without a trail."""
+        from hub.models import AuditLogEntry
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/auto-contribute", data={"enabled": "1"})
+        async with session_scope(session_factory) as session:
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.action == "set_commons_auto_contribute")
+                )
+            ).scalars().first()
+        assert entry is not None
+        assert entry.org_id == org_id
+        assert "enabled=True" in entry.summary
+
+    async def test_a_read_only_key_cannot_change_it(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/auto-contribute", data={"enabled": "1"})
+        assert "admin-scoped key" in response.text
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+        assert org.commons_auto_contribute is False
+
+    async def test_changing_it_requires_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/auto-contribute",
+                data={"enabled": "1"}, follow_redirects=False,
+            )
+        assert response.status_code == 303

@@ -88,6 +88,27 @@ class Organization(Base):
     # only way to raise this number is to write something an operator
     # judged worth publishing.
     bonus_commons_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Opt IN to contributing back: when true, every trace this org
+    # contributes is also proposed to the Knowledge Base automatically,
+    # instead of someone remembering to propose each one by hand.
+    #
+    # Default False, and it has to be: this flag causes an org's own
+    # incident text to leave its tenant, which is the one thing every other
+    # line of this schema is arranged to prevent. It is never inferred from
+    # a plan, a role or any other setting -- an org turns it on, by name,
+    # or it does not happen.
+    #
+    # It changes WHO PROPOSES, never what gets published. An auto-proposed
+    # entry lands in exactly the same `KnowledgeBaseSubmission` queue a
+    # hand-written one does and stays invisible to every other org until an
+    # operator accepts it (hub/crud.py:review_kb_submission). That gate is
+    # what keeps this from re-opening the org-to-org sharing design
+    # hub/plans.py retired over adverse selection: volume arriving
+    # automatically is still volume a human reads before anyone else sees
+    # it.
+    commons_auto_contribute: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # A maintained counter, not derived: hub/crud.py's _reserve_trace_slot
     # used to enforce plan.max_traces with a `SELECT count(*) FROM traces
     # WHERE org_id = ...` on every single contribute_trace/amend_trace call
