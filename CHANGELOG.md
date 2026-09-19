@@ -37,7 +37,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never populated by `from_env()`, never read anywhere. Removed, along
   with the now-unused `field` import.
 
+### Fixed
+
+- **A doctor test went red on the most complete install possible.**
+  `test_info_conditions_do_not_fail_the_run` asserted that `commontrace
+  doctor` prints at least one `[INFO]` line — but every INFO branch in
+  `doctor_cmd` reports an *optional* extra being **absent**, so on a machine
+  with all extras installed there are none, and the test failed. Its own
+  docstring says it exists so that "every `pip install` user's pipeline
+  [doesn't] go red on a working setup", which is precisely what it then did.
+  Surfaced by installing the `attention` extra to run the semantic
+  evaluation. The proxy is replaced by the invariant it was reaching for —
+  an INFO never reaches the exit code — and a new
+  `test_info_never_registers_a_failure` pins that directly against
+  `_FAILURES`, independent of what happens to be installed.
+
 ### Added
+
+- **`commons fetch` + `commons_export`: hold the corpus, and stop asking.**
+  Every other Knowledge Base call describes a failure — as a MinHash
+  signature, but the Hub still learns that a fleet is asking and roughly
+  about what. `commons fetch` asks for the operator's curated corpus and
+  names nothing, so from then on `commons report --corpus` runs with no
+  network at all. Verified end to end: corpus fetched from a live Hub, the
+  **Hub then stopped**, and semantic matching still produced a full report
+  with complete solutions.
+
+  **Off by default** (`HUB_COMMONS_EXPORT_ENABLED`), unlike
+  `HUB_COMMONS_ENABLED`, and the asymmetry is deliberate: consulting the
+  corpus is the product working, while handing over every record in one
+  call gives away what an operator's curation produced. The reference
+  corpus is published in this repository either way, so the flag protects
+  nothing there — but a deployment that curated its own would be
+  justifiably surprised to find it bulk-readable by any key with read
+  scope. When it is off, the error names both the flag and the per-failure
+  tools that still work.
+
+  Not metered against `commons_queries`: that allowance prices per-failure
+  consultations, and this is one bulk read that *replaces* them — charging
+  per record would price the private path far above the one that discloses
+  more. It credits no `commons_hits` either, since a download is not
+  evidence an entry solved anything. `plan.commons_access` still gates it,
+  `commons_visible()` still scopes it, and tests pin that a private trace,
+  a retracted entry and a quarantined one never appear.
+
+  Entries carry full solution text (not `browse_commons`' previews — a
+  truncated corpus cannot answer a question offline) and their standing, so
+  a local matcher can rank a disputed entry the way the Hub would rather
+  than treating it as an equal answer.
+
+- **`commons report --corpus`: a coverage number computed with no Hub at
+  all.** The Knowledge Base is operator-curated public content and a
+  fleet's failure text is already on its own machine, so both halves of the
+  comparison can be local. This measures coverage against a corpus file
+  with **nothing sent anywhere** — not the failure text, not a MinHash
+  signature, not even the fact that the fleet asked. That is strictly less
+  disclosure than the shipped path, which transmits a signature to a Hub,
+  and it lets a prospect evaluate the corpus on their own laptop before
+  they have an account or have trusted anyone with their incidents. A test
+  asserts no Hub call is made, because a regression that quietly
+  reintroduced one would destroy exactly that property, silently.
+
+  `--corpus` alone runs the same `overlap` code the Hub runs, so an offline
+  run is a check on the Hub rather than a different product — verified
+  against the nine-row export from `commons/eval/RESULTS.md`, where it
+  reproduces the Hub's `0 of 9` exactly.
+
+- **`commons report --corpus --semantic`: embedding similarity instead of
+  word overlap.** Measured on the held-out probe set, 32.6% recall at a 0%
+  false-positive bar against the lexical matcher's 8.7%
+  (`commons/eval/semantic.py`). The default operating point is cosine
+  ≥ 0.65 — deliberately **not** the higher-recall 0.60, which leaks 4.5%
+  false positives on the dev set. Needs the existing optional `attention`
+  extra, so it adds no new dependency; absent it, the command says so and
+  exits rather than silently degrading to the other matcher, because a
+  coverage number computed by a different matcher than the caller asked for
+  is the kind of quiet substitution this codebase refuses elsewhere.
+
+  Both local matchers show the **nearest entry for every failure that did
+  not clear the bar**. A matcher that hides its own runner-up is how a
+  threshold's cost becomes invisible — the exact defect RESULTS.md records
+  against the shipped coverage figure. On that nine-row export the seven
+  provably-present failures all have the correct entry as their nearest
+  match at 0.54–0.66, while both negative controls sit at 0.43–0.46:
+  visible, judgeable, and counted toward nothing.
+
+- **`commons report --candidates`: the report no longer reads as an empty
+  Knowledge Base.** `commons/eval/RESULTS.md` recorded this as *"the single
+  highest-value thing to fix in this codebase"*: a prospect's nine-failure
+  export, seven of which the corpus provably contained, came back **"0 of
+  9. 0%."** The number was correct — the coverage bar buys a 0%
+  false-positive rate by discarding roughly nine of every ten real answers
+  — but "0%" and "this product knows nothing about my problems" are
+  indistinguishable to a reader, and only the second predicts what happens
+  in the room.
+
+  The report now looks up the failures the bar did *not* clear, via the
+  ranked `commons_search` path (89% recall@1, same privacy properties — still
+  signatures, no failure text leaves the machine), and shows them under a
+  heading that cannot be read as coverage. Measured by re-running that exact
+  scenario against a seeded Hub: coverage still **0 of 9 (0%)**, and **7 of
+  7** provably-present failures now surface their exact entry at rank 1.
+
+  The coverage figure, its threshold and its 0% false-positive property are
+  untouched — the lookups are a second question asked only about what the
+  first did not answer, and nothing on that list moves the percentage. The
+  JSON output marks them `candidate_lookups_are_not_coverage` so a machine
+  consumer cannot add them to the numerator by mistake.
+
+  Opt-in, because each lookup is a metered consultation
+  (`hub/crud.py:commons_search`) and an unbounded report over a large import
+  could spend a month's allowance in one command; `--candidate-limit` bounds
+  it, and the default caps at 10. Without the flag the report still now says
+  plainly that a low number is not an empty Knowledge Base, states what the
+  lookup would cost, and shows the command.
 
 - **A corrected Knowledge Base entry now says it was corrected.**
   Amendment resets an entry's votes (they judged text that no longer

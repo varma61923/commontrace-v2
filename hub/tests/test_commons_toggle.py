@@ -80,7 +80,7 @@ class TestCommonsEnabledByDefault:
             "amend_trace", "list_tags",
             "delete_trace", "request_account_deletion",
             "cancel_account_deletion", "confirm_account_deletion",
-            "commons_overlap", "commons_search",
+            "commons_overlap", "commons_search", "commons_export",
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage", "fleet_outcomes",
             "holdout_assign", "record_occasion_outcome", "value_delivered",
@@ -102,6 +102,10 @@ class TestCommonsDisabled:
         # commons_overlap does, so a deployment that turned cross-org
         # sharing off must not acquire a second door to it.
         assert "commons_search" not in names
+        # Bulk export reads the same corpus commons_search does. A
+        # deployment that removed the Knowledge Base must not keep a door
+        # that hands over all of it.
+        assert "commons_export" not in names
         # Proposing to a Knowledge Base that has been removed from the
         # deployment entirely makes no sense either -- both submission
         # tools go with it.
@@ -145,3 +149,66 @@ class TestCommonsDisabled:
         # rather than existing and choosing to say no.
         assert "unknown tool" in str(exc_info.value).lower()
         assert "not_found" not in str(exc_info.value).lower()
+
+
+class TestTheHandMaintainedToolInventoriesMatchReality:
+    """Four places name the MCP tool surface, and nothing compared any of
+    them to the server until this test existed.
+
+      1. hub/rbac.py's capability map    -- authorization
+      2. this file's expected set        -- the commons toggle
+      3. hub/smoke.py's EXPECTED_TOOLS   -- the live-stack smoke check
+      4. install_cmd._HUB_TOOLS          -- the generated client template
+
+    (3) and (4) were pinned to EACH OTHER, which is why they could drift
+    from the server together and still look consistent. Adding
+    `commons_export` did exactly that: the hub suite went green while the
+    docker-compose job failed on "MCP tool surface is exactly core+commons",
+    because that assertion is the only thing that had ever compared a list
+    to a running server -- and it runs in CI, not here.
+
+    So this compares the list to the server, where it is cheap to check and
+    fast to find out. A tool added without its entry in these inventories
+    is not a cosmetic omission: (1) decides who may call it and (4) is what
+    an installed client believes exists.
+    """
+
+    async def test_smoke_expects_exactly_what_the_server_registers(
+        self, enabled_config, session_factory
+    ):
+        from hub import smoke
+
+        assert await _tool_names(enabled_config, session_factory) == set(smoke.EXPECTED_TOOLS)
+
+    async def test_the_core_only_surface_matches_with_commons_disabled(
+        self, disabled_config, session_factory
+    ):
+        from hub import smoke
+
+        assert await _tool_names(disabled_config, session_factory) == set(smoke.CORE_TOOLS)
+
+    async def test_the_generated_client_template_lists_the_real_surface(
+        self, enabled_config, session_factory
+    ):
+        """`commontrace install` writes _HUB_TOOLS into the template's
+        _comment, so this list is what a customer reads to find out what
+        their Hub can do. It was pinned to smoke.py's list rather than to
+        the server, which is how both drifted at once."""
+        from commontrace.commands import install_cmd
+
+        assert await _tool_names(enabled_config, session_factory) == set(
+            install_cmd._HUB_TOOLS
+        )
+
+    async def test_every_registered_tool_has_a_capability(
+        self, enabled_config, session_factory
+    ):
+        """hub/tests/test_rbac.py pins this too, and deliberately so: that
+        file owns authorization, this one owns the inventory. Both fail on
+        the same mistake, which is the point -- a tool registered without a
+        capability is unreachable-or-unguarded depending on which way the
+        lookup fails, and neither is acceptable."""
+        from hub import rbac
+
+        for name in await _tool_names(enabled_config, session_factory):
+            assert name in rbac.TOOL_CAPABILITY, f"{name} has no capability mapping"

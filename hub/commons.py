@@ -255,18 +255,29 @@ COMMONS_VOTER_MIN_TRACES = 5
 COMMONS_VOTER_MIN_AGE_HOURS = 24
 
 
-def vote_counts_toward_standing(
+def org_is_established(
     *,
     trace_count: int,
     org_created_at: datetime | None,
     now: datetime | None = None,
 ) -> bool:
-    """Whether this organization's vote may move a Knowledge Base entry's
-    standing. See the thresholds above for why these two signals.
+    """The "autoconfirmed" bar itself: has this organization done enough,
+    for long enough, that the corpus will let it move a shared number?
+
+    Stated once, as a property of the ORG rather than of any particular
+    action, because more than one signal is moveable and they must agree on
+    who may move them. `vote_counts_toward_standing` (trust/standing) and
+    `hit_counts_toward_quality_signal` (commons_hits) are both this
+    predicate under an action-specific name; the names are kept because the
+    call sites read better, but there is exactly one rule underneath.
+
+    That is not cosmetic. The bar was originally written for votes alone,
+    and the signal it did not cover was reachable for free -- see
+    `hit_counts_toward_quality_signal` for what that cost.
 
     Never raises on a missing timestamp: an org row with no `created_at`
-    should not be able to vote its way past the age bar by being
-    malformed, so an absent value fails the check rather than passing it.
+    should not clear the age bar by being malformed, so an absent value
+    fails the check rather than passing it.
     """
     if trace_count < COMMONS_VOTER_MIN_TRACES:
         return False
@@ -276,6 +287,62 @@ def vote_counts_toward_standing(
     if org_created_at.tzinfo is None:
         org_created_at = org_created_at.replace(tzinfo=timezone.utc)
     return (now - org_created_at) >= timedelta(hours=COMMONS_VOTER_MIN_AGE_HOURS)
+
+
+def vote_counts_toward_standing(
+    *,
+    trace_count: int,
+    org_created_at: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    """Whether this organization's vote may move a Knowledge Base entry's
+    standing (`trust` / `commons_votes`, which `entry_standing` reads)."""
+    return org_is_established(
+        trace_count=trace_count, org_created_at=org_created_at, now=now
+    )
+
+
+def hit_counts_toward_quality_signal(
+    *,
+    trace_count: int,
+    org_created_at: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    """Whether this organization's `commons_overlap` matches may move an
+    entry's `commons_hits` -- the operator's content-quality signal.
+
+    WHY THIS EXISTS, WHEN THE VOTE BAR ALREADY DID
+    -----------------------------------------------
+    `commons_hits` is not bookkeeping. It is read by
+    `hub/manage.py:kb_stats`, where a zero-hit entry is listed as a prune
+    candidate and the top of the list is what the operator expands on --
+    so it steers which knowledge the corpus keeps and grows.
+
+    The vote bar above was built on the explicit premise that
+    "organizations are cheap", and it is right. But it was applied to votes
+    only, and `commons_hits` reaches a decision about an entry without
+    passing it: any org could credit hits from its first minute, with zero
+    traces. Measured against the shipped plans, one free self-serve org --
+    which `hub/rest.py`'s `POST /api/v1/keys` mints over HTTP with no human
+    in the loop -- carries 20 commons queries a month, and
+    MAX_HITS_PER_TRACE_PER_QUERY lets each of those credit 20 hits to one
+    entry: 400 units of influence over the operator's curation signal, for
+    free, from an org that has never captured a trace. The same org could
+    not cast a single counted vote.
+
+    So the same rule now applies to both. The asymmetry was the bug: a
+    defence that stops you saying an entry is bad, while letting you say
+    an entry is popular for nothing, defends the wrong half.
+
+    Every match is still COUNTED AS COVERAGE and still returned to the
+    caller -- this gates only whether it moves the shared number, exactly
+    as the vote bar gates only whether a stored vote moves standing. A new
+    customer's queries work normally and get the same answers; they just
+    do not vote on the corpus's shape with their traffic.
+    """
+    return org_is_established(
+        trace_count=trace_count, org_created_at=org_created_at, now=now
+    )
 
 # trust is up_votes / total_votes (hub/crud.py:vote_trace). Strictly below
 # 0.5 means a majority of the fleets that tried this entry reported it did

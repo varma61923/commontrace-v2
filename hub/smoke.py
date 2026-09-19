@@ -254,7 +254,10 @@ CORE_TOOLS = [
     # list; unaffected by HUB_COMMONS_ENABLED.
     "tag_trace_subjects", "find_traces_by_subject", "purge_traces_by_subject",
 ]
-COMMONS_TOOLS = ["commons_overlap", "commons_search", "submit_kb_entry", "list_my_kb_submissions"]
+COMMONS_TOOLS = [
+    "commons_overlap", "commons_search", "commons_export",
+    "submit_kb_entry", "list_my_kb_submissions",
+]
 EXPECTED_TOOLS = CORE_TOOLS + COMMONS_TOOLS  # kept for external callers/tests
 
 
