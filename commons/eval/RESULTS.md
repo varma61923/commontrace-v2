@@ -192,17 +192,86 @@ So ranked results are candidates to judge and can never be reported as
 coverage. The shipped coverage number, its threshold, and its 0%
 false-positive property are untouched by this finding.
 
-## The honest path forward for the coverage *number*
+## The coverage *number*: measured, and the blocker was not real
 
-Recall **of the thresholded coverage figure** is a representation problem,
-and the fix is semantic rather than lexical similarity — embedding each
-failure and comparing vectors. That is a real change, not a tweak, because
-**it breaks the current privacy story**: MinHash signatures are exchanged
-today precisely because failure text never leaves the fleet, and an
-embedding is computed by a model that has to see the text. Any move in that
-direction has to answer where the model runs before it answers whether
-recall improves. That work is not done, and this file does not pretend a
-number exists for it.
+Recall **of the thresholded coverage figure** is a representation problem.
+`python commons/eval/representations.py` closed the cheap door first: every
+tokenization candidate — stems, char-4, char-5, words+char-4 — measured
+*worse* than shipped on the held-out set. (`stems` reached 15.2% on dev and
+fell to 6.5% held-out, which is what a dev-set overfit looks like and why
+that split exists.) Lexical representation is exhausted.
+
+That left semantic similarity, which this file previously recorded as
+blocked: *"it breaks the current privacy story… an embedding is computed by
+a model that has to see the text."*
+
+**That blocker rests on a false premise.** "A model has to see the text" is
+true and harmless. What the guarantee forbids is the *operator* seeing a
+customer's failure text — not a model running on the customer's own
+machine, on text that machine already holds. And the other side of the
+comparison is not secret at all: the Knowledge Base is operator-curated
+substrate knowledge, published in this repository. So the whole comparison
+can happen on the client:
+
+| | |
+|---|---|
+| corpus embeddings | public content — computed anywhere, distributable |
+| failure embedding | computed locally, from text already on that machine |
+| similarity | computed locally, against a local index |
+
+The Hub is not a participant. It learns nothing — not the text, not an
+embedding, **not even the MinHash signature it receives today**. That is
+strictly *more* private than what currently ships, which is the opposite of
+what the blocker assumed. The real trade is not "recall versus privacy"; it
+is "recall and privacy, versus a model dependency and an index to
+distribute".
+
+`python commons/eval/semantic.py` measures it, on the same corpus, the same
+dev/held-out split and the same negative controls
+(`all-MiniLM-L6-v2`, cosine):
+
+| cosine ≥ | dev recall | dev FP | **HELD recall** | **HELD FP** |
+|---|---|---|---|---|
+| 0.70 | 15.2% | 0.0% | 19.6% | 0.0% |
+| **0.65** | **32.6%** | **0.0%** | **32.6%** | **0.0%** |
+| 0.60 | 67.4% | 4.5% | 58.7% | 0.0% |
+| 0.55 | 89.1% | 9.1% | 78.3% | 10.5% |
+| 0.50 | 93.5% | 9.1% | 95.7% | 10.5% |
+
+The operating point is chosen the way the shipped one was: the most recall
+available while **both** sets still report zero false positives. That is
+0.65, and 0.60 is rejected despite more recall because it leaks 4.5% on dev
+— exactly the "bar dropped, gain is fake" failure this evaluation exists to
+catch.
+
+| | Shipped (Jaccard @0.30) | Semantic (cosine @0.65) |
+|---|---|---|
+| Held-out recall | 8.7% | **32.6%** |
+| Held-out false positives | 0.0% | **0.0%** |
+| Right record, of matches made | — | **100%** |
+
+**3.7× the recall at the same zero-false-positive bar, with every match
+landing on the correct record.** Median similarity to the true record is
+0.615, so the operating point sits well inside the distribution rather than
+on its edge.
+
+### What this does and does not license
+
+It does **not** move the shipped threshold or representation, and nothing
+in this finding has been applied to the product. Taking it would mean a
+`sentence-transformers` dependency (heavy: it pulls torch), an embedding
+index to build and distribute, and a decision about air-gapped deployments
+— none of which is a matter of retrieval evidence, and all of which should
+be decided deliberately rather than as a side effect of a good number.
+
+It also does not change the *lookup* story, which was never the problem:
+`commons_search` already recovers 89–100% by ranking, and
+`commons report --candidates` now surfaces that in the customer-facing
+report.
+
+What it does retire is the claim that semantic matching is unavailable here
+on privacy grounds. It is available, it is measurably better, and it would
+leave the Hub knowing less about its customers than it does today.
 
 Note what the section above changes about the *urgency* of that work: it is
 now an improvement to one number, not a precondition for the commons being
