@@ -327,11 +327,27 @@ def test_exclude_shown_drops_a_lesson_already_injected_for_that_occasion(server,
     from commontrace import holdout_io
 
     slug = _curate(server)
+    # The store's own holdout must be OFF for this test, and turning it off
+    # explicitly is the fix for a real calendar-dependent flake.
+    #
+    # A fresh store runs at DEFAULT_HOLDOUT_RATE (0.10), and arms are
+    # `hash(lesson_slug, occasion, salt) < rate`. The slug a fresh curate
+    # produces embeds today's date (lesson_candidate_YYYYMMDD_1), so whether
+    # `occ-2` below lands in the treatment arm depended on the DATE THE
+    # TESTS RAN: measured across September 2026, 4 days in 28 put it in the
+    # control arm, and on those days this test failed with an empty
+    # `lessons` list -- the lesson was not missing, it was withheld.
+    #
+    # This test is about `exclude_shown`, not about randomization, so it
+    # takes the holdout out of the picture rather than betting on a hash.
+    holdout_io.configure(store, rate=0.0)
     holdout_io.assign_and_log(store, [slug], occasion_id="occ-1", rate=0.0, salt="s")
 
     first = call(server, "retrieve", task="password reset email never arrived",
                  occasion_id="occ-2")
-    assert [item["slug"] for item in first["lessons"]] == [slug]
+    assert [item["slug"] for item in first["lessons"]] == [slug], (
+        f"expected the lesson to be injected, got withheld={first.get('withheld')}"
+    )
 
     again = call(server, "retrieve", task="password reset email never arrived",
                  occasion_id="occ-2", exclude_shown="occ-1")

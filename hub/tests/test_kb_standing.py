@@ -864,9 +864,16 @@ class TestSeedReviewAfter:
 
         path = tmp_path / "kb.jsonl"
         path.write_text(
-            json.dumps({"title": "t", "solution_text": "s", "review_after": "next tuesday"})
+            # `context_text` on both: the curated-corpus loader validates
+            # against the same protocol schema every customer trace passes,
+            # and the schema requires it (as does commons_seed's own
+            # documented line format). A record without it is skipped as
+            # non-conforming, which would make this test about the wrong
+            # thing entirely.
+            json.dumps({"title": "t", "context_text": "c",
+                        "solution_text": "s", "review_after": "next tuesday"})
             + "\n"
-            + json.dumps({"title": "good", "solution_text": "s"})
+            + json.dumps({"title": "good", "context_text": "c", "solution_text": "s"})
             + "\n",
             encoding="utf-8",
         )

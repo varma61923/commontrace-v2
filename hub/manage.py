@@ -46,6 +46,12 @@
                                        delivered, top/dead entries, orgs that query it,
                                        and the community-submission funnel (pending /
                                        approved / rejected)
+    validate-corpus <file.jsonl>
+                                   -> check a curated corpus against the SAME trace schema
+                                       every customer trace must pass, without loading it.
+                                       Reports every problem at once and exits non-zero if
+                                       any -- the pre-flight for commons-seed, which skips
+                                       a malformed line rather than failing
     commons-seed <file.jsonl> <org_id>
                                    -> load or update the operator-curated Knowledge Base
                                        content, marked commons_source='seed' from a file
@@ -291,6 +297,7 @@ from hub.models import (
     Vote,
     WebhookEndpoint,
 )
+from hub.schema_validation import SchemaValidationError
 
 
 def _default_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -730,7 +737,132 @@ def _parse_review_after(raw: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
+def _corpus_record_to_wire(rec: dict) -> dict:
+    """Shape one curated JSONL record like the dict `crud.validate_trace`
+    already validates for `contribute_trace`, so both paths are judged
+    against the same protocol schema rather than two hand-kept notions of
+    a well-formed trace."""
+    title = str(rec.get("title") or "")
+    context_text = str(rec.get("context_text") or "")
+    tags = [str(t) for t in (rec.get("tags") or []) if t is not None]
+    return {
+        # validate_trace wants an id; the real one is minted at insert, and
+        # nothing about schema conformance depends on its value.
+        "id": "00000000-0000-0000-0000-000000000000",
+        "title": title,
+        "context_text": context_text,
+        "solution_text": str(rec.get("solution_text") or ""),
+        "tags": tags,
+        "agent_type": str(rec.get("agent_type") or "code"),
+        "profile": str(rec.get("profile") or ""),
+    }
+
+
+def _corpus_schema_problem(rec: dict, config: HubConfig | None = None) -> str:
+    """The reason this curated record does not conform, or "" if it does.
+
+    WHY THE CURATED CORPUS IS VALIDATED AT ALL
+    ------------------------------------------
+    Every customer trace passes `validate_trace` (the protocol schema in
+    protocol/schemas/trace.schema.json) and `validate_size` before it is
+    stored. The operator's own curated corpus passed neither: this loader
+    checked that `title` and `solution_text` were non-empty and stopped
+    there. So the content this product SERVES TO EVERY ORG was held to a
+    weaker standard than the content any single org contributes -- and it
+    is the corpus, not any one tenant's traces, that is read cross-tenant
+    and quoted back as substrate knowledge.
+
+    Same schema, same size limits, one definition of a well-formed trace.
+    """
+    # Type-checked BEFORE shaping, because the shaping coerces with
+    # `str()` -- which would turn a hand-edited `{"title": {"a": 1}}` into
+    # the perfectly valid-looking title `{'a': 1}` and publish that to
+    # every organisation. For curated content a wrong type is a mistake to
+    # report, never one to quietly stringify.
+    for field in ("title", "context_text", "solution_text", "agent_type", "profile", "source"):
+        value = rec.get(field)
+        if value is not None and not isinstance(value, str):
+            return f"{field} must be a string, got {type(value).__name__}"
+    tags = rec.get("tags")
+    if tags is not None:
+        if not isinstance(tags, list):
+            return f"tags must be a list, got {type(tags).__name__}"
+        if any(not isinstance(t, str) for t in tags):
+            return "every tag must be a string"
+    try:
+        crud.validate_trace(_corpus_record_to_wire(rec))
+    except SchemaValidationError as exc:
+        return f"does not match the trace schema ({exc})"
+    if config is not None:
+        try:
+            crud.validate_size(_corpus_record_to_wire(rec), config)
+        except abuse.TraceRejected as exc:
+            return f"exceeds a size limit ({exc})"
+    return ""
+
+
+async def validate_corpus(path: str) -> bool:
+    """Check a curated JSONL corpus against the trace schema WITHOUT
+    loading it -- the pre-flight for `commons-seed`.
+
+    Worth having as its own command because the loader's own reaction to a
+    malformed line is to skip it: a corpus can seed "successfully" while
+    quietly dropping the three entries someone most wanted to add. This
+    reports every problem at once and exits non-zero if there is any, so a
+    corpus file can be gated in CI the way code is.
+    """
+    import json as _json
+
+    # Schema conformance is a property of the FILE, so this must be
+    # runnable with no database configured at all -- the whole point is to
+    # gate a corpus in CI, where there is no Hub. The size limits are the
+    # only part that needs a config (they are deployment policy, not
+    # protocol), so a missing one degrades to schema-only checking and
+    # says which check it skipped, rather than refusing to run.
+    try:
+        config = HubConfig.from_env()
+    except RuntimeError:
+        config = None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw_lines = [ln for ln in (line.strip() for line in fh) if ln]
+    except OSError as exc:
+        print(f"error: cannot read {path}: {exc}", file=sys.stderr)
+        return False
+
+    problems: list[str] = []
+    for i, line in enumerate(raw_lines, 1):
+        try:
+            rec = _json.loads(line)
+        except ValueError:
+            problems.append(f"  line {i}: not valid JSON")
+            continue
+        if not isinstance(rec, dict):
+            problems.append(f"  line {i}: not a JSON object")
+            continue
+        if rec.get("review_after") and _parse_review_after(rec["review_after"]) is None:
+            problems.append(
+                f"  line {i}: review_after={rec['review_after']!r} is not ISO 8601")
+        problem = _corpus_schema_problem(rec, config)
+        if problem:
+            problems.append(f"  line {i}: {problem}")
+
+    if problems:
+        print(f"{len(problems)} problem(s) in {path}:", file=sys.stderr)
+        for p in problems:
+            print(p, file=sys.stderr)
+        return False
+    scope = (
+        "the trace schema and this deployment's size limits" if config is not None
+        else "the trace schema (size limits skipped: no HUB_DATABASE_URL configured)"
+    )
+    print(f"{len(raw_lines)} record(s) in {path}: all conform to {scope}.")
+    return True
+
+
+async def commons_seed(
+    path: str, org_id: str, session_factory=None, config: HubConfig | None = None,
+) -> bool:
     """Load or update the CommonTrace Knowledge Base from a JSONL file of
     curated substrate knowledge.
 
@@ -776,6 +908,16 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
     import json as _json
 
     session_factory = session_factory or _default_session_factory()
+    # Schema conformance is checked always; the SIZE limits are deployment
+    # policy and need a config, so a caller without one (a test harness
+    # that injects its own session_factory and never sets HUB_DATABASE_URL)
+    # still gets the schema gate rather than a refusal to load at all.
+    # Same degradation, and the same reasoning, as `validate_corpus`.
+    if config is None:
+        try:
+            config = HubConfig.from_env()
+        except RuntimeError:
+            config = None
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw_lines = [ln for ln in (line.strip() for line in fh) if ln]
@@ -806,6 +948,11 @@ async def commons_seed(path: str, org_id: str, session_factory=None) -> bool:
                 )
                 continue
             rec["review_after"] = parsed
+        problem = _corpus_schema_problem(rec, config)
+        if problem:
+            bad += 1
+            print(f"  line {i}: {problem}, skipped", file=sys.stderr)
+            continue
         records.append(rec)
 
     if not records:
@@ -2694,6 +2841,7 @@ _COMMANDS = {
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),
     "commons-seed": (commons_seed, 2, 2),
+    "validate-corpus": (validate_corpus, 1, 1),
     "kb-review": (kb_review, 0, 1),
     "kb-retract": (kb_retract, 1, 2),
     "kb-restore": (kb_restore, 1, 1),
