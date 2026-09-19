@@ -302,6 +302,18 @@ class HubConfig:
     # way, the same bound every free-tier evaluator already gets.
     signup_enabled: bool = False
 
+    # --- REST API (hub/rest.py) ---
+    # Off by default, the same absent-unless-configured posture /admin, /app
+    # and /signup each take. Set true to expose `/api/v1/*`, the JSON surface
+    # the CommonTrace Claude Code plugin speaks, so pointing that plugin's
+    # COMMONTRACE_API_BASE_URL at this Hub works with no plugin change. Every
+    # endpoint is a thin translation over the same hub/crud.py functions the
+    # MCP tools call -- see hub/rest.py's own docstring for what it is and
+    # is not. `/api/v1/keys` (unauthenticated account creation) additionally
+    # requires `signup_enabled`, since it is the same capability /signup's
+    # form already offers and must not become a second, ungated door to it.
+    rest_api_enabled: bool = False
+
     # --- Self-serve billing (hub/billing.py) ---
     # Empty (default) means neither the console's "Upgrade" buttons nor the
     # /billing/webhook route do anything real: hub/billing.py's own
@@ -656,6 +668,7 @@ class HubConfig:
             operator_legal_name=os.environ.get("HUB_OPERATOR_LEGAL_NAME", ""),
             operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
+            rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             # Price ids ("price_...") are references, not credentials --

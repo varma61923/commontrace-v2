@@ -39,6 +39,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A `/api/v1/*` REST surface, so the CommonTrace Claude Code plugin can
+  talk to this Hub** (`hub/rest.py`, opt-in via `HUB_REST_API_ENABLED`).
+  The client that actually captures traces in the field — the
+  `commontrace/skill` plugin — does not speak MCP at all; its hooks are
+  plain `urllib` calls against `POST /api/v1/keys`, `/api/v1/traces`,
+  `/api/v1/traces/search` and three `/api/v1/telemetry/*` beacons. So the
+  plugin and this Hub could not be pointed at each other despite storing
+  the same objects and meaning the same things by them. With the flag on,
+  `COMMONTRACE_API_BASE_URL=https://your-hub.example.com` is the entire
+  integration — no plugin change.
+
+  Every endpoint is a thin translation in front of the SAME `hub/crud.py`
+  and `hub/auth.py` functions the MCP tools call, so tenant isolation,
+  plan entitlements, quarantine, the shared write-rate bucket and audit
+  rows behave identically whichever surface a caller arrives through; a
+  trace contributed over REST is indistinguishable afterwards from one
+  contributed over MCP except for its audit `actor` (`rest-api`). Scope
+  checks mirror the MCP tools' (search needs `read`, contribute needs
+  `write`), and a scope denial is a 403 — the one status the plugin
+  branches on specifically — kept distinct from a 401 (bad key) and a 402
+  (valid key, plan exhausted). `POST /api/v1/keys` mints a credential
+  with no caller identity, so it is gated on `HUB_SIGNUP_ENABLED` as well
+  and stays absent from the router entirely when that is off, the same
+  posture `/admin`, `/app` and `/signup` each take.
+
+  Verified end-to-end against the shipped plugin's own hook code, not a
+  reimplementation of it: `session_start.provision_api_key()`,
+  `ct_config` round-trip, a contribution in the exact body shape the
+  plugin's directive specifies, `retrieval.search_commontrace()` and
+  `retrieval.format_results()`, and both telemetry beacons, all against a
+  live Hub. 30 new tests (`hub/tests/test_rest.py`, plus two `build_app`
+  boot cases), including a `TestThePluginsOwnRequestShapes` class whose
+  whole job is to fail CI if a field is renamed out from under an
+  installed plugin.
+
 - **Amending a trace from the `/admin` console, plus a new `hub.manage
   amend-trace` CLI command** (`hub/manage.py:amend_trace`,
   `hub/admin.py`): the operator counterpart to the `amend_trace` MCP tool

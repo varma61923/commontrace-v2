@@ -50,6 +50,7 @@ from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
+from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
 from hub.signup import add_signup_routes
@@ -1613,6 +1614,19 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         add_signup_routes(
             inner_app, session_factory,
             trusted_proxy_hops=config.trusted_proxy_hops, console_path=CONSOLE_PATH,
+        )
+
+    # The JSON surface the CommonTrace Claude Code plugin speaks -- opt-in,
+    # and sharing the MCP path's write-rate bucket rather than opening a
+    # second one (hub/rest.py's add_rest_routes explains why that matters).
+    if config.rest_api_enabled:
+        add_rest_routes(
+            inner_app,
+            session_factory,
+            config=config,
+            rate_limiter=rate_limiter,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            signup_enabled=config.signup_enabled,
         )
 
     # Stripe calls this, not a signed-in browser -- registered independently

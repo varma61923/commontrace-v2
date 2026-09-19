@@ -152,6 +152,24 @@ class TestTheProductionAppBoots:
         assert "lifespan.shutdown.complete" in types
         assert "lifespan.startup.failed" not in types
 
+    async def test_it_boots_with_the_rest_api_enabled(self, config, session_factory):
+        """hub/rest.py mounts conditionally and takes `config` and the MCP
+        path's own write-rate limiter as arguments -- wiring that only runs
+        on this branch, so booting under the default alone would never
+        exercise it."""
+        cfg = dataclasses.replace(config, rest_api_enabled=True, signup_enabled=True)
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        assert "lifespan.startup.complete" in [m["type"] for m in messages]
+
+    async def test_it_boots_with_the_rest_api_enabled_but_signup_off(
+        self, config, session_factory
+    ):
+        """The other half of that branch: `/api/v1/keys` is skipped while
+        the authenticated routes still mount."""
+        cfg = dataclasses.replace(config, rest_api_enabled=True, signup_enabled=False)
+        messages = await _run_lifespan(build_app(cfg, session_factory))
+        assert "lifespan.startup.complete" in [m["type"] for m in messages]
+
     async def test_it_boots_with_an_ip_allowlist_configured(self, config, session_factory):
         """IpAllowlistMiddleware is only mounted when HUB_IP_ALLOWLIST is
         set -- proves the conditional wiring in build_app itself doesn't
