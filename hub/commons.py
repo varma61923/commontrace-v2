@@ -70,7 +70,7 @@ dependency.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from commontrace import overlap
 
@@ -213,6 +213,69 @@ VALID_STANDINGS = (
 # interval, because the failure mode being defended against is not noise;
 # it is one participant with a reason to suppress an answer.
 MIN_VOTES_FOR_STANDING = 3
+
+# --- Who is allowed to move the number ------------------------------------
+#
+# MIN_VOTES_FOR_STANDING above defends against one ORGANIZATION. It does
+# not defend against one PERSON, because organizations are cheap: signup is
+# self-serve (hub/signup.py) and `POST /api/v1/keys` (hub/rest.py) mints an
+# org and a working key over HTTP with no human in the loop. Three of those
+# is three votes, and three votes is the threshold -- so the defence the
+# comment above describes could be walked around in about a minute by
+# anyone who read this file.
+#
+# This is the Wikipedia problem, and the shape of Wikipedia's answer is the
+# right one here: RECORD EVERY CONTRIBUTION, COUNT SELECTIVELY. Wikipedia
+# lets anyone edit but reserves consequential actions for "autoconfirmed"
+# accounts -- old enough, and with enough real edits behind them. An
+# account minted to win one argument does not qualify, and the attempt is
+# still on the record where a human can see it.
+#
+# So a vote from any authenticated org is always STORED (it is evidence,
+# and discarding it would hide the abuse rather than stop it), but only a
+# vote from an established org is COUNTED into the trust/commons_votes
+# pair that `entry_standing` reads. The two thresholds below are the
+# "autoconfirmed" bar, and they are deliberately cheap for a real customer
+# to clear and expensive for a sockpuppet farm:
+#
+#   - Traces: an org that has never captured anything has no standing to
+#     judge whether a fix works, because it has not run any. This is the
+#     expensive one to fake -- traces are rate limited, size limited, plan
+#     capped and quarantine screened.
+#   - Age: a brand-new org cannot vote at all yet. This is the cheap one to
+#     wait out, and it is not meant to stop a determined attacker on its
+#     own; it removes the "mint an org and immediately swing a vote" path
+#     so that abuse has to be planned in advance, which is when the audit
+#     log and the operator's review queue get a chance to notice it.
+#
+# Neither applies to an org voting on its OWN trace: that is private
+# feedback inside one tenant, it moves no shared number, and there is
+# nothing there to manipulate.
+COMMONS_VOTER_MIN_TRACES = 5
+COMMONS_VOTER_MIN_AGE_HOURS = 24
+
+
+def vote_counts_toward_standing(
+    *,
+    trace_count: int,
+    org_created_at: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    """Whether this organization's vote may move a Knowledge Base entry's
+    standing. See the thresholds above for why these two signals.
+
+    Never raises on a missing timestamp: an org row with no `created_at`
+    should not be able to vote its way past the age bar by being
+    malformed, so an absent value fails the check rather than passing it.
+    """
+    if trace_count < COMMONS_VOTER_MIN_TRACES:
+        return False
+    if org_created_at is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if org_created_at.tzinfo is None:
+        org_created_at = org_created_at.replace(tzinfo=timezone.utc)
+    return (now - org_created_at) >= timedelta(hours=COMMONS_VOTER_MIN_AGE_HOURS)
 
 # trust is up_votes / total_votes (hub/crud.py:vote_trace). Strictly below
 # 0.5 means a majority of the fleets that tried this entry reported it did

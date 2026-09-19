@@ -357,6 +357,47 @@ read path stays org-scoped" -- it also reaches Knowledge Base entries
 cannot reach another org's own private trace; `amend_trace`/`get_trace`
 remain fully org-scoped.
 
+### Who can move an entry's standing
+
+`MIN_VOTES_FOR_STANDING = 3` stops one *organisation* deciding what the
+field thinks. It does not, on its own, stop one *person*: signup is
+self-serve and `POST /api/v1/keys` mints an org and a working key over
+HTTP, so three throwaway orgs is three votes, which is the threshold.
+
+The answer is Wikipedia's, and it is the same shape as "autoconfirmed":
+**record every contribution, count selectively.** A vote from any
+authenticated org is always stored -- discarding a sockpuppet's vote would
+hide the attempt rather than stop it, and those `votes` rows are the
+evidence an operator needs to see a farm at all. Only votes from an
+*established* org are counted into the `trust`/`commons_votes` pair that
+`entry_standing` reads. The bar (`hub/commons.py`) is
+`COMMONS_VOTER_MIN_TRACES` traces captured and `COMMONS_VOTER_MIN_AGE_HOURS`
+hours since signup: cheap for a real customer to clear, expensive for a
+farm, because traces are rate limited, size limited, plan capped and
+quarantine screened.
+
+Two deliberate exemptions and one obligation:
+
+- The bar is keyed on the **trace** being a Knowledge Base entry, not on
+  who is casting the vote, and that distinction is load bearing. Keyed on
+  the voter instead ("an org rating its own trace needs no bar"), the
+  entry owner's single vote would take the unfiltered path and count every
+  stored vote, including the ones the filtered path had been holding out —
+  a farm that cannot move the number directly would move it by waiting for
+  the operator to vote once. Voting on a trace that never entered the
+  Knowledge Base is unaffected: it is visible to exactly one org, so there
+  is no shared number to protect and no reason to make a new customer wait
+  a day to rate their own content.
+- A vote cast before the org qualifies is **not wasted**. The tally is
+  recomputed from scratch on every vote, so an early vote starts counting
+  the moment its org clears the bar. Legitimate newcomers are delayed,
+  never disenfranchised.
+- The rule is **stated, not silent**. `vote_trace` returns `vote_counted`,
+  the MCP tool's docstring says so, and the console's Knowledge Base page
+  spells out the bar before anyone votes -- an org that votes, sees nothing
+  move and is told nothing has learned that the feature is broken, not
+  that it has not qualified yet.
+
 ### Community submissions: review, not opt-in
 
 `submit_kb_entry` reopens a contribution channel the retired `share_trace`

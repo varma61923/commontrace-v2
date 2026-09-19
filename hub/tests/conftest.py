@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from hub import commons
 from hub.config import HubConfig
-from hub.db import make_engine, make_session_factory
-from hub.models import Base
+from hub.db import make_engine, make_session_factory, session_scope
+from hub.models import Base, Organization
 
 # This default matches the Postgres role/db this project's own dev sandbox
 # provisions out of the box, so hub tests "just work" there with no extra
@@ -102,3 +104,46 @@ async def session_factory(config: HubConfig, _schema):
             for table in reversed(Base.metadata.sorted_tables):
                 await conn.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
         await engine.dispose()
+
+
+@pytest.fixture
+def establish_orgs(session_factory):
+    """Factory: promote existing organizations to "established" voters.
+
+    hub/crud.py:vote_trace only tallies votes from orgs that clear the
+    autoconfirmed bar in hub/commons.py -- old enough, with real traces
+    behind them. A freshly inserted `Organization()` clears neither, so any
+    test about what voting *does* (standing, ranking, coverage claims,
+    review queues) would silently be measuring the anti-sockpuppet rule
+    instead of the thing it is about. Those tests call this on their voter
+    orgs; the tests that are about the rule itself deliberately do not.
+
+    `trace_count` is set directly rather than by contributing N traces:
+    it is the maintained counter the policy actually reads, and
+    hub/tests/test_trace_count.py is what keeps that counter honest against
+    a real `count(*)` -- inserting five throwaway traces per voter here
+    would cost every one of these tests real time and prove nothing extra.
+    """
+
+    async def _establish(*org_ids) -> None:
+        # Accepts ids loose or in one iterable, so both `establish_orgs(a, b)`
+        # and `establish_orgs(list_of_ids)` read naturally at the call site.
+        ids = [
+            oid
+            for group in org_ids
+            for oid in ([group] if isinstance(group, str) else group)
+        ]
+        backdated = datetime.now(timezone.utc) - timedelta(
+            hours=commons.COMMONS_VOTER_MIN_AGE_HOURS + 1
+        )
+        async with session_scope(session_factory) as session:
+            await session.execute(
+                update(Organization)
+                .where(Organization.id.in_(ids))
+                .values(
+                    trace_count=commons.COMMONS_VOTER_MIN_TRACES,
+                    created_at=backdated,
+                )
+            )
+
+    return _establish

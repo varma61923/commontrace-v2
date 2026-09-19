@@ -12,7 +12,7 @@ from hub import audit, auth, commons, crud
 from hub.abuse import TraceRejected, make_rate_limiter
 from hub.config import MAX_SEARCH_LIMIT
 from hub.db import session_scope
-from hub.models import ApiKey, AuditLogEntry, Organization, Trace
+from hub.models import ApiKey, AuditLogEntry, Organization, Trace, Vote
 
 pytestmark = pytest.mark.asyncio
 
@@ -725,9 +725,10 @@ class TestCrossOrgVoting:
     path here at all, only org-to-Knowledge-Base."""
 
     async def test_another_org_can_vote_on_a_kb_entry(
-        self, session_factory, org, other_org
+        self, session_factory, org, other_org, establish_orgs
     ):
         trace_id = await _seed_kb(session_factory, org, "t")
+        await establish_orgs(other_org)
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, other_org, trace_id, "up")
         assert result is not None
@@ -744,13 +745,14 @@ class TestCrossOrgVoting:
         assert result is None
 
     async def test_cross_org_vote_response_excludes_private_fields(
-        self, session_factory, org, other_org
+        self, session_factory, org, other_org, establish_orgs
     ):
         """The vote succeeded and the response reflects it (id, trust), but
         a cross-org voter gets the same narrow projection commons_overlap
         returns (H-08) -- voting on a Knowledge Base entry is not an
         invitation to see its contributor/extensions/outcome/etc."""
         trace_id = await _seed_kb(session_factory, org, "t", contributor="alice@example.com")
+        await establish_orgs(other_org)
 
         async with session_scope(session_factory) as session:
             result = await crud.vote_trace(session, other_org, trace_id, "down", feedback_tag="outdated")
@@ -772,9 +774,15 @@ class TestCrossOrgVoting:
         assert result["votes"][0]["vote_type"] == "up"
 
     async def test_owner_and_another_org_votes_both_count_toward_trust(
-        self, session_factory, org, other_org
+        self, session_factory, org, other_org, establish_orgs
     ):
         trace_id = await _seed_kb(session_factory, org, "t")
+        # BOTH established. Without this the assertion below still passed,
+        # for the wrong reason: no vote counted at all, and `trust` fell
+        # back to its 0.5 no-votes default -- numerically identical to the
+        # 1-up-1-down aggregate this test exists to check. A test that can
+        # pass while counting nothing is not testing the aggregate.
+        await establish_orgs(org, other_org)
         async with session_scope(session_factory) as session:
             await crud.vote_trace(session, org, trace_id, "up")
         async with session_scope(session_factory) as session:
@@ -782,6 +790,47 @@ class TestCrossOrgVoting:
         # 1 up (the seeding org) + 1 down (other_org) = 0.5, an actual
         # aggregate across two distinct orgs' votes.
         assert result["trust"] == pytest.approx(0.5)
+        assert result["vote_count"] == 2
+
+    async def test_the_owners_own_vote_cannot_flush_in_held_back_votes(
+        self, session_factory, org, other_org, establish_orgs
+    ):
+        """The bar is keyed on the TRACE being a Knowledge Base entry, not
+        on who is casting the vote -- and this is why.
+
+        Keyed on the voter instead ("an org rating its own trace needs no
+        bar"), the entry owner's single vote would take the unfiltered
+        path and count EVERY stored vote, including the ones the filtered
+        path had been holding out. A farm that could not move the number
+        directly would move it by waiting for the operator to vote once.
+        """
+        trace_id = await _seed_kb(session_factory, org, "t")
+        await establish_orgs(org)
+        for i in range(6):
+            async with session_scope(session_factory) as session:
+                sock = Organization(name=f"flush-sock-{i}")
+                session.add(sock)
+                await session.flush()
+                sock_id = sock.id
+            async with session_scope(session_factory) as session:
+                await crud.vote_trace(session, sock_id, trace_id, "down")
+
+        async with session_scope(session_factory) as session:
+            result = await crud.vote_trace(session, org, trace_id, "up")
+        assert result is not None
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+            stored = (
+                await session.execute(select(Vote).where(Vote.trace_id == trace_id))
+            ).scalars().all()
+
+        # Only the owner's own (established) vote moved the published pair.
+        assert trace.commons_votes == 1
+        assert trace.trust == pytest.approx(1.0)
+        # The six held-back down-votes are still on record -- withheld from
+        # the tally, never discarded.
+        assert len(stored) == 7
 
 
 class TestMalformedIdsAreCleanNotFoundNot500s:

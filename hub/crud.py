@@ -1949,13 +1949,41 @@ async def vote_trace(
     # down-vote row for the trace as ORM objects just to len() the lists.
     # A trace with thousands of votes made every single new vote cast pull
     # its entire voting history into memory for two integers.
-    counts = (
-        await session.execute(
-            select(Vote.vote_type, func.count())
-            .where(Vote.trace_id == trace_id)
-            .group_by(Vote.vote_type)
+    # Only votes from ESTABLISHED organizations are counted into the pair
+    # `entry_standing` reads -- see hub/commons.py's
+    # `vote_counts_toward_standing` for the thresholds and the reasoning.
+    #
+    # Every vote is still stored (the upsert above runs unconditionally):
+    # discarding a sockpuppet's vote would hide the attempt, and the Vote
+    # rows are the evidence an operator needs to see a farm at all. What
+    # this filter does is stop it MOVING anything.
+    #
+    # The bar is keyed on the TRACE being a Knowledge Base entry, not on
+    # who is casting this particular vote, and that distinction is load
+    # bearing. Keying it on "the voter is not the owner" -- the obvious
+    # reading of "an org rating its own trace needs no bar" -- would make
+    # the tally's meaning depend on who happened to vote LAST: the
+    # operator casting a single vote on its own entry would take the
+    # unfiltered path and sweep in every sockpuppet vote the filtered path
+    # had been holding out, handing an attacker through the back door the
+    # exact result the front door refuses. The tally has to mean the same
+    # thing no matter who triggers it.
+    #
+    # A trace that is not a Knowledge Base entry is visible to exactly one
+    # org (see this module's docstring), so there is no shared number to
+    # protect, nobody else who could be stuffing it, and no reason to make
+    # a new customer wait a day to rate their own content.
+    tally_is_public = trace.commons_source == "seed"
+    counted = select(Vote.vote_type, func.count()).where(Vote.trace_id == trace_id)
+    if tally_is_public:
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            hours=commons.COMMONS_VOTER_MIN_AGE_HOURS
         )
-    ).all()
+        counted = counted.join(Organization, Organization.id == Vote.org_id).where(
+            Organization.trace_count >= commons.COMMONS_VOTER_MIN_TRACES,
+            Organization.created_at <= cutoff,
+        )
+    counts = (await session.execute(counted.group_by(Vote.vote_type))).all()
     tally = dict(counts)
     up_count, down_count = tally.get("up", 0), tally.get("down", 0)
     total = up_count + down_count
@@ -2002,14 +2030,38 @@ async def vote_trace(
         target_id=trace_id,
         summary=f"vote={vote_type} feedback_tag={feedback_tag or '-'} new_trust={trace.trust:.3f}",
     )
+    # Said plainly, because silence here is its own failure: an org whose
+    # vote was recorded but not counted would otherwise watch the number
+    # not move and reasonably conclude the feature is broken. Telling it
+    # the vote is on record and what the bar is turns an invisible
+    # anti-abuse rule into an answerable one -- and costs an attacker
+    # nothing they could not already infer from hub/commons.py. Reported
+    # on the owner's projection too, since the bar applies to every vote
+    # on a Knowledge Base entry including the entry owner's own; omitted
+    # entirely where no bar applied, rather than stating a vacuous `true`.
+    vote_counted = None
+    if tally_is_public:
+        voter = await session.get(Organization, org_id)
+        vote_counted = commons.vote_counts_toward_standing(
+            trace_count=(voter.trace_count if voter else 0),
+            org_created_at=(voter.created_at if voter else None),
+        )
     if is_owner:
-        return await _hydrate_one(session, trace)
+        wire = await _hydrate_one(session, trace)
+        if vote_counted is not None:
+            wire["vote_counted"] = vote_counted
+        return wire
     # A vote on a Knowledge Base entry gets the same narrow projection
     # commons_overlap/commons_search return (_to_commons_wire) -- voting on
     # an entry is not an invitation to see operator-internal metadata
     # (contributor, extensions, outcome, ...), only to confirm the vote
     # registered and see the entry's current trust score.
-    return _to_commons_wire(trace)
+    wire = _to_commons_wire(trace)
+    # A non-owner can only ever reach a commons-visible entry (the lookup
+    # above is gated on commons_visible()), so the bar always applied and
+    # this is never None here.
+    wire["vote_counted"] = vote_counted
+    return wire
 
 
 async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:

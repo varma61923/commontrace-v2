@@ -39,6 +39,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sockpuppet resistance for Knowledge Base voting** — the open
+  repository now follows the wiki model all the way down, not just in
+  who may contribute. `MIN_VOTES_FOR_STANDING = 3` defended against one
+  *organisation* deciding what the field thinks; it did not defend against
+  one *person*, because organisations are free and self-serve and
+  `POST /api/v1/keys` mints one over HTTP with no human in the loop. Three
+  signups was three votes, which was the threshold — a ~60-second walk
+  around the constant that exists to prevent exactly that.
+
+  The fix is Wikipedia's "autoconfirmed" shape: **record every
+  contribution, count selectively.** A vote from any authenticated org is
+  still stored unconditionally — discarding a sockpuppet's vote hides the
+  attempt rather than stopping it, and those rows are the evidence an
+  operator needs to see a farm at all — but only votes from *established*
+  orgs enter the `trust`/`commons_votes` pair `entry_standing` reads. The
+  bar (`hub/commons.py`: `COMMONS_VOTER_MIN_TRACES = 5`,
+  `COMMONS_VOTER_MIN_AGE_HOURS = 24`, and the new
+  `vote_counts_toward_standing`) is cheap for a real customer and
+  expensive for a farm, since traces are rate limited, size limited, plan
+  capped and quarantine screened.
+
+  Properties pinned by tests in `hub/tests/test_kb_standing.py` and
+  `hub/tests/test_search_and_audit.py`: minted orgs can neither dispute an
+  entry nor manufacture `established` standing nor drown out the real
+  fleets that already disputed one; a vote cast before an org qualifies
+  starts counting the moment it does, so legitimate newcomers are delayed
+  rather than disenfranchised; and voting on a trace that never entered the
+  Knowledge Base is unaffected, since it is visible to exactly one org.
+
+  The bar is keyed on the **trace** being a Knowledge Base entry rather
+  than on who is casting the vote, which is subtler than it looks. Keyed on
+  the voter — the obvious reading of "an org rating its own trace needs no
+  bar" — the tally's meaning would depend on who voted *last*: the entry
+  owner casting one vote would take the unfiltered path and sweep in every
+  sockpuppet vote the filtered path had been holding out, handing an
+  attacker through the back door the exact result the front door refuses.
+  `test_the_owners_own_vote_cannot_flush_in_held_back_votes` is that
+  regression, and it was found by an existing test that passed for the
+  wrong reason: `trust` falls back to 0.5 when nothing is counted, which is
+  numerically identical to the 1-up-1-down aggregate it meant to assert.
+
+  The rule is stated rather than silent, which is the difference between an
+  anti-abuse measure and an apparently broken feature: `vote_trace` returns
+  `vote_counted`, the MCP tool docstring says so, the console's Knowledge
+  Base page spells out the bar *before* anyone votes, and the vote
+  confirmation says plainly when a vote was recorded but not counted.
+
 - **Per-org opt-in to contributing back** (`Organization
   .commons_auto_contribute`, migration `a1c7e4f93d2b`). An org can now turn
   on automatic contribution from `/app/kb`: every trace its agents capture

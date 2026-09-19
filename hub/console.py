@@ -90,7 +90,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
-from hub import alerts, audit, auth, crud, events, manage, plans, rbac, scopes
+from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
 from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
@@ -1072,6 +1072,7 @@ def _render_kb(
     tag: str = "",
     can_submit: bool = False,
     can_vote: bool = False,
+    vote_counts: bool = True,
     auto_contribute: bool = False,
     error: str = "",
     flash: str = "",
@@ -1125,6 +1126,21 @@ def _render_kb(
                 "signal the operator's review queue sorts on. Voting is per organisation, "
                 "and voting again changes your vote rather than adding one.</p>"
             )
+            # Said here, before the vote rather than only after it, because
+            # an organisation that votes and watches nothing move has every
+            # reason to conclude the feature is broken. The rule is in
+            # hub/commons.py and stating it costs an attacker nothing they
+            # could not read there.
+            if can_vote and not vote_counts:
+                body.append(
+                    '<p class="sub">Your votes are <b>recorded but not yet counted</b> '
+                    "toward an entry's standing. Organisations qualify once they have "
+                    f"captured {commons.COMMONS_VOTER_MIN_TRACES} traces and are more than "
+                    f"{commons.COMMONS_VOTER_MIN_AGE_HOURS} hours old — the bar that "
+                    "keeps a handful of throwaway signups from deciding what the field "
+                    "thinks. Nothing is lost in the meantime: votes you cast now start "
+                    "counting the moment you qualify.</p>"
+                )
             total = browse.get("total", 0)
             shown = len(entries)
             offset = browse.get("offset", 0)
@@ -1993,6 +2009,10 @@ def add_console_routes(
             auto_contribute = bool(
                 organization is not None and organization.commons_auto_contribute
             )
+            vote_counts = commons.vote_counts_toward_standing(
+                trace_count=(organization.trace_count if organization else 0),
+                org_created_at=(organization.created_at if organization else None),
+            )
             try:
                 browse = await crud.browse_commons(session, org_id, tag=tag, offset=offset)
             except plans.EntitlementExceeded:
@@ -2012,6 +2032,7 @@ def add_console_routes(
                 # it behind an admin key is how a governance signal ends up
                 # coming from the one person who least often runs the fix.
                 can_vote=scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE),
+                vote_counts=vote_counts,
                 auto_contribute=auto_contribute,
                 error=error, flash=flash,
             ),
@@ -2179,9 +2200,15 @@ def add_console_routes(
                 org_id, claims,
                 error="That entry is no longer in the Knowledge Base.",
             )
-        return RedirectResponse(
-            f"{CONSOLE_PATH}/kb?done=Thanks+—+your+vote+was+recorded.", status_code=303,
+        # Two different true things, and saying only the first one to an
+        # org whose vote did not count would be a quiet lie by omission.
+        done = (
+            "Thanks+—+your+vote+was+recorded."
+            if voted.get("vote_counted", True) else
+            "Your+vote+was+recorded,+but+does+not+count+toward+this+entry%27s"
+            "+standing+yet+—+see+the+note+below+the+catalogue."
         )
+        return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:
         async with session_scope(session_factory) as session:

@@ -36,6 +36,7 @@ from starlette.applications import Starlette
 
 from hub import alerts as alerts_module
 from hub import auth, console, rbac
+from hub import commons as commons_module
 from hub import events as events_module
 from hub.billing import StripeSettings
 from hub.db import session_scope
@@ -2350,10 +2351,16 @@ class TestKnowledgeBaseVotingFromTheConsole:
             return trace.id
 
     async def test_an_upvote_is_recorded_and_moves_the_tally(
-        self, session_factory, org_and_key
+        self, session_factory, org_and_key, establish_orgs
     ):
         org_id, raw_key = org_and_key
         entry_id = await self._seed_entry(session_factory, org_id)
+        # The entry is a Knowledge Base entry, so the anti-sockpuppet bar
+        # applies to every vote on it -- including one from the org that
+        # happens to own it (hub/crud.py:vote_trace explains why it is keyed
+        # on the trace rather than the voter). This test is about the button
+        # moving the number, so its org has to be able to move it.
+        await establish_orgs(org_id)
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
             response = await client.post(
@@ -2389,12 +2396,13 @@ class TestKnowledgeBaseVotingFromTheConsole:
         assert vote.feedback_tag == "security_concern"
 
     async def test_voting_again_changes_the_vote_rather_than_adding_one(
-        self, session_factory, org_and_key
+        self, session_factory, org_and_key, establish_orgs
     ):
         """One org, one vote -- `vote_trace` upserts on (trace, org), so a
         second click must not let a single org stuff the ballot."""
         org_id, raw_key = org_and_key
         entry_id = await self._seed_entry(session_factory, org_id)
+        await establish_orgs(org_id)
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
             await client.post(
@@ -2621,3 +2629,97 @@ class TestAutoContributeToggleFromTheConsole:
                 data={"enabled": "1"}, follow_redirects=False,
             )
         assert response.status_code == 303
+
+
+class TestTheConsoleSaysWhenAVoteDoesNotCountYet:
+    """The console half of the anti-sockpuppet rule (hub/commons.py).
+
+    Only established organisations move an entry's standing. That rule is
+    only defensible if the organisations it applies to can SEE it: an org
+    that votes, watches the tally stay put and is told nothing has learned
+    that voting is broken, not that it has not qualified yet. So the page
+    says so before the vote, and the confirmation says so after it.
+    """
+
+    async def _operator_entry(self, session_factory, title="Someone else's entry"):
+        """A Knowledge Base entry owned by a DIFFERENT org -- the only case
+        the rule applies to. An org voting on its own trace is private
+        feedback and is deliberately exempt."""
+        from hub import commons
+        tags = ["substrate"]
+        async with session_scope(session_factory) as session:
+            operator = Organization(name="operator-org")
+            session.add(operator)
+            await session.flush()
+            trace = Trace(
+                org_id=operator.id, title=title, context_text="ctx", solution_text="fix",
+                tags=tags, agent_type="code", shared_with_commons=True,
+                shared_at=datetime.now(timezone.utc), shared_rationale="seed",
+                commons_signature=commons.signature_for(title, "ctx", tags),
+                commons_source="seed",
+            )
+            session.add(trace)
+            await session.flush()
+            return trace.id
+
+    async def test_a_new_org_is_told_its_vote_is_recorded_but_not_counted(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        entry_id = await self._operator_entry(session_factory)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""},
+                follow_redirects=True,
+            )
+        assert "recorded" in response.text
+        assert "does not count toward" in response.text
+        # ...and the number genuinely did not move, which is the whole point.
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, entry_id)
+        assert trace.commons_votes == 0
+
+    async def test_an_established_org_gets_the_plain_thanks_and_moves_the_tally(
+        self, session_factory, org_and_key, establish_orgs
+    ):
+        org_id, raw_key = org_and_key
+        await establish_orgs(org_id)
+        entry_id = await self._operator_entry(session_factory)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""},
+                follow_redirects=True,
+            )
+        assert "does not count toward" not in response.text
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, entry_id)
+        assert trace.commons_votes == 1
+
+    async def test_the_catalogue_states_the_bar_before_anyone_votes(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        await self._operator_entry(session_factory)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "recorded but not yet counted" in response.text
+        # The bar itself, not just the fact of one -- a rule stated without
+        # its threshold is not something anyone can act on.
+        assert str(commons_module.COMMONS_VOTER_MIN_TRACES) in response.text
+        assert str(commons_module.COMMONS_VOTER_MIN_AGE_HOURS) in response.text
+
+    async def test_an_established_org_is_not_shown_the_notice(
+        self, session_factory, org_and_key, establish_orgs
+    ):
+        org_id, raw_key = org_and_key
+        await establish_orgs(org_id)
+        await self._operator_entry(session_factory)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "recorded but not yet counted" not in response.text

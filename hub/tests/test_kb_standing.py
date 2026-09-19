@@ -35,16 +35,23 @@ from sqlalchemy import select
 
 from hub import commons, crud, manage
 from hub.db import session_scope
-from hub.models import Organization, Trace
+from hub.models import Organization, Trace, Vote
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
-async def orgs(session_factory):
+async def orgs(session_factory, establish_orgs):
     """One operator org (the only one ever allowed to own Knowledge Base
     entries) and four customer orgs -- four because MIN_VOTES_FOR_STANDING
-    is 3 and several tests need to cross it and then some."""
+    is 3 and several tests need to cross it and then some.
+
+    The customer orgs are established voters (see the `establish_orgs`
+    fixture): this file is about what a *legitimate* field of voters does
+    to an entry's standing, so its voters have to be able to move the
+    number at all. The anti-sockpuppet bar that decides who can is pinned
+    separately, in TestSockpuppetsCannotMoveStanding below.
+    """
     async with session_scope(session_factory) as session:
         made = {}
         for name in ("operator", "cust-a", "cust-b", "cust-c", "cust-d"):
@@ -52,7 +59,8 @@ async def orgs(session_factory):
             session.add(o)
             await session.flush()
             made[name] = o.id
-        return made
+    await establish_orgs([made[n] for n in ("cust-a", "cust-b", "cust-c", "cust-d")])
+    return made
 
 
 async def _seed(session_factory, operator_org_id, title, review_after=None, hits=0):
@@ -904,3 +912,203 @@ class TestSeedReviewAfter:
     def test_non_strings_and_nonsense_return_none(self):
         for bad in (None, 12345, [], "next tuesday", ""):
             assert manage._parse_review_after(bad) is None
+
+
+# --- 9. Who is allowed to move the number -------------------------------
+
+
+async def _fresh_orgs(session_factory, n, prefix="sock"):
+    """Organizations exactly as `POST /api/v1/keys` or self-serve signup
+    leaves them: created a moment ago, nothing captured yet. This is what a
+    sockpuppet farm's orgs look like, because it is what every brand-new
+    org looks like -- there is nothing else to simulate."""
+    async with session_scope(session_factory) as session:
+        made = [Organization(name=f"{prefix}-{i}") for i in range(n)]
+        session.add_all(made)
+        await session.flush()
+        return [o.id for o in made]
+
+
+async def _standing_of(session_factory, trace_id):
+    async with session_scope(session_factory) as session:
+        trace = await session.get(Trace, trace_id)
+        return commons.entry_standing(
+            trust=trace.trust,
+            votes=trace.commons_votes,
+            review_after=trace.commons_review_after,
+        )
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+class TestVoteEligibility:
+    """The pure predicate. See hub/commons.py for why these two signals."""
+
+    def test_an_established_org_qualifies(self):
+        assert commons.vote_counts_toward_standing(
+            trace_count=commons.COMMONS_VOTER_MIN_TRACES,
+            org_created_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+
+    def test_an_org_that_has_captured_nothing_does_not(self):
+        """Age alone is not enough. An org that has never run anything has
+        no basis to judge whether a fix works -- it has not tried one."""
+        assert not commons.vote_counts_toward_standing(
+            trace_count=0,
+            org_created_at=datetime.now(timezone.utc) - timedelta(days=365),
+        )
+
+    def test_one_trace_short_does_not(self):
+        assert not commons.vote_counts_toward_standing(
+            trace_count=commons.COMMONS_VOTER_MIN_TRACES - 1,
+            org_created_at=datetime.now(timezone.utc) - timedelta(days=365),
+        )
+
+    def test_a_minutes_old_org_does_not_however_busy(self):
+        assert not commons.vote_counts_toward_standing(
+            trace_count=10_000,
+            org_created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+
+    def test_a_missing_creation_timestamp_fails_closed(self):
+        """A malformed org row must not be a way *past* the age bar. The
+        absent value has to fail the check, not skip it."""
+        assert not commons.vote_counts_toward_standing(
+            trace_count=10_000, org_created_at=None
+        )
+
+    def test_a_naive_timestamp_is_read_as_utc_not_crashed_on(self):
+        """Postgres hands back naive datetimes for a column declared
+        without a timezone; subtracting one from an aware `now` raises.
+        A TypeError here would take down the whole vote path."""
+        assert commons.vote_counts_toward_standing(
+            trace_count=commons.COMMONS_VOTER_MIN_TRACES,
+            org_created_at=(datetime.now(timezone.utc) - timedelta(days=30)).replace(
+                tzinfo=None
+            ),
+        )
+
+
+class TestSockpuppetsCannotMoveStanding:
+    """The attack this exists to stop: organizations are free and
+    self-serve, so MIN_VOTES_FOR_STANDING = 3 costs one person three
+    signups. These tests are the property that that no longer buys
+    anything."""
+
+    async def test_five_fresh_orgs_cannot_dispute_an_entry(self, session_factory, orgs):
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        for sock in await _fresh_orgs(session_factory, 5):
+            await _vote(session_factory, sock, trace_id, "down")
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+            assert trace.commons_votes == 0
+            assert trace.trust == 0.5, "an uncounted vote must not move trust either"
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_UNPROVEN
+
+    async def test_fresh_orgs_cannot_manufacture_established_standing_either(
+        self, session_factory, orgs
+    ):
+        """Symmetry matters as much as the down-vote case: if up-votes from
+        minted orgs counted, the same person could mint an entry's way to
+        `established` -- a corroboration claim this product quotes to
+        customers, bought for the price of five signups."""
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        for sock in await _fresh_orgs(session_factory, 6):
+            await _vote(session_factory, sock, trace_id, "up")
+
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_UNPROVEN
+
+    async def test_sockpuppets_cannot_drown_out_real_voters(self, session_factory, orgs):
+        """The realistic shape of the attack: an entry three real fleets
+        have reported does not work, and someone minting up-votes to pull
+        its trust back above the disputed ceiling. Only the real votes are
+        in the ratio at all, so the entry stays disputed no matter how many
+        are minted."""
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        await _downvote_into_dispute(session_factory, orgs, trace_id)
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
+
+        for sock in await _fresh_orgs(session_factory, 20):
+            await _vote(session_factory, sock, trace_id, "up")
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+            assert trace.commons_votes == 3, "only the three established fleets count"
+            assert trace.trust == 0.0
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
+
+    async def test_the_vote_is_stored_not_discarded(self, session_factory, orgs):
+        """Dropping the row would hide the attempt. The evidence an
+        operator needs to see a farm at all IS the pile of Vote rows from
+        orgs that cannot vote yet -- so every vote is recorded, and only
+        the tally is selective."""
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        socks = await _fresh_orgs(session_factory, 4)
+        for sock in socks:
+            await _vote(session_factory, sock, trace_id, "down")
+
+        async with session_scope(session_factory) as session:
+            rows = (
+                await session.execute(select(Vote).where(Vote.trace_id == trace_id))
+            ).scalars().all()
+        assert len(rows) == 4
+        assert {r.org_id for r in rows} == set(socks)
+
+    async def test_a_vote_recorded_today_starts_counting_once_the_org_qualifies(
+        self, session_factory, orgs, establish_orgs
+    ):
+        """Because the vote is kept rather than dropped, an org that votes
+        on day one and becomes a real customer later does not have to vote
+        again -- the next tally simply includes it. A legitimate new
+        customer is delayed, never silently disenfranchised."""
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        newcomers = await _fresh_orgs(session_factory, 3, prefix="newcomer")
+        for org_id in newcomers:
+            await _vote(session_factory, org_id, trace_id, "down")
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_UNPROVEN
+
+        await establish_orgs(newcomers)
+        # Any subsequent vote re-tallies the entry from scratch; here it is
+        # one of the newcomers re-affirming, which re-counts all three.
+        await _vote(session_factory, newcomers[0], trace_id, "down")
+
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, trace_id)
+            assert trace.commons_votes == 3
+        assert await _standing_of(session_factory, trace_id) == commons.STANDING_DISPUTED
+
+    async def test_the_response_tells_the_voter_whether_it_counted(self, session_factory, orgs):
+        """Silence would be its own failure: an org watching the number not
+        move would reasonably conclude voting is broken."""
+        trace_id = await _seed(session_factory, orgs["operator"], "webhook idempotency")
+        sock = (await _fresh_orgs(session_factory, 1))[0]
+
+        assert (await _vote(session_factory, sock, trace_id, "up"))["vote_counted"] is False
+        assert (await _vote(session_factory, orgs["cust-a"], trace_id, "up"))["vote_counted"] is True
+
+    async def test_an_org_rating_its_own_trace_is_never_held_back(self, session_factory):
+        """The bar exists to protect a SHARED number. A brand-new org
+        rating its own trace moves nothing anyone else reads, so making it
+        wait a day would be friction with no threat behind it."""
+        async with session_scope(session_factory) as session:
+            own = Organization(name="brand-new")
+            session.add(own)
+            await session.flush()
+            org_id = own.id
+            trace = Trace(
+                org_id=org_id,
+                title="my own failure",
+                context_text="ctx",
+                solution_text="fix",
+                tags=[],
+                agent_type="code",
+            )
+            session.add(trace)
+            await session.flush()
+            trace_id = trace.id
+
+        await _vote(session_factory, org_id, trace_id, "up")
+        async with session_scope(session_factory) as session:
+            stored = await session.get(Trace, trace_id)
+            assert stored.commons_votes == 1
+            assert stored.trust == 1.0

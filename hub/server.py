@@ -821,7 +821,12 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     @scoped_tool(scopes.SCOPE_WRITE)
     async def vote_trace(id: str, vote: str, feedback_tag: str = "", feedback_text: str = "") -> dict:
         """Cast (or update) this org's vote ('up'/'down') on a trace: your
-        own, or any other org's trace currently shared to the commons."""
+        own, or any other org's trace currently shared to the commons.
+
+        A vote on a commons entry is always recorded, but only moves that
+        entry's standing once your org is established (enough traces
+        captured, old enough) -- the reply's `vote_counted` says which.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
