@@ -88,6 +88,25 @@ and only the second one predicts what happens in the room.
 That is the single highest-value thing to fix in this codebase, and it is
 not a tuning exercise.
 
+**Fixed, and measured on exactly that scenario.** `commons report` now
+looks up the failures the bar did *not* clear, using the ranked
+`commons_search` path measured further down this file, and shows them under
+a heading that cannot be read as coverage. Re-running the nine-row export
+above against a seeded Hub:
+
+| | Before | After |
+|---|---|---|
+| Coverage figure | 0 of 9 (0%) | **0 of 9 (0%) — unchanged** |
+| Correct entry surfaced, rank 1 | — | **7 of 7** of the provably-present failures |
+| Negative controls returning a candidate | — | 0 of 2 |
+
+The coverage number, its threshold and its 0% false-positive property are
+untouched: the lookups are a second question asked only about what the
+first one did not answer, and nothing on that list moves the percentage.
+Ranked lookup is opt-in (`--candidates`) because each lookup is a metered
+consultation; without the flag the report now at least *says* that a low
+number is not an empty Knowledge Base, and how to see what it has.
+
 ## Two tiers, opposite trades — and only one of them is a defect
 
 `python commons/eval/retrieval_tiers.py` runs the *per-org* lexical ranker

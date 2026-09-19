@@ -452,3 +452,190 @@ class TestSignFromAnExistingExport:
         ))
         assert rc == 1
         assert "not both" in capsys.readouterr().err
+
+
+# --- `commons report --candidates`: the lookup the coverage bar hides ----
+
+
+def _report_args(**kw):
+    base = dict(
+        signatures=None, from_file=None, from_format=None, threshold=None,
+        counts_only=False, candidates=False,
+        candidate_limit=commons_cmd.DEFAULT_CANDIDATE_LOOKUPS,
+        json=False, hub_url="http://hub.test/mcp", hub_api_key="ct_live_test", dest=None,
+    )
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _stub_hub(monkeypatch, *, report, searches=None, search_error=None):
+    """Stand in for the two Hub calls, recording what was asked."""
+    calls: list[list[int]] = []
+
+    async def fake_overlap(hub_url, api_key, failures, **kw):
+        return report
+
+    async def fake_search(hub_url, api_key, signature, **kw):
+        calls.append(signature)
+        if search_error is not None:
+            raise commons_cmd.hub_client.HubConnectionError(search_error)
+        return {"candidates": (searches or {}).get(tuple(signature), [])}
+
+    monkeypatch.setattr(commons_cmd.hub_client, "commons_overlap", fake_overlap)
+    monkeypatch.setattr(commons_cmd.hub_client, "commons_search", fake_search)
+    return calls
+
+
+def _failures():
+    return [
+        {"label": "alpha", "signature": [1, 1, 1]},
+        {"label": "beta", "signature": [2, 2, 2]},
+        {"label": "gamma", "signature": [3, 3, 3]},
+    ]
+
+
+def _coverage(n_covered=0, matches=None, disputed=None):
+    return {
+        "n_failures": 3, "n_covered": n_covered,
+        "covered_fraction": n_covered / 3, "n_commons_traces": 46, "threshold": 0.3,
+        "matches": matches or [], "disputed_matches": disputed or [],
+    }
+
+
+class TestTheReportNoLongerReadsAsAnEmptyKnowledgeBase:
+    """The defect this closes, recorded in commons/eval/RESULTS.md as the
+    single highest-value thing to fix in the codebase.
+
+    A prospect's export of nine failures -- seven of which the corpus
+    provably contained -- reported "0 of 9. 0%." The number was correct:
+    the coverage bar buys a 0% false-positive rate by discarding roughly
+    nine of every ten real answers. But "0%" and "this product knows
+    nothing about my problems" are indistinguishable to a reader, and only
+    the second one predicts what happens in the room.
+    """
+
+    def test_an_uncovered_report_explains_the_bar_and_offers_the_lookup(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage())
+
+        assert commons_cmd.run_report(_report_args()) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out
+        assert "not the same as an empty Knowledge Base" in out
+        assert "--candidates" in out
+        # The cost is stated up front: each lookup is a metered consultation.
+        assert "consultation" in out
+
+    def test_a_fully_covered_report_makes_no_such_offer(self, monkeypatch, capsys):
+        """Nothing was hidden, so there is nothing to explain away."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        matches = [{"failure_label": f["label"], "similarity": 0.9, "trace": {"title": "t"}}
+                   for f in _failures()]
+        _stub_hub(monkeypatch, report=_coverage(n_covered=3, matches=matches))
+
+        assert commons_cmd.run_report(_report_args()) == 0
+        out = capsys.readouterr().out
+        assert "empty Knowledge Base" not in out
+
+
+class TestCandidatesAreLookedUpButNeverCounted:
+    def test_it_looks_up_exactly_the_uncovered_failures(self, monkeypatch, capsys):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        matches = [{"failure_label": "alpha", "similarity": 0.9, "trace": {"title": "covered"}}]
+        calls = _stub_hub(
+            monkeypatch,
+            report=_coverage(n_covered=1, matches=matches),
+            searches={(2, 2, 2): [{"rank": 1, "similarity": 0.15,
+                                   "trace": {"title": "beta answer", "solution_text": "do x"}}]},
+        )
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        # alpha cleared the bar, so looking it up again would spend a
+        # consultation to repeat what the report already said.
+        assert calls == [[2, 2, 2], [3, 3, 3]]
+        out = capsys.readouterr().out
+        assert "beta answer" in out
+        assert "do x" in out
+
+    def test_a_disputed_match_is_not_looked_up_again(self, monkeypatch):
+        """`_render` already gives disputed matches their own section
+        explaining why they are excluded from the figure. The Knowledge
+        Base demonstrably has something about them, so they are found, not
+        uncovered."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        disputed = [{"failure_label": "beta", "similarity": 0.4, "trace": {"title": "d"}}]
+        calls = _stub_hub(
+            monkeypatch, report=_coverage(n_covered=0, disputed=disputed))
+
+        commons_cmd.run_report(_report_args(candidates=True))
+        assert [1, 1, 1] in calls and [3, 3, 3] in calls
+        assert [2, 2, 2] not in calls
+
+    def test_the_coverage_figure_is_untouched_by_the_lookups(self, monkeypatch, capsys):
+        """The whole point. Ranked hits are candidates a human judges; the
+        score distributions of true and absent matches overlap
+        (commons/eval/RESULTS.md), so counting one would destroy the 0%
+        false-positive property the quotable number rests on."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(
+            monkeypatch, report=_coverage(),
+            searches={(s, s, s): [{"rank": 1, "similarity": 0.5,
+                                   "trace": {"title": f"answer {s}", "solution_text": "x"}}]
+                      for s in (1, 2, 3)},
+        )
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out and "**0%**" in out
+        assert "NOT counted as coverage" in out
+        assert "answer 1" in out
+
+    def test_json_marks_the_lookups_as_not_coverage(self, monkeypatch, capsys):
+        """A machine consumer must not be able to add these to the
+        numerator by mistake."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage(),
+                  searches={(1, 1, 1): [{"rank": 1, "trace": {"title": "a"}}]})
+
+        assert commons_cmd.run_report(_report_args(candidates=True, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["n_covered"] == 0
+        assert payload["covered_fraction"] == 0
+        assert payload["candidate_lookups_are_not_coverage"] is True
+        assert len(payload["candidate_lookups"]) == 3
+
+
+class TestTheLookupsAreBoundedAndSurviveFailure:
+    def test_the_budget_caps_lookups_and_says_how_many_were_skipped(
+        self, monkeypatch, capsys
+    ):
+        """Each lookup is a metered consultation, so an unbounded report
+        over a large import could spend a month's allowance in one
+        command."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        calls = _stub_hub(monkeypatch, report=_coverage())
+
+        commons_cmd.run_report(_report_args(candidates=True, candidate_limit=1))
+        assert len(calls) == 1
+        out = capsys.readouterr().out
+        assert "2 further uncovered failure(s) were not looked up" in out
+
+    def test_a_zero_budget_spends_nothing(self, monkeypatch):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        calls = _stub_hub(monkeypatch, report=_coverage())
+        commons_cmd.run_report(_report_args(candidates=True, candidate_limit=0))
+        assert calls == []
+
+    def test_a_failed_lookup_does_not_discard_the_report(self, monkeypatch, capsys):
+        """A plan running out of consultations mid-report is the expected
+        case, not an exceptional one -- and the coverage report was already
+        paid for before the first lookup was attempted."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage(), search_error="allowance exhausted")
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out
+        assert "allowance exhausted" in out

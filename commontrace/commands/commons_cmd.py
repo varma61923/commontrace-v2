@@ -102,6 +102,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--counts-only", action="store_true",
         help="Ask for the headline number without pulling any matched content.",
     )
+    rep.add_argument(
+        "--candidates", action="store_true",
+        help="For each failure the coverage bar did NOT clear, also look it up by "
+        "ranked search and show the best candidate answers. Measured recall is 89%% "
+        "at rank 1 against the coverage bar's 10.9%%, so this is usually the "
+        "difference between a report that reads 'we know nothing about you' and one "
+        "that is useful. Results are candidates to judge, never counted as coverage. "
+        "Costs one consultation per uncovered failure looked up.",
+    )
+    rep.add_argument(
+        "--candidate-limit", type=int, default=DEFAULT_CANDIDATE_LOOKUPS, metavar="N",
+        help=f"With --candidates, look up at most N uncovered failures "
+        f"(default {DEFAULT_CANDIDATE_LOOKUPS}). Each one costs a consultation, so "
+        "this bounds what a single report can spend.",
+    )
     rep.add_argument("--json", action="store_true", help="Emit raw JSON instead of markdown.")
     rep.add_argument("--hub-url", default=None, help="Default: $COMMONTRACE_HUB_URL")
     rep.add_argument("--hub-api-key", default=None, help="Default: $COMMONTRACE_HUB_API_KEY")
@@ -301,6 +316,123 @@ def run_sign(args: argparse.Namespace) -> int:
     return 0
 
 
+# How many uncovered failures one `commons report --candidates` will look
+# up unless told otherwise. Each lookup is a metered consultation
+# (hub/crud.py:commons_search), so an unbounded report over a large import
+# could spend a month's allowance in one command. Ten is enough to make the
+# point on a realistic incident export while keeping the bill legible.
+DEFAULT_CANDIDATE_LOOKUPS = 10
+
+
+def _uncovered(failures: list[dict], report: dict) -> list[dict]:
+    """The failures the coverage bar did not clear, in input order.
+
+    Disputed matches count as *found*, not uncovered: the Knowledge Base
+    demonstrably has something about them, and `_render` already gives them
+    their own section explaining why they are excluded from the figure.
+    Looking them up again would spend a consultation to repeat what the
+    report just said.
+    """
+    answered = {m.get("failure_label") for m in (report.get("matches") or [])}
+    answered |= {m.get("failure_label") for m in (report.get("disputed_matches") or [])}
+    return [f for f in failures if f.get("label") not in answered]
+
+
+def _render_report_candidates(found: list[dict], skipped: int) -> str:
+    """The ranked lookups, under a heading that cannot be misread as coverage.
+
+    Kept textually separate from the coverage section above, and never
+    folded into its arithmetic, because commons/eval/RESULTS.md measured
+    exactly why: the score distributions of true and absent matches
+    overlap, so a ranked hit is evidence for a human to weigh and not a
+    solved failure. The coverage figure keeps its 0% false-positive
+    property precisely by not counting anything on this list.
+    """
+    lines = [
+        "## Candidates to judge — NOT counted as coverage",
+        "",
+        "The coverage figure above uses a deliberately strict bar so that a number "
+        "you may quote never over-claims. Measured against labelled pairs, that bar "
+        "discards roughly nine of every ten real answers "
+        "(`commons/eval/RESULTS.md`). Ranked lookup keeps the same privacy "
+        "properties — still signatures, still no failure text leaving this machine — "
+        "and finds the right entry 89% of the time at rank 1.",
+        "",
+        "So the entries below are what the Knowledge Base offers for failures the "
+        "bar did not clear. They are **candidates for you to judge**, and none of "
+        "them moved the percentage above.",
+        "",
+    ]
+    for item in found:
+        label = item["label"]
+        candidates = item.get("candidates") or []
+        lines += [f"### {label}", ""]
+        if item.get("error"):
+            lines += [f"> Lookup failed: {item['error']}", ""]
+            continue
+        if not candidates:
+            lines += ["No entry shared a content word with this failure.", ""]
+            continue
+        for c in candidates:
+            trace = c.get("trace") or {}
+            sim = c.get("similarity")
+            bits = [f"similarity {sim:.3f}"] if isinstance(sim, (int, float)) else []
+            if trace.get("standing"):
+                bits.append(str(trace["standing"]))
+            votes = trace.get("vote_count") or 0
+            if votes:
+                bits.append(f"{votes} fleet(s) voted")
+            lines += [
+                f"- **{trace.get('title', '(untitled)')}**"
+                + (f" — *{' · '.join(bits)}*" if bits else ""),
+            ]
+            solution = (trace.get("solution_text") or "").strip()
+            if solution:
+                lines.append(f"  - {solution}")
+        lines.append("")
+    if skipped > 0:
+        lines += [
+            f"*{skipped} further uncovered failure(s) were not looked up — each lookup "
+            "spends a consultation. Raise `--candidate-limit` to include them.*",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def _render_candidates_offer(n_uncovered: int) -> str:
+    """Shown when the bar cleared nothing (or little) and the reader did not
+    ask for lookups.
+
+    This exists because of a specific, recorded failure: a prospect's export
+    of nine failures, seven of which this corpus provably contained, came
+    back "0 of 9, 0%" — and a reader has no way to tell that from "this
+    product knows nothing about my problems". The number was correct. The
+    impression it left was false, and that gap is what loses the room.
+    """
+    return "\n".join([
+        "## Before you read the number above as 'it knows nothing'",
+        "",
+        f"{n_uncovered} of your failures did not clear the coverage bar. That bar is "
+        "strict on purpose — it buys a 0% false-positive rate so the percentage is "
+        "safe to quote — and the price, measured against labelled pairs, is that it "
+        "discards roughly nine of every ten answers the Knowledge Base actually has "
+        "(`commons/eval/RESULTS.md`).",
+        "",
+        "**A low number here is not the same as an empty Knowledge Base.** Ranked "
+        "lookup, with identical privacy properties, finds the right entry 89% of the "
+        "time at rank 1. To see what it has for the failures above:",
+        "",
+        "```",
+        "commontrace commons report --from <your file> --candidates",
+        "```",
+        "",
+        f"That costs one consultation per failure looked up (at most "
+        f"{DEFAULT_CANDIDATE_LOOKUPS} unless you raise `--candidate-limit`), and what "
+        "comes back are candidates to judge rather than coverage.",
+        "",
+    ])
+
+
 def _render(report: dict) -> str:
     n_f = report["n_failures"]
     n_cov = report["n_covered"]
@@ -425,7 +557,53 @@ def run_report(args: argparse.Namespace) -> int:
         print(f"[commontrace] {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(report, indent=2) if args.json else _render(report))
+    # The coverage call, its threshold and its output are untouched by
+    # everything below: the ranked lookups are a second, separate question
+    # asked only about the failures that call did not answer.
+    uncovered = _uncovered(failures, report)
+    looked_up: list[dict] = []
+    skipped = 0
+    if uncovered and getattr(args, "candidates", False):
+        try:
+            budget = int(getattr(args, "candidate_limit", DEFAULT_CANDIDATE_LOOKUPS))
+        except (TypeError, ValueError):
+            budget = DEFAULT_CANDIDATE_LOOKUPS
+        budget = max(0, budget)
+        skipped = max(0, len(uncovered) - budget)
+        for failure in uncovered[:budget]:
+            entry: dict = {"label": failure.get("label", "(unlabelled)")}
+            try:
+                found = asyncio.run(
+                    hub_client.commons_search(
+                        hub_url, api_key, failure.get("signature") or [],
+                    )
+                )
+                entry["candidates"] = found.get("candidates") or []
+            except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+                # One failed lookup must not discard the coverage report the
+                # caller already paid for, nor the lookups that did succeed
+                # -- a plan running out of consultations mid-report is the
+                # expected case, not an exceptional one.
+                entry["error"] = str(exc)
+            looked_up.append(entry)
+
+    if args.json:
+        if looked_up or skipped:
+            report = dict(report)
+            report["candidate_lookups"] = looked_up
+            report["candidate_lookups_skipped"] = skipped
+            # Named so no consumer can mistake this for part of the
+            # coverage arithmetic, which is what RESULTS.md warns against.
+            report["candidate_lookups_are_not_coverage"] = True
+        print(json.dumps(report, indent=2))
+        return 0
+
+    rendered = _render(report)
+    if looked_up:
+        rendered += "\n" + _render_report_candidates(looked_up, skipped)
+    elif uncovered:
+        rendered += "\n" + _render_candidates_offer(len(uncovered))
+    print(rendered)
     return 0
 
 

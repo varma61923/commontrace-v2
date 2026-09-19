@@ -39,6 +39,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commons report --candidates`: the report no longer reads as an empty
+  Knowledge Base.** `commons/eval/RESULTS.md` recorded this as *"the single
+  highest-value thing to fix in this codebase"*: a prospect's nine-failure
+  export, seven of which the corpus provably contained, came back **"0 of
+  9. 0%."** The number was correct — the coverage bar buys a 0%
+  false-positive rate by discarding roughly nine of every ten real answers
+  — but "0%" and "this product knows nothing about my problems" are
+  indistinguishable to a reader, and only the second predicts what happens
+  in the room.
+
+  The report now looks up the failures the bar did *not* clear, via the
+  ranked `commons_search` path (89% recall@1, same privacy properties — still
+  signatures, no failure text leaves the machine), and shows them under a
+  heading that cannot be read as coverage. Measured by re-running that exact
+  scenario against a seeded Hub: coverage still **0 of 9 (0%)**, and **7 of
+  7** provably-present failures now surface their exact entry at rank 1.
+
+  The coverage figure, its threshold and its 0% false-positive property are
+  untouched — the lookups are a second question asked only about what the
+  first did not answer, and nothing on that list moves the percentage. The
+  JSON output marks them `candidate_lookups_are_not_coverage` so a machine
+  consumer cannot add them to the numerator by mistake.
+
+  Opt-in, because each lookup is a metered consultation
+  (`hub/crud.py:commons_search`) and an unbounded report over a large import
+  could spend a month's allowance in one command; `--candidate-limit` bounds
+  it, and the default caps at 10. Without the flag the report still now says
+  plainly that a low number is not an empty Knowledge Base, states what the
+  lookup would cost, and shows the command.
+
 - **A corrected Knowledge Base entry now says it was corrected.**
   Amendment resets an entry's votes (they judged text that no longer
   exists), which left a freshly corrected entry indistinguishable from one
