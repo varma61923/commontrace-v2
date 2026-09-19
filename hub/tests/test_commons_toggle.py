@@ -149,3 +149,66 @@ class TestCommonsDisabled:
         # rather than existing and choosing to say no.
         assert "unknown tool" in str(exc_info.value).lower()
         assert "not_found" not in str(exc_info.value).lower()
+
+
+class TestTheHandMaintainedToolInventoriesMatchReality:
+    """Four places name the MCP tool surface, and nothing compared any of
+    them to the server until this test existed.
+
+      1. hub/rbac.py's capability map    -- authorization
+      2. this file's expected set        -- the commons toggle
+      3. hub/smoke.py's EXPECTED_TOOLS   -- the live-stack smoke check
+      4. install_cmd._HUB_TOOLS          -- the generated client template
+
+    (3) and (4) were pinned to EACH OTHER, which is why they could drift
+    from the server together and still look consistent. Adding
+    `commons_export` did exactly that: the hub suite went green while the
+    docker-compose job failed on "MCP tool surface is exactly core+commons",
+    because that assertion is the only thing that had ever compared a list
+    to a running server -- and it runs in CI, not here.
+
+    So this compares the list to the server, where it is cheap to check and
+    fast to find out. A tool added without its entry in these inventories
+    is not a cosmetic omission: (1) decides who may call it and (4) is what
+    an installed client believes exists.
+    """
+
+    async def test_smoke_expects_exactly_what_the_server_registers(
+        self, enabled_config, session_factory
+    ):
+        from hub import smoke
+
+        assert await _tool_names(enabled_config, session_factory) == set(smoke.EXPECTED_TOOLS)
+
+    async def test_the_core_only_surface_matches_with_commons_disabled(
+        self, disabled_config, session_factory
+    ):
+        from hub import smoke
+
+        assert await _tool_names(disabled_config, session_factory) == set(smoke.CORE_TOOLS)
+
+    async def test_the_generated_client_template_lists_the_real_surface(
+        self, enabled_config, session_factory
+    ):
+        """`commontrace install` writes _HUB_TOOLS into the template's
+        _comment, so this list is what a customer reads to find out what
+        their Hub can do. It was pinned to smoke.py's list rather than to
+        the server, which is how both drifted at once."""
+        from commontrace.commands import install_cmd
+
+        assert await _tool_names(enabled_config, session_factory) == set(
+            install_cmd._HUB_TOOLS
+        )
+
+    async def test_every_registered_tool_has_a_capability(
+        self, enabled_config, session_factory
+    ):
+        """hub/tests/test_rbac.py pins this too, and deliberately so: that
+        file owns authorization, this one owns the inventory. Both fail on
+        the same mistake, which is the point -- a tool registered without a
+        capability is unreachable-or-unguarded depending on which way the
+        lookup fails, and neither is acceptable."""
+        from hub import rbac
+
+        for name in await _tool_names(enabled_config, session_factory):
+            assert name in rbac.TOOL_CAPABILITY, f"{name} has no capability mapping"
