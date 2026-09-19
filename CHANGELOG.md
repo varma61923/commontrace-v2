@@ -37,6 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never populated by `from_env()`, never read anywhere. Removed, along
   with the now-unused `field` import.
 
+### Fixed
+
+- **A doctor test went red on the most complete install possible.**
+  `test_info_conditions_do_not_fail_the_run` asserted that `commontrace
+  doctor` prints at least one `[INFO]` line — but every INFO branch in
+  `doctor_cmd` reports an *optional* extra being **absent**, so on a machine
+  with all extras installed there are none, and the test failed. Its own
+  docstring says it exists so that "every `pip install` user's pipeline
+  [doesn't] go red on a working setup", which is precisely what it then did.
+  Surfaced by installing the `attention` extra to run the semantic
+  evaluation. The proxy is replaced by the invariant it was reaching for —
+  an INFO never reaches the exit code — and a new
+  `test_info_never_registers_a_failure` pins that directly against
+  `_FAILURES`, independent of what happens to be installed.
+
 ### Added
 
 - **`commons report --corpus`: a coverage number computed with no Hub at
