@@ -2311,3 +2311,116 @@ section is not a claim that none remain; it is a record that the method
 for finding them (audit the audit, not just the effect) produced a real
 one on the first deliberate pass, which is the argument for keeping the
 practice, not for stopping.
+
+---
+
+## 26. Update (2026-09-19): the abuse bar was built for votes, and the corpus has two shared numbers
+
+§25 established the method: audit the claim rather than extend it, and
+expect the first deliberate pass to find something. This section is that
+pass applied to the newest claim in the product — the one the Knowledge
+Base's governance makes, and the one a customer hears as *"nobody can
+game this."*
+
+The governance is modelled on Wikipedia's answer to cheap identities, and
+`hub/commons.py` states it plainly: **record every contribution, count
+selectively.** Any authenticated org may vote; only an *established* one —
+five traces, twenty-four hours — has its vote counted into the `trust` /
+`commons_votes` pair that decides an entry's standing. The file is explicit
+about why the bar has to exist at all: organizations are cheap. Signup is
+self-serve and `POST /api/v1/keys` mints an org and a working key over HTTP
+with no human in the loop.
+
+That reasoning is right. It was applied to one signal.
+
+### 26.1 The unguarded number, and what it costs
+
+`Trace.commons_hits` is not bookkeeping. It is read by
+`hub/manage.py kb_stats`, where a zero-hit entry is listed as a prune
+candidate and the top of the list is what the operator expands on. It was
+also, until this change, the tie-break in `commons_search`'s customer-facing
+ranking. So it reaches two decisions: **which knowledge the corpus keeps,
+and which answer a customer reads first.** Neither passed the bar.
+
+The arithmetic is not marginal. The `free` plan carries 20 commons queries
+a month with `commons_access=True`, and `MAX_HITS_PER_TRACE_PER_QUERY`
+permits each of those to credit 20 hits to a single entry. One free,
+self-minted, zero-trace org is therefore worth **400 units of influence
+over the operator's curation signal, for nothing** — while the same org
+cannot cast one counted vote. The defence stopped you saying an entry was
+bad and let you say an entry was popular for free.
+
+### 26.2 Why the ranking half was worse than it looks
+
+"Tie-break" understates it. MinHash similarity is quantized to
+`k / COMMONS_NUM_PERM`, so exact ties are the normal case. Measured on the
+shipped corpus against the held-out probes (`commons/eval/probes-v2.jsonl`,
+64 of 65 returning ≥2 candidates): **82.8% of queries have at least one
+similarity tie inside the top 10, and 7.8% have #1 and #2 tied outright.**
+Whatever breaks those ties is effectively choosing the answer, and what
+broke them was a number the caller writes with its own traffic.
+
+This is the suppression attack the vote bar was built to stop, reached by
+the door nobody was watching. You cannot downvote a correct entry past the
+bar — but you could pump an equally-similar competing entry's hits until
+the correct one ranked below it, for every other customer, and never cast
+a vote at all.
+
+### 26.3 The fix, and the half of it that is a refusal
+
+Two independent changes, because either alone leaves a live path.
+
+**The bar now governs both signals.** `org_is_established` states the rule
+once, as a property of an organization rather than of an action;
+`vote_counts_toward_standing` and `hit_counts_toward_quality_signal` are
+that predicate under names their call sites read better with. A test pins
+all three to the same answer — not a tautology, since the entire defect was
+two signals with two different bars, one of which was no bar.
+
+**Traffic no longer orders what customers read.** Gating *who* may credit a
+hit does not bound *how much* one qualifying org may credit, and nothing
+reasonably could: query volume is the thing a customer pays for, and
+`scale` carries 25,000 a month. Votes are one org, one vote; traffic is
+not. So `commons_hits` was removed from the ranking key entirely, leaving
+`trust` — which *is* one org, one vote, and gated by the same established
+filter — with `created_at` plus `id` beneath it as a total, stable key, so
+identical queries return identical rankings. The count is still returned on
+every candidate. It no longer decides their order.
+
+The refusal is the third option I did not take. Bounding one org's
+contribution properly means counting **distinct** orgs per entry, which
+needs a who-matched-what join table — the artifact `hub/models.py` already
+rejects, in writing, as "a far more sensitive artifact for a marginal
+gain." The gain is no longer marginal, so that tradeoff deserves re-opening
+on its own terms; it does not deserve to be reversed quietly inside an
+abuse fix, in a product whose entire pitch is tenant isolation and a
+signature-only exchange. So the residual is **accepted and stated**: an
+established org can still inflate the operator's own `commons_hits` figure.
+That number is operator-facing, a human reads it, and every query behind it
+is in the audit log — which is a different risk class from silently
+reordering what customers see.
+
+### 26.4 What this changes about the case, and what it does not
+
+No number in §24.3's table moves. What moves is the standing of a claim the
+product had started making implicitly the moment the Knowledge Base got
+governance: that the corpus resists manipulation. Before this pass that
+claim was true of votes and false of traffic, and the traffic path reached
+the same two outcomes more cheaply — 400 free units versus five traces and
+a day's wait for a single vote.
+
+§25.4 named "link 0" — is the instrument measuring what it claims to,
+under its own operating conditions? This is the governance analogue:
+**does the abuse model cover every number that moves, or only the number
+someone thought of first?** The honest answer was the latter, and the
+generalizable lesson is the one `org_is_established` now encodes
+structurally — an anti-abuse rule attached to an *action* protects that
+action, while the corpus needs it attached to the *actor*, so that the next
+shared signal inherits the bar instead of quietly starting without one.
+
+*Falsifier:* a third shared number, added later, that moves without passing
+`org_is_established`. Nothing in the type system enforces this yet; the
+defence is that the predicate is now one function with the reasoning at its
+call sites, rather than a rule re-derived per feature. If a fourth signal
+appears and drifts anyway, the right fix is structural — routing every
+shared-number write through one gate — not another section like this one.

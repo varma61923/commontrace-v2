@@ -425,6 +425,25 @@ class Trace(Base):
     # artifact for a marginal gain. Incremented with the same atomic
     # in-database UPDATE the retrievals counter uses. BigInteger for the
     # same overflow reason as retrievals/depth above.
+    #
+    # Credited only for an ESTABLISHED org (hub/commons.py:
+    # hit_counts_toward_quality_signal) -- the same autoconfirmed bar that
+    # governs votes. It was originally credited for anyone, which made a
+    # free self-serve org worth 400 units a month against the operator's
+    # own curation signal while being unable to cast one counted vote.
+    #
+    # What that gate does NOT bound is how much ONE qualifying org may
+    # credit: query volume is what a customer pays for, and the `scale`
+    # plan carries 25,000 commons queries a month. Bounding it properly
+    # would mean counting DISTINCT orgs per entry, which needs exactly the
+    # who-matched-what join table this comment rejects above, and that
+    # tradeoff has not changed -- so the residual is accepted and stated
+    # rather than hidden: this number is operator-facing, a human reads it
+    # in `hub/manage.py kb_stats`, and every query behind it is in the
+    # audit log. The customer-facing consequence was removed instead --
+    # `commons_hits` no longer breaks ties in `commons_search`'s ranking
+    # (see hub/crud.py there for the measurement that made that a real
+    # ordering decision rather than a rare one).
     commons_hits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # --- Knowledge Base entry standing -------------------------------------

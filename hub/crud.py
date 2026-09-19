@@ -5065,7 +5065,28 @@ async def commons_overlap(
         if include_matches:
             matches.append(entry)
 
-    if hit_ids:
+    # Only an ESTABLISHED org's matches may move `commons_hits`. See
+    # hub/commons.py:hit_counts_toward_quality_signal for the full
+    # reasoning and the measured cost of not doing this; in short, that
+    # counter steers the operator's keep/prune/expand decisions
+    # (hub/manage.py:kb_stats), so it is a shared number, and the bar that
+    # protects the OTHER shared number -- trust/standing -- had never been
+    # applied to it. A free self-serve org with no traces could credit 400
+    # hits a month while being unable to cast one counted vote.
+    #
+    # Checked once per call, not per hit: it is a property of the caller,
+    # and the org row is already the one this request authenticated as.
+    # Deliberately AFTER coverage is computed and matches are collected --
+    # an unestablished caller gets exactly the same answer it always did,
+    # including its hits in `by_domain` and `matches`. What it does not get
+    # is a vote, cast in traffic, on which entries the corpus should keep.
+    hitter = await session.get(Organization, org_id) if hit_ids else None
+    hits_count = bool(hit_ids) and commons.hit_counts_toward_quality_signal(
+        trace_count=(hitter.trace_count if hitter else 0),
+        org_created_at=(hitter.created_at if hitter else None),
+    )
+
+    if hit_ids and hits_count:
         # Atomic in-database increment, same pattern as the retrievals
         # counter: a read-modify-write through the ORM would lose counts
         # under concurrent queries, and this number is the operator's
@@ -5277,9 +5298,9 @@ async def commons_search(
         for idx, sim in ranked
     ]
     # Disputed entries sort behind everything else, however similar. Within
-    # each group similarity decides the order, and delivered value and trust
-    # only break ties -- folding popularity into the score itself would let
-    # a well-corroborated answer to a DIFFERENT question outrank the right
+    # each group similarity decides the order, and trust only breaks ties --
+    # folding corroboration into the score itself would let a
+    # well-corroborated answer to a DIFFERENT question outrank the right
     # one, which is the failure mode a naive "rank by votes" blend has.
     #
     # Sorted to the back rather than filtered out, and that is the whole
@@ -5289,12 +5310,48 @@ async def commons_search(
     # relevant thing the corpus holds about your failure, plus the warning
     # that it did not work for the fleets who tried it. Dropping it would
     # answer "nothing found", which is false and strictly less useful.
+    #
+    # WHY `commons_hits` IS NOT A TIE-BREAK HERE, THOUGH IT USED TO BE
+    # ----------------------------------------------------------------
+    # This is a customer-facing ORDER, and the tie-break decides it far
+    # more often than "tie-break" suggests: measured on the shipped corpus
+    # against the held-out probes (commons/eval/probes-v2.jsonl), 82.8% of
+    # queries have at least one similarity tie inside the top 10 and 7.8%
+    # have the #1 and #2 candidates tied outright. MinHash similarity is
+    # quantized to k/COMMONS_NUM_PERM, so exact ties are the normal case,
+    # not a rare one. Whatever breaks them effectively chooses the answer.
+    #
+    # `commons_hits` cannot be that thing, because a caller controls it
+    # directly with its own traffic. hub/commons.py's establishment bar now
+    # governs WHO may credit a hit, which removes the free-org path; it does
+    # not bound HOW MUCH one qualifying org may credit, and nothing
+    # reasonably could -- an org's query volume is what it pays for, and on
+    # the `scale` plan that is 25,000 commons queries a month. One org
+    # willing to spend them could pin its preferred entry above an equally
+    # similar, more correct one for every other customer. Votes are one org,
+    # one vote; traffic is not, so traffic must not order what customers
+    # read.
+    #
+    # `trust` is the right tie-break precisely because it IS one org, one
+    # vote, and gated (hub/crud.py:_established_voters_only). Ties past that
+    # fall to `created_at`, oldest first: an arbitrary but STABLE order, so
+    # identical queries return identical rankings instead of whatever order
+    # the corpus scan happened to yield. `commons_hits` is still returned on
+    # each candidate -- it is real information about an entry, and a reader
+    # judging candidates may want it. It just no longer decides their order.
     candidates.sort(
         key=lambda c: (
             not commons.counts_as_coverage(c["trace"]["standing"]),
             -c["similarity"],
-            -c["commons_hits"],
             -(c["trace"].get("trust") or 0.0),
+            # `created_at` is a non-null ISO-8601 UTC string (_to_commons_wire
+            # -> _iso), so lexicographic order is chronological order. The id
+            # rides along to make the key TOTAL: two entries seeded in the
+            # same batch can share a timestamp, and without it Python's stable
+            # sort would fall back to corpus-scan order, which is
+            # `created_at DESC, id DESC` -- reversing the intended tie-break
+            # for exactly the rows most likely to hit it.
+            (c["trace"].get("created_at") or "", c["trace"]["id"]),
         )
     )
     for position, c in enumerate(candidates, start=1):

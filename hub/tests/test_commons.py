@@ -535,6 +535,19 @@ class TestKbStats:
     is a content-quality one: is the corpus actually answering real
     questions, and who is using it."""
 
+    # Every test in this class is about how hits are COUNTED, not about who
+    # is allowed to move the counter. hub/crud.py:commons_overlap only
+    # credits `commons_hits` for an established org -- the same
+    # autoconfirmed bar the vote path uses, applied to the other shared
+    # number (see hub/tests/test_commons_hit_integrity.py for why, and for
+    # the tests that own the rule itself). A freshly inserted
+    # Organization() clears neither threshold, so without this every
+    # assertion below would be reading 0 and silently measuring the
+    # anti-sockpuppet rule instead of the arithmetic it names.
+    @pytest_asyncio.fixture(autouse=True)
+    async def _established_queriers(self, orgs, establish_orgs):
+        await establish_orgs(orgs["customer-a"], orgs["customer-b"])
+
     async def test_empty_knowledge_base_reports_cleanly(self, session_factory, orgs, capsys):
         from hub import manage
 
@@ -658,6 +671,19 @@ class TestValueLedger:
     """Trace.commons_hits is the operator's quality signal for its own
     curated content -- "this entry actually covered a real recurring
     failure" -- so it has to be counted correctly."""
+
+    # Every test in this class is about how hits are COUNTED, not about who
+    # is allowed to move the counter. hub/crud.py:commons_overlap only
+    # credits `commons_hits` for an established org -- the same
+    # autoconfirmed bar the vote path uses, applied to the other shared
+    # number (see hub/tests/test_commons_hit_integrity.py for why, and for
+    # the tests that own the rule itself). A freshly inserted
+    # Organization() clears neither threshold, so without this every
+    # assertion below would be reading 0 and silently measuring the
+    # anti-sockpuppet rule instead of the arithmetic it names.
+    @pytest_asyncio.fixture(autouse=True)
+    async def _established_queriers(self, orgs, establish_orgs):
+        await establish_orgs(orgs["customer-a"], orgs["customer-b"])
 
     async def test_a_covered_failure_increments_the_hit_count(self, session_factory, orgs):
         tid = await _seed(
