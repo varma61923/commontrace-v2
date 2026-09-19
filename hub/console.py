@@ -1108,6 +1108,19 @@ def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
     much it is actually used, and this org's own say in that."""
     standing = str(entry.get("standing") or "")
     tone = _STANDING_TONE.get(standing, "")
+    # "Revised" is not decoration. Amending an entry resets its votes (the
+    # old ones judged text that is gone), so a corrected entry and a
+    # never-tried one both read `unproven` with zero votes. Saying which is
+    # which is what keeps that reset honest, and it is the same affordance
+    # a wiki's "last edited on" provides.
+    revisions = int(entry.get("revisions") or 0)
+    revised = (
+        f'<br><span class="pill mute" title="Corrected {_num(revisions)} time(s). '
+        'Votes reset on each correction, because they judged text that is no '
+        'longer there.">revised &times;'
+        f'{_num(revisions)}</span>'
+        if revisions else ""
+    )
     tags = "".join(
         f'<span class="pill">{h(t)}</span> ' for t in (entry.get("tags") or [])[:6]
     )
@@ -1115,7 +1128,7 @@ def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
         f"<tr><td><b>{h(entry.get('title'))}</b><br>"
         f'<span class="muted">{h(entry.get("solution_preview"))}</span><br>{tags}</td>'
         f'<td><span class="pill {tone}" title="{h(_STANDING_MEANING.get(standing, ""))}">'
-        f"{h(standing)}</span>{_render_kb_concerns(entry)}</td>"
+        f"{h(standing)}</span>{revised}{_render_kb_concerns(entry)}</td>"
         f'<td class="rev">{_num(entry.get("votes", 0))} vote(s)</td>'
         f'<td class="rev">{_num(entry.get("hits", 0))}</td>'
         f"<td>{_render_kb_vote(entry, can_vote)}</td>"

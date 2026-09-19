@@ -205,3 +205,46 @@ class TestACustomersOwnTraceIsUnaffected:
         assert stored.commons_source != "seed"
         assert stored.shared_with_commons is False
         assert (await _browse(session_factory, orgs["reader"]))["total"] == 0
+
+
+class TestAReaderCanTellACorrectedEntryFromANewOne:
+    """The honesty condition on resetting votes.
+
+    `_carry_commons_forward` drops `trust`/`commons_votes` on amendment,
+    for good reasons documented there. The consequence is that a freshly
+    corrected entry and one nobody has ever tried both read `unproven`
+    with zero votes -- indistinguishable, which makes the reset look like
+    amnesia rather than a decision. Saying "revised" is what keeps it
+    honest, and it is the same affordance a wiki's "last edited on"
+    provides.
+    """
+
+    async def test_an_untouched_entry_reports_no_revisions(
+        self, session_factory, config, orgs
+    ):
+        await _seed_kb(session_factory, orgs["operator"])
+        entry = (await _browse(session_factory, orgs["reader"]))["entries"][0]
+        assert entry["revisions"] == 0
+
+    async def test_a_corrected_entry_reports_one(self, session_factory, config, orgs):
+        entry_id = await _seed_kb(session_factory, orgs["operator"])
+        await _amend(session_factory, config, orgs["operator"], entry_id,
+                     solution_text="corrected")
+
+        entry = (await _browse(session_factory, orgs["reader"]))["entries"][0]
+        assert entry["revisions"] == 1
+        # ...and it is otherwise indistinguishable from a new entry, which
+        # is exactly why the count has to be there.
+        assert entry["standing"] == commons.STANDING_UNPROVEN
+        assert entry["votes"] == 0
+
+    async def test_the_count_tracks_a_chain_of_corrections(
+        self, session_factory, config, orgs
+    ):
+        entry_id = await _seed_kb(session_factory, orgs["operator"])
+        current = entry_id
+        for n in range(3):
+            current = (await _amend(session_factory, config, orgs["operator"], current,
+                                    solution_text=f"revision {n}"))["id"]
+
+        assert (await _browse(session_factory, orgs["reader"]))["entries"][0]["revisions"] == 3

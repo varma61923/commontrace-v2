@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A corrected Knowledge Base entry now says it was corrected.**
+  Amendment resets an entry's votes (they judged text that no longer
+  exists), which left a freshly corrected entry indistinguishable from one
+  nobody has ever tried: both `unproven`, both zero votes. That makes the
+  reset look like amnesia rather than a decision. `browse_commons` now
+  returns `revisions` per entry and the console renders a "revised ×N"
+  marker beside the standing — the same affordance a wiki's "last edited
+  on" provides, and the thing that explains why an entry a reader
+  remembers as disputed no longer is.
+
 - **Correcting a Knowledge Base entry no longer deletes it.**
   `commons_visible()` excludes superseded rows and `amend_trace` INSERTs a
   new row rather than mutating the original, so amending a Knowledge Base

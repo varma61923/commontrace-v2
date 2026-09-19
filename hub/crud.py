@@ -5440,6 +5440,16 @@ async def browse_commons(
             "hits": trace.commons_hits or 0,
             "my_vote": my_votes.get(trace.id, ""),
             "concerns": concerns.get(trace.id, {}),
+            # How many times this entry has been corrected. Surfaced
+            # because amendment resets the votes (see
+            # _carry_commons_forward: they judged text that no longer
+            # exists), which leaves a freshly corrected entry looking
+            # identical to one nobody has ever tried -- both `unproven`,
+            # both zero votes. The reset is only honest if a reader can
+            # tell the difference, and "this was revised" is also the
+            # thing that explains why an entry they remember as disputed
+            # is not any more.
+            "revisions": trace.depth or 0,
             "created_at": _iso(trace.created_at),
         })
     entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))

@@ -2771,6 +2771,28 @@ class TestTheCatalogueShowsTheGroundsForAVerdict:
         assert "unproven" in response.text
         assert "security concern" in response.text
 
+    async def test_a_corrected_entry_says_so(
+        self, session_factory, org_and_key, config
+    ):
+        """A corrected entry and a never-tried one both read `unproven`
+        with zero votes, because amendment resets the votes. Saying
+        "revised" is what keeps that reset honest rather than amnesiac."""
+        from hub.abuse import make_rate_limiter
+        _org_id, raw_key = org_and_key
+        entry_id = await self._operator_entry(session_factory)
+        async with session_scope(session_factory) as session:
+            operator_org = (await session.get(Trace, entry_id)).org_id
+        async with session_scope(session_factory) as session:
+            await crud.amend_trace(
+                session, operator_org, entry_id, config, make_rate_limiter(config),
+                solution_text="corrected advice", actor="operator-console",
+            )
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "revised" in response.text
+        assert "corrected advice" in response.text
+
     async def test_an_unflagged_entry_shows_no_concern_pills(
         self, session_factory, org_and_key
     ):
