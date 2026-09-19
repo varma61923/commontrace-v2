@@ -5110,6 +5110,24 @@ async def browse_commons(
     has_more = len(rows) > limit
     rows = rows[:limit]
 
+    # This org's OWN vote on each listed entry, in one query rather than
+    # one per row. Surfaced because a catalogue that shows a verdict but
+    # not your part in it cannot tell "nobody has judged this" from "you
+    # already did" -- and a reader who cannot see their own vote has no way
+    # to know the button they are looking at would change it rather than
+    # cast it.
+    my_votes: dict[str, str] = {}
+    if rows:
+        vote_rows = (
+            await session.execute(
+                select(Vote.trace_id, Vote.vote_type).where(
+                    Vote.org_id == org_id,
+                    Vote.trace_id.in_([trace.id for trace in rows]),
+                )
+            )
+        ).all()
+        my_votes = {trace_id: vote_type for trace_id, vote_type in vote_rows}
+
     now = datetime.now(timezone.utc)
     entries = []
     for trace in rows:
@@ -5130,6 +5148,7 @@ async def browse_commons(
             "trust": trace.trust or 0.0,
             "votes": trace.commons_votes or 0,
             "hits": trace.commons_hits or 0,
+            "my_vote": my_votes.get(trace.id, ""),
             "created_at": _iso(trace.created_at),
         })
     entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))

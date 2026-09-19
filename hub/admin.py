@@ -257,17 +257,27 @@ def _auto_refresh_script(seconds: int) -> str:
 # double click or an impatient second click while the first request is
 # still in flight would fire the SAME mutation twice before either
 # response comes back -- harmless for an idempotent one, but a second
-# "issue a key" or "purge" click is not a no-op. Disabling the clicked
-# button (and every other submit button on the page, since a slow
-# request blocks the whole page anyway) the instant a form actually
-# submits closes that window without a network call of its own: the
-# browser's native submit still proceeds normally, this only prevents a
-# second one starting before navigation away from this page happens.
+# "issue a key" or "purge" click is not a no-op. Marking the form as
+# in-flight and cancelling any SECOND submit closes that window without a
+# network call of its own; the browser's native first submit proceeds
+# untouched.
+#
+# It deliberately does NOT disable the clicked button, which is what an
+# earlier version of this guard did. A disabled control is barred from
+# form submission, so disabling the submitter drops its own name/value
+# pair -- and a multi-button form carries its ACTION there
+# (`<button name="vote" value="up">`). That silently turned "vote up"
+# into a request with no vote at all. Caught in a real browser; every
+# test here posts with httpx, which runs no JavaScript and so could not
+# have seen it. The class is cosmetic precisely so that nothing about
+# what gets submitted depends on this script running.
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
+    "var f=ev.target;"
+    "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
     "if(ev.defaultPrevented)return;"
-    "document.querySelectorAll('button[type=submit]').forEach(function(b){"
-    "if(b===ev.submitter){b.textContent='Working…';}b.disabled=true;});"
+    "f.dataset.ctSubmitting='1';"
+    "if(ev.submitter){ev.submitter.classList.add('busy');}"
     "},true);</script>"
 )
 

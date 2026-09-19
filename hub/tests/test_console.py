@@ -2320,3 +2320,230 @@ class TestKnowledgeBaseSubmitFromTheConsole:
                 follow_redirects=False,
             )
         assert response.status_code == 303
+
+
+class TestKnowledgeBaseVotingFromTheConsole:
+    """Closing the governance loop.
+
+    The catalogue displays each entry's standing, and standing is computed
+    from exactly these votes -- but until now a vote could only be cast by
+    an agent through the MCP tool. A repository that shows a verdict and
+    offers no way to change it is a read-only encyclopedia, so what these
+    tests pin is that the button actually moves the number, that it is
+    scoped to `write` rather than `admin`, and that it cannot reach content
+    the org could not already see.
+    """
+
+    async def _seed_entry(self, session_factory, org_id, title="Pool exhausted"):
+        from hub import commons
+        tags = ["postgres"]
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=org_id, title=title, context_text="ctx", solution_text="fix",
+                tags=tags, agent_type="code", shared_with_commons=True,
+                shared_at=datetime.now(timezone.utc), shared_rationale="seed",
+                commons_signature=commons.signature_for(title, "ctx", tags),
+                commons_source="seed",
+            )
+            session.add(trace)
+            await session.flush()
+            return trace.id
+
+    async def test_an_upvote_is_recorded_and_moves_the_tally(
+        self, session_factory, org_and_key
+    ):
+        org_id, raw_key = org_and_key
+        entry_id = await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, entry_id)
+        assert trace.commons_votes == 1
+        assert trace.trust == 1.0
+
+    async def test_a_downvote_carries_its_reason(self, session_factory, org_and_key):
+        """The reason is not decoration: `security_concern` is what
+        promotes an entry into the operator review queue's urgent bucket,
+        and a bare downvote cannot say that."""
+        from hub.models import Vote
+        org_id, raw_key = org_and_key
+        entry_id = await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "down",
+                      "feedback_tag": "security_concern"},
+            )
+        async with session_scope(session_factory) as session:
+            vote = (
+                await session.execute(select(Vote).where(Vote.trace_id == entry_id))
+            ).scalars().one()
+        assert vote.vote_type == "down"
+        assert vote.feedback_tag == "security_concern"
+
+    async def test_voting_again_changes_the_vote_rather_than_adding_one(
+        self, session_factory, org_and_key
+    ):
+        """One org, one vote -- `vote_trace` upserts on (trace, org), so a
+        second click must not let a single org stuff the ballot."""
+        org_id, raw_key = org_and_key
+        entry_id = await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""})
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "down", "feedback_tag": "wrong"})
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, entry_id)
+        assert trace.commons_votes == 1
+        assert trace.trust == 0.0
+
+    async def test_the_catalogue_shows_this_orgs_own_vote(
+        self, session_factory, org_and_key
+    ):
+        """A reader who cannot see their own vote has no way to know the
+        button would change it rather than cast it."""
+        org_id, raw_key = org_and_key
+        entry_id = await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            before = await client.get(f"{console.CONSOLE_PATH}/kb")
+            assert 'class="v voted"' not in before.text
+            await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""})
+            after = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert 'class="v voted"' in after.text
+
+    async def test_a_read_only_key_cannot_vote(self, session_factory, org_and_readonly_key):
+        """`write`, not `admin` -- but still not nothing: a read-only key
+        consumes the repository, it does not get to govern it."""
+        org_id, raw_key = org_and_readonly_key
+        entry_id = await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "up", "feedback_tag": ""})
+        # Apostrophes are HTML-escaped by `h()`, so match the unquoted part.
+        assert "Voting needs a key with" in response.text
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, entry_id)
+        assert trace.commons_votes == 0
+
+    async def test_a_read_only_key_is_shown_no_vote_buttons(
+        self, session_factory, org_and_readonly_key
+    ):
+        org_id, raw_key = org_and_readonly_key
+        await self._seed_entry(session_factory, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "/kb/vote" not in response.text
+
+    async def test_it_cannot_vote_on_a_trace_outside_the_knowledge_base(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        """The boundary again, at the one write path the catalogue exposes:
+        another org's private trace is not commons-visible, so a tampered
+        form naming its id must change nothing."""
+        _org_id, raw_key = org_and_key
+        other_id, _other_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            private = Trace(
+                org_id=other_id, title="Acme private", context_text="c",
+                solution_text="s", tags=[], agent_type="code",
+            )
+            session.add(private)
+            await session.flush()
+            private_id = private.id
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": private_id, "vote": "up", "feedback_tag": ""})
+        assert "no longer in the Knowledge Base" in response.text
+        async with session_scope(session_factory) as session:
+            trace = await session.get(Trace, private_id)
+        assert trace.commons_votes == 0
+
+    async def test_a_tampered_vote_value_is_refused_cleanly(
+        self, session_factory, org_and_key
+    ):
+        _org_id, raw_key = org_and_key
+        entry_id = await self._seed_entry(session_factory, org_and_key[0])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": entry_id, "vote": "sideways", "feedback_tag": ""})
+        assert response.status_code == 200
+        assert "vote_type" in response.text
+
+    async def test_voting_requires_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/vote",
+                data={"trace_id": "x", "vote": "up"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+
+class TestTheDoubleSubmitGuardDoesNotBreakForms:
+    """A regression test for a bug no other test here could catch.
+
+    The first version of this guard disabled every submit button the
+    instant a form submitted. A disabled control is barred from form
+    submission, so disabling the SUBMITTER drops its own name/value --
+    and a multi-button form keeps its action exactly there
+    (`<button name="vote" value="up">`). Voting silently posted no vote.
+
+    Every other test in this file drives the app with httpx, which runs no
+    JavaScript, so none of them saw it; it took a real browser. What can
+    be asserted without one is the invariant the fix rests on: this script
+    must never disable a control, because nothing about WHAT gets
+    submitted may depend on it.
+    """
+
+    async def test_the_guard_never_disables_a_control(self, session_factory, org_and_key):
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "ctSubmitting" in response.text, "the guard should be present at all"
+        assert "disabled=true" not in response.text.replace(" ", "")
+
+    async def test_the_vote_form_keeps_its_action_in_the_button(
+        self, session_factory, org_and_key
+    ):
+        """The shape that made the bug possible, pinned so a future
+        refactor cannot quietly move the action into a hidden input and
+        leave the guard's invariant looking unnecessary."""
+        from hub import commons
+        org_id, raw_key = org_and_key
+        tags = ["postgres"]
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=org_id, title="Pool exhausted", context_text="c",
+                solution_text="s", tags=tags, agent_type="code",
+                shared_with_commons=True, shared_at=datetime.now(timezone.utc),
+                shared_rationale="seed",
+                commons_signature=commons.signature_for("Pool exhausted", "c", tags),
+                commons_source="seed",
+            ))
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert 'name="vote" value="up"' in response.text
+        assert 'name="vote" value="down"' in response.text

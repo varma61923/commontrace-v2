@@ -291,6 +291,15 @@ form.stack input[type=text],form.stack textarea{font:inherit;font-size:.92rem;
 form.stack textarea{min-height:5.5rem;resize:vertical;font-family:inherit}
 form.stack button{padding:.5rem 1rem;font:inherit;border-radius:8px;
   border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;align-self:start}
+form.vote{display:flex;gap:.25rem;align-items:center;margin:0}
+form.vote button.v{font:inherit;font-size:.8rem;line-height:1;padding:.25rem .45rem;
+  border:1px solid var(--rule);border-radius:6px;background:var(--paper);
+  color:var(--muted);cursor:pointer}
+form.vote button.v:hover{border-color:var(--ink);color:var(--ink)}
+form.vote button.v.voted{border-color:var(--ink);background:var(--ink);color:#fff}
+button.busy{opacity:.6}
+form.vote select{font:inherit;font-size:.72rem;padding:.2rem;border:1px solid var(--rule);
+  border-radius:6px;background:var(--paper);color:var(--ink);max-width:9rem}
 """
 
 
@@ -334,16 +343,19 @@ def _auto_refresh_script(seconds: int) -> str:
     )
 
 
-# See hub/admin.py's identical copy of this guard for the full reasoning:
-# every form here is POST-then-redirect, so disabling the clicked submit
-# button (and every other one on the page) the instant a form actually
-# submits closes the double-click/impatient-second-click window without
-# a network call of its own -- the browser's native submit still proceeds.
+# See hub/admin.py's identical copy of this guard for the full reasoning,
+# including why it marks the form in-flight rather than DISABLING the
+# clicked button: a disabled control is barred from submission, so
+# disabling the submitter drops its own name/value -- which is exactly
+# where a multi-button form (the Knowledge Base vote buttons below) keeps
+# its action.
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
+    "var f=ev.target;"
+    "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
     "if(ev.defaultPrevented)return;"
-    "document.querySelectorAll('button[type=submit]').forEach(function(b){"
-    "if(b===ev.submitter){b.textContent='Working…';}b.disabled=true;});"
+    "f.dataset.ctSubmitting='1';"
+    "if(ev.submitter){ev.submitter.classList.add('busy');}"
     "},true);</script>"
 )
 
@@ -995,9 +1007,46 @@ _STANDING_MEANING = {
 }
 
 
-def _render_kb_entry(entry: dict) -> str:
+def _render_kb_vote(entry: dict, can_vote: bool) -> str:
+    """The governance control: this org's verdict on one entry.
+
+    A catalogue that shows standing but offers no way to change it is a
+    read-only encyclopedia -- the standing every row displays is computed
+    from exactly these votes, and until now they could only be cast by an
+    agent through the MCP tool. The org's current vote is rendered as the
+    pressed state so the button reads as "change my mind", not "vote
+    again"; `vote_trace` upserts on (trace, org), so a second click
+    replaces rather than double-counts.
+    """
+    if not can_vote:
+        return '<span class="muted">—</span>'
+    trace_id = h(entry.get("id"))
+    mine = str(entry.get("my_vote") or "")
+    up_state = " voted" if mine == "up" else ""
+    down_state = " voted" if mine == "down" else ""
+    # A downvote carries WHY, because hub/manage.py's review queue sorts on
+    # it: a `security_concern` tag is what promotes an entry to the
+    # operator's urgent bucket, and a bare downvote cannot say that.
+    tags = "".join(
+        f'<option value="{h(t)}">{h(t or "reason (optional)")}</option>'
+        for t in ("", "outdated", "wrong", "security_concern", "spam")
+    )
+    return (
+        f'<form method="post" action="{CONSOLE_PATH}/kb/vote" class="vote">'
+        f'<input type="hidden" name="trace_id" value="{trace_id}">'
+        f'<button type="submit" name="vote" value="up" class="v{up_state}" '
+        f'title="This worked for us">&#9650;</button>'
+        f'<button type="submit" name="vote" value="down" class="v{down_state}" '
+        f'title="This did not work for us">&#9660;</button>'
+        f'<label class="sr-only" for="fb-{trace_id}">Why (for a downvote)</label>'
+        f'<select id="fb-{trace_id}" name="feedback_tag">{tags}</select>'
+        "</form>"
+    )
+
+
+def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
     """One catalogue row: what it is, what the field thinks of it, how
-    much it is actually used."""
+    much it is actually used, and this org's own say in that."""
     standing = str(entry.get("standing") or "")
     tone = _STANDING_TONE.get(standing, "")
     tags = "".join(
@@ -1010,6 +1059,7 @@ def _render_kb_entry(entry: dict) -> str:
         f"{h(standing)}</span></td>"
         f'<td class="rev">{_num(entry.get("votes", 0))} vote(s)</td>'
         f'<td class="rev">{_num(entry.get("hits", 0))}</td>'
+        f"<td>{_render_kb_vote(entry, can_vote)}</td>"
         f'<td class="rev">{h(entry.get("id"))}</td></tr>'
     )
 
@@ -1021,6 +1071,7 @@ def _render_kb(
     *,
     tag: str = "",
     can_submit: bool = False,
+    can_vote: bool = False,
     error: str = "",
     flash: str = "",
 ) -> str:
@@ -1061,10 +1112,17 @@ def _render_kb(
         )
         entries = browse.get("entries") or []
         if entries:
-            rows = "".join(_render_kb_entry(e) for e in entries)
+            rows = "".join(_render_kb_entry(e, can_vote) for e in entries)
             body.append(
                 "<table><thead><tr><th>Entry</th><th>Standing</th><th>Votes</th>"
-                f"<th>Times used</th><th>Id</th></tr></thead><tbody>{rows}</tbody></table>"
+                f"<th>Times used</th><th>Your vote</th><th>Id</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table>"
+            )
+            body.append(
+                '<p class="sub">Your vote is what moves an entry between '
+                '<em>unproven</em>, <em>established</em> and <em>disputed</em> — the same '
+                "signal the operator's review queue sorts on. Voting is per organisation, "
+                "and voting again changes your vote rather than adding one.</p>"
             )
             total = browse.get("total", 0)
             shown = len(entries)
@@ -1920,7 +1978,14 @@ def add_console_routes(
             "Knowledge Base",
             _render_kb(
                 submissions, ent, browse, tag=tag,
-                can_submit=_is_admin(claims), error=error, flash=flash,
+                can_submit=_is_admin(claims),
+                # Voting needs only `write`, not `admin`: reporting that an
+                # entry did or did not work is ordinary use of the
+                # repository, not administration of the org -- and gating
+                # it behind an admin key is how a governance signal ends up
+                # coming from the one person who least often runs the fix.
+                can_vote=scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE),
+                error=error, flash=flash,
             ),
         )
 
@@ -1997,6 +2062,54 @@ def add_console_routes(
             )
         return RedirectResponse(
             f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
+        )
+
+    async def kb_vote(request: Request) -> Response:
+        """Cast this org's verdict on one Knowledge Base entry.
+
+        Calls the SAME `crud.vote_trace` the MCP tool does, which already
+        permits voting on any `commons_visible()` entry and upserts on
+        (trace, org) -- so voting twice changes a vote rather than stuffing
+        the ballot, and an org still cannot vote on content it cannot see.
+
+        Gated on `write`, not `admin`: reporting that a published fix did
+        or did not work is ordinary use of the repository. Requiring an
+        admin key would mean the governance signal comes from whoever holds
+        the most privileged credential rather than whoever actually ran the
+        fix, which is the opposite of what makes the standing worth
+        anything.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE):
+            return await _kb_view(
+                org_id, claims, error="Voting needs a key with the 'write' scope.")
+        form = await request.form()
+        vote_type = str(form.get("vote") or "").strip()
+        trace_id = str(form.get("trace_id") or "").strip()
+        feedback_tag = str(form.get("feedback_tag") or "").strip()
+        try:
+            async with session_scope(session_factory) as session:
+                voted = await crud.vote_trace(
+                    session, org_id, trace_id, vote_type,
+                    feedback_tag=feedback_tag,
+                    actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                )
+        except ValueError as exc:
+            # A bad vote_type or feedback_tag -- a tampered form, since the
+            # rendered one only ever offers valid values.
+            return await _kb_view(org_id, claims, error=str(exc))
+        if voted is None:
+            return await _kb_view(
+                org_id, claims,
+                error="That entry is no longer in the Knowledge Base.",
+            )
+        return RedirectResponse(
+            f"{CONSOLE_PATH}/kb?done=Thanks+—+your+vote+was+recorded.", status_code=303,
         )
 
     async def _list_users(org_id: str) -> list[User]:
@@ -2439,6 +2552,7 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb/submit", kb_submit, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/kb/vote", kb_vote, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])
