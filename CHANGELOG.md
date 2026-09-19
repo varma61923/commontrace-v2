@@ -54,6 +54,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commons fetch` + `commons_export`: hold the corpus, and stop asking.**
+  Every other Knowledge Base call describes a failure — as a MinHash
+  signature, but the Hub still learns that a fleet is asking and roughly
+  about what. `commons fetch` asks for the operator's curated corpus and
+  names nothing, so from then on `commons report --corpus` runs with no
+  network at all. Verified end to end: corpus fetched from a live Hub, the
+  **Hub then stopped**, and semantic matching still produced a full report
+  with complete solutions.
+
+  **Off by default** (`HUB_COMMONS_EXPORT_ENABLED`), unlike
+  `HUB_COMMONS_ENABLED`, and the asymmetry is deliberate: consulting the
+  corpus is the product working, while handing over every record in one
+  call gives away what an operator's curation produced. The reference
+  corpus is published in this repository either way, so the flag protects
+  nothing there — but a deployment that curated its own would be
+  justifiably surprised to find it bulk-readable by any key with read
+  scope. When it is off, the error names both the flag and the per-failure
+  tools that still work.
+
+  Not metered against `commons_queries`: that allowance prices per-failure
+  consultations, and this is one bulk read that *replaces* them — charging
+  per record would price the private path far above the one that discloses
+  more. It credits no `commons_hits` either, since a download is not
+  evidence an entry solved anything. `plan.commons_access` still gates it,
+  `commons_visible()` still scopes it, and tests pin that a private trace,
+  a retracted entry and a quarantined one never appear.
+
+  Entries carry full solution text (not `browse_commons`' previews — a
+  truncated corpus cannot answer a question offline) and their standing, so
+  a local matcher can rank a disputed entry the way the Hub would rather
+  than treating it as an equal answer.
+
 - **`commons report --corpus`: a coverage number computed with no Hub at
   all.** The Knowledge Base is operator-curated public content and a
   fleet's failure text is already on its own machine, so both halves of the

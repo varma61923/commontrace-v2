@@ -1388,6 +1388,37 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
             except Exception as exc:  # noqa: BLE001
                 return _error_response(exc)
 
+        @scoped_tool(scopes.SCOPE_READ)
+        async def commons_export(limit: int = crud.MAX_EXPORT_COMMONS) -> dict:
+            """Fetch the whole curated Knowledge Base corpus, to match against
+            it on your own machine.
+
+            Every other Knowledge Base tool answers a question about ONE
+            failure, which means telling this Hub that you are asking and
+            roughly what about -- a MinHash signature, but a disclosure all
+            the same. This removes that price: hold the corpus locally and
+            `commontrace commons report --corpus` computes your coverage with
+            no query, no signature and no record that you looked.
+
+            Returns full solution text, not previews, because the point is to
+            let you answer your own questions offline. Entries carry their
+            standing and trust so a local matcher can rank them the way this
+            Hub would -- a client that cannot see standing would treat a
+            disputed entry as an equal answer.
+
+            May be disabled: a deployment that curated its own corpus decides
+            whether to publish it in bulk (HUB_COMMONS_EXPORT_ENABLED). When
+            it is off, this returns an entitlement error and the per-failure
+            tools still work.
+            """
+            try:
+                org_id = auth.get_current_org_id()
+                async with session_scope(session_factory) as session:
+                    return await crud.export_commons(
+                        session, org_id, config, limit=limit)
+            except Exception as exc:  # noqa: BLE001
+                return _error_response(exc)
+
         @scoped_tool(scopes.SCOPE_WRITE)
         async def submit_kb_entry(
             title: str,

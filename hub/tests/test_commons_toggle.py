@@ -80,7 +80,7 @@ class TestCommonsEnabledByDefault:
             "amend_trace", "list_tags",
             "delete_trace", "request_account_deletion",
             "cancel_account_deletion", "confirm_account_deletion",
-            "commons_overlap", "commons_search",
+            "commons_overlap", "commons_search", "commons_export",
             "submit_kb_entry", "list_my_kb_submissions",
             "account_usage", "fleet_outcomes",
             "holdout_assign", "record_occasion_outcome", "value_delivered",
@@ -102,6 +102,10 @@ class TestCommonsDisabled:
         # commons_overlap does, so a deployment that turned cross-org
         # sharing off must not acquire a second door to it.
         assert "commons_search" not in names
+        # Bulk export reads the same corpus commons_search does. A
+        # deployment that removed the Knowledge Base must not keep a door
+        # that hands over all of it.
+        assert "commons_export" not in names
         # Proposing to a Knowledge Base that has been removed from the
         # deployment entirely makes no sense either -- both submission
         # tools go with it.

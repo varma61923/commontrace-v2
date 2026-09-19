@@ -804,3 +804,93 @@ class TestTheCorpusFileIsValidated:
         args = _local_args(tmp_path, _CORPUS, _EXPORT, from_file=None)
         assert commons_cmd.run_report(args) == 1
         assert "--corpus needs --from" in capsys.readouterr().err
+
+
+# --- `commons fetch`: the one call that asks about nothing ---------------
+
+
+class TestFetchingTheCorpus:
+    """The call that removes the disclosure price of using the corpus.
+
+    Every other Knowledge Base call describes a failure -- as a signature,
+    but the Hub still learns that this fleet is asking and roughly about
+    what. This one asks for public curated content and names nothing, so
+    afterwards `report --corpus` needs no network at all.
+    """
+
+    def _args(self, tmp_path, **kw):
+        base = dict(
+            out=str(tmp_path / "corpus.jsonl"), limit=None,
+            hub_url="http://hub.test/mcp", hub_api_key="ct_live_test",
+        )
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def _stub(self, monkeypatch, result):
+        seen = {}
+
+        async def fake_export(hub_url, api_key, limit=None):
+            seen["limit"] = limit
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_export", fake_export)
+        return seen
+
+    def test_it_writes_the_corpus_as_jsonl(self, tmp_path, monkeypatch, capsys):
+        self._stub(monkeypatch, {"entries": [
+            {"title": "a", "context_text": "c", "solution_text": "s", "tags": ["t"]},
+            {"title": "b", "context_text": "c", "solution_text": "s", "tags": []},
+        ], "n_entries": 2})
+        args = self._args(tmp_path)
+        assert commons_cmd.run_fetch(args) == 0
+
+        written = [json.loads(x) for x in
+                   open(args.out, encoding="utf-8").read().splitlines() if x.strip()]
+        assert [r["title"] for r in written] == ["a", "b"]
+        # The file it writes must be the file --corpus reads.
+        assert commons_cmd._load_corpus(args.out) == written
+
+    def test_it_tells_you_the_next_command(self, tmp_path, monkeypatch, capsys):
+        """The point of holding the corpus is the offline run; a fetch that
+        does not say so leaves the privacy gain undiscovered."""
+        self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                 "n_entries": 1})
+        commons_cmd.run_fetch(self._args(tmp_path))
+        out = capsys.readouterr().out
+        assert "--corpus" in out
+        assert "nothing needs to leave this machine" in out
+
+    def test_truncation_is_reported(self, tmp_path, monkeypatch, capsys):
+        """Silently returning a partial corpus would make every later local
+        coverage number quietly wrong."""
+        self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                 "n_entries": 1, "truncated": True})
+        commons_cmd.run_fetch(self._args(tmp_path))
+        assert "truncated" in capsys.readouterr().err
+
+    def test_a_disabled_export_is_reported_not_raised(self, tmp_path, monkeypatch, capsys):
+        """A deployment may decline to publish its corpus in bulk. That is a
+        configuration answer, not a crash."""
+        self._stub(monkeypatch, commons_cmd.hub_client.HubConnectionError(
+            "commons_export failed: entitlement_exceeded: ... "
+            "ask the operator to set HUB_COMMONS_EXPORT_ENABLED=true."))
+        assert commons_cmd.run_fetch(self._args(tmp_path)) == 1
+        assert "HUB_COMMONS_EXPORT_ENABLED" in capsys.readouterr().err
+
+    def test_an_empty_corpus_is_not_written_as_a_valid_file(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Writing an empty corpus would make the next `report --corpus`
+        say 0% with total confidence, for the wrong reason."""
+        self._stub(monkeypatch, {"entries": [], "n_entries": 0})
+        args = self._args(tmp_path)
+        assert commons_cmd.run_fetch(args) == 1
+        assert not os.path.exists(args.out)
+
+    def test_the_limit_is_passed_through(self, tmp_path, monkeypatch):
+        seen = self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                        "n_entries": 1})
+        commons_cmd.run_fetch(self._args(tmp_path, limit=10))
+        assert seen["limit"] == 10

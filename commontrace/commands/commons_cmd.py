@@ -139,6 +139,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     rep.add_argument("--dest", default=None)
     rep.set_defaults(func=run_report)
 
+    fetch = sub.add_parser(
+        "fetch",
+        help="Download the operator's Knowledge Base corpus so you can match "
+        "against it locally, with nothing sent back.",
+    )
+    fetch.add_argument("--out", required=True, help="Where to write the corpus JSONL.")
+    fetch.add_argument("--limit", type=int, default=None)
+    fetch.add_argument("--hub-url", default=None, help="Default: $COMMONTRACE_HUB_URL")
+    fetch.add_argument("--hub-api-key", default=None, help="Default: $COMMONTRACE_HUB_API_KEY")
+    fetch.set_defaults(func=run_fetch)
+
     ask = sub.add_parser(
         "ask",
         help="Ask the Knowledge Base what it already knows about one failure, in your "
@@ -800,6 +811,51 @@ def run_report(args: argparse.Namespace) -> int:
     elif uncovered:
         rendered += "\n" + _render_candidates_offer(len(uncovered))
     print(rendered)
+    return 0
+
+
+def run_fetch(args: argparse.Namespace) -> int:
+    """Pull the curated corpus down so every later question can be answered
+    here, without asking.
+
+    This is the one Knowledge Base call that carries no signature and names
+    no failure: it asks for public curated content, so the Hub learns only
+    that a fetch happened -- not what this fleet is failing at. Afterwards
+    `commons report --corpus` needs no network at all, which is why this
+    exists rather than a flag that fetches implicitly on every report.
+    """
+    resolved = _resolve_hub(args)
+    if resolved is None:
+        return 1
+    hub_url, api_key = resolved
+
+    try:
+        result = asyncio.run(hub_client.commons_export(hub_url, api_key, limit=args.limit))
+    except (hub_client.HubClientUnavailable, hub_client.HubConnectionError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    entries = result.get("entries") or []
+    if not entries:
+        print("[commontrace] the Knowledge Base returned no entries.", file=sys.stderr)
+        return 1
+
+    try:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            for e in entries:
+                fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(f"[commontrace] cannot write {args.out}: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"[commontrace] wrote {len(entries)} entry(ies) to {args.out}")
+    if result.get("truncated"):
+        print("[commontrace] the corpus was truncated at the server's limit; "
+              "pass --limit to ask for more.", file=sys.stderr)
+    print("[commontrace] from here nothing needs to leave this machine:")
+    print(f"    commontrace commons report --from <your failures> --corpus {args.out}")
+    print("    ... add --semantic for the higher-recall matcher "
+          "(pip install 'commontrace[attention]').")
     return 0
 
 

@@ -5320,6 +5320,115 @@ BROWSE_COMMONS_LIMIT = 25
 MAX_BROWSE_COMMONS_LIMIT = 100
 
 
+MAX_EXPORT_COMMONS = 5000
+
+
+async def export_commons(
+    session: AsyncSession,
+    org_id: str,
+    config: HubConfig,
+    *,
+    limit: int = MAX_EXPORT_COMMONS,
+) -> dict:
+    """The whole curated Knowledge Base corpus, for matching on the client.
+
+    WHY A BULK READ EXISTS AT ALL
+    -----------------------------
+    Every other commons read answers a question ABOUT a specific failure,
+    which means the caller has to describe that failure -- as a MinHash
+    signature, but still: the Hub learns that this fleet is asking, and
+    roughly what about. That is a small disclosure and it has always been
+    the price of using the corpus.
+
+    Handing over the corpus removes the price entirely. A fleet that has
+    the records can compute its own coverage locally
+    (`commontrace commons report --corpus`), with no query, no signature
+    and no record that it looked -- see commontrace/semantic.py for why
+    that is strictly more private than the shipped path rather than a
+    different trade. It is also what lets semantic matching run against a
+    LIVE corpus instead of a file someone pasted in, because the client can
+    embed records it actually holds.
+
+    WHY IT IS OFF BY DEFAULT
+    ------------------------
+    `config.commons_export_enabled`, default False. Consulting the corpus
+    is the product working; downloading all of it in one call is giving
+    away what an operator's curation effort produced. The reference corpus
+    is published anyway, so this flag protects nothing there -- but a
+    deployment that curated its own would be justifiably surprised to find
+    it bulk-readable by any key with read scope, and surprising an operator
+    about their own content is the wrong default no matter what the
+    reference deployment happens to want.
+
+    WHAT IT RETURNS
+    ---------------
+    `commons_visible()` rows only, so the same boundary every other read
+    path applies -- no customer trace can leave through here, because none
+    is in this corpus to begin with (hub/commons.py's module docstring).
+    Full `solution_text`, unlike `browse_commons`'s previews: the point is
+    to let a client answer its own questions offline, and a corpus of
+    truncated solutions cannot do that.
+
+    Deliberately NOT metered against `commons_queries`. That allowance
+    prices per-failure consultations; this is one bulk read that replaces
+    them, and charging a consultation per record would price the private
+    path far above the one that discloses more. `plan.commons_access`
+    still gates it -- a plan without the Knowledge Base does not get it by
+    another door.
+    """
+    if not config.commons_export_enabled:
+        raise plans.EntitlementExceeded(
+            metric="commons_export", limit=0, used=0, plan="",
+            remedy="This deployment does not publish its Knowledge Base corpus in "
+                   "bulk. Consult it per failure with commons_search, or ask the "
+                   "operator to set HUB_COMMONS_EXPORT_ENABLED=true.",
+        )
+
+    plan, _bonus = await _plan_and_bonus_for(session, org_id)
+    if not plan.commons_access:
+        raise plans.EntitlementExceeded(
+            metric="commons_access", limit=0, used=0, plan=plan.name,
+            remedy="The Knowledge Base is not included in this plan.",
+        )
+
+    limit = _clamp_int(limit, 1, MAX_EXPORT_COMMONS, MAX_EXPORT_COMMONS)
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*commons_visible())
+            .order_by(Trace.created_at.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    return {
+        "entries": [
+            {
+                "title": t.title,
+                "context_text": t.context_text,
+                "solution_text": t.solution_text,
+                "tags": list(t.tags or []),
+                "agent_type": t.agent_type,
+                # Carried so a local matcher can reproduce the ranking the
+                # Hub would apply -- a client that cannot see standing would
+                # silently treat a disputed entry as an equal answer.
+                "standing": commons.entry_standing(
+                    trust=t.trust or 0.0,
+                    votes=t.commons_votes or 0,
+                    review_after=t.commons_review_after,
+                    now=now,
+                ),
+                "trust": t.trust or 0.0,
+                "votes": t.commons_votes or 0,
+            }
+            for t in rows
+        ],
+        "n_entries": len(rows),
+        "truncated": len(rows) >= limit,
+    }
+
+
 async def browse_commons(
     session: AsyncSession,
     org_id: str,
