@@ -747,10 +747,35 @@ class TestDoctorReportsFailuresInItsExitCode:
     def test_info_conditions_do_not_fail_the_run(self):
         """_info marks things normal for a clean client install. If those
         counted as failures, every `pip install` user's pipeline would go
-        red on a working setup."""
+        red on a working setup.
+
+        Deliberately does NOT assert that an `[INFO]` line appears. Every
+        INFO branch in doctor_cmd reports an OPTIONAL extra being absent,
+        so on a machine with all of them installed there are no INFO lines
+        at all -- and this test used to fail there, going red on the most
+        complete setup possible. That is the exact failure its own
+        docstring exists to prevent, so the proxy was replaced by the
+        invariant: an INFO never reaches the exit code.
+        `test_info_never_registers_a_failure` pins that directly, without
+        depending on what happens to be installed.
+        """
         r = self._run()
         assert r.returncode == 0
-        assert "[INFO]" in r.stdout
+        assert "critical check(s) failed" not in r.stdout
+
+    def test_info_never_registers_a_failure(self, capsys):
+        """The invariant the test above used to reach for by proxy, checked
+        where it actually lives: `_info` prints and returns, and never
+        appends to the list that drives the exit code."""
+        from commontrace.commands import doctor_cmd
+
+        before = list(doctor_cmd._FAILURES)
+        try:
+            doctor_cmd._info("an optional thing", "not installed; optional")
+            assert doctor_cmd._FAILURES == before
+        finally:
+            doctor_cmd._FAILURES[:] = before
+        assert "[INFO] an optional thing" in capsys.readouterr().out
 
     def test_a_fresh_store_with_no_lessons_is_not_a_failure(self, tmp_path):
         """Only CRITICAL checks affect the exit code. A store you just

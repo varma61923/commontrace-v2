@@ -313,6 +313,24 @@ class HubConfig:
     # requires `signup_enabled`, since it is the same capability /signup's
     # form already offers and must not become a second, ungated door to it.
     rest_api_enabled: bool = False
+    # Bulk export of the curated Knowledge Base corpus (crud.export_commons).
+    #
+    # OFF by default, unlike commons_enabled, and the asymmetry is the point.
+    # Consulting the corpus is the product working as intended; handing over
+    # every record in one call is giving away the thing an operator spent
+    # curation effort building. The reference corpus shipped in this
+    # repository is public either way, so nothing about it is protected by
+    # this flag -- but a deployment that curated its own would be very
+    # surprised to find it downloadable by any key with read scope, and a
+    # default that surprises an operator about their own content is the
+    # wrong default whatever the reference deployment wants.
+    #
+    # Turning it on is what makes client-side matching work against a LIVE
+    # Knowledge Base: the client fetches the corpus once and then computes
+    # coverage locally, so the Hub never learns what the fleet is failing at
+    # (see commontrace/semantic.py). That is a real privacy gain, and it is
+    # the operator's call to make rather than a default anyone inherits.
+    commons_export_enabled: bool = False
 
     # --- Self-serve billing (hub/billing.py) ---
     # Empty (default) means neither the console's "Upgrade" buttons nor the
@@ -669,6 +687,7 @@ class HubConfig:
             operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
             rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
+            commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             # Price ids ("price_...") are references, not credentials --

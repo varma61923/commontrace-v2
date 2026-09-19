@@ -452,3 +452,445 @@ class TestSignFromAnExistingExport:
         ))
         assert rc == 1
         assert "not both" in capsys.readouterr().err
+
+
+# --- `commons report --candidates`: the lookup the coverage bar hides ----
+
+
+def _report_args(**kw):
+    base = dict(
+        signatures=None, from_file=None, from_format=None, threshold=None,
+        counts_only=False, candidates=False,
+        candidate_limit=commons_cmd.DEFAULT_CANDIDATE_LOOKUPS,
+        json=False, hub_url="http://hub.test/mcp", hub_api_key="ct_live_test", dest=None,
+    )
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _stub_hub(monkeypatch, *, report, searches=None, search_error=None):
+    """Stand in for the two Hub calls, recording what was asked."""
+    calls: list[list[int]] = []
+
+    async def fake_overlap(hub_url, api_key, failures, **kw):
+        return report
+
+    async def fake_search(hub_url, api_key, signature, **kw):
+        calls.append(signature)
+        if search_error is not None:
+            raise commons_cmd.hub_client.HubConnectionError(search_error)
+        return {"candidates": (searches or {}).get(tuple(signature), [])}
+
+    monkeypatch.setattr(commons_cmd.hub_client, "commons_overlap", fake_overlap)
+    monkeypatch.setattr(commons_cmd.hub_client, "commons_search", fake_search)
+    return calls
+
+
+def _failures():
+    return [
+        {"label": "alpha", "signature": [1, 1, 1]},
+        {"label": "beta", "signature": [2, 2, 2]},
+        {"label": "gamma", "signature": [3, 3, 3]},
+    ]
+
+
+def _coverage(n_covered=0, matches=None, disputed=None):
+    return {
+        "n_failures": 3, "n_covered": n_covered,
+        "covered_fraction": n_covered / 3, "n_commons_traces": 46, "threshold": 0.3,
+        "matches": matches or [], "disputed_matches": disputed or [],
+    }
+
+
+class TestTheReportNoLongerReadsAsAnEmptyKnowledgeBase:
+    """The defect this closes, recorded in commons/eval/RESULTS.md as the
+    single highest-value thing to fix in the codebase.
+
+    A prospect's export of nine failures -- seven of which the corpus
+    provably contained -- reported "0 of 9. 0%." The number was correct:
+    the coverage bar buys a 0% false-positive rate by discarding roughly
+    nine of every ten real answers. But "0%" and "this product knows
+    nothing about my problems" are indistinguishable to a reader, and only
+    the second one predicts what happens in the room.
+    """
+
+    def test_an_uncovered_report_explains_the_bar_and_offers_the_lookup(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage())
+
+        assert commons_cmd.run_report(_report_args()) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out
+        assert "not the same as an empty Knowledge Base" in out
+        assert "--candidates" in out
+        # The cost is stated up front: each lookup is a metered consultation.
+        assert "consultation" in out
+
+    def test_a_fully_covered_report_makes_no_such_offer(self, monkeypatch, capsys):
+        """Nothing was hidden, so there is nothing to explain away."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        matches = [{"failure_label": f["label"], "similarity": 0.9, "trace": {"title": "t"}}
+                   for f in _failures()]
+        _stub_hub(monkeypatch, report=_coverage(n_covered=3, matches=matches))
+
+        assert commons_cmd.run_report(_report_args()) == 0
+        out = capsys.readouterr().out
+        assert "empty Knowledge Base" not in out
+
+
+class TestCandidatesAreLookedUpButNeverCounted:
+    def test_it_looks_up_exactly_the_uncovered_failures(self, monkeypatch, capsys):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        matches = [{"failure_label": "alpha", "similarity": 0.9, "trace": {"title": "covered"}}]
+        calls = _stub_hub(
+            monkeypatch,
+            report=_coverage(n_covered=1, matches=matches),
+            searches={(2, 2, 2): [{"rank": 1, "similarity": 0.15,
+                                   "trace": {"title": "beta answer", "solution_text": "do x"}}]},
+        )
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        # alpha cleared the bar, so looking it up again would spend a
+        # consultation to repeat what the report already said.
+        assert calls == [[2, 2, 2], [3, 3, 3]]
+        out = capsys.readouterr().out
+        assert "beta answer" in out
+        assert "do x" in out
+
+    def test_a_disputed_match_is_not_looked_up_again(self, monkeypatch):
+        """`_render` already gives disputed matches their own section
+        explaining why they are excluded from the figure. The Knowledge
+        Base demonstrably has something about them, so they are found, not
+        uncovered."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        disputed = [{"failure_label": "beta", "similarity": 0.4, "trace": {"title": "d"}}]
+        calls = _stub_hub(
+            monkeypatch, report=_coverage(n_covered=0, disputed=disputed))
+
+        commons_cmd.run_report(_report_args(candidates=True))
+        assert [1, 1, 1] in calls and [3, 3, 3] in calls
+        assert [2, 2, 2] not in calls
+
+    def test_the_coverage_figure_is_untouched_by_the_lookups(self, monkeypatch, capsys):
+        """The whole point. Ranked hits are candidates a human judges; the
+        score distributions of true and absent matches overlap
+        (commons/eval/RESULTS.md), so counting one would destroy the 0%
+        false-positive property the quotable number rests on."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(
+            monkeypatch, report=_coverage(),
+            searches={(s, s, s): [{"rank": 1, "similarity": 0.5,
+                                   "trace": {"title": f"answer {s}", "solution_text": "x"}}]
+                      for s in (1, 2, 3)},
+        )
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out and "**0%**" in out
+        assert "NOT counted as coverage" in out
+        assert "answer 1" in out
+
+    def test_json_marks_the_lookups_as_not_coverage(self, monkeypatch, capsys):
+        """A machine consumer must not be able to add these to the
+        numerator by mistake."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage(),
+                  searches={(1, 1, 1): [{"rank": 1, "trace": {"title": "a"}}]})
+
+        assert commons_cmd.run_report(_report_args(candidates=True, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["n_covered"] == 0
+        assert payload["covered_fraction"] == 0
+        assert payload["candidate_lookups_are_not_coverage"] is True
+        assert len(payload["candidate_lookups"]) == 3
+
+
+class TestTheLookupsAreBoundedAndSurviveFailure:
+    def test_the_budget_caps_lookups_and_says_how_many_were_skipped(
+        self, monkeypatch, capsys
+    ):
+        """Each lookup is a metered consultation, so an unbounded report
+        over a large import could spend a month's allowance in one
+        command."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        calls = _stub_hub(monkeypatch, report=_coverage())
+
+        commons_cmd.run_report(_report_args(candidates=True, candidate_limit=1))
+        assert len(calls) == 1
+        out = capsys.readouterr().out
+        assert "2 further uncovered failure(s) were not looked up" in out
+
+    def test_a_zero_budget_spends_nothing(self, monkeypatch):
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        calls = _stub_hub(monkeypatch, report=_coverage())
+        commons_cmd.run_report(_report_args(candidates=True, candidate_limit=0))
+        assert calls == []
+
+    def test_a_failed_lookup_does_not_discard_the_report(self, monkeypatch, capsys):
+        """A plan running out of consultations mid-report is the expected
+        case, not an exceptional one -- and the coverage report was already
+        paid for before the first lookup was attempted."""
+        monkeypatch.setattr(commons_cmd, "build_signatures", lambda root: _failures())
+        _stub_hub(monkeypatch, report=_coverage(), search_error="allowance exhausted")
+
+        assert commons_cmd.run_report(_report_args(candidates=True)) == 0
+        out = capsys.readouterr().out
+        assert "0 of 3" in out
+        assert "allowance exhausted" in out
+
+
+# --- `commons report --corpus`: measured here, sent nowhere ---------------
+
+
+def _local_args(tmp_path, corpus_records, export_records, **kw):
+    cfile = tmp_path / "corpus.jsonl"
+    cfile.write_text("\n".join(json.dumps(r) for r in corpus_records), encoding="utf-8")
+    efile = tmp_path / "export.jsonl"
+    efile.write_text("\n".join(json.dumps(r) for r in export_records), encoding="utf-8")
+    base = dict(
+        signatures=None, from_file=str(efile), from_format=None, threshold=None,
+        counts_only=False, candidates=False,
+        candidate_limit=commons_cmd.DEFAULT_CANDIDATE_LOOKUPS,
+        corpus=str(cfile), semantic=False,
+        json=False, hub_url=None, hub_api_key=None, dest=None,
+    )
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+_CORPUS = [
+    {"title": "Connection pool exhausted during a retry storm",
+     "context_text": "callers queue waiting to acquire a connection",
+     "tags": ["postgres"], "solution_text": "bound retries with jittered backoff"},
+    {"title": "Payment webhook delivered more than once",
+     "context_text": "the provider redelivers after a timeout",
+     "tags": ["billing"], "solution_text": "persist the event id"},
+]
+_EXPORT = [
+    {"title": "Connection pool exhausted during a retry storm",
+     "context_text": "callers queue waiting to acquire a connection", "tags": ["postgres"]},
+    {"title": "the office coffee machine leaks", "context_text": "water on the floor",
+     "tags": ["facilities"]},
+]
+
+
+class TestALocalReportTouchesNothing:
+    """The privacy property, asserted rather than described.
+
+    The corpus is operator-curated public content and the failure text is
+    already on this machine, so both halves of the comparison are local.
+    That makes `--corpus` disclose strictly less than the shipped path,
+    which transmits a MinHash signature: here the operator does not learn
+    that a fleet asked, let alone what about. A regression that quietly
+    reintroduced a Hub call would destroy exactly that, and silently.
+    """
+
+    def test_no_hub_call_is_made(self, tmp_path, monkeypatch, capsys):
+        def explode(*a, **kw):
+            raise AssertionError("a local report must not contact a Hub")
+
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_overlap", explode)
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_search", explode)
+
+        assert commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT)) == 0
+        assert "computed locally" in capsys.readouterr().out.lower()
+
+    def test_it_needs_no_hub_url_or_api_key(self, tmp_path, capsys):
+        """A prospect evaluating the corpus has no account yet."""
+        assert commons_cmd.run_report(
+            _local_args(tmp_path, _CORPUS, _EXPORT, hub_url=None, hub_api_key=None)) == 0
+        out = capsys.readouterr().out
+        assert "of 2" in out
+
+    def test_the_lexical_matcher_reproduces_the_hubs_own_number(self, tmp_path, capsys):
+        """`--corpus` alone runs the same overlap code the Hub runs, so an
+        offline run is a check on the Hub rather than a different product."""
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
+        out = capsys.readouterr().out
+        # The identically-worded failure clears any sane bar; the coffee
+        # machine clears none.
+        assert "**1 of 2**" in out
+        assert "Connection pool exhausted" in out
+
+
+class TestTheThresholdsCostIsVisible:
+    def test_a_near_miss_is_shown_rather_than_hidden(self, tmp_path, capsys):
+        """A matcher that hides its own runner-up is how a threshold's cost
+        becomes invisible -- the exact defect RESULTS.md records against the
+        shipped coverage figure."""
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
+        out = capsys.readouterr().out
+        assert "below the bar, shown anyway" in out
+        assert "office coffee machine" in out
+
+    def test_near_misses_never_move_the_figure(self, tmp_path, capsys):
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT, json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["n_covered"] == 1
+        uncovered = [e for e in payload["entries"] if not e["matches"]]
+        assert all(e["best_unmatched"] is not None for e in uncovered)
+
+
+class TestSemanticIsOptOutAndFailsLoudly:
+    def test_semantic_without_a_corpus_is_refused(self, tmp_path, capsys):
+        """The Hub serves signatures, not embeddings, so there is nothing
+        for --semantic to compare against remotely."""
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=None, semantic=True)
+        assert commons_cmd.run_report(args) == 1
+        assert "--semantic needs --corpus" in capsys.readouterr().err
+
+    def test_a_missing_model_stack_is_reported_not_raised(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Never degrade silently to the other matcher: a coverage number
+        computed by a different matcher than the caller asked for is the
+        quiet substitution this codebase refuses elsewhere."""
+        def unavailable(*a, **kw):
+            raise commons_cmd.semantic.SemanticUnavailable("install the extra")
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", unavailable)
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, semantic=True)
+        assert commons_cmd.run_report(args) == 1
+        err = capsys.readouterr().err
+        assert "install the extra" in err
+
+    def test_semantic_uses_the_measured_operating_point(self, tmp_path, monkeypatch, capsys):
+        seen = {}
+
+        def fake(queries, corpus, *, threshold, top_k=5):
+            seen["threshold"] = threshold
+            return [{"best": (0, 0.9), "matches": [(0, 0.9)]} for _ in queries]
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", fake)
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT, semantic=True))
+        # 0.65, not the higher-recall 0.60: that one leaks false positives on
+        # the dev probe set (commons/eval/semantic.py).
+        assert seen["threshold"] == commons_cmd.semantic.DEFAULT_SEMANTIC_THRESHOLD
+        assert "semantic (cosine >= 0.65" in capsys.readouterr().out
+
+    def test_an_explicit_threshold_still_wins(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake(queries, corpus, *, threshold, top_k=5):
+            seen["threshold"] = threshold
+            return [{"best": None, "matches": []} for _ in queries]
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", fake)
+        commons_cmd.run_report(
+            _local_args(tmp_path, _CORPUS, _EXPORT, semantic=True, threshold=0.5))
+        assert seen["threshold"] == 0.5
+
+
+class TestTheCorpusFileIsValidated:
+    def test_a_malformed_corpus_is_refused_cleanly(self, tmp_path, capsys):
+        bad = tmp_path / "bad.jsonl"
+        bad.write_text("{not json}\n", encoding="utf-8")
+        exp = tmp_path / "e.jsonl"
+        exp.write_text(json.dumps(_EXPORT[0]) + "\n", encoding="utf-8")
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=str(bad), from_file=str(exp))
+        assert commons_cmd.run_report(args) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+    def test_a_record_without_a_title_is_refused(self, tmp_path, capsys):
+        bad = tmp_path / "bad.jsonl"
+        bad.write_text(json.dumps({"context_text": "x"}) + "\n", encoding="utf-8")
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=str(bad))
+        assert commons_cmd.run_report(args) == 1
+        assert "needs a title" in capsys.readouterr().err
+
+    def test_corpus_without_from_is_refused(self, tmp_path, capsys):
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, from_file=None)
+        assert commons_cmd.run_report(args) == 1
+        assert "--corpus needs --from" in capsys.readouterr().err
+
+
+# --- `commons fetch`: the one call that asks about nothing ---------------
+
+
+class TestFetchingTheCorpus:
+    """The call that removes the disclosure price of using the corpus.
+
+    Every other Knowledge Base call describes a failure -- as a signature,
+    but the Hub still learns that this fleet is asking and roughly about
+    what. This one asks for public curated content and names nothing, so
+    afterwards `report --corpus` needs no network at all.
+    """
+
+    def _args(self, tmp_path, **kw):
+        base = dict(
+            out=str(tmp_path / "corpus.jsonl"), limit=None,
+            hub_url="http://hub.test/mcp", hub_api_key="ct_live_test",
+        )
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def _stub(self, monkeypatch, result):
+        seen = {}
+
+        async def fake_export(hub_url, api_key, limit=None):
+            seen["limit"] = limit
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_export", fake_export)
+        return seen
+
+    def test_it_writes_the_corpus_as_jsonl(self, tmp_path, monkeypatch, capsys):
+        self._stub(monkeypatch, {"entries": [
+            {"title": "a", "context_text": "c", "solution_text": "s", "tags": ["t"]},
+            {"title": "b", "context_text": "c", "solution_text": "s", "tags": []},
+        ], "n_entries": 2})
+        args = self._args(tmp_path)
+        assert commons_cmd.run_fetch(args) == 0
+
+        written = [json.loads(x) for x in
+                   open(args.out, encoding="utf-8").read().splitlines() if x.strip()]
+        assert [r["title"] for r in written] == ["a", "b"]
+        # The file it writes must be the file --corpus reads.
+        assert commons_cmd._load_corpus(args.out) == written
+
+    def test_it_tells_you_the_next_command(self, tmp_path, monkeypatch, capsys):
+        """The point of holding the corpus is the offline run; a fetch that
+        does not say so leaves the privacy gain undiscovered."""
+        self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                 "n_entries": 1})
+        commons_cmd.run_fetch(self._args(tmp_path))
+        out = capsys.readouterr().out
+        assert "--corpus" in out
+        assert "nothing needs to leave this machine" in out
+
+    def test_truncation_is_reported(self, tmp_path, monkeypatch, capsys):
+        """Silently returning a partial corpus would make every later local
+        coverage number quietly wrong."""
+        self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                 "n_entries": 1, "truncated": True})
+        commons_cmd.run_fetch(self._args(tmp_path))
+        assert "truncated" in capsys.readouterr().err
+
+    def test_a_disabled_export_is_reported_not_raised(self, tmp_path, monkeypatch, capsys):
+        """A deployment may decline to publish its corpus in bulk. That is a
+        configuration answer, not a crash."""
+        self._stub(monkeypatch, commons_cmd.hub_client.HubConnectionError(
+            "commons_export failed: entitlement_exceeded: ... "
+            "ask the operator to set HUB_COMMONS_EXPORT_ENABLED=true."))
+        assert commons_cmd.run_fetch(self._args(tmp_path)) == 1
+        assert "HUB_COMMONS_EXPORT_ENABLED" in capsys.readouterr().err
+
+    def test_an_empty_corpus_is_not_written_as_a_valid_file(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Writing an empty corpus would make the next `report --corpus`
+        say 0% with total confidence, for the wrong reason."""
+        self._stub(monkeypatch, {"entries": [], "n_entries": 0})
+        args = self._args(tmp_path)
+        assert commons_cmd.run_fetch(args) == 1
+        assert not os.path.exists(args.out)
+
+    def test_the_limit_is_passed_through(self, tmp_path, monkeypatch):
+        seen = self._stub(monkeypatch, {"entries": [{"title": "a", "solution_text": "s"}],
+                                        "n_entries": 1})
+        commons_cmd.run_fetch(self._args(tmp_path, limit=10))
+        assert seen["limit"] == 10

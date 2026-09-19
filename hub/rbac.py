@@ -173,6 +173,12 @@ TOOL_CAPABILITY: dict[str, str] = {
     "value_delivered": CAP_ANALYZE,
     "commons_overlap": CAP_ANALYZE,
     "commons_search": CAP_VIEW,
+    # Reading the operator-curated corpus, same content commons_search
+    # returns and the same capability -- in bulk rather than one
+    # question at a time. It is gated further by
+    # config.commons_export_enabled and plan.commons_access, but the
+    # capability it needs is the one for reading the Knowledge Base.
+    "commons_export": CAP_VIEW,
     "list_my_kb_submissions": CAP_VIEW,
     "account_usage": CAP_ANALYZE,
     "contribute_trace": CAP_CURATE,

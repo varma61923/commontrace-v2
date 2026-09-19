@@ -1615,6 +1615,24 @@ async def commons_search(
     return response
 
 
+async def commons_export(hub_url: str, api_key: str, limit: int | None = None) -> dict:
+    """Fetch the operator's curated Knowledge Base corpus for local matching.
+
+    Sends no signature and no question: this asks for public curated content,
+    not about a failure, so the Hub learns nothing about this fleet beyond
+    the fact that it fetched. What comes back can answer every later coverage
+    question offline (`commontrace commons report --corpus`).
+    """
+    arguments: dict[str, Any] = {}
+    if limit is not None:
+        arguments["limit"] = limit
+    response = await _call_tool(hub_url, api_key, "commons_export", arguments)
+    if response.get("error"):
+        raise HubConnectionError(
+            f"commons_export failed: {response['error']}: {response.get('detail', '')}")
+    return response
+
+
 async def submit_kb_entry(
     hub_url: str,
     api_key: str,

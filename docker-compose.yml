@@ -124,6 +124,17 @@ services:
       # middleware exactly as build_app() assembles them at startup.
       HUB_CONSOLE_SECRET: ${HUB_CONSOLE_SECRET:-}
       HUB_SIGNUP_ENABLED: ${HUB_SIGNUP_ENABLED:-false}
+      # ON for the reference stack, where the library default is off.
+      #
+      # The two are not in conflict; they answer different questions. The
+      # library default protects an operator who curated their own corpus
+      # from publishing it by accident. This stack's corpus is
+      # commons/seed/substrate-v1.jsonl, which is committed to this
+      # repository and therefore public already -- so defaulting it off
+      # here would protect nothing and would withhold the one path that
+      # lets a fleet measure its coverage without telling this Hub what it
+      # is failing at (hub/crud.py:export_commons).
+      HUB_COMMONS_EXPORT_ENABLED: ${HUB_COMMONS_EXPORT_ENABLED:-true}
     ports:
       # Loopback-only: nothing outside this host can reach the Hub directly.
       # A reverse proxy on the same host (or same private network) is the
