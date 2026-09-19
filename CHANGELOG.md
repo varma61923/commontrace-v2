@@ -39,6 +39,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commons report --corpus`: a coverage number computed with no Hub at
+  all.** The Knowledge Base is operator-curated public content and a
+  fleet's failure text is already on its own machine, so both halves of the
+  comparison can be local. This measures coverage against a corpus file
+  with **nothing sent anywhere** — not the failure text, not a MinHash
+  signature, not even the fact that the fleet asked. That is strictly less
+  disclosure than the shipped path, which transmits a signature to a Hub,
+  and it lets a prospect evaluate the corpus on their own laptop before
+  they have an account or have trusted anyone with their incidents. A test
+  asserts no Hub call is made, because a regression that quietly
+  reintroduced one would destroy exactly that property, silently.
+
+  `--corpus` alone runs the same `overlap` code the Hub runs, so an offline
+  run is a check on the Hub rather than a different product — verified
+  against the nine-row export from `commons/eval/RESULTS.md`, where it
+  reproduces the Hub's `0 of 9` exactly.
+
+- **`commons report --corpus --semantic`: embedding similarity instead of
+  word overlap.** Measured on the held-out probe set, 32.6% recall at a 0%
+  false-positive bar against the lexical matcher's 8.7%
+  (`commons/eval/semantic.py`). The default operating point is cosine
+  ≥ 0.65 — deliberately **not** the higher-recall 0.60, which leaks 4.5%
+  false positives on the dev set. Needs the existing optional `attention`
+  extra, so it adds no new dependency; absent it, the command says so and
+  exits rather than silently degrading to the other matcher, because a
+  coverage number computed by a different matcher than the caller asked for
+  is the kind of quiet substitution this codebase refuses elsewhere.
+
+  Both local matchers show the **nearest entry for every failure that did
+  not clear the bar**. A matcher that hides its own runner-up is how a
+  threshold's cost becomes invisible — the exact defect RESULTS.md records
+  against the shipped coverage figure. On that nine-row export the seven
+  provably-present failures all have the correct entry as their nearest
+  match at 0.54–0.66, while both negative controls sit at 0.43–0.46:
+  visible, judgeable, and counted toward nothing.
+
 - **`commons report --candidates`: the report no longer reads as an empty
   Knowledge Base.** `commons/eval/RESULTS.md` recorded this as *"the single
   highest-value thing to fix in this codebase"*: a prospect's nine-failure

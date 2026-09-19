@@ -639,3 +639,168 @@ class TestTheLookupsAreBoundedAndSurviveFailure:
         out = capsys.readouterr().out
         assert "0 of 3" in out
         assert "allowance exhausted" in out
+
+
+# --- `commons report --corpus`: measured here, sent nowhere ---------------
+
+
+def _local_args(tmp_path, corpus_records, export_records, **kw):
+    cfile = tmp_path / "corpus.jsonl"
+    cfile.write_text("\n".join(json.dumps(r) for r in corpus_records), encoding="utf-8")
+    efile = tmp_path / "export.jsonl"
+    efile.write_text("\n".join(json.dumps(r) for r in export_records), encoding="utf-8")
+    base = dict(
+        signatures=None, from_file=str(efile), from_format=None, threshold=None,
+        counts_only=False, candidates=False,
+        candidate_limit=commons_cmd.DEFAULT_CANDIDATE_LOOKUPS,
+        corpus=str(cfile), semantic=False,
+        json=False, hub_url=None, hub_api_key=None, dest=None,
+    )
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+_CORPUS = [
+    {"title": "Connection pool exhausted during a retry storm",
+     "context_text": "callers queue waiting to acquire a connection",
+     "tags": ["postgres"], "solution_text": "bound retries with jittered backoff"},
+    {"title": "Payment webhook delivered more than once",
+     "context_text": "the provider redelivers after a timeout",
+     "tags": ["billing"], "solution_text": "persist the event id"},
+]
+_EXPORT = [
+    {"title": "Connection pool exhausted during a retry storm",
+     "context_text": "callers queue waiting to acquire a connection", "tags": ["postgres"]},
+    {"title": "the office coffee machine leaks", "context_text": "water on the floor",
+     "tags": ["facilities"]},
+]
+
+
+class TestALocalReportTouchesNothing:
+    """The privacy property, asserted rather than described.
+
+    The corpus is operator-curated public content and the failure text is
+    already on this machine, so both halves of the comparison are local.
+    That makes `--corpus` disclose strictly less than the shipped path,
+    which transmits a MinHash signature: here the operator does not learn
+    that a fleet asked, let alone what about. A regression that quietly
+    reintroduced a Hub call would destroy exactly that, and silently.
+    """
+
+    def test_no_hub_call_is_made(self, tmp_path, monkeypatch, capsys):
+        def explode(*a, **kw):
+            raise AssertionError("a local report must not contact a Hub")
+
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_overlap", explode)
+        monkeypatch.setattr(commons_cmd.hub_client, "commons_search", explode)
+
+        assert commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT)) == 0
+        assert "computed locally" in capsys.readouterr().out.lower()
+
+    def test_it_needs_no_hub_url_or_api_key(self, tmp_path, capsys):
+        """A prospect evaluating the corpus has no account yet."""
+        assert commons_cmd.run_report(
+            _local_args(tmp_path, _CORPUS, _EXPORT, hub_url=None, hub_api_key=None)) == 0
+        out = capsys.readouterr().out
+        assert "of 2" in out
+
+    def test_the_lexical_matcher_reproduces_the_hubs_own_number(self, tmp_path, capsys):
+        """`--corpus` alone runs the same overlap code the Hub runs, so an
+        offline run is a check on the Hub rather than a different product."""
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
+        out = capsys.readouterr().out
+        # The identically-worded failure clears any sane bar; the coffee
+        # machine clears none.
+        assert "**1 of 2**" in out
+        assert "Connection pool exhausted" in out
+
+
+class TestTheThresholdsCostIsVisible:
+    def test_a_near_miss_is_shown_rather_than_hidden(self, tmp_path, capsys):
+        """A matcher that hides its own runner-up is how a threshold's cost
+        becomes invisible -- the exact defect RESULTS.md records against the
+        shipped coverage figure."""
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT))
+        out = capsys.readouterr().out
+        assert "below the bar, shown anyway" in out
+        assert "office coffee machine" in out
+
+    def test_near_misses_never_move_the_figure(self, tmp_path, capsys):
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT, json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["n_covered"] == 1
+        uncovered = [e for e in payload["entries"] if not e["matches"]]
+        assert all(e["best_unmatched"] is not None for e in uncovered)
+
+
+class TestSemanticIsOptOutAndFailsLoudly:
+    def test_semantic_without_a_corpus_is_refused(self, tmp_path, capsys):
+        """The Hub serves signatures, not embeddings, so there is nothing
+        for --semantic to compare against remotely."""
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=None, semantic=True)
+        assert commons_cmd.run_report(args) == 1
+        assert "--semantic needs --corpus" in capsys.readouterr().err
+
+    def test_a_missing_model_stack_is_reported_not_raised(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Never degrade silently to the other matcher: a coverage number
+        computed by a different matcher than the caller asked for is the
+        quiet substitution this codebase refuses elsewhere."""
+        def unavailable(*a, **kw):
+            raise commons_cmd.semantic.SemanticUnavailable("install the extra")
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", unavailable)
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, semantic=True)
+        assert commons_cmd.run_report(args) == 1
+        err = capsys.readouterr().err
+        assert "install the extra" in err
+
+    def test_semantic_uses_the_measured_operating_point(self, tmp_path, monkeypatch, capsys):
+        seen = {}
+
+        def fake(queries, corpus, *, threshold, top_k=5):
+            seen["threshold"] = threshold
+            return [{"best": (0, 0.9), "matches": [(0, 0.9)]} for _ in queries]
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", fake)
+        commons_cmd.run_report(_local_args(tmp_path, _CORPUS, _EXPORT, semantic=True))
+        # 0.65, not the higher-recall 0.60: that one leaks false positives on
+        # the dev probe set (commons/eval/semantic.py).
+        assert seen["threshold"] == commons_cmd.semantic.DEFAULT_SEMANTIC_THRESHOLD
+        assert "semantic (cosine >= 0.65" in capsys.readouterr().out
+
+    def test_an_explicit_threshold_still_wins(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake(queries, corpus, *, threshold, top_k=5):
+            seen["threshold"] = threshold
+            return [{"best": None, "matches": []} for _ in queries]
+
+        monkeypatch.setattr(commons_cmd.semantic, "best_matches", fake)
+        commons_cmd.run_report(
+            _local_args(tmp_path, _CORPUS, _EXPORT, semantic=True, threshold=0.5))
+        assert seen["threshold"] == 0.5
+
+
+class TestTheCorpusFileIsValidated:
+    def test_a_malformed_corpus_is_refused_cleanly(self, tmp_path, capsys):
+        bad = tmp_path / "bad.jsonl"
+        bad.write_text("{not json}\n", encoding="utf-8")
+        exp = tmp_path / "e.jsonl"
+        exp.write_text(json.dumps(_EXPORT[0]) + "\n", encoding="utf-8")
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=str(bad), from_file=str(exp))
+        assert commons_cmd.run_report(args) == 1
+        assert "not valid JSON" in capsys.readouterr().err
+
+    def test_a_record_without_a_title_is_refused(self, tmp_path, capsys):
+        bad = tmp_path / "bad.jsonl"
+        bad.write_text(json.dumps({"context_text": "x"}) + "\n", encoding="utf-8")
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, corpus=str(bad))
+        assert commons_cmd.run_report(args) == 1
+        assert "needs a title" in capsys.readouterr().err
+
+    def test_corpus_without_from_is_refused(self, tmp_path, capsys):
+        args = _local_args(tmp_path, _CORPUS, _EXPORT, from_file=None)
+        assert commons_cmd.run_report(args) == 1
+        assert "--corpus needs --from" in capsys.readouterr().err

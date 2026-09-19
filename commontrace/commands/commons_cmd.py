@@ -41,7 +41,7 @@ import json
 import os
 import sys
 
-from commontrace import failure_import, hub_client, overlap, paths, trace_io
+from commontrace import failure_import, hub_client, overlap, paths, semantic, trace_io
 from commontrace.commands import _format
 from commontrace.commands._format import read_or_warn
 
@@ -98,6 +98,22 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Force how --from is parsed instead of guessing from its extension/content.",
     )
     rep.add_argument("--threshold", type=float, default=None)
+    rep.add_argument(
+        "--corpus", default=None, metavar="FILE",
+        help="Measure against a Knowledge Base corpus file ON THIS MACHINE instead "
+        "of asking a Hub. Nothing is sent anywhere -- not your failure text, not a "
+        "signature, not even the fact that you asked. The corpus is operator-curated "
+        "public content, so this is a coverage number you can compute without "
+        "trusting anyone with your incidents.",
+    )
+    rep.add_argument(
+        "--semantic", action="store_true",
+        help="With --corpus, match by sentence-embedding similarity instead of word "
+        "overlap. Measured on the held-out probe set: 32.6%% recall at a 0%% "
+        "false-positive bar, against the lexical matcher's 8.7%% "
+        "(commons/eval/semantic.py). Needs the optional model stack: "
+        "pip install 'commontrace[attention]'.",
+    )
     rep.add_argument(
         "--counts-only", action="store_true",
         help="Ask for the headline number without pulling any matched content.",
@@ -506,7 +522,187 @@ def _render(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _load_corpus(path: str) -> list[dict]:
+    """A Knowledge Base corpus file, as `hub.manage commons-seed` consumes it."""
+    records = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError as exc:
+                raise ValueError(f"{path}:{n}: not valid JSON ({exc})") from None
+            if not isinstance(rec, dict) or not rec.get("title"):
+                raise ValueError(f"{path}:{n}: not a corpus record (needs a title)")
+            records.append(rec)
+    if not records:
+        raise ValueError(f"{path}: no records")
+    return records
+
+
+def run_local_report(args: argparse.Namespace) -> int:
+    """Coverage measured entirely on this machine, against a corpus file.
+
+    No Hub, no network, no signature: the corpus is public operator-curated
+    content and the failure text is already here, so both halves of the
+    comparison are local. That makes this strictly less disclosing than the
+    shipped path, which transmits a MinHash signature -- here the operator
+    does not learn that you asked, let alone what about.
+
+    The lexical matcher is the same `overlap` code the Hub runs, so
+    `--corpus` alone reproduces the Hub's number offline. `--semantic`
+    swaps in embeddings, whose measured recall is ~3.7x higher at the same
+    zero-false-positive bar (commons/eval/semantic.py).
+    """
+    try:
+        corpus = _load_corpus(args.corpus)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+
+    if not getattr(args, "from_file", None):
+        print("[commontrace] --corpus needs --from: a local run has no Hub to ask "
+              "about this store, so point it at the failures to measure.",
+              file=sys.stderr)
+        return 1
+    try:
+        # The same reader signatures_from_file() uses, so the text both
+        # matchers see is identical -- the two sides of this comparison
+        # diverging is the failure mode that keeps numbers plausible while
+        # making them meaningless.
+        raw, stats = failure_import.read_failures(
+            args.from_file, fmt_override=getattr(args, "from_format", None))
+    except failure_import.FailureImportError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    labels = [f["label"] for f in raw]
+    texts = [" ".join([f["label"], f["text"], " ".join(f["tags"])]) for f in raw]
+
+    corpus_text = [
+        " ".join([
+            str(r.get("title") or ""), str(r.get("context_text") or ""),
+            " ".join(_safe_tags(r.get("tags"))),
+        ])
+        for r in corpus
+    ]
+
+    if args.semantic:
+        try:
+            threshold = (args.threshold if args.threshold is not None
+                         else semantic.DEFAULT_SEMANTIC_THRESHOLD)
+            results = semantic.best_matches(texts, corpus_text, threshold=threshold)
+        except semantic.SemanticUnavailable as exc:
+            print(f"[commontrace] {exc}", file=sys.stderr)
+            return 1
+        matcher = f"semantic (cosine >= {threshold}, {semantic.MODEL_NAME})"
+    else:
+        threshold = (args.threshold if args.threshold is not None
+                     else overlap.DEFAULT_MATCH_THRESHOLD)
+        corpus_sigs = [overlap.minhash(t, COMMONS_NUM_PERM) for t in corpus_text]
+        results = []
+        for text in texts:
+            sig = overlap.minhash(text, COMMONS_NUM_PERM)
+            scored = sorted(
+                ((i, overlap.estimate_jaccard(sig, cs))
+                 for i, cs in enumerate(corpus_sigs)),
+                key=lambda pair: -pair[1],
+            )
+            results.append({
+                "best": scored[0] if scored else None,
+                "matches": [(i, sc) for i, sc in scored[:5] if sc >= threshold],
+            })
+        matcher = f"lexical (jaccard >= {threshold})"
+
+    covered = [r for r in results if r["matches"]]
+    report = {
+        "n_failures": len(results),
+        "n_covered": len(covered),
+        "covered_fraction": (len(covered) / len(results)) if results else 0.0,
+        "n_commons_traces": len(corpus),
+        "matcher": matcher,
+        "local": True,
+        "entries": [
+            {
+                "failure_label": labels[i],
+                "matches": [
+                    {"title": corpus[j].get("title"), "similarity": round(sc, 3),
+                     "solution_text": corpus[j].get("solution_text", "")}
+                    for j, sc in r["matches"]
+                ],
+                "best_unmatched": (
+                    {"title": corpus[r["best"][0]].get("title"),
+                     "similarity": round(r["best"][1], 3)}
+                    if r["best"] and not r["matches"] else None
+                ),
+            }
+            for i, r in enumerate(results)
+        ],
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    print(_render_local(report, stats))
+    return 0
+
+
+def _render_local(report: dict, stats: dict) -> str:
+    n, c = report["n_failures"], report["n_covered"]
+    lines = [
+        "# Knowledge Base Coverage Report (computed locally)",
+        "",
+        f"**{c} of {n}** of your failures (**{report['covered_fraction']:.0%}**) match "
+        f"an entry in this Knowledge Base corpus.",
+        "",
+        f"- Corpus entries searched: {report['n_commons_traces']}",
+        f"- Matcher: {report['matcher']}",
+        "",
+        "> Computed entirely on this machine. No failure text, no signature and no "
+        "record that you ran this left it — there was no Hub in this measurement.",
+        "",
+    ]
+    covered = [e for e in report["entries"] if e["matches"]]
+    if covered:
+        lines += ["## What this corpus already knows", ""]
+        for e in covered:
+            top = e["matches"][0]
+            lines += [
+                f"### {top['title']}",
+                "",
+                f"- Matches your `{e['failure_label']}` at **{top['similarity']}**",
+                "",
+                f"**Solution:** {top['solution_text']}",
+                "",
+            ]
+    near = [e for e in report["entries"] if e["best_unmatched"]]
+    if near:
+        lines += [
+            "## Nearest entry for the rest — below the bar, shown anyway",
+            "",
+            "A matcher that hides its own runner-up makes the threshold's cost "
+            "invisible. None of these counted toward the figure above.",
+            "",
+        ]
+        for e in near:
+            b = e["best_unmatched"]
+            lines.append(f"- `{e['failure_label']}` → *{b['title']}* ({b['similarity']})")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def run_report(args: argparse.Namespace) -> int:
+    # --corpus means "measure here", so it is answered before any Hub is
+    # resolved: a local run must not require a hub url or an api key, and
+    # must not be able to reach the network by accident.
+    if getattr(args, "corpus", None):
+        return run_local_report(args)
+    if getattr(args, "semantic", False):
+        print("[commontrace] --semantic needs --corpus: the Hub serves MinHash "
+              "signatures, not embeddings, so semantic matching runs locally "
+              "against a corpus file.", file=sys.stderr)
+        return 1
     if args.signatures and getattr(args, "from_file", None):
         print("[commontrace] pass --signatures or --from, not both: they are two ways "
               "of supplying the same input.", file=sys.stderr)
