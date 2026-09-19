@@ -22,6 +22,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import math
 import secrets
 import uuid
@@ -74,6 +75,9 @@ from hub.schema_validation import validate_trace
 # verbatim rather than silently omitted: an audit row that can't name
 # its actor should be visibly incomplete, not invisible.
 AUDIT_ACTOR_UNKNOWN = "unknown"
+
+
+logger = logging.getLogger("commontrace.hub.crud")
 
 
 class IdempotencyKeyConflict(ValueError):
@@ -1358,12 +1362,87 @@ async def contribute_trace(
     possible_duplicates = await _possible_duplicates(
         session, org_id, trace.id, title, context_text, solution_text, tags, agent_type,
     )
+    auto_proposed = await _maybe_auto_contribute(
+        session, org_id, trace, config, rate_limiter,
+        title=title, context_text=context_text, solution_text=solution_text,
+        tags=tags, agent_type=agent_type, actor=actor,
+    )
     return {
         "id": trace.id,
         "quarantined": trace.quarantined,
         "quarantine_reason": trace.quarantine_reason,
         "possible_duplicates": possible_duplicates,
+        "auto_proposed_to_commons": auto_proposed,
     }
+
+
+async def _maybe_auto_contribute(
+    session: AsyncSession,
+    org_id: str,
+    trace: Trace,
+    config: HubConfig,
+    rate_limiter: RateLimiter,
+    *,
+    title: str,
+    context_text: str,
+    solution_text: str,
+    tags: list[str],
+    agent_type: str,
+    actor: str,
+) -> bool:
+    """Propose this trace to the Knowledge Base if its org opted in.
+
+    Returns whether a proposal was created, so the caller can say so rather
+    than leaving an org to discover its own content in a review queue.
+
+    THREE THINGS THIS DELIBERATELY WILL NOT DO
+    ------------------------------------------
+    1. **Propose a quarantined trace.** `suspicion_reason` flagged it as
+       probable spam; the entire point of that gate is that such content
+       does not travel, and an opt-in that forwarded it anyway would make
+       every participating org a spam relay into the operator's queue.
+    2. **Fail the contribution.** The trace is the primary artifact and it
+       is already committed by this point. A rate-limited, oversized or
+       plan-exhausted PROPOSAL must not turn a successful capture into an
+       error the caller has to retry -- retrying would re-contribute the
+       trace, not just re-propose it. Every failure here is swallowed and
+       logged, and the org's next contribution tries again.
+    3. **Publish anything.** This creates the same `KnowledgeBaseSubmission`
+       a hand-written proposal creates, invisible to every other org until
+       an operator accepts it. The flag changes who proposes, never what
+       gets published -- see `Organization.commons_auto_contribute`.
+
+    The idempotency key is derived from the trace id, so the proposal
+    inherits the contribution's own idempotency: a client retrying a
+    contribute that already succeeded cannot produce a second proposal for
+    the same trace.
+    """
+    if trace.quarantined:
+        return False
+    opted_in = await session.scalar(
+        select(Organization.commons_auto_contribute).where(Organization.id == org_id)
+    )
+    if not opted_in:
+        return False
+    try:
+        await submit_kb_entry(
+            session, org_id, config, rate_limiter,
+            title=title,
+            context_text=context_text,
+            solution_text=solution_text,
+            tags=tags,
+            agent_type=agent_type,
+            rationale="auto-proposed: this organization opted in to contributing",
+            actor=actor,
+            idempotency_key=f"auto-contribute:{trace.id}",
+        )
+    except Exception:  # noqa: BLE001 - see point 2 above; never fail the capture
+        logger.warning(
+            "auto-contribute proposal failed for org=%s trace=%s", org_id, trace.id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _idempotent_replay_or_conflict(
@@ -1760,6 +1839,80 @@ async def get_trace(session: AsyncSession, org_id: str, trace_id: str) -> dict |
     return await _hydrate_one(session, trace)
 
 
+def _established_voters_only(stmt):
+    """Restrict a Vote-selecting statement to votes from established orgs.
+
+    Shared by BOTH numbers a reader sees about an entry: its standing
+    (`vote_trace`'s tally) and the concern breakdown behind that standing
+    (`_concerns_for`). Shared rather than repeated because those two are
+    read side by side -- somebody looking at "disputed · 2 orgs flagged
+    security_concern" will reasonably assume the same set of voters
+    produced both, and a filter that drifted on one side would quietly
+    make that false. It would also reopen, in the second place, exactly
+    the hole the first one closes: minting orgs to smear an entry with
+    flags is the same attack as minting them to vote it down.
+
+    See hub/commons.py's `vote_counts_toward_standing` for the thresholds
+    and the reasoning; this is the SQL form of the same rule.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        hours=commons.COMMONS_VOTER_MIN_AGE_HOURS
+    )
+    return stmt.join(Organization, Organization.id == Vote.org_id).where(
+        Organization.trace_count >= commons.COMMONS_VOTER_MIN_TRACES,
+        Organization.created_at <= cutoff,
+    )
+
+
+async def _concerns_for(
+    session: AsyncSession, trace_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Why the field thinks what it thinks: per entry, how many established
+    orgs attached each `feedback_tag`.
+
+    A standing with no evidence behind it is a verdict a reader has to take
+    on faith, which is the opposite of what makes a wiki's judgements worth
+    anything -- "disputed" tells you the field rejected this, and nothing
+    about whether it is stale, wrong, or dangerous. Those are very
+    different things to a person deciding whether to apply a fix.
+
+    Two things are deliberately NOT returned, and both are boundaries
+    rather than omissions:
+
+    - WHICH org attached a tag. Naming the voter would leak that that
+      customer uses this Hub and hit this specific failure -- a
+      cross-tenant disclosure through the governance layer, which is
+      precisely where nobody would think to look for one.
+    - `feedback_text`. It is free text written by one customer and would
+      be rendered to every other, so it carries both a leak surface (a
+      pasted stack trace naming internal hosts) and an injection surface.
+      The closed vocabulary (hub/models.py's VALID_FEEDBACK_TAGS) carries
+      the actionable signal without either; the free text stays where it
+      already goes, to the operator's review queue, read by a human.
+
+    Counted across every vote type, not down-votes only, and deliberately:
+    an org that says "this worked, but it worries me" has still raised a
+    security concern, and dropping it because the vote was an up-vote
+    would silently discard the most safety-relevant report this system can
+    receive. This matches `kb_review_queue`'s existing treatment.
+    """
+    if not trace_ids:
+        return {}
+    stmt = _established_voters_only(
+        select(Vote.trace_id, Vote.feedback_tag, func.count()).where(
+            Vote.trace_id.in_(trace_ids),
+            Vote.feedback_tag != "",
+        )
+    )
+    rows = (
+        await session.execute(stmt.group_by(Vote.trace_id, Vote.feedback_tag))
+    ).all()
+    concerns: dict[str, dict[str, int]] = {}
+    for trace_id, tag, count in rows:
+        concerns.setdefault(trace_id, {})[tag] = int(count)
+    return concerns
+
+
 async def vote_trace(
     session: AsyncSession,
     org_id: str,
@@ -1870,13 +2023,35 @@ async def vote_trace(
     # down-vote row for the trace as ORM objects just to len() the lists.
     # A trace with thousands of votes made every single new vote cast pull
     # its entire voting history into memory for two integers.
-    counts = (
-        await session.execute(
-            select(Vote.vote_type, func.count())
-            .where(Vote.trace_id == trace_id)
-            .group_by(Vote.vote_type)
-        )
-    ).all()
+    # Only votes from ESTABLISHED organizations are counted into the pair
+    # `entry_standing` reads -- see hub/commons.py's
+    # `vote_counts_toward_standing` for the thresholds and the reasoning.
+    #
+    # Every vote is still stored (the upsert above runs unconditionally):
+    # discarding a sockpuppet's vote would hide the attempt, and the Vote
+    # rows are the evidence an operator needs to see a farm at all. What
+    # this filter does is stop it MOVING anything.
+    #
+    # The bar is keyed on the TRACE being a Knowledge Base entry, not on
+    # who is casting this particular vote, and that distinction is load
+    # bearing. Keying it on "the voter is not the owner" -- the obvious
+    # reading of "an org rating its own trace needs no bar" -- would make
+    # the tally's meaning depend on who happened to vote LAST: the
+    # operator casting a single vote on its own entry would take the
+    # unfiltered path and sweep in every sockpuppet vote the filtered path
+    # had been holding out, handing an attacker through the back door the
+    # exact result the front door refuses. The tally has to mean the same
+    # thing no matter who triggers it.
+    #
+    # A trace that is not a Knowledge Base entry is visible to exactly one
+    # org (see this module's docstring), so there is no shared number to
+    # protect, nobody else who could be stuffing it, and no reason to make
+    # a new customer wait a day to rate their own content.
+    tally_is_public = trace.commons_source == "seed"
+    counted = select(Vote.vote_type, func.count()).where(Vote.trace_id == trace_id)
+    if tally_is_public:
+        counted = _established_voters_only(counted)
+    counts = (await session.execute(counted.group_by(Vote.vote_type))).all()
     tally = dict(counts)
     up_count, down_count = tally.get("up", 0), tally.get("down", 0)
     total = up_count + down_count
@@ -1923,14 +2098,38 @@ async def vote_trace(
         target_id=trace_id,
         summary=f"vote={vote_type} feedback_tag={feedback_tag or '-'} new_trust={trace.trust:.3f}",
     )
+    # Said plainly, because silence here is its own failure: an org whose
+    # vote was recorded but not counted would otherwise watch the number
+    # not move and reasonably conclude the feature is broken. Telling it
+    # the vote is on record and what the bar is turns an invisible
+    # anti-abuse rule into an answerable one -- and costs an attacker
+    # nothing they could not already infer from hub/commons.py. Reported
+    # on the owner's projection too, since the bar applies to every vote
+    # on a Knowledge Base entry including the entry owner's own; omitted
+    # entirely where no bar applied, rather than stating a vacuous `true`.
+    vote_counted = None
+    if tally_is_public:
+        voter = await session.get(Organization, org_id)
+        vote_counted = commons.vote_counts_toward_standing(
+            trace_count=(voter.trace_count if voter else 0),
+            org_created_at=(voter.created_at if voter else None),
+        )
     if is_owner:
-        return await _hydrate_one(session, trace)
+        wire = await _hydrate_one(session, trace)
+        if vote_counted is not None:
+            wire["vote_counted"] = vote_counted
+        return wire
     # A vote on a Knowledge Base entry gets the same narrow projection
     # commons_overlap/commons_search return (_to_commons_wire) -- voting on
     # an entry is not an invitation to see operator-internal metadata
     # (contributor, extensions, outcome, ...), only to confirm the vote
     # registered and see the entry's current trust score.
-    return _to_commons_wire(trace)
+    wire = _to_commons_wire(trace)
+    # A non-owner can only ever reach a commons-visible entry (the lookup
+    # above is gated on commons_visible()), so the bar always applied and
+    # this is never None here.
+    wire["vote_counted"] = vote_counted
+    return wire
 
 
 async def amendment_chain(session: AsyncSession, trace_id: str) -> set[str]:
@@ -2223,6 +2422,89 @@ async def confirm_org_deletion(
     return True
 
 
+def _carry_commons_forward(
+    original: Trace, title: str, context_text: str, tags: list[str]
+) -> dict:
+    """The Knowledge Base fields an amendment inherits, if any.
+
+    `commons_visible()` excludes superseded rows, and `amend_trace` INSERTs
+    a new row rather than mutating the original. So without this, amending
+    a Knowledge Base entry REMOVED IT FROM THE KNOWLEDGE BASE: the original
+    stopped being visible the moment it was superseded, and the new row was
+    a plain org trace (`commons_source` defaults to "org",
+    `shared_with_commons` to False). Measured on a seeded entry with 42
+    hits and 5 votes: the corpus went from 1 entry to 0, and the hits and
+    votes went with it, with no error and nothing in the audit log saying
+    an entry had left the corpus.
+
+    That is a workflow bug, not a theoretical one, and it sits directly on
+    the path this product's governance is built around:
+    `hub/manage.py kb-review` tells an operator "this entry is disputed"
+    or "this entry is stale", and the natural remedy -- amend it -- is what
+    deleted it. Correcting an article is the single most ordinary act in a
+    wiki, and it has to leave the article in place.
+
+    WHICH AMENDMENTS INHERIT, AND WHY ONLY THOSE
+    --------------------------------------------
+    Only `commons_source == "seed"` originals: operator-curated Knowledge
+    Base entries, owned by the operator org and ALREADY published. For
+    those, dropping the entry is not the conservative choice, it is the
+    destructive one -- the conservative choice for already-published
+    content is that it stays published, corrected.
+
+    A customer's own trace keeps the existing behaviour, and
+    `commons_visible()`'s docstring already says why: re-sharing a
+    correction is a separate, explicit decision this function must not make
+    on the org's behalf. That reasoning is right for content that is the
+    org's to publish, and inverted for content the operator has already
+    published to everyone.
+
+    WHAT IS DELIBERATELY NOT CARRIED FORWARD
+    ----------------------------------------
+    `trust` and `commons_votes`. They are aggregates OVER `Vote` rows, and
+    those rows are keyed to the original's trace id -- they stay with the
+    text they judged. Copying the two numbers onto a row with no underlying
+    votes would produce a state that contradicts itself and then silently
+    self-destructs: the next vote recomputes the tally from the new row's
+    own `Vote` rows (`vote_trace`), so the carried figures would be
+    overwritten by whatever that single voter said. A corrected entry
+    therefore re-enters as `unproven`, which is honest -- nobody has tried
+    the corrected text yet.
+
+    The cost of that, stated plainly rather than discovered later: a
+    substantive correction also clears any `security_concern` the old text
+    had accumulated, so a cosmetic amendment can launder a warning. The
+    actor who can do this is the operator, who can already retract or edit
+    any entry outright, so it widens nothing -- but it does mean "amend"
+    is not a neutral act on a flagged entry, and `audit.record` is what
+    makes it reviewable.
+
+    `commons_hits` DOES carry forward: it measures how often the corpus was
+    asked this question, which is a property of the topic rather than of
+    the wording, and resetting it would drop a corrected entry into
+    `kb_review_queue`'s "never hit" bucket as though nobody had ever needed
+    it.
+
+    `commons_signature` is RECOMPUTED from the amended text rather than
+    copied. The signature is what `commons_overlap`/`commons_search` match
+    a caller's failure against; carrying the old one forward would leave a
+    corrected entry answering to the old failure's fingerprint, which is
+    the quiet wrong-answer failure mode hub/commons.py refuses to risk.
+    """
+    if original.commons_source != "seed":
+        return {}
+    return {
+        "shared_with_commons": original.shared_with_commons,
+        "shared_at": original.shared_at,
+        "shared_rationale": original.shared_rationale,
+        "commons_source": original.commons_source,
+        "commons_signature": commons.signature_for(title, context_text, tags),
+        "commons_hits": original.commons_hits,
+        "commons_review_after": original.commons_review_after,
+        "commons_retracted_at": original.commons_retracted_at,
+    }
+
+
 async def amend_trace(
     session: AsyncSession,
     org_id: str,
@@ -2401,6 +2683,9 @@ async def amend_trace(
             if idempotency_key is not None
             else None
         ),
+        # Knowledge Base membership carries forward; a customer's own
+        # sharing decision does not. See _carry_commons_forward.
+        **_carry_commons_forward(original, resolved_title, resolved_context, resolved_tags),
     )
     # Bi-temporal supersession (hub/models.py:Trace.superseded_at, adapted
     # from Zep/Graphiti's bi-temporal fact model): the row being amended
@@ -5025,6 +5310,156 @@ async def commons_search(
         "corpus_truncated": total_corpus > len(rows),
         "candidates": candidates,
         "note": _SEARCH_NOTE,
+    }
+
+
+#: A browse page's worth of Knowledge Base entries. Bounded for the reason
+#: search_traces bounds its own page: this returns rows the caller did not
+#: write, and an unbounded page is a full scan of the corpus per request.
+BROWSE_COMMONS_LIMIT = 25
+MAX_BROWSE_COMMONS_LIMIT = 100
+
+
+async def browse_commons(
+    session: AsyncSession,
+    org_id: str,
+    *,
+    tag: str = "",
+    limit: int = BROWSE_COMMONS_LIMIT,
+    offset: int = 0,
+) -> dict:
+    """The Knowledge Base as a CATALOGUE rather than a lookup: what is in
+    there, what the field thinks of it, and how much it is actually used.
+
+    WHY THIS IS NOT commons_search
+    ------------------------------
+    `commons_search` answers "what does the corpus know about MY failure",
+    and it takes a MinHash signature precisely so the caller never has to
+    send its failure text anywhere (hub/commons.py's module docstring).
+    That is the right shape for an agent mid-incident and the wrong shape
+    for a person who has not had the failure yet and simply wants to see
+    what this repository holds -- which needs no query at all, and so needs
+    no signature, no text, and no new privacy surface. Browsing by tag and
+    standing keeps the "never send your text" property intact by having no
+    text to send.
+
+    WHY IT DOES NOT SPEND A CONSULTATION
+    ------------------------------------
+    `plan.commons_access` is still required -- an org whose plan excludes
+    the Knowledge Base does not get to read it by another door. But the
+    monthly `commons_queries` allowance is deliberately NOT charged here,
+    for two reasons. Metering the catalogue would tax exactly the moment
+    this repository is trying to earn: someone deciding whether it is worth
+    opting into at all. And what comes back is previews (`_preview`, the
+    same truncation `search_traces(brief=True)` applies), not solutions --
+    the shop window, not the goods. A caller who wants an entry's full
+    solution text still consults for it, and that consultation still meters.
+
+    Ordering mirrors `commons_search`'s: disputed entries sort to the BACK
+    rather than being filtered out, for the identical reason given there --
+    "it did not work for the fleets who tried it" is information, and
+    hiding it would answer a browse with a rosier corpus than exists.
+    """
+    limit = _clamp_int(limit, 1, MAX_BROWSE_COMMONS_LIMIT, BROWSE_COMMONS_LIMIT)
+    offset = _clamp_int(offset, 0, 100_000, 0)
+
+    plan, _bonus = await _plan_and_bonus_for(session, org_id)
+    if not plan.commons_access:
+        raise plans.EntitlementExceeded(
+            metric="commons_access", limit=0, used=0, plan=plan.name,
+            remedy="The Knowledge Base is not included in this plan.",
+        )
+
+    # The fourth read path commons_visible()'s own docstring anticipates --
+    # it gets the boundary by construction rather than by a hand-copied
+    # `commons_source == "seed"` that could drift.
+    conditions = list(commons_visible())
+    tag = (tag or "").strip()
+    if tag:
+        conditions.append(Trace.tags.any(tag))
+
+    total = await session.scalar(
+        select(func.count()).select_from(Trace).where(*conditions)
+    )
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*conditions)
+            # One extra row, the same trick search_traces uses, so `has_more`
+            # costs no second COUNT round trip.
+            .order_by(Trace.commons_hits.desc(), Trace.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    # This org's OWN vote on each listed entry, in one query rather than
+    # one per row. Surfaced because a catalogue that shows a verdict but
+    # not your part in it cannot tell "nobody has judged this" from "you
+    # already did" -- and a reader who cannot see their own vote has no way
+    # to know the button they are looking at would change it rather than
+    # cast it.
+    my_votes: dict[str, str] = {}
+    if rows:
+        vote_rows = (
+            await session.execute(
+                select(Vote.trace_id, Vote.vote_type).where(
+                    Vote.org_id == org_id,
+                    Vote.trace_id.in_([trace.id for trace in rows]),
+                )
+            )
+        ).all()
+        my_votes = {trace_id: vote_type for trace_id, vote_type in vote_rows}
+
+    # Why each entry stands where it does, in one grouped query rather than
+    # one per row. A catalogue that shows "disputed" and stops there asks
+    # the reader to trust a verdict it will not justify.
+    concerns = await _concerns_for(session, [trace.id for trace in rows])
+
+    now = datetime.now(timezone.utc)
+    entries = []
+    for trace in rows:
+        standing = commons.entry_standing(
+            trust=trace.trust or 0.0,
+            votes=trace.commons_votes or 0,
+            review_after=trace.commons_review_after,
+            now=now,
+        )
+        entries.append({
+            "id": trace.id,
+            "title": trace.title,
+            "context_preview": _preview(trace.context_text),
+            "solution_preview": _preview(trace.solution_text),
+            "tags": list(trace.tags or []),
+            "agent_type": trace.agent_type,
+            "standing": standing,
+            "trust": trace.trust or 0.0,
+            "votes": trace.commons_votes or 0,
+            "hits": trace.commons_hits or 0,
+            "my_vote": my_votes.get(trace.id, ""),
+            "concerns": concerns.get(trace.id, {}),
+            # How many times this entry has been corrected. Surfaced
+            # because amendment resets the votes (see
+            # _carry_commons_forward: they judged text that no longer
+            # exists), which leaves a freshly corrected entry looking
+            # identical to one nobody has ever tried -- both `unproven`,
+            # both zero votes. The reset is only honest if a reader can
+            # tell the difference, and "this was revised" is also the
+            # thing that explains why an entry they remember as disputed
+            # is not any more.
+            "revisions": trace.depth or 0,
+            "created_at": _iso(trace.created_at),
+        })
+    entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))
+
+    return {
+        "entries": entries,
+        "total": total or 0,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
     }
 
 

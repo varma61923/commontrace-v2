@@ -302,6 +302,18 @@ class HubConfig:
     # way, the same bound every free-tier evaluator already gets.
     signup_enabled: bool = False
 
+    # --- REST API (hub/rest.py) ---
+    # Off by default, the same absent-unless-configured posture /admin, /app
+    # and /signup each take. Set true to expose `/api/v1/*`, the JSON surface
+    # the CommonTrace Claude Code plugin speaks, so pointing that plugin's
+    # COMMONTRACE_API_BASE_URL at this Hub works with no plugin change. Every
+    # endpoint is a thin translation over the same hub/crud.py functions the
+    # MCP tools call -- see hub/rest.py's own docstring for what it is and
+    # is not. `/api/v1/keys` (unauthenticated account creation) additionally
+    # requires `signup_enabled`, since it is the same capability /signup's
+    # form already offers and must not become a second, ungated door to it.
+    rest_api_enabled: bool = False
+
     # --- Self-serve billing (hub/billing.py) ---
     # Empty (default) means neither the console's "Upgrade" buttons nor the
     # /billing/webhook route do anything real: hub/billing.py's own
@@ -511,6 +523,21 @@ class HubConfig:
     alert_scheduler_enabled: bool = False
     alert_scheduler_interval_seconds: int = 300
 
+    # --- Webhook delivery scheduler (hub/scheduler.py) ---
+    # Same shape as the alert scheduler above, for the other sweep
+    # hub/events.py's own module docstring otherwise assumes an operator
+    # points external cron at: `hub.manage webhook-deliver`. False
+    # (default): no change for a deployment already doing that. True: the
+    # Hub process drains its own pending-delivery queue every
+    # webhook_scheduler_interval_seconds, so an org's webhook subscriber
+    # hears about a quarantine or an experiment verdict without waiting on
+    # an external cron's own schedule.
+    webhook_scheduler_enabled: bool = False
+    webhook_scheduler_interval_seconds: int = 30
+    #: How many queued deliveries one sweep attempts -- see
+    #: hub/manage.py's webhook_deliver, whose own default this matches.
+    webhook_scheduler_batch_size: int = 100
+
     # --- Misc ---
     log_level: str = "INFO"
 
@@ -641,6 +668,7 @@ class HubConfig:
             operator_legal_name=os.environ.get("HUB_OPERATOR_LEGAL_NAME", ""),
             operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
+            rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),
             # Price ids ("price_...") are references, not credentials --
@@ -667,5 +695,10 @@ class HubConfig:
             alert_scheduler_enabled=_env_bool("HUB_ALERT_SCHEDULER_ENABLED", False),
             alert_scheduler_interval_seconds=_env_int_in_range(
                 "HUB_ALERT_SCHEDULER_INTERVAL_SECONDS", 300, 10, 86_400),
+            webhook_scheduler_enabled=_env_bool("HUB_WEBHOOK_SCHEDULER_ENABLED", False),
+            webhook_scheduler_interval_seconds=_env_int_in_range(
+                "HUB_WEBHOOK_SCHEDULER_INTERVAL_SECONDS", 30, 5, 86_400),
+            webhook_scheduler_batch_size=_env_int_in_range(
+                "HUB_WEBHOOK_SCHEDULER_BATCH_SIZE", 100, 1, 10_000),
             log_level=os.environ.get("HUB_LOG_LEVEL", "INFO"),
         )

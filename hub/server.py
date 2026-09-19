@@ -50,6 +50,7 @@ from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
+from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
 from hub.signup import add_signup_routes
@@ -820,7 +821,12 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
     @scoped_tool(scopes.SCOPE_WRITE)
     async def vote_trace(id: str, vote: str, feedback_tag: str = "", feedback_text: str = "") -> dict:
         """Cast (or update) this org's vote ('up'/'down') on a trace: your
-        own, or any other org's trace currently shared to the commons."""
+        own, or any other org's trace currently shared to the commons.
+
+        A vote on a commons entry is always recorded, but only moves that
+        entry's standing once your org is established (enough traces
+        captured, old enough) -- the reply's `vote_counted` says which.
+        """
         try:
             org_id = auth.get_current_org_id()
             async with session_scope(session_factory) as session:
@@ -1581,6 +1587,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
             commons_enabled=config.commons_enabled,
             operator_org_id=config.operator_org_id,
+            config=config,
         )
 
     # The customer-facing console, gated on its own secret. Distinct from the
@@ -1603,6 +1610,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             stripe=stripe_settings,
             signing_key=config.ledger_signing_key,
             cipher=config.cipher(),
+            config=config,
+            rate_limiter=rate_limiter,
         )
 
     # Public, unauthenticated org creation -- opt-in only (hub/signup.py's
@@ -1612,6 +1621,19 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         add_signup_routes(
             inner_app, session_factory,
             trusted_proxy_hops=config.trusted_proxy_hops, console_path=CONSOLE_PATH,
+        )
+
+    # The JSON surface the CommonTrace Claude Code plugin speaks -- opt-in,
+    # and sharing the MCP path's write-rate bucket rather than opening a
+    # second one (hub/rest.py's add_rest_routes explains why that matters).
+    if config.rest_api_enabled:
+        add_rest_routes(
+            inner_app,
+            session_factory,
+            config=config,
+            rate_limiter=rate_limiter,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+            signup_enabled=config.signup_enabled,
         )
 
     # Stripe calls this, not a signed-in browser -- registered independently
@@ -1680,25 +1702,39 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     @contextlib.asynccontextmanager
     async def _lifespan_with_scheduler(app):
         async with _lifespan_with_rls_check(app):
-            if not config.alert_scheduler_enabled:
+            # Each loop is independently opt-in (hub/scheduler.py's own
+            # docstring) -- a deployment relying on `hub.manage
+            # check-alerts`/`webhook-deliver` via its own cron for either
+            # one, or both, is unaffected either way.
+            stop_event = asyncio.Event()
+            tasks = []
+            if config.alert_scheduler_enabled:
+                tasks.append(asyncio.create_task(
+                    scheduler.run(
+                        session_factory,
+                        interval_seconds=config.alert_scheduler_interval_seconds,
+                        stop_event=stop_event,
+                    )
+                ))
+            if config.webhook_scheduler_enabled:
+                tasks.append(asyncio.create_task(
+                    scheduler.run_webhook_delivery(
+                        session_factory,
+                        interval_seconds=config.webhook_scheduler_interval_seconds,
+                        stop_event=stop_event,
+                        signing_key=config.ledger_signing_key,
+                        cipher=config.cipher(),
+                        batch_size=config.webhook_scheduler_batch_size,
+                    )
+                ))
+            if not tasks:
                 yield
                 return
-            # See hub/scheduler.py's own docstring: off unless explicitly
-            # enabled, so a deployment relying on `hub.manage check-alerts`
-            # via its own cron is unaffected either way.
-            stop_event = asyncio.Event()
-            task = asyncio.create_task(
-                scheduler.run(
-                    session_factory,
-                    interval_seconds=config.alert_scheduler_interval_seconds,
-                    stop_event=stop_event,
-                )
-            )
             try:
                 yield
             finally:
                 stop_event.set()
-                await task
+                await asyncio.gather(*tasks)
 
     inner_app.router.lifespan_context = _lifespan_with_scheduler
     inner_app.add_middleware(

@@ -160,7 +160,9 @@ class TestVoteTraceRace:
             expected_trust = 1.0 if votes[0].vote_type == "up" else 0.0
             assert t.trust == pytest.approx(expected_trust)
 
-    async def test_20_concurrent_votes_from_20_distinct_orgs_all_count(self, session_factory, config, org):
+    async def test_20_concurrent_votes_from_20_distinct_orgs_all_count(
+        self, session_factory, config, org, establish_orgs
+    ):
         """Regression test for a real bug distinct from the one above: this
         one is 20 DIFFERENT orgs each casting their own first vote on the
         same Knowledge Base entry at the same time, not one org retrying.
@@ -179,6 +181,12 @@ class TestVoteTraceRace:
         """
         trace_id = await _seed_kb(session_factory, org, "vote race across orgs")
         voter_orgs = await _make_orgs(session_factory, 20, "voter")
+        # Established voters: this test is about the count-then-write race,
+        # so every one of the 20 has to be eligible to move the tally in the
+        # first place (hub/tests/conftest.py:establish_orgs). A fresh org's
+        # vote is stored but not counted, which would make commons_votes
+        # legitimately 0 here and hide the race this test exists to catch.
+        await establish_orgs(voter_orgs)
 
         async def _vote(voter_org_id):
             async with session_scope(session_factory) as session:

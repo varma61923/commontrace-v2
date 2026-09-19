@@ -39,6 +39,312 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A corrected Knowledge Base entry now says it was corrected.**
+  Amendment resets an entry's votes (they judged text that no longer
+  exists), which left a freshly corrected entry indistinguishable from one
+  nobody has ever tried: both `unproven`, both zero votes. That makes the
+  reset look like amnesia rather than a decision. `browse_commons` now
+  returns `revisions` per entry and the console renders a "revised ×N"
+  marker beside the standing — the same affordance a wiki's "last edited
+  on" provides, and the thing that explains why an entry a reader
+  remembers as disputed no longer is.
+
+- **Correcting a Knowledge Base entry no longer deletes it.**
+  `commons_visible()` excludes superseded rows and `amend_trace` INSERTs a
+  new row rather than mutating the original, so amending a Knowledge Base
+  entry removed it from the Knowledge Base: the original went invisible the
+  moment it was superseded, and the new row was a plain org trace
+  (`commons_source` defaults to `"org"`, `shared_with_commons` to `False`).
+  Measured on a seeded entry with 42 hits and 5 votes, the corpus went from
+  1 entry to 0 — with no error, and nothing in the audit log saying an
+  entry had left the corpus.
+
+  This sat directly on the path the governance model is built around:
+  `kb-review` tells an operator "this entry is disputed" or "this entry is
+  stale", the natural remedy is to amend it, and amending it deleted it.
+  The operator console's own "Amend a trace" form is exactly how that
+  remedy would be applied. Correcting an article is the most ordinary act
+  in a wiki and has to leave the article in place.
+
+  Amendments of `commons_source == "seed"` originals now carry Knowledge
+  Base membership forward, along with `commons_hits` (which measures how
+  often the corpus was asked this question — a property of the topic, not
+  the wording, and resetting it would drop a corrected entry into the
+  review queue's "never hit" bucket). `commons_signature` is **recomputed**
+  from the amended text rather than copied, since carrying the old one
+  forward would leave a corrected entry answering to the old failure's
+  fingerprint.
+
+  `trust`/`commons_votes` deliberately do **not** carry forward: they are
+  aggregates over `Vote` rows that stay keyed to the text they judged, so
+  copying the numbers onto a row with no underlying votes would contradict
+  itself and then be silently overwritten by the next voter's recomputed
+  tally. A corrected entry re-enters as `unproven`, which is honest —
+  nobody has tried the corrected text yet. Stated rather than left to be
+  discovered: this also clears any `security_concern` the old text had
+  accumulated, so amending is not a neutral act on a flagged entry. Only
+  the operator can do it, and `audit.record` is what makes it reviewable.
+
+  A customer's own trace keeps the previous behaviour, because the
+  reasoning behind it still applies there: re-sharing a correction is an
+  explicit decision `amend_trace` must not make on the org's behalf. That
+  is right for content that is the org's to publish and inverted for
+  content the operator has already published to everyone.
+
+- **The Knowledge Base catalogue now shows the grounds for a verdict, not
+  just the verdict.** `standing` says the field rejected an entry; it does
+  not say whether the entry is stale, wrong, or dangerous, which are three
+  very different decisions for someone about to apply the fix. Votes have
+  always carried a closed-vocabulary `feedback_tag`, but only the
+  operator's review queue ever saw it. `crud.browse_commons` now returns
+  `concerns` -- per entry, how many established orgs attached each tag --
+  and the console renders them beside the standing.
+
+  This closes a real safety gap, not only a UX one. Standing is
+  deliberately conservative and one voice never condemns an entry, so an
+  entry a single org flagged `security_concern` still read `unproven`:
+  "not enough votes yet to say either way". A reader would apply a fix
+  somebody had explicitly flagged as dangerous and see no warning at all.
+  A security concern is now surfaced at any standing and any count,
+  including one -- the thresholds that govern a *verdict* are the wrong
+  rule for a *warning*.
+
+  Three boundaries, each pinned by a test in
+  `hub/tests/test_commons_browse.py`. Concerns are counted only from
+  established orgs, through the same `crud._established_voters_only`
+  filter the standing tally uses -- extracted and shared precisely so the
+  two numbers, which are read side by side, cannot drift apart, and so
+  that counting flags from any org cannot reopen the sockpuppet hole one
+  field over (mint five orgs, brand a rival's entry a security risk).
+  The counts never name an organisation, since that would leak that a
+  customer uses this Hub and hit that failure -- a cross-tenant
+  disclosure through the governance layer. And `feedback_text` is never
+  surfaced: free text from one customer rendered to every other carries
+  both a leak surface and an injection surface, so it stays with the
+  operator's review queue, read by a human.
+
+- **Sockpuppet resistance for Knowledge Base voting** — the open
+  repository now follows the wiki model all the way down, not just in
+  who may contribute. `MIN_VOTES_FOR_STANDING = 3` defended against one
+  *organisation* deciding what the field thinks; it did not defend against
+  one *person*, because organisations are free and self-serve and
+  `POST /api/v1/keys` mints one over HTTP with no human in the loop. Three
+  signups was three votes, which was the threshold — a ~60-second walk
+  around the constant that exists to prevent exactly that.
+
+  The fix is Wikipedia's "autoconfirmed" shape: **record every
+  contribution, count selectively.** A vote from any authenticated org is
+  still stored unconditionally — discarding a sockpuppet's vote hides the
+  attempt rather than stopping it, and those rows are the evidence an
+  operator needs to see a farm at all — but only votes from *established*
+  orgs enter the `trust`/`commons_votes` pair `entry_standing` reads. The
+  bar (`hub/commons.py`: `COMMONS_VOTER_MIN_TRACES = 5`,
+  `COMMONS_VOTER_MIN_AGE_HOURS = 24`, and the new
+  `vote_counts_toward_standing`) is cheap for a real customer and
+  expensive for a farm, since traces are rate limited, size limited, plan
+  capped and quarantine screened.
+
+  Properties pinned by tests in `hub/tests/test_kb_standing.py` and
+  `hub/tests/test_search_and_audit.py`: minted orgs can neither dispute an
+  entry nor manufacture `established` standing nor drown out the real
+  fleets that already disputed one; a vote cast before an org qualifies
+  starts counting the moment it does, so legitimate newcomers are delayed
+  rather than disenfranchised; and voting on a trace that never entered the
+  Knowledge Base is unaffected, since it is visible to exactly one org.
+
+  The bar is keyed on the **trace** being a Knowledge Base entry rather
+  than on who is casting the vote, which is subtler than it looks. Keyed on
+  the voter — the obvious reading of "an org rating its own trace needs no
+  bar" — the tally's meaning would depend on who voted *last*: the entry
+  owner casting one vote would take the unfiltered path and sweep in every
+  sockpuppet vote the filtered path had been holding out, handing an
+  attacker through the back door the exact result the front door refuses.
+  `test_the_owners_own_vote_cannot_flush_in_held_back_votes` is that
+  regression, and it was found by an existing test that passed for the
+  wrong reason: `trust` falls back to 0.5 when nothing is counted, which is
+  numerically identical to the 1-up-1-down aggregate it meant to assert.
+
+  The rule is stated rather than silent, which is the difference between an
+  anti-abuse measure and an apparently broken feature: `vote_trace` returns
+  `vote_counted`, the MCP tool docstring says so, the console's Knowledge
+  Base page spells out the bar *before* anyone votes, and the vote
+  confirmation says plainly when a vote was recorded but not counted.
+
+- **Per-org opt-in to contributing back** (`Organization
+  .commons_auto_contribute`, migration `a1c7e4f93d2b`). An org can now turn
+  on automatic contribution from `/app/kb`: every trace its agents capture
+  is also proposed to the Knowledge Base, instead of someone remembering to
+  propose each one by hand. This is the participation half of the
+  open-repository model — the consumption half (browsing, consulting) was
+  already there.
+
+  It changes **who proposes, never what is published**. An auto-proposed
+  entry lands in exactly the same `KnowledgeBaseSubmission` queue a
+  hand-written one does and stays invisible to every other organisation
+  until an operator accepts it, which is what keeps this from re-opening
+  the org-to-org sharing design `hub/plans.py` retired over adverse
+  selection: volume arriving automatically is still volume a human reads
+  before anyone else sees it.
+
+  Off by default in the column default, the server default and the
+  migration backfill — this is the one flag that lets an org's own incident
+  text leave its tenant, so it is never inferred from a plan or a role, and
+  changing it is admin-scoped and audited. Quarantined traces are never
+  proposed (`suspicion_reason` flagged them as probable spam, and
+  forwarding them would make every participating org a spam relay into the
+  operator's queue). A failed proposal never fails the capture: the trace
+  is already committed, and surfacing a rate-limited proposal as a
+  contribute error would make the caller retry the whole contribution. The
+  proposal keys its idempotency off the trace id, so a retried contribution
+  cannot produce a second proposal. 14 new tests
+  (`hub/tests/test_commons_auto_contribute.py`, plus
+  `TestAutoContributeToggleFromTheConsole`).
+
+- **Customers can vote on Knowledge Base entries from the console**
+  (`hub/console.py`). The catalogue displayed each entry's standing, but
+  standing is computed from votes and a vote could only be cast by an agent
+  through the MCP tool — a repository that shows a verdict and offers no way
+  to change it is a read-only encyclopedia. Voting goes through the same
+  `crud.vote_trace` the tool calls, so an org still cannot vote on content
+  it cannot see, and voting twice changes a vote rather than stuffing the
+  ballot. Gated on `write` rather than `admin`: reporting whether a
+  published fix worked is ordinary use of the repository, and requiring an
+  admin key would source the governance signal from whoever holds the most
+  privileged credential instead of whoever ran the fix.
+
+- **The Knowledge Base is now browsable and contributable from the
+  customer console** (`crud.browse_commons`, `hub/console.py`). The open
+  repository had two query surfaces, both agent-facing MCP tools that take
+  a MinHash signature — right for an agent mid-incident, and useless to a
+  person deciding whether the repository is worth opting into at all, who
+  has no failure yet and nothing to sign. `/app/kb` previously showed an
+  org only its own proposals, so "opt in and get access to shared
+  knowledge" was a claim a customer had to take on faith.
+
+  `browse_commons` is the catalogue: filter by tag, page through it, and
+  see each entry's **standing** — `established` / `unproven` / `stale` /
+  `disputed`, `hub/commons.py`'s existing field verdict, which until now
+  only tilted a ranking nobody could see. A disputed entry sorts to the
+  back rather than being hidden, the identical reasoning `commons_search`
+  gives: "it did not work for the fleets who tried it" is information, and
+  hiding it would answer a browse with a rosier corpus than exists.
+
+  Two deliberate boundaries, each with a test that fails loudly if it
+  changes: browsing requires `plan.commons_access` but does **not** spend a
+  monthly consultation (metering the catalogue would tax exactly the
+  moment this repository is trying to earn), and it does not increment
+  `commons_hits` (looking at an entry is not the same as it resolving an
+  incident, and inflating that metric would corrupt the operator's review
+  queue). What comes back is previews, not solutions — the shop window.
+
+  Proposing an entry is also reachable from the browser now, calling the
+  SAME `crud.submit_kb_entry` the MCP tool does: a second door to that
+  function, never a second path to publication — the operator review gate
+  is untouched. Previously only an agent could propose, which meant the
+  person who actually knows whether a fix generalises had no way to.
+  Verified in a real browser end to end. 30 new tests
+  (`hub/tests/test_commons_browse.py`, plus `TestKnowledgeBaseBrowse` and
+  `TestKnowledgeBaseSubmitFromTheConsole` in `hub/tests/test_console.py`).
+
+- **A `/api/v1/*` REST surface, so the CommonTrace Claude Code plugin can
+  talk to this Hub** (`hub/rest.py`, opt-in via `HUB_REST_API_ENABLED`).
+  The client that actually captures traces in the field — the
+  `commontrace/skill` plugin — does not speak MCP at all; its hooks are
+  plain `urllib` calls against `POST /api/v1/keys`, `/api/v1/traces`,
+  `/api/v1/traces/search` and three `/api/v1/telemetry/*` beacons. So the
+  plugin and this Hub could not be pointed at each other despite storing
+  the same objects and meaning the same things by them. With the flag on,
+  `COMMONTRACE_API_BASE_URL=https://your-hub.example.com` is the entire
+  integration — no plugin change.
+
+  Every endpoint is a thin translation in front of the SAME `hub/crud.py`
+  and `hub/auth.py` functions the MCP tools call, so tenant isolation,
+  plan entitlements, quarantine, the shared write-rate bucket and audit
+  rows behave identically whichever surface a caller arrives through; a
+  trace contributed over REST is indistinguishable afterwards from one
+  contributed over MCP except for its audit `actor` (`rest-api`). Scope
+  checks mirror the MCP tools' (search needs `read`, contribute needs
+  `write`), and a scope denial is a 403 — the one status the plugin
+  branches on specifically — kept distinct from a 401 (bad key) and a 402
+  (valid key, plan exhausted). `POST /api/v1/keys` mints a credential
+  with no caller identity, so it is gated on `HUB_SIGNUP_ENABLED` as well
+  and stays absent from the router entirely when that is off, the same
+  posture `/admin`, `/app` and `/signup` each take.
+
+  Verified end-to-end against the shipped plugin's own hook code, not a
+  reimplementation of it: `session_start.provision_api_key()`,
+  `ct_config` round-trip, a contribution in the exact body shape the
+  plugin's directive specifies, `retrieval.search_commontrace()` and
+  `retrieval.format_results()`, and both telemetry beacons, all against a
+  live Hub. 30 new tests (`hub/tests/test_rest.py`, plus two `build_app`
+  boot cases), including a `TestThePluginsOwnRequestShapes` class whose
+  whole job is to fail CI if a field is renamed out from under an
+  installed plugin.
+
+- **Amending a trace from the `/admin` console, plus a new `hub.manage
+  amend-trace` CLI command** (`hub/manage.py:amend_trace`,
+  `hub/admin.py`): the operator counterpart to the `amend_trace` MCP tool
+  an org's own agents already use — for a support-ticket-driven
+  correction where the org itself cannot or has not amended its own
+  trace (a typo cleaned up on their behalf, a title fixed after a
+  misconfigured client mis-titled it). Calls the SAME `crud.amend_trace`
+  the MCP tool does, so it cannot do anything the org's own key could
+  not already do to its own trace, and is reversible in the same sense:
+  it INSERTs a new trace onto the amendment chain rather than mutating
+  the original in place, so nothing is lost even from a wrong trace id.
+  A malformed (non-UUID) id — realistic on a form an operator types into
+  directly, unlike a CLI arg — is now caught before it reaches asyncpg's
+  UUID column check as a raw, unhandled `DataError`. 9 new tests across
+  `hub/tests/test_manage.py` and `hub/tests/test_admin.py`, plus an
+  end-to-end browser smoke test against a live server.
+
+- **A double-submit guard on every form in both consoles**
+  (`hub/admin.py`, `hub/console.py`): every mutation here is
+  POST-then-redirect, so a double click or an impatient second click
+  while the first request is still in flight could fire the same
+  mutation twice before either response comes back. A small,
+  dependency-free script now disables every submit button (and relabels
+  the clicked one "Working…") the instant a form actually submits — the
+  browser's native submit still proceeds unchanged, this only closes the
+  window for a second one starting before the redirect navigates away.
+
+- **An in-process webhook-delivery scheduler** (`hub/scheduler.py`'s
+  `run_webhook_delivery`, opt-in via `HUB_WEBHOOK_SCHEDULER_ENABLED`):
+  the same pattern the existing alert scheduler already used for
+  `hub.manage check-alerts`, now applied to `hub.manage webhook-deliver`
+  — a deployment that would rather not run cron next to the Hub process
+  can have it drain `hub/events.py`'s pending-delivery queue on its own
+  heartbeat instead, on a much shorter default interval
+  (`HUB_WEBHOOK_SCHEDULER_INTERVAL_SECONDS`, default 30s) than any cron
+  entry would sanely use, since a subscriber hearing about a quarantine
+  or an experiment verdict promptly is the whole point of having
+  webhooks at all. A deployment that already points cron at
+  `webhook-deliver` sees no change — this is off by default and
+  `build_app` never starts the loop unless asked to. `build_app`'s
+  lifespan now joins however many of the two schedulers are enabled via
+  `asyncio.gather` on shutdown, rather than assuming at most one.
+  New tests in `hub/tests/test_scheduler.py`
+  (`TestWebhookDeliveryRunLoop`, `TestWebhookSweepReachesRealDeliveries`)
+  and `hub/tests/test_build_app_startup.py` (both schedulers enabled
+  together, boots and shuts down cleanly).
+
+- **Auto-refreshing pages in both consoles.** The customer console's
+  Overview and audit log pages, and the operator console's Overview,
+  organization, and knowledge-base pages, now reload themselves every
+  15–45 seconds (vanilla JS, no new dependency) so a page left open in a
+  background tab stays live instead of showing a stale snapshot until
+  the next manual reload. Refresh pauses (and retries in 3s) while the
+  viewer is actively typing in a field, and scroll position round-trips
+  across the reload via `sessionStorage`. Deliberately excluded: any
+  page that can render a shown-once secret (an API key or encryption
+  key) — auto-refresh is switched off exactly when a fresh key is being
+  displayed, so a background timer can never wipe a credential from the
+  screen before the operator or customer has copied it. New
+  `TestAutoRefresh` classes in `hub/tests/test_console.py` and
+  `hub/tests/test_admin.py` cover both the presence of the refresh
+  script on the intended pages and its absence whenever a fresh key is
+  in the response.
+
 - **Key issuance and a confirmed danger zone in the `/admin` console**
   (`hub/admin.py`): issue/rotate/revoke-key buttons on an organization's
   own page (needed for onboarding — a brand-new org has no key yet, so

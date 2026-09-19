@@ -90,10 +90,11 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
-from hub import alerts, audit, auth, crud, events, manage, plans, rbac, scopes
-from hub.abuse import RateLimiter, resolve_client_key
+from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
+from hub.config import HubConfig
 from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
@@ -275,6 +276,30 @@ fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
   border-radius:8px;margin:.4rem 0;background:var(--paper)}
 .share-box button{padding:.4rem .9rem;font:inherit;font-size:.85rem;border-radius:8px;
   border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+form.act{display:flex;gap:.4rem;align-items:center;margin:.6rem 0 1rem}
+form.act input[type=text]{font:inherit;font-size:.9rem;padding:.4rem .55rem;
+  border:1px solid var(--rule);border-radius:8px;background:var(--paper);color:var(--ink);
+  min-width:14rem}
+form.act button{padding:.4rem .9rem;font:inherit;font-size:.9rem;border-radius:8px;
+  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+form.stack{display:flex;flex-direction:column;gap:.7rem;margin:.6rem 0 1rem;max-width:42rem}
+form.stack label{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);display:block;margin-bottom:.2rem}
+form.stack input[type=text],form.stack textarea{font:inherit;font-size:.92rem;
+  padding:.45rem .6rem;border:1px solid var(--rule);border-radius:8px;
+  background:var(--paper);color:var(--ink);width:100%}
+form.stack textarea{min-height:5.5rem;resize:vertical;font-family:inherit}
+form.stack button{padding:.5rem 1rem;font:inherit;border-radius:8px;
+  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;align-self:start}
+form.vote{display:flex;gap:.25rem;align-items:center;margin:0}
+form.vote button.v{font:inherit;font-size:.8rem;line-height:1;padding:.25rem .45rem;
+  border:1px solid var(--rule);border-radius:6px;background:var(--paper);
+  color:var(--muted);cursor:pointer}
+form.vote button.v:hover{border-color:var(--ink);color:var(--ink)}
+form.vote button.v.voted{border-color:var(--ink);background:var(--ink);color:#fff}
+button.busy{opacity:.6}
+form.vote select{font:inherit;font-size:.72rem;padding:.2rem;border:1px solid var(--rule);
+  border-radius:6px;background:var(--paper);color:var(--ink);max-width:9rem}
 """
 
 
@@ -296,7 +321,48 @@ _FAVICON_LINK = (
 )
 
 
-def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
+def _auto_refresh_script(seconds: int) -> str:
+    """A dependency-free "this page is live" mechanism -- see
+    hub/admin.py's own copy of this helper for the full reasoning
+    (reload on a timer; skip and retry shortly while a form control is
+    focused, so a half-typed search or reason is never silently wiped;
+    round-trip scroll position through sessionStorage so a reload does
+    not snap back to the top of the page).
+    """
+    return (
+        "<script>(function(){"
+        f"var KEY='ct-scroll-'+location.pathname+location.search;"
+        "var y=sessionStorage.getItem(KEY);"
+        "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
+        "function isEditing(){var el=document.activeElement;"
+        "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
+        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
+        "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
+        f"setTimeout(tick,{int(seconds)}*1000);"
+        "})();</script>"
+    )
+
+
+# See hub/admin.py's identical copy of this guard for the full reasoning,
+# including why it marks the form in-flight rather than DISABLING the
+# clicked button: a disabled control is barred from submission, so
+# disabling the submitter drops its own name/value -- which is exactly
+# where a multi-button form (the Knowledge Base vote buttons below) keeps
+# its action.
+_FORM_GUARD_SCRIPT = (
+    "<script>document.addEventListener('submit',function(ev){"
+    "var f=ev.target;"
+    "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
+    "if(ev.defaultPrevented)return;"
+    "f.dataset.ctSubmitting='1';"
+    "if(ev.submitter){ev.submitter.classList.add('busy');}"
+    "},true);</script>"
+)
+
+
+def _page(
+    title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
+) -> HTMLResponse:
     nav = (
         f'<nav><a href="{CONSOLE_PATH}">Overview</a>'
         f'<a href="{CONSOLE_PATH}/proof">Proof</a>'
@@ -310,6 +376,12 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
         if signed_in else ""
     )
+    live_badge = (
+        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
+        'unless you are typing in a field">live</span>'
+        if auto_refresh_seconds else ""
+    )
+    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -317,7 +389,8 @@ def _page(title: str, body: str, *, signed_in: bool = True) -> HTMLResponse:
         f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">your fleet</span>'
-        f"{nav}</div></header><main>{body}</main></body></html>",
+        f"{live_badge}"
+        f"{nav}</div></header><main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
         # A customer console renders that org's own operational data. A cached
         # copy in a shared or kiosk browser is one more place it sits at rest,
         # and it outlives the session cookie that was supposed to gate it.
@@ -914,12 +987,177 @@ def _render_memory(result: dict, tags: list[str]) -> str:
     return "".join(body)
 
 
-def _render_kb(submissions: list[dict], ent: dict) -> str:
+#: How the field's verdict on an entry renders. The label is
+#: hub/commons.py's (`entry_standing`); the tone is this page's, and
+#: `disputed` deliberately gets the same red a failure gets elsewhere in
+#: this console -- an entry the fleets who tried it say did not work is a
+#: warning, not a neutral attribute.
+_STANDING_TONE = {
+    "established": "ok",
+    "stale": "warn",
+    "disputed": "bad",
+    "unproven": "",
+}
+
+_STANDING_MEANING = {
+    "established": "enough fleets tried it and it worked",
+    "stale": "past its review date — may have drifted",
+    "disputed": "fleets tried it and a majority say it did NOT work",
+    "unproven": "not enough votes yet to say either way",
+}
+
+
+# What each closed-vocabulary feedback tag means to a READER, as opposed to
+# what it means to the operator's review queue. Phrased as the thing the
+# reader has to decide: whether to apply this fix.
+_CONCERN_LABEL = {
+    "security_concern": "security concern",
+    "outdated": "outdated",
+    "wrong": "does not work",
+    "spam": "spam",
+}
+
+# `security_concern` is the one tag that is never merely informational, and
+# it is rendered as a warning at ANY standing -- see _render_kb_concerns.
+_CONCERN_TONE = {
+    "security_concern": "bad",
+    "wrong": "bad",
+    "outdated": "warn",
+    "spam": "mute",
+}
+
+
+def _render_kb_concerns(entry: dict) -> str:
+    """The evidence behind an entry's standing, as pills.
+
+    A verdict with no reason attached is something a reader must take on
+    faith, and "disputed" flattens three very different situations --
+    stale, wrong, or dangerous -- into one word. Each is a different
+    decision for someone about to apply the fix.
+
+    The safety case this exists for: an entry two orgs flagged
+    `security_concern` but which has fewer votes than
+    MIN_VOTES_FOR_STANDING still reads as `unproven`, because standing is
+    deliberately conservative about calling the field's verdict. A reader
+    would see "not enough votes yet to say either way" and apply a fix
+    somebody had explicitly flagged as dangerous. So a security concern is
+    surfaced at ANY standing and at any count, including one -- the
+    thresholds that govern *standing* are about not letting a single voice
+    condemn an entry, which is the right rule for a verdict and the wrong
+    one for a warning.
+
+    Counts are aggregates from established voters only, and name no
+    organisation -- see crud._concerns_for for why both.
+    """
+    concerns = entry.get("concerns") or {}
+    if not concerns:
+        return ""
+    # Most-reported first, with security always leading regardless of count.
+    ordered = sorted(
+        concerns.items(),
+        key=lambda kv: (kv[0] != "security_concern", -kv[1], kv[0]),
+    )
+    pills = "".join(
+        f'<span class="pill {_CONCERN_TONE.get(tag, "")}" '
+        f'title="{_num(count)} organisation(s) reported this">'
+        f'{h(_CONCERN_LABEL.get(tag, tag))} &times;{_num(count)}</span> '
+        for tag, count in ordered
+    )
+    return f'<div class="concerns">{pills}</div>'
+
+
+def _render_kb_vote(entry: dict, can_vote: bool) -> str:
+    """The governance control: this org's verdict on one entry.
+
+    A catalogue that shows standing but offers no way to change it is a
+    read-only encyclopedia -- the standing every row displays is computed
+    from exactly these votes, and until now they could only be cast by an
+    agent through the MCP tool. The org's current vote is rendered as the
+    pressed state so the button reads as "change my mind", not "vote
+    again"; `vote_trace` upserts on (trace, org), so a second click
+    replaces rather than double-counts.
+    """
+    if not can_vote:
+        return '<span class="muted">—</span>'
+    trace_id = h(entry.get("id"))
+    mine = str(entry.get("my_vote") or "")
+    up_state = " voted" if mine == "up" else ""
+    down_state = " voted" if mine == "down" else ""
+    # A downvote carries WHY, because hub/manage.py's review queue sorts on
+    # it: a `security_concern` tag is what promotes an entry to the
+    # operator's urgent bucket, and a bare downvote cannot say that.
+    tags = "".join(
+        f'<option value="{h(t)}">{h(t or "reason (optional)")}</option>'
+        for t in ("", "outdated", "wrong", "security_concern", "spam")
+    )
+    return (
+        f'<form method="post" action="{CONSOLE_PATH}/kb/vote" class="vote">'
+        f'<input type="hidden" name="trace_id" value="{trace_id}">'
+        f'<button type="submit" name="vote" value="up" class="v{up_state}" '
+        f'title="This worked for us">&#9650;</button>'
+        f'<button type="submit" name="vote" value="down" class="v{down_state}" '
+        f'title="This did not work for us">&#9660;</button>'
+        f'<label class="sr-only" for="fb-{trace_id}">Why (for a downvote)</label>'
+        f'<select id="fb-{trace_id}" name="feedback_tag">{tags}</select>'
+        "</form>"
+    )
+
+
+def _render_kb_entry(entry: dict, can_vote: bool = False) -> str:
+    """One catalogue row: what it is, what the field thinks of it, how
+    much it is actually used, and this org's own say in that."""
+    standing = str(entry.get("standing") or "")
+    tone = _STANDING_TONE.get(standing, "")
+    # "Revised" is not decoration. Amending an entry resets its votes (the
+    # old ones judged text that is gone), so a corrected entry and a
+    # never-tried one both read `unproven` with zero votes. Saying which is
+    # which is what keeps that reset honest, and it is the same affordance
+    # a wiki's "last edited on" provides.
+    revisions = int(entry.get("revisions") or 0)
+    revised = (
+        f'<br><span class="pill mute" title="Corrected {_num(revisions)} time(s). '
+        'Votes reset on each correction, because they judged text that is no '
+        'longer there.">revised &times;'
+        f'{_num(revisions)}</span>'
+        if revisions else ""
+    )
+    tags = "".join(
+        f'<span class="pill">{h(t)}</span> ' for t in (entry.get("tags") or [])[:6]
+    )
+    return (
+        f"<tr><td><b>{h(entry.get('title'))}</b><br>"
+        f'<span class="muted">{h(entry.get("solution_preview"))}</span><br>{tags}</td>'
+        f'<td><span class="pill {tone}" title="{h(_STANDING_MEANING.get(standing, ""))}">'
+        f"{h(standing)}</span>{revised}{_render_kb_concerns(entry)}</td>"
+        f'<td class="rev">{_num(entry.get("votes", 0))} vote(s)</td>'
+        f'<td class="rev">{_num(entry.get("hits", 0))}</td>'
+        f"<td>{_render_kb_vote(entry, can_vote)}</td>"
+        f'<td class="rev">{h(entry.get("id"))}</td></tr>'
+    )
+
+
+def _render_kb(
+    submissions: list[dict],
+    ent: dict,
+    browse: dict | None = None,
+    *,
+    tag: str = "",
+    can_submit: bool = False,
+    can_vote: bool = False,
+    vote_counts: bool = True,
+    auto_contribute: bool = False,
+    error: str = "",
+    flash: str = "",
+) -> str:
     body = ["<h1>Knowledge Base</h1>",
             '<p class="sub">The one surface where anything crosses an organisation '
             "boundary — and it crosses it through a person. You consult the Knowledge Base "
             "by sending a <em>signature</em>, never your text; you propose an entry and an "
             "operator decides. No other customer sees your traces, ever.</p>"]
+    if flash:
+        body.append(f'<div class="share-box">{h(flash)}</div>')
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
     queries = ent.get("commons_queries") or {}
     body.append(_tiles([
         ("Consultations used", f'{_num(queries.get("used", 0))} <span class="muted">of '
@@ -928,6 +1166,126 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
         ("Earned by accepted proposals", _num(queries.get("bonus_from_accepted_submissions", 0))),
         ("Proposals sent", str(len(submissions))),
     ]))
+
+    # --- The open repository, as a catalogue ---------------------------
+    if browse is not None:
+        body.append("<h2>Browse the open repository</h2>")
+        body.append(
+            '<p class="sub">Every entry here is operator-curated and public to all '
+            "organisations — never another customer's private trace. Browsing costs no "
+            "consultation: what you see below are previews, and asking the Knowledge Base "
+            "about a <em>specific</em> failure of yours (which is what spends one) still "
+            "goes through your agents with a signature, never your text.</p>"
+        )
+        body.append(
+            f'<form method="get" action="{CONSOLE_PATH}/kb" class="act">'
+            '<label class="sr-only" for="kb-tag">Filter by tag</label>'
+            f'<input type="text" id="kb-tag" name="tag" value="{h(tag)}" '
+            'placeholder="filter by tag (blank = everything)">'
+            "<button type=\"submit\">Filter</button></form>"
+        )
+        entries = browse.get("entries") or []
+        if entries:
+            rows = "".join(_render_kb_entry(e, can_vote) for e in entries)
+            body.append(
+                "<table><thead><tr><th>Entry</th><th>Standing</th><th>Votes</th>"
+                f"<th>Times used</th><th>Your vote</th><th>Id</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table>"
+            )
+            body.append(
+                '<p class="sub">Your vote is what moves an entry between '
+                '<em>unproven</em>, <em>established</em> and <em>disputed</em> — the same '
+                "signal the operator's review queue sorts on. Voting is per organisation, "
+                "and voting again changes your vote rather than adding one.</p>"
+            )
+            # Said here, before the vote rather than only after it, because
+            # an organisation that votes and watches nothing move has every
+            # reason to conclude the feature is broken. The rule is in
+            # hub/commons.py and stating it costs an attacker nothing they
+            # could not read there.
+            if can_vote and not vote_counts:
+                body.append(
+                    '<p class="sub">Your votes are <b>recorded but not yet counted</b> '
+                    "toward an entry's standing. Organisations qualify once they have "
+                    f"captured {commons.COMMONS_VOTER_MIN_TRACES} traces and are more than "
+                    f"{commons.COMMONS_VOTER_MIN_AGE_HOURS} hours old — the bar that "
+                    "keeps a handful of throwaway signups from deciding what the field "
+                    "thinks. Nothing is lost in the meantime: votes you cast now start "
+                    "counting the moment you qualify.</p>"
+                )
+            total = browse.get("total", 0)
+            shown = len(entries)
+            offset = browse.get("offset", 0)
+            nav = []
+            if offset > 0:
+                previous = max(0, offset - browse.get("limit", 25))
+                nav.append(
+                    f'<a href="{CONSOLE_PATH}/kb?tag={h(tag)}&offset={previous}">&larr; Newer</a>'
+                )
+            if browse.get("has_more"):
+                nxt = offset + browse.get("limit", 25)
+                nav.append(
+                    f'<a href="{CONSOLE_PATH}/kb?tag={h(tag)}&offset={nxt}">Older &rarr;</a>'
+                )
+            body.append(
+                f'<p class="muted">Showing {_num(shown)} of {_num(total)} entries. '
+                + (" · ".join(nav) if nav else "")
+                + "</p>"
+            )
+        elif tag:
+            body.append(f'<p class="sub">No entries tagged {h(tag)!r}.</p>')
+        else:
+            body.append('<p class="sub">The Knowledge Base has no published entries yet.</p>')
+
+    # --- Contributing back ---------------------------------------------
+    body.append("<h2>Contribute back</h2>")
+    if can_submit:
+        state = "on" if auto_contribute else "off"
+        turning = "off" if auto_contribute else "on"
+        body.append(
+            '<p class="sub">Automatic contribution is currently '
+            f"<b>{state}</b>. When it is on, every trace your agents capture is also "
+            "proposed to the Knowledge Base — you stop having to remember to propose "
+            "them one at a time. Nothing is published by this: an operator still reviews "
+            "every proposal, and until one is accepted no other organisation can see it. "
+            "Quarantined traces are never proposed.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/kb/auto-contribute" class="act">'
+            f'<input type="hidden" name="enabled" value="{"0" if auto_contribute else "1"}">'
+            f"<button type=\"submit\">Turn automatic contribution {turning}</button></form>"
+        )
+    else:
+        body.append(
+            '<p class="sub">Automatic contribution is '
+            f"<b>{'on' if auto_contribute else 'off'}</b> for this organisation. "
+            "Changing it needs an admin-scoped key.</p>"
+        )
+
+    body.append("<h2>Propose an entry</h2>")
+    if can_submit:
+        body.append(
+            '<p class="sub">An accepted proposal is published under the operator\'s name, '
+            "not yours, and permanently raises your consultation allowance. Nothing you "
+            "send here is visible to another organisation unless and until an operator "
+            "accepts it. Never include secrets, credentials or customer data.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/kb/submit" class="stack">'
+            '<div><label for="kb-title">Title</label>'
+            '<input type="text" id="kb-title" name="title" required maxlength="200"></div>'
+            '<div><label for="kb-context">The problem</label>'
+            '<textarea id="kb-context" name="context_text" required></textarea></div>'
+            '<div><label for="kb-solution">What actually fixed it</label>'
+            '<textarea id="kb-solution" name="solution_text" required></textarea></div>'
+            '<div><label for="kb-tags">Tags, comma-separated</label>'
+            '<input type="text" id="kb-tags" name="tags"></div>'
+            '<div><label for="kb-rationale">Why this is worth publishing (optional)</label>'
+            '<input type="text" id="kb-rationale" name="rationale" maxlength="300"></div>'
+            '<div><button type="submit">Propose to the Knowledge Base</button></div></form>'
+        )
+    else:
+        body.append(
+            '<p class="sub">Proposing an entry needs an admin-scoped key. Your agents can '
+            "also propose one directly with the <code>submit_kb_entry</code> tool.</p>"
+        )
+
     if submissions:
         rows = "".join(
             f"<tr><td>{h(s.get('title'))}</td><td>{h(s.get('status'))}</td>"
@@ -938,8 +1296,7 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
         body.append("<h2>Your proposals</h2><table><thead><tr><th>Title</th><th>Status</th>"
                     f"<th>Sent</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>")
     else:
-        body.append('<h2>Your proposals</h2><p class="sub">None yet. Your agents propose '
-                    "one with <code>submit_to_commons</code>; an accepted proposal is "
+        body.append('<h2>Your proposals</h2><p class="sub">None yet. An accepted proposal is '
                     "published under the operator's name, not yours, and earns you bonus "
                     "consultations.</p>")
     return "".join(body)
@@ -1286,9 +1643,35 @@ def add_console_routes(
     stripe: StripeSettings | None = None,
     signing_key: str = "",
     cipher: EnvelopeCipher = NULL_CIPHER,
+    config: HubConfig | None = None,
+    rate_limiter=None,
 ) -> None:
-    """Mount the customer console. Registered only when a secret is set."""
+    """Mount the customer console. Registered only when a secret is set.
+
+    `config` and `rate_limiter` are needed by exactly one handler --
+    proposing a Knowledge Base entry, which validates and stores
+    caller-supplied content through `crud.submit_kb_entry` and so needs the
+    same size limits and write budget every other write path gets.
+    `build_app` passes both; everything else may omit them.
+
+    When omitted they are resolved LAZILY, on first use, rather than here.
+    Mounting is not the moment to need a database URL: most of this console
+    never touches either value, and every test that builds the app without
+    them would otherwise fail at import-time on `HubConfig.from_env()`'s
+    deliberate refusal to guess a connection string. Deferring means an
+    unconfigured deployment fails on the one request that genuinely needs
+    the config, with a message about that request, instead of refusing to
+    mount a console whose other twenty routes were fine.
+    """
     stripe = stripe or StripeSettings()
+    _resolved: dict = {"config": config, "rate_limiter": rate_limiter}
+
+    def _write_deps():
+        if _resolved["config"] is None:
+            _resolved["config"] = HubConfig.from_env()
+        if _resolved["rate_limiter"] is None:
+            _resolved["rate_limiter"] = make_rate_limiter(_resolved["config"])
+        return _resolved["config"], _resolved["rate_limiter"]
 
     # Sign-in is a credential-checking endpoint, so it is rate limited on the
     # client key exactly as the MCP auth path is: without it this is an
@@ -1428,7 +1811,14 @@ def add_console_routes(
                 if stripe.price_for_plan(name) and name != current_plan
             ],
         }
-        return _page("Your fleet", _render_overview(data, causal, billing_state))
+        return _page(
+            "Your fleet", _render_overview(data, causal, billing_state),
+            # Longer than the other auto-refreshing pages: causal_effects is
+            # real statistical work (hub/SCALING.md measures it up to 1.4s on
+            # a large org), and this is the page most likely left open in a
+            # background tab.
+            auto_refresh_seconds=45,
+        )
 
     async def billing_checkout(request: Request) -> Response:
         """Mints a fresh Checkout Session for a plan the signed-in org does
@@ -1674,6 +2064,52 @@ def add_console_routes(
         result["query"] = query
         return _page("Memory", _render_memory(result, tags))
 
+    async def _kb_view(
+        org_id: str, claims: dict, *, tag: str = "", offset: int = 0,
+        error: str = "", flash: str = "",
+    ) -> Response:
+        """The Knowledge Base page, rendered from scratch.
+
+        Shared by the GET route and by the submit handler's re-render, so a
+        validation failure comes back to a fully populated page rather than
+        a stub missing the catalogue the visitor was just looking at.
+        """
+        async with session_scope(session_factory) as session:
+            submissions = await crud.list_my_kb_submissions(session, org_id)
+            ent = await crud.entitlements(session, org_id)
+            organization = await session.get(Organization, org_id)
+            auto_contribute = bool(
+                organization is not None and organization.commons_auto_contribute
+            )
+            vote_counts = commons.vote_counts_toward_standing(
+                trace_count=(organization.trace_count if organization else 0),
+                org_created_at=(organization.created_at if organization else None),
+            )
+            try:
+                browse = await crud.browse_commons(session, org_id, tag=tag, offset=offset)
+            except plans.EntitlementExceeded:
+                # A plan without Knowledge Base access still gets the page
+                # (its own proposals, its allowance) -- just not the
+                # catalogue. Failing the whole page would hide information
+                # the org is entitled to over one section it is not.
+                browse = None
+        return _page(
+            "Knowledge Base",
+            _render_kb(
+                submissions, ent, browse, tag=tag,
+                can_submit=_is_admin(claims),
+                # Voting needs only `write`, not `admin`: reporting that an
+                # entry did or did not work is ordinary use of the
+                # repository, not administration of the org -- and gating
+                # it behind an admin key is how a governance signal ends up
+                # coming from the one person who least often runs the fix.
+                can_vote=scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE),
+                vote_counts=vote_counts,
+                auto_contribute=auto_contribute,
+                error=error, flash=flash,
+            ),
+        )
+
     async def knowledge_base(request: Request) -> Response:
         claims = await _claims(request)
         if claims is None:
@@ -1683,10 +2119,168 @@ def add_console_routes(
             return _page("Knowledge Base",
                          "<h1>Knowledge Base</h1><p class=\"sub\">The Knowledge Base is "
                          "not enabled on this deployment.</p>")
+        try:
+            offset = int(request.query_params.get("offset", "0"))
+        except ValueError:
+            offset = 0
+        return await _kb_view(
+            org_id, claims,
+            tag=request.query_params.get("tag", "")[:64],
+            offset=max(0, offset),
+            flash=request.query_params.get("done", "")[:200],
+        )
+
+    async def kb_submit(request: Request) -> Response:
+        """Propose an entry from the browser.
+
+        Until now this was reachable only as an MCP tool, which meant the
+        person who actually knows whether a fix generalises -- rather than
+        the agent that happened to apply it -- had no way to propose one at
+        all. Calls the SAME `crud.submit_kb_entry` the tool does, so the
+        operator-review gate, the rate limit and the credit on acceptance
+        are identical; this is a second door to that function, never a
+        second path to publication.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return await _kb_view(
+                org_id, claims,
+                error="Proposing an entry needs an admin-scoped key.",
+            )
+        form = await request.form()
+        title = str(form.get("title") or "").strip()
+        context_text = str(form.get("context_text") or "").strip()
+        solution_text = str(form.get("solution_text") or "").strip()
+        if not (title and context_text and solution_text):
+            return await _kb_view(
+                org_id, claims,
+                error="Title, the problem and what fixed it are all required.",
+            )
+        tags = [t.strip() for t in str(form.get("tags") or "").split(",") if t.strip()]
+        submit_config, submit_limiter = _write_deps()
+        try:
+            async with session_scope(session_factory) as session:
+                await crud.submit_kb_entry(
+                    session, org_id, submit_config, submit_limiter,
+                    title=title,
+                    context_text=context_text,
+                    solution_text=solution_text,
+                    tags=tags,
+                    rationale=str(form.get("rationale") or "").strip()[:300],
+                    actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                )
+        except (TraceRejected, plans.EntitlementExceeded) as exc:
+            return await _kb_view(org_id, claims, error=str(exc))
+        except RateLimited:
+            return await _kb_view(
+                org_id, claims,
+                error="Too many proposals just now. Try again shortly.",
+            )
+        return RedirectResponse(
+            f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
+        )
+
+    async def kb_auto_contribute(request: Request) -> Response:
+        """Turn this org's automatic contribution on or off.
+
+        Admin-scoped, and audited, because it is the one setting that
+        changes whether this organisation's own incident text leaves its
+        tenant at all. Everything downstream of the flag is unchanged: an
+        auto-proposed entry goes into the same operator-review queue a
+        hand-written one does (see `Organization.commons_auto_contribute`),
+        so this grants no new visibility to anyone -- it only stops a
+        participating org having to remember to propose each trace.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return await _kb_view(
+                org_id, claims,
+                error="Changing automatic contribution needs an admin-scoped key.",
+            )
+        form = await request.form()
+        enabled = str(form.get("enabled") or "").strip() == "1"
         async with session_scope(session_factory) as session:
-            submissions = await crud.list_my_kb_submissions(session, org_id)
-            ent = await crud.entitlements(session, org_id)
-        return _page("Knowledge Base", _render_kb(submissions, ent))
+            organization = await session.get(Organization, org_id)
+            if organization is None:
+                return _redirect_to_signin()
+            organization.commons_auto_contribute = enabled
+            await audit.record(
+                session,
+                actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                action="set_commons_auto_contribute",
+                org_id=org_id, target_type="org", target_id=org_id,
+                summary=f"enabled={enabled}",
+            )
+        done = (
+            "Automatic+contribution+is+on.+New+traces+will+also+be+proposed."
+            if enabled else
+            "Automatic+contribution+is+off."
+        )
+        return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
+
+    async def kb_vote(request: Request) -> Response:
+        """Cast this org's verdict on one Knowledge Base entry.
+
+        Calls the SAME `crud.vote_trace` the MCP tool does, which already
+        permits voting on any `commons_visible()` entry and upserts on
+        (trace, org) -- so voting twice changes a vote rather than stuffing
+        the ballot, and an org still cannot vote on content it cannot see.
+
+        Gated on `write`, not `admin`: reporting that a published fix did
+        or did not work is ordinary use of the repository. Requiring an
+        admin key would mean the governance signal comes from whoever holds
+        the most privileged credential rather than whoever actually ran the
+        fix, which is the opposite of what makes the standing worth
+        anything.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not scopes.satisfies(claims.get("scopes"), scopes.SCOPE_WRITE):
+            return await _kb_view(
+                org_id, claims, error="Voting needs a key with the 'write' scope.")
+        form = await request.form()
+        vote_type = str(form.get("vote") or "").strip()
+        trace_id = str(form.get("trace_id") or "").strip()
+        feedback_tag = str(form.get("feedback_tag") or "").strip()
+        try:
+            async with session_scope(session_factory) as session:
+                voted = await crud.vote_trace(
+                    session, org_id, trace_id, vote_type,
+                    feedback_tag=feedback_tag,
+                    actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                )
+        except ValueError as exc:
+            # A bad vote_type or feedback_tag -- a tampered form, since the
+            # rendered one only ever offers valid values.
+            return await _kb_view(org_id, claims, error=str(exc))
+        if voted is None:
+            return await _kb_view(
+                org_id, claims,
+                error="That entry is no longer in the Knowledge Base.",
+            )
+        # Two different true things, and saying only the first one to an
+        # org whose vote did not count would be a quiet lie by omission.
+        done = (
+            "Thanks+—+your+vote+was+recorded."
+            if voted.get("vote_counted", True) else
+            "Your+vote+was+recorded,+but+does+not+count+toward+this+entry%27s"
+            "+standing+yet+—+see+the+note+below+the+catalogue."
+        )
+        return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:
         async with session_scope(session_factory) as session:
@@ -2108,7 +2702,10 @@ def add_console_routes(
                 )
             ).scalars().all())
         has_more = len(rows) > limit
-        return _page("Audit log", _render_audit_log(rows[:limit], offset, limit, has_more))
+        return _page(
+            "Audit log", _render_audit_log(rows[:limit], offset, limit, has_more),
+            auto_refresh_seconds=20,
+        )
 
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
@@ -2124,6 +2721,10 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/kb/submit", kb_submit, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/kb/vote", kb_vote, methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/kb/auto-contribute", kb_auto_contribute, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])

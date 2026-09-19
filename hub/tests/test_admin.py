@@ -39,12 +39,13 @@ def _explode(*a, **kw):
     raise AssertionError("no database access should happen for an unauthenticated request")
 
 
-def _app(token: str = "s3cret", session_factory=_explode) -> Starlette:
+def _app(token: str = "s3cret", session_factory=_explode, config: HubConfig | None = None) -> Starlette:
     app = Starlette()
     admin.add_admin_routes(
         app, session_factory, admin_token=token,
         # High limits: these tests assert auth and rendering, not throttling.
         rate_limiter=RateLimiter(per_minute=10_000, burst=10_000),
+        config=config,
     )
     return app
 
@@ -341,7 +342,7 @@ class TestRendering:
             "quarantine/release", "legal-hold/place", "legal-hold/release",
             "retention/set", "retention/clear", "set-plan",
             "users/create", "users/set-role", "users/disable", "users/unlink-sso",
-            "tag-subjects", "keys/issue", "keys/rotate", "keys/revoke",
+            "tag-subjects", "amend-trace", "keys/issue", "keys/rotate", "keys/revoke",
             "purge-trace", "purge", "purge-subject-traces",
         ):
             assert f'action="/admin/org/{org_id}/{allowed_action}"'.lower() in lowered
@@ -1286,6 +1287,107 @@ class TestKeyIssuanceFromTheConsole:
         assert entry.actor == admin._ADMIN_ACTOR
 
 
+class TestAmendingATraceFromTheConsole:
+    """The operator counterpart to the `amend_trace` MCP tool
+    (hub/manage.py:amend_trace) -- for a support-ticket-driven correction
+    on an org's behalf. Reversible in the sense that matters: it INSERTs a
+    new trace onto the amendment chain rather than mutating the original,
+    so a wrong trace id or a bad edit costs nothing more than a second
+    amendment."""
+
+    async def _seed(self, session_factory) -> tuple[str, str]:
+        from hub.db import session_scope
+        from hub.models import Organization, Trace
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            trace = Trace(
+                org_id=org.id, title="Original title", context_text="original context",
+                solution_text="original solution", tags=["a"], agent_type="support",
+            )
+            session.add(trace)
+            await session.flush()
+            return org.id, trace.id
+
+    async def test_amending_a_trace_creates_a_new_superseding_trace(self, session_factory, config):
+        from sqlalchemy import select
+
+        from hub.db import session_scope
+        from hub.models import AuditLogEntry, Trace
+
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": trace_id, "title": "Corrected title",
+                    "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        async with session_scope(session_factory) as session:
+            original = await session.get(Trace, trace_id)
+            amended = (
+                await session.execute(
+                    select(Trace).where(Trace.supersedes_trace_id == trace_id)
+                )
+            ).scalars().one()
+            entry = (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "amend_trace")
+                )
+            ).scalars().first()
+        assert original.superseded_at is not None
+        assert original.superseded_by_trace_id == amended.id
+        assert amended.title == "Corrected title"
+        # Blank fields carry the original forward unchanged rather than
+        # being overwritten with empty strings.
+        assert amended.context_text == "original context"
+        assert amended.solution_text == "original solution"
+        assert entry is not None
+        assert entry.actor == admin._ADMIN_ACTOR
+
+    async def test_amending_an_unknown_trace_id_is_a_no_op(self, session_factory, config):
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": "00000000-0000-0000-0000-000000000000",
+                    "title": "x", "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
+
+    async def test_a_fat_fingered_non_uuid_trace_id_is_a_clean_no_op_not_a_500(self, session_factory, config):
+        """This form is where an operator types a trace id directly, unlike
+        a CLI arg that is usually copy-pasted -- a malformed id must not
+        reach asyncpg's UUID column check as a raw, unhandled DBAPIError."""
+        org_id, _trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory, config=config)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "trace_id": "not-a-real-id", "title": "x",
+                    "csrf": admin._csrf_token("s3cret", "amend_trace", org_id),
+                },
+            )
+        assert r.status_code == 303
+        assert "No+such+trace" in r.headers["location"] or "No%20such%20trace" in r.headers["location"]
+
+    async def test_wrong_csrf_token_is_refused(self, session_factory):
+        org_id, trace_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/amend-trace", headers=_basic("op", "s3cret"),
+                data={"org_id": org_id, "trace_id": trace_id, "title": "x", "csrf": "wrong"},
+            )
+        assert r.status_code == 403
+
+
 class TestGeneratingAnEncryptionKey:
     async def test_generating_a_key(self, session_factory):
         async with _client(_app(session_factory=session_factory)) as c:
@@ -1586,3 +1688,83 @@ class TestRetentionApplyFromTheConsole:
         async with session_scope(session_factory) as session:
             row = await session.get(Trace, trace_id)
         assert row is not None
+
+
+class TestAutoRefresh:
+    """The "this console is for noticing things" pages reload themselves,
+    so an operator watching a queue or a quarantine count does not have
+    to remember to hit reload -- but never on a page currently showing a
+    just-issued, shown-once secret, since a reload before it's copied
+    loses it for good."""
+
+    async def _seed(self, session_factory):
+        from hub.db import session_scope
+        from hub.models import Organization
+
+        async with session_scope(session_factory) as session:
+            org = Organization(name="Acme", plan="team")
+            session.add(org)
+            await session.flush()
+            return org.id
+
+    async def test_the_overview_page_auto_refreshes(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get("/admin", headers=_basic("op", "s3cret"))
+        assert "<script>" in r.text
+        assert "location.reload" in r.text
+
+    async def test_the_org_page_auto_refreshes(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.get(f"/admin/org/{org_id}", headers=_basic("op", "s3cret"))
+        assert "location.reload" in r.text
+
+    async def test_the_kb_page_auto_refreshes(self, session_factory):
+        async with _client(_kb_app(session_factory, operator_org_id="x")) as c:
+            r = await c.get("/admin/kb", headers=_basic("op", "s3cret"))
+        assert "location.reload" in r.text
+
+    async def test_a_freshly_issued_key_disables_auto_refresh(self, session_factory):
+        org_id = await self._seed(session_factory)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/issue", headers=_basic("op", "s3cret"),
+                data={
+                    "org_id": org_id, "scopes": ["read"],
+                    "csrf": admin._csrf_token("s3cret", "issue_key", org_id),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text
+
+    async def test_a_freshly_rotated_key_disables_auto_refresh(self, session_factory):
+        from hub import auth as auth_module
+        from hub.db import session_scope
+
+        org_id = await self._seed(session_factory)
+        async with session_scope(session_factory) as session:
+            issued = await auth_module.issue_api_key(session, org_id)
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                f"/admin/org/{org_id}/keys/rotate", headers=_basic("op", "s3cret"),
+                data={
+                    "key_id": issued.key_id,
+                    "csrf": admin._csrf_token("s3cret", "rotate_key", issued.key_id),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text
+
+    async def test_a_freshly_generated_encryption_key_disables_auto_refresh(
+        self, session_factory
+    ):
+        async with _client(_app(session_factory=session_factory)) as c:
+            r = await c.post(
+                "/admin/generate-encryption-key", headers=_basic("op", "s3cret"),
+                data={
+                    "target": "new",
+                    "csrf": admin._csrf_token("s3cret", "generate_encryption_key", "new"),
+                },
+            )
+        assert "shown once" in r.text
+        assert "location.reload" not in r.text

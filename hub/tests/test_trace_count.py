@@ -198,7 +198,11 @@ class TestCommonsSeedMaintainsTheCounter:
         path = tmp_path / "seed.jsonl"
         path.write_text(
             "\n".join(
-                '{"title": "t%d", "solution_text": "fix %d"}' % (i, i)
+                # `context_text` included: the loader now validates curated
+                # records against the same protocol schema customer traces
+                # pass, and a record without it is skipped as non-conforming.
+                '{"title": "t%d", "context_text": "ctx %d", "solution_text": "fix %d"}'
+                % (i, i, i)
                 for i in range(5)
             )
         )

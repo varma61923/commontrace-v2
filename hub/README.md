@@ -357,6 +357,88 @@ read path stays org-scoped" -- it also reaches Knowledge Base entries
 cannot reach another org's own private trace; `amend_trace`/`get_trace`
 remain fully org-scoped.
 
+### Who can move an entry's standing
+
+`MIN_VOTES_FOR_STANDING = 3` stops one *organisation* deciding what the
+field thinks. It does not, on its own, stop one *person*: signup is
+self-serve and `POST /api/v1/keys` mints an org and a working key over
+HTTP, so three throwaway orgs is three votes, which is the threshold.
+
+The answer is Wikipedia's, and it is the same shape as "autoconfirmed":
+**record every contribution, count selectively.** A vote from any
+authenticated org is always stored -- discarding a sockpuppet's vote would
+hide the attempt rather than stop it, and those `votes` rows are the
+evidence an operator needs to see a farm at all. Only votes from an
+*established* org are counted into the `trust`/`commons_votes` pair that
+`entry_standing` reads. The bar (`hub/commons.py`) is
+`COMMONS_VOTER_MIN_TRACES` traces captured and `COMMONS_VOTER_MIN_AGE_HOURS`
+hours since signup: cheap for a real customer to clear, expensive for a
+farm, because traces are rate limited, size limited, plan capped and
+quarantine screened.
+
+Two deliberate exemptions and one obligation:
+
+- The bar is keyed on the **trace** being a Knowledge Base entry, not on
+  who is casting the vote, and that distinction is load bearing. Keyed on
+  the voter instead ("an org rating its own trace needs no bar"), the
+  entry owner's single vote would take the unfiltered path and count every
+  stored vote, including the ones the filtered path had been holding out —
+  a farm that cannot move the number directly would move it by waiting for
+  the operator to vote once. Voting on a trace that never entered the
+  Knowledge Base is unaffected: it is visible to exactly one org, so there
+  is no shared number to protect and no reason to make a new customer wait
+  a day to rate their own content.
+- A vote cast before the org qualifies is **not wasted**. The tally is
+  recomputed from scratch on every vote, so an early vote starts counting
+  the moment its org clears the bar. Legitimate newcomers are delayed,
+  never disenfranchised.
+- The rule is **stated, not silent**. `vote_trace` returns `vote_counted`,
+  the MCP tool's docstring says so, and the console's Knowledge Base page
+  spells out the bar before anyone votes -- an org that votes, sees nothing
+  move and is told nothing has learned that the feature is broken, not
+  that it has not qualified yet.
+
+### The grounds for a verdict, not just the verdict
+
+`standing` says the field rejected an entry. It does not say whether the
+entry is stale, wrong, or dangerous -- three very different decisions for
+someone about to apply the fix. So the catalogue also carries `concerns`:
+per entry, how many established orgs attached each `feedback_tag` from the
+closed vocabulary in `hub/models.py` (`outdated`, `wrong`,
+`security_concern`, `spam`).
+
+The safety case this exists for: standing is deliberately conservative,
+and one voice never condemns an entry. An entry a single org flagged
+`security_concern` therefore still reads `unproven` -- "not enough votes
+yet to say either way" -- and without the reason surfaced, a reader would
+apply a fix somebody explicitly flagged as dangerous and see no warning at
+all. A security concern is shown at any standing and at any count,
+including one: the thresholds that govern a *verdict* are the wrong rule
+for a *warning*.
+
+Three boundaries, each with a test:
+
+- **Same anti-abuse bar as standing.** Concerns are counted only from
+  established orgs, through the same `crud._established_voters_only`
+  filter the tally uses. Counting them from any org would reopen the
+  sockpuppet hole one field over: mint five orgs, brand a rival's entry a
+  security risk. The filter is shared rather than repeated so the two
+  numbers, which are read side by side, cannot drift apart.
+- **Never which org.** Naming a voter would leak that that customer uses
+  this Hub and hit that specific failure -- a cross-tenant disclosure
+  through the governance layer, which is exactly where nobody would think
+  to look for one.
+- **Never `feedback_text`.** It is free text written by one customer that
+  would be rendered to every other, carrying both a leak surface (a pasted
+  stack trace naming internal hosts) and an injection surface. It stays
+  where it already goes: the operator's review queue, read by a human. The
+  closed vocabulary carries the actionable signal without either risk.
+
+Counted across every vote type rather than down-votes only, deliberately:
+an org reporting "this worked, but it worries me" has still raised a
+security concern, and dropping it for being attached to an up-vote would
+discard the most safety-relevant report this system can receive.
+
 ### Community submissions: review, not opt-in
 
 `submit_kb_entry` reopens a contribution channel the retired `share_trace`
