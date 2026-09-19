@@ -39,6 +39,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Knowledge Base is now browsable and contributable from the
+  customer console** (`crud.browse_commons`, `hub/console.py`). The open
+  repository had two query surfaces, both agent-facing MCP tools that take
+  a MinHash signature — right for an agent mid-incident, and useless to a
+  person deciding whether the repository is worth opting into at all, who
+  has no failure yet and nothing to sign. `/app/kb` previously showed an
+  org only its own proposals, so "opt in and get access to shared
+  knowledge" was a claim a customer had to take on faith.
+
+  `browse_commons` is the catalogue: filter by tag, page through it, and
+  see each entry's **standing** — `established` / `unproven` / `stale` /
+  `disputed`, `hub/commons.py`'s existing field verdict, which until now
+  only tilted a ranking nobody could see. A disputed entry sorts to the
+  back rather than being hidden, the identical reasoning `commons_search`
+  gives: "it did not work for the fleets who tried it" is information, and
+  hiding it would answer a browse with a rosier corpus than exists.
+
+  Two deliberate boundaries, each with a test that fails loudly if it
+  changes: browsing requires `plan.commons_access` but does **not** spend a
+  monthly consultation (metering the catalogue would tax exactly the
+  moment this repository is trying to earn), and it does not increment
+  `commons_hits` (looking at an entry is not the same as it resolving an
+  incident, and inflating that metric would corrupt the operator's review
+  queue). What comes back is previews, not solutions — the shop window.
+
+  Proposing an entry is also reachable from the browser now, calling the
+  SAME `crud.submit_kb_entry` the MCP tool does: a second door to that
+  function, never a second path to publication — the operator review gate
+  is untouched. Previously only an agent could propose, which meant the
+  person who actually knows whether a fix generalises had no way to.
+  Verified in a real browser end to end. 30 new tests
+  (`hub/tests/test_commons_browse.py`, plus `TestKnowledgeBaseBrowse` and
+  `TestKnowledgeBaseSubmitFromTheConsole` in `hub/tests/test_console.py`).
+
 - **A `/api/v1/*` REST surface, so the CommonTrace Claude Code plugin can
   talk to this Hub** (`hub/rest.py`, opt-in via `HUB_REST_API_ENABLED`).
   The client that actually captures traces in the field — the

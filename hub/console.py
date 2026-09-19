@@ -91,9 +91,10 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
 from hub import alerts, audit, auth, crud, events, manage, plans, rbac, scopes
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, resolve_client_key
 from hub.admin import _CSS, _limit, _num, h
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
+from hub.config import HubConfig
 from hub.db import session_scope
 from hub.encryption import NULL_CIPHER, EnvelopeCipher
 from hub.models import AlertRule, ApiKey, AuditLogEntry, Organization, User, WebhookEndpoint
@@ -275,6 +276,21 @@ fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
   border-radius:8px;margin:.4rem 0;background:var(--paper)}
 .share-box button{padding:.4rem .9rem;font:inherit;font-size:.85rem;border-radius:8px;
   border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+form.act{display:flex;gap:.4rem;align-items:center;margin:.6rem 0 1rem}
+form.act input[type=text]{font:inherit;font-size:.9rem;padding:.4rem .55rem;
+  border:1px solid var(--rule);border-radius:8px;background:var(--paper);color:var(--ink);
+  min-width:14rem}
+form.act button{padding:.4rem .9rem;font:inherit;font-size:.9rem;border-radius:8px;
+  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+form.stack{display:flex;flex-direction:column;gap:.7rem;margin:.6rem 0 1rem;max-width:42rem}
+form.stack label{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);display:block;margin-bottom:.2rem}
+form.stack input[type=text],form.stack textarea{font:inherit;font-size:.92rem;
+  padding:.45rem .6rem;border:1px solid var(--rule);border-radius:8px;
+  background:var(--paper);color:var(--ink);width:100%}
+form.stack textarea{min-height:5.5rem;resize:vertical;font-family:inherit}
+form.stack button{padding:.5rem 1rem;font:inherit;border-radius:8px;
+  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;align-self:start}
 """
 
 
@@ -959,12 +975,64 @@ def _render_memory(result: dict, tags: list[str]) -> str:
     return "".join(body)
 
 
-def _render_kb(submissions: list[dict], ent: dict) -> str:
+#: How the field's verdict on an entry renders. The label is
+#: hub/commons.py's (`entry_standing`); the tone is this page's, and
+#: `disputed` deliberately gets the same red a failure gets elsewhere in
+#: this console -- an entry the fleets who tried it say did not work is a
+#: warning, not a neutral attribute.
+_STANDING_TONE = {
+    "established": "ok",
+    "stale": "warn",
+    "disputed": "bad",
+    "unproven": "",
+}
+
+_STANDING_MEANING = {
+    "established": "enough fleets tried it and it worked",
+    "stale": "past its review date — may have drifted",
+    "disputed": "fleets tried it and a majority say it did NOT work",
+    "unproven": "not enough votes yet to say either way",
+}
+
+
+def _render_kb_entry(entry: dict) -> str:
+    """One catalogue row: what it is, what the field thinks of it, how
+    much it is actually used."""
+    standing = str(entry.get("standing") or "")
+    tone = _STANDING_TONE.get(standing, "")
+    tags = "".join(
+        f'<span class="pill">{h(t)}</span> ' for t in (entry.get("tags") or [])[:6]
+    )
+    return (
+        f"<tr><td><b>{h(entry.get('title'))}</b><br>"
+        f'<span class="muted">{h(entry.get("solution_preview"))}</span><br>{tags}</td>'
+        f'<td><span class="pill {tone}" title="{h(_STANDING_MEANING.get(standing, ""))}">'
+        f"{h(standing)}</span></td>"
+        f'<td class="rev">{_num(entry.get("votes", 0))} vote(s)</td>'
+        f'<td class="rev">{_num(entry.get("hits", 0))}</td>'
+        f'<td class="rev">{h(entry.get("id"))}</td></tr>'
+    )
+
+
+def _render_kb(
+    submissions: list[dict],
+    ent: dict,
+    browse: dict | None = None,
+    *,
+    tag: str = "",
+    can_submit: bool = False,
+    error: str = "",
+    flash: str = "",
+) -> str:
     body = ["<h1>Knowledge Base</h1>",
             '<p class="sub">The one surface where anything crosses an organisation '
             "boundary — and it crosses it through a person. You consult the Knowledge Base "
             "by sending a <em>signature</em>, never your text; you propose an entry and an "
             "operator decides. No other customer sees your traces, ever.</p>"]
+    if flash:
+        body.append(f'<div class="share-box">{h(flash)}</div>')
+    if error:
+        body.append(f'<p class="err">{h(error)}</p>')
     queries = ent.get("commons_queries") or {}
     body.append(_tiles([
         ("Consultations used", f'{_num(queries.get("used", 0))} <span class="muted">of '
@@ -973,6 +1041,82 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
         ("Earned by accepted proposals", _num(queries.get("bonus_from_accepted_submissions", 0))),
         ("Proposals sent", str(len(submissions))),
     ]))
+
+    # --- The open repository, as a catalogue ---------------------------
+    if browse is not None:
+        body.append("<h2>Browse the open repository</h2>")
+        body.append(
+            '<p class="sub">Every entry here is operator-curated and public to all '
+            "organisations — never another customer's private trace. Browsing costs no "
+            "consultation: what you see below are previews, and asking the Knowledge Base "
+            "about a <em>specific</em> failure of yours (which is what spends one) still "
+            "goes through your agents with a signature, never your text.</p>"
+        )
+        body.append(
+            f'<form method="get" action="{CONSOLE_PATH}/kb" class="act">'
+            '<label class="sr-only" for="kb-tag">Filter by tag</label>'
+            f'<input type="text" id="kb-tag" name="tag" value="{h(tag)}" '
+            'placeholder="filter by tag (blank = everything)">'
+            "<button type=\"submit\">Filter</button></form>"
+        )
+        entries = browse.get("entries") or []
+        if entries:
+            rows = "".join(_render_kb_entry(e) for e in entries)
+            body.append(
+                "<table><thead><tr><th>Entry</th><th>Standing</th><th>Votes</th>"
+                f"<th>Times used</th><th>Id</th></tr></thead><tbody>{rows}</tbody></table>"
+            )
+            total = browse.get("total", 0)
+            shown = len(entries)
+            offset = browse.get("offset", 0)
+            nav = []
+            if offset > 0:
+                previous = max(0, offset - browse.get("limit", 25))
+                nav.append(
+                    f'<a href="{CONSOLE_PATH}/kb?tag={h(tag)}&offset={previous}">&larr; Newer</a>'
+                )
+            if browse.get("has_more"):
+                nxt = offset + browse.get("limit", 25)
+                nav.append(
+                    f'<a href="{CONSOLE_PATH}/kb?tag={h(tag)}&offset={nxt}">Older &rarr;</a>'
+                )
+            body.append(
+                f'<p class="muted">Showing {_num(shown)} of {_num(total)} entries. '
+                + (" · ".join(nav) if nav else "")
+                + "</p>"
+            )
+        elif tag:
+            body.append(f'<p class="sub">No entries tagged {h(tag)!r}.</p>')
+        else:
+            body.append('<p class="sub">The Knowledge Base has no published entries yet.</p>')
+
+    # --- Contributing back ---------------------------------------------
+    body.append("<h2>Propose an entry</h2>")
+    if can_submit:
+        body.append(
+            '<p class="sub">An accepted proposal is published under the operator\'s name, '
+            "not yours, and permanently raises your consultation allowance. Nothing you "
+            "send here is visible to another organisation unless and until an operator "
+            "accepts it. Never include secrets, credentials or customer data.</p>"
+            f'<form method="post" action="{CONSOLE_PATH}/kb/submit" class="stack">'
+            '<div><label for="kb-title">Title</label>'
+            '<input type="text" id="kb-title" name="title" required maxlength="200"></div>'
+            '<div><label for="kb-context">The problem</label>'
+            '<textarea id="kb-context" name="context_text" required></textarea></div>'
+            '<div><label for="kb-solution">What actually fixed it</label>'
+            '<textarea id="kb-solution" name="solution_text" required></textarea></div>'
+            '<div><label for="kb-tags">Tags, comma-separated</label>'
+            '<input type="text" id="kb-tags" name="tags"></div>'
+            '<div><label for="kb-rationale">Why this is worth publishing (optional)</label>'
+            '<input type="text" id="kb-rationale" name="rationale" maxlength="300"></div>'
+            '<div><button type="submit">Propose to the Knowledge Base</button></div></form>'
+        )
+    else:
+        body.append(
+            '<p class="sub">Proposing an entry needs an admin-scoped key. Your agents can '
+            "also propose one directly with the <code>submit_kb_entry</code> tool.</p>"
+        )
+
     if submissions:
         rows = "".join(
             f"<tr><td>{h(s.get('title'))}</td><td>{h(s.get('status'))}</td>"
@@ -983,8 +1127,7 @@ def _render_kb(submissions: list[dict], ent: dict) -> str:
         body.append("<h2>Your proposals</h2><table><thead><tr><th>Title</th><th>Status</th>"
                     f"<th>Sent</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>")
     else:
-        body.append('<h2>Your proposals</h2><p class="sub">None yet. Your agents propose '
-                    "one with <code>submit_to_commons</code>; an accepted proposal is "
+        body.append('<h2>Your proposals</h2><p class="sub">None yet. An accepted proposal is '
                     "published under the operator's name, not yours, and earns you bonus "
                     "consultations.</p>")
     return "".join(body)
@@ -1331,9 +1474,35 @@ def add_console_routes(
     stripe: StripeSettings | None = None,
     signing_key: str = "",
     cipher: EnvelopeCipher = NULL_CIPHER,
+    config: HubConfig | None = None,
+    rate_limiter=None,
 ) -> None:
-    """Mount the customer console. Registered only when a secret is set."""
+    """Mount the customer console. Registered only when a secret is set.
+
+    `config` and `rate_limiter` are needed by exactly one handler --
+    proposing a Knowledge Base entry, which validates and stores
+    caller-supplied content through `crud.submit_kb_entry` and so needs the
+    same size limits and write budget every other write path gets.
+    `build_app` passes both; everything else may omit them.
+
+    When omitted they are resolved LAZILY, on first use, rather than here.
+    Mounting is not the moment to need a database URL: most of this console
+    never touches either value, and every test that builds the app without
+    them would otherwise fail at import-time on `HubConfig.from_env()`'s
+    deliberate refusal to guess a connection string. Deferring means an
+    unconfigured deployment fails on the one request that genuinely needs
+    the config, with a message about that request, instead of refusing to
+    mount a console whose other twenty routes were fine.
+    """
     stripe = stripe or StripeSettings()
+    _resolved: dict = {"config": config, "rate_limiter": rate_limiter}
+
+    def _write_deps():
+        if _resolved["config"] is None:
+            _resolved["config"] = HubConfig.from_env()
+        if _resolved["rate_limiter"] is None:
+            _resolved["rate_limiter"] = make_rate_limiter(_resolved["config"])
+        return _resolved["config"], _resolved["rate_limiter"]
 
     # Sign-in is a credential-checking endpoint, so it is rate limited on the
     # client key exactly as the MCP auth path is: without it this is an
@@ -1726,6 +1895,35 @@ def add_console_routes(
         result["query"] = query
         return _page("Memory", _render_memory(result, tags))
 
+    async def _kb_view(
+        org_id: str, claims: dict, *, tag: str = "", offset: int = 0,
+        error: str = "", flash: str = "",
+    ) -> Response:
+        """The Knowledge Base page, rendered from scratch.
+
+        Shared by the GET route and by the submit handler's re-render, so a
+        validation failure comes back to a fully populated page rather than
+        a stub missing the catalogue the visitor was just looking at.
+        """
+        async with session_scope(session_factory) as session:
+            submissions = await crud.list_my_kb_submissions(session, org_id)
+            ent = await crud.entitlements(session, org_id)
+            try:
+                browse = await crud.browse_commons(session, org_id, tag=tag, offset=offset)
+            except plans.EntitlementExceeded:
+                # A plan without Knowledge Base access still gets the page
+                # (its own proposals, its allowance) -- just not the
+                # catalogue. Failing the whole page would hide information
+                # the org is entitled to over one section it is not.
+                browse = None
+        return _page(
+            "Knowledge Base",
+            _render_kb(
+                submissions, ent, browse, tag=tag,
+                can_submit=_is_admin(claims), error=error, flash=flash,
+            ),
+        )
+
     async def knowledge_base(request: Request) -> Response:
         claims = await _claims(request)
         if claims is None:
@@ -1735,10 +1933,71 @@ def add_console_routes(
             return _page("Knowledge Base",
                          "<h1>Knowledge Base</h1><p class=\"sub\">The Knowledge Base is "
                          "not enabled on this deployment.</p>")
-        async with session_scope(session_factory) as session:
-            submissions = await crud.list_my_kb_submissions(session, org_id)
-            ent = await crud.entitlements(session, org_id)
-        return _page("Knowledge Base", _render_kb(submissions, ent))
+        try:
+            offset = int(request.query_params.get("offset", "0"))
+        except ValueError:
+            offset = 0
+        return await _kb_view(
+            org_id, claims,
+            tag=request.query_params.get("tag", "")[:64],
+            offset=max(0, offset),
+            flash=request.query_params.get("done", "")[:200],
+        )
+
+    async def kb_submit(request: Request) -> Response:
+        """Propose an entry from the browser.
+
+        Until now this was reachable only as an MCP tool, which meant the
+        person who actually knows whether a fix generalises -- rather than
+        the agent that happened to apply it -- had no way to propose one at
+        all. Calls the SAME `crud.submit_kb_entry` the tool does, so the
+        operator-review gate, the rate limit and the credit on acceptance
+        are identical; this is a second door to that function, never a
+        second path to publication.
+        """
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not commons_enabled:
+            return _redirect_to_signin()
+        if not _is_admin(claims):
+            return await _kb_view(
+                org_id, claims,
+                error="Proposing an entry needs an admin-scoped key.",
+            )
+        form = await request.form()
+        title = str(form.get("title") or "").strip()
+        context_text = str(form.get("context_text") or "").strip()
+        solution_text = str(form.get("solution_text") or "").strip()
+        if not (title and context_text and solution_text):
+            return await _kb_view(
+                org_id, claims,
+                error="Title, the problem and what fixed it are all required.",
+            )
+        tags = [t.strip() for t in str(form.get("tags") or "").split(",") if t.strip()]
+        submit_config, submit_limiter = _write_deps()
+        try:
+            async with session_scope(session_factory) as session:
+                await crud.submit_kb_entry(
+                    session, org_id, submit_config, submit_limiter,
+                    title=title,
+                    context_text=context_text,
+                    solution_text=solution_text,
+                    tags=tags,
+                    rationale=str(form.get("rationale") or "").strip()[:300],
+                    actor=audit.actor_for_api_key(str(claims.get("key") or "")),
+                )
+        except (TraceRejected, plans.EntitlementExceeded) as exc:
+            return await _kb_view(org_id, claims, error=str(exc))
+        except RateLimited:
+            return await _kb_view(
+                org_id, claims,
+                error="Too many proposals just now. Try again shortly.",
+            )
+        return RedirectResponse(
+            f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
+        )
 
     async def _list_users(org_id: str) -> list[User]:
         async with session_scope(session_factory) as session:
@@ -2179,6 +2438,7 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
+    app.add_route(f"{CONSOLE_PATH}/kb/submit", kb_submit, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])

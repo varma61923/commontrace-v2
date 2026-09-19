@@ -5028,6 +5028,121 @@ async def commons_search(
     }
 
 
+#: A browse page's worth of Knowledge Base entries. Bounded for the reason
+#: search_traces bounds its own page: this returns rows the caller did not
+#: write, and an unbounded page is a full scan of the corpus per request.
+BROWSE_COMMONS_LIMIT = 25
+MAX_BROWSE_COMMONS_LIMIT = 100
+
+
+async def browse_commons(
+    session: AsyncSession,
+    org_id: str,
+    *,
+    tag: str = "",
+    limit: int = BROWSE_COMMONS_LIMIT,
+    offset: int = 0,
+) -> dict:
+    """The Knowledge Base as a CATALOGUE rather than a lookup: what is in
+    there, what the field thinks of it, and how much it is actually used.
+
+    WHY THIS IS NOT commons_search
+    ------------------------------
+    `commons_search` answers "what does the corpus know about MY failure",
+    and it takes a MinHash signature precisely so the caller never has to
+    send its failure text anywhere (hub/commons.py's module docstring).
+    That is the right shape for an agent mid-incident and the wrong shape
+    for a person who has not had the failure yet and simply wants to see
+    what this repository holds -- which needs no query at all, and so needs
+    no signature, no text, and no new privacy surface. Browsing by tag and
+    standing keeps the "never send your text" property intact by having no
+    text to send.
+
+    WHY IT DOES NOT SPEND A CONSULTATION
+    ------------------------------------
+    `plan.commons_access` is still required -- an org whose plan excludes
+    the Knowledge Base does not get to read it by another door. But the
+    monthly `commons_queries` allowance is deliberately NOT charged here,
+    for two reasons. Metering the catalogue would tax exactly the moment
+    this repository is trying to earn: someone deciding whether it is worth
+    opting into at all. And what comes back is previews (`_preview`, the
+    same truncation `search_traces(brief=True)` applies), not solutions --
+    the shop window, not the goods. A caller who wants an entry's full
+    solution text still consults for it, and that consultation still meters.
+
+    Ordering mirrors `commons_search`'s: disputed entries sort to the BACK
+    rather than being filtered out, for the identical reason given there --
+    "it did not work for the fleets who tried it" is information, and
+    hiding it would answer a browse with a rosier corpus than exists.
+    """
+    limit = _clamp_int(limit, 1, MAX_BROWSE_COMMONS_LIMIT, BROWSE_COMMONS_LIMIT)
+    offset = _clamp_int(offset, 0, 100_000, 0)
+
+    plan, _bonus = await _plan_and_bonus_for(session, org_id)
+    if not plan.commons_access:
+        raise plans.EntitlementExceeded(
+            metric="commons_access", limit=0, used=0, plan=plan.name,
+            remedy="The Knowledge Base is not included in this plan.",
+        )
+
+    # The fourth read path commons_visible()'s own docstring anticipates --
+    # it gets the boundary by construction rather than by a hand-copied
+    # `commons_source == "seed"` that could drift.
+    conditions = list(commons_visible())
+    tag = (tag or "").strip()
+    if tag:
+        conditions.append(Trace.tags.any(tag))
+
+    total = await session.scalar(
+        select(func.count()).select_from(Trace).where(*conditions)
+    )
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*conditions)
+            # One extra row, the same trick search_traces uses, so `has_more`
+            # costs no second COUNT round trip.
+            .order_by(Trace.commons_hits.desc(), Trace.created_at.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    now = datetime.now(timezone.utc)
+    entries = []
+    for trace in rows:
+        standing = commons.entry_standing(
+            trust=trace.trust or 0.0,
+            votes=trace.commons_votes or 0,
+            review_after=trace.commons_review_after,
+            now=now,
+        )
+        entries.append({
+            "id": trace.id,
+            "title": trace.title,
+            "context_preview": _preview(trace.context_text),
+            "solution_preview": _preview(trace.solution_text),
+            "tags": list(trace.tags or []),
+            "agent_type": trace.agent_type,
+            "standing": standing,
+            "trust": trace.trust or 0.0,
+            "votes": trace.commons_votes or 0,
+            "hits": trace.commons_hits or 0,
+            "created_at": _iso(trace.created_at),
+        })
+    entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))
+
+    return {
+        "entries": entries,
+        "total": total or 0,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
+
+
 # Measured, not estimated: against 46 held-out failures the corpus provably
 # contains, described in on-call vocabulary rather than the corpus's own,
 # the matcher found 5 -- with zero false positives across 22 deliberately

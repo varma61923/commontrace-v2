@@ -66,12 +66,16 @@ def _explode(*a, **kw):
 
 def _app(
     secret: str = SECRET, session_factory=_explode, stripe: StripeSettings | None = None,
-    signing_key: str = "",
+    signing_key: str = "", config=None,
 ) -> Starlette:
     app = Starlette()
     if secret:
         console.add_console_routes(
             app, session_factory, console_secret=secret, stripe=stripe, signing_key=signing_key,
+            # Only the Knowledge Base proposal handler needs it; passing the
+            # fixture's config keeps that one route off `HubConfig.from_env()`,
+            # which this harness deliberately never configures.
+            config=config,
         )
     return app
 
@@ -2129,3 +2133,190 @@ class TestAutoRefresh:
         assert "location.reload" not in plain.text
         assert "shown once" in issued.text
         assert "location.reload" not in issued.text
+
+
+class TestKnowledgeBaseBrowse:
+    """The open repository, as a customer sees it.
+
+    Until now `/app/kb` showed an org only its OWN proposals and its
+    consultation allowance -- there was no way, from a browser, to see what
+    the repository actually holds. That made "opt in and you get access to
+    shared knowledge" a claim a customer had to take on faith, since the
+    only surfaces that read the corpus were agent-facing MCP tools.
+
+    What is pinned here is the boundary, not the layout: the catalogue must
+    show operator-curated entries and never another customer's private
+    trace, and the field's verdict on an entry has to travel WITH it.
+    """
+
+    async def _seed_entry(self, session_factory, org_id, title="Pool exhausted",
+                          tags=None, *, trust=1.0, votes=0, hits=0):
+        from hub import commons
+        tags = tags if tags is not None else ["postgres"]
+        async with session_scope(session_factory) as session:
+            trace = Trace(
+                org_id=org_id, title=title,
+                context_text="requests queued behind a saturated pool",
+                solution_text="raise pool_size and set a command timeout",
+                tags=tags, agent_type="code",
+                shared_with_commons=True, shared_at=datetime.now(timezone.utc),
+                shared_rationale="test fixture: operator-curated",
+                commons_signature=commons.signature_for(title, "ctx", tags),
+                commons_source="seed", trust=trust, commons_votes=votes,
+                commons_hits=hits,
+            )
+            session.add(trace)
+            await session.flush()
+            return trace.id
+
+    async def test_the_catalogue_lists_curated_entries(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        await self._seed_entry(session_factory, org_id, title="Deadlock on upsert")
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert response.status_code == 200
+        assert "Browse the open repository" in response.text
+        assert "Deadlock on upsert" in response.text
+
+    async def test_it_never_shows_another_orgs_private_trace(
+        self, session_factory, org_and_key, other_org_and_key
+    ):
+        """The boundary the whole product rests on, asserted at the surface
+        a customer actually looks at."""
+        org_id, raw_key = org_and_key
+        other_id, _other_key = other_org_and_key
+        async with session_scope(session_factory) as session:
+            session.add(Trace(
+                org_id=other_id, title="Acme private incident",
+                context_text="internal", solution_text="internal",
+                tags=["postgres"], agent_type="code",
+            ))
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "Acme private incident" not in response.text
+
+    async def test_an_entrys_standing_is_shown_to_the_reader(
+        self, session_factory, org_and_key
+    ):
+        """The Stack-Overflow-shaped part: the field's verdict is visible,
+        not just quietly tilting a ranking nobody can see."""
+        org_id, raw_key = org_and_key
+        await self._seed_entry(session_factory, org_id, trust=1.0, votes=5)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "established" in response.text
+
+    async def test_a_disputed_entry_is_labelled_as_such(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        await self._seed_entry(session_factory, org_id, trust=0.1, votes=9)
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "disputed" in response.text
+
+    async def test_it_filters_by_tag(self, session_factory, org_and_key):
+        org_id, raw_key = org_and_key
+        await self._seed_entry(session_factory, org_id, title="pg thing", tags=["postgres"])
+        await self._seed_entry(session_factory, org_id, title="redis thing", tags=["redis"])
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb?tag=redis")
+        assert "redis thing" in response.text
+        assert "pg thing" not in response.text
+
+    async def test_a_hostile_entry_title_renders_inert(self, session_factory, org_and_key):
+        """Catalogue content is operator-curated, but it still reaches
+        every customer's browser -- so it goes through the same escaping
+        everything else on this console does."""
+        org_id, raw_key = org_and_key
+        await self._seed_entry(
+            session_factory, org_id, title="<script>alert('xss')</script>")
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(f"{console.CONSOLE_PATH}/kb")
+        assert "<script>alert('xss')</script>" not in response.text
+        assert "&lt;script&gt;" in response.text
+
+    async def test_it_requires_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/kb", follow_redirects=False)
+        assert response.status_code == 303
+
+
+class TestKnowledgeBaseSubmitFromTheConsole:
+    """Proposing an entry from the browser.
+
+    `submit_kb_entry` shipped as an MCP tool only, which meant the person
+    who actually knows whether a fix generalises had no way to propose one
+    -- only the agent that happened to apply it did. This is a second door
+    to the SAME function, never a second path to publication: the operator
+    review gate is untouched.
+    """
+
+    async def test_an_admin_key_can_propose_an_entry(self, session_factory, org_and_key, config):
+        from hub.models import KnowledgeBaseSubmission
+        org_id, raw_key = org_and_key
+        app = _app(session_factory=session_factory, config=config)
+        async with _client(app) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/submit",
+                data={
+                    "title": "Retry storms after a failover",
+                    "context_text": "every client retried at once and re-saturated the primary",
+                    "solution_text": "added jittered exponential backoff",
+                    "tags": "postgres, failover",
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+        async with session_scope(session_factory) as session:
+            submission = (
+                await session.execute(
+                    select(KnowledgeBaseSubmission).where(
+                        KnowledgeBaseSubmission.org_id == org_id)
+                )
+            ).scalars().first()
+        assert submission is not None
+        assert submission.title == "Retry storms after a failover"
+        # Nothing is published by proposing -- the operator still decides.
+        assert submission.status == "pending"
+
+    async def test_a_read_only_key_cannot_propose(
+        self, session_factory, org_and_readonly_key, config
+    ):
+        _org_id, raw_key = org_and_readonly_key
+        async with _client(_app(session_factory=session_factory, config=config)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/submit",
+                data={"title": "t", "context_text": "c", "solution_text": "s"},
+            )
+        assert "admin-scoped key" in response.text
+
+    async def test_a_missing_field_comes_back_as_an_inline_error(
+        self, session_factory, org_and_key, config
+    ):
+        """And comes back to a fully populated page, not a stub -- the
+        catalogue the visitor was looking at is still there."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory, config=config)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/submit",
+                data={"title": "only a title"},
+            )
+        assert "are all required" in response.text
+        assert "Browse the open repository" in response.text
+
+    async def test_proposing_requires_a_session(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(
+                f"{console.CONSOLE_PATH}/kb/submit",
+                data={"title": "t", "context_text": "c", "solution_text": "s"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303

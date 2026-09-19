@@ -1605,6 +1605,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             stripe=stripe_settings,
             signing_key=config.ledger_signing_key,
             cipher=config.cipher(),
+            config=config,
+            rate_limiter=rate_limiter,
         )
 
     # Public, unauthenticated org creation -- opt-in only (hub/signup.py's
