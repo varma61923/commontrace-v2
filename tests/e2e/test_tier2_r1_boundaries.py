@@ -302,13 +302,16 @@ def test_r1_f4_boundary_task_empty_string(
 # R1-F5 Boundary Cases (5 tests)
 # ============================================================================
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SCRIPT = REPO_ROOT / "install.sh"
+
+
 def test_r1_f5_boundary_install_sh_dest_with_spaces(tmp_path: Path) -> None:
     """Validate install.sh handles custom destination directory with spaces."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     dest_with_space = tmp_path / "custom store with spaces"
 
     res = subprocess.run(
-        ["bash", str(install_script), "--dest", str(dest_with_space), "--no-deps", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), "--dest", str(dest_with_space), "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -319,11 +322,10 @@ def test_r1_f5_boundary_install_sh_dest_with_spaces(tmp_path: Path) -> None:
 
 def test_r1_f5_boundary_install_sh_trailing_slash(tmp_path: Path) -> None:
     """Validate install.sh handles destination with trailing slash."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     dest_slash = str(tmp_path / "store_trailing") + "/"
 
     res = subprocess.run(
-        ["bash", str(install_script), "--dest", dest_slash, "--no-deps", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), "--dest", dest_slash, "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -333,9 +335,8 @@ def test_r1_f5_boundary_install_sh_trailing_slash(tmp_path: Path) -> None:
 
 def test_r1_f5_boundary_install_sh_invalid_python_binary() -> None:
     """Validate install.sh fails cleanly when given non-existent python binary."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     res = subprocess.run(
-        ["bash", str(install_script), "--python", "/nonexistent/python_bin_xyz", "--no-deps", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), "--python", "/nonexistent/python_bin_xyz", "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -346,11 +347,10 @@ def test_r1_f5_boundary_install_sh_invalid_python_binary() -> None:
 
 def test_r1_f5_boundary_install_sh_dest_equals_syntax(tmp_path: Path) -> None:
     """Validate install.sh supports `--dest=PATH` argument syntax."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     dest_path = tmp_path / "dest_eq"
 
     res = subprocess.run(
-        ["bash", str(install_script), f"--dest={dest_path}", "--no-deps", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), f"--dest={dest_path}", "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -361,11 +361,10 @@ def test_r1_f5_boundary_install_sh_dest_equals_syntax(tmp_path: Path) -> None:
 
 def test_r1_f5_boundary_install_sh_repeated_flags(tmp_path: Path) -> None:
     """Validate that passing flags multiple times (e.g. --no-deps --no-deps) does not crash."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     dest_path = tmp_path / "dest_repeat"
 
     res = subprocess.run(
-        ["bash", str(install_script), "--dest", str(dest_path), "--no-deps", "--no-deps", "--no-index", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), "--dest", str(dest_path), "--no-deps", "--no-deps", "--no-index", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

@@ -309,12 +309,15 @@ def test_r1_f4_query_hybrid_and_lexical_with_flag_delimited_task(
 # R1-F5: Repair install.sh Target Paths (>=5 tests)
 # ============================================================================
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SCRIPT = REPO_ROOT / "install.sh"
+
+
 def test_r1_f5_install_sh_help_exits_cleanly() -> None:
     """Validate that `./install.sh --help` executes cleanly and returns exit code 0."""
-    install_script = Path("/root/commontrace-v2/install.sh")
-    assert install_script.exists()
+    assert INSTALL_SCRIPT.exists()
     res = subprocess.run(
-        ["bash", str(install_script), "--help"],
+        ["bash", str(INSTALL_SCRIPT), "--help"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -325,9 +328,8 @@ def test_r1_f5_install_sh_help_exits_cleanly() -> None:
 
 def test_r1_f5_install_sh_dest_without_arg_fails_cleanly() -> None:
     """Validate that `./install.sh --dest` without argument emits actionable error and exits 1."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     res = subprocess.run(
-        ["bash", str(install_script), "--dest"],
+        ["bash", str(INSTALL_SCRIPT), "--dest"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -338,9 +340,8 @@ def test_r1_f5_install_sh_dest_without_arg_fails_cleanly() -> None:
 
 def test_r1_f5_install_sh_unknown_arg_fails_cleanly() -> None:
     """Validate that `./install.sh` rejects unknown flags with exit code 1."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     res = subprocess.run(
-        ["bash", str(install_script), "--unrecognized-option-test"],
+        ["bash", str(INSTALL_SCRIPT), "--unrecognized-option-test"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -351,9 +352,8 @@ def test_r1_f5_install_sh_unknown_arg_fails_cleanly() -> None:
 
 def test_r1_f5_install_sh_supports_in_place_flag() -> None:
     """Validate that `./install.sh --in-place --no-deps --no-index` runs without error in the repo."""
-    install_script = Path("/root/commontrace-v2/install.sh")
     res = subprocess.run(
-        ["bash", str(install_script), "--in-place", "--no-deps", "--no-index"],
+        ["bash", str(INSTALL_SCRIPT), "--in-place", "--no-deps", "--no-index"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -364,7 +364,6 @@ def test_r1_f5_install_sh_supports_in_place_flag() -> None:
 
 def test_r1_f5_install_sh_references_valid_reference_paths() -> None:
     """Validate that install.sh does not reference obsolete or broken paths for build_index."""
-    install_script = Path("/root/commontrace-v2/install.sh")
-    content = install_script.read_text(encoding="utf-8")
+    content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     # Verify that the script contains valid references to the reference directory or cli index
     assert "commontrace/reference/build_index.py" in content or "commontrace.cli index" in content or "commontrace index" in content or "memory/attention/build_index.py" in content

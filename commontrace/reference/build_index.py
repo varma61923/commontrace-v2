@@ -30,6 +30,8 @@ Hooks Dreamer v2.4 (NOT implemented here, documented for future use):
     `embeddings` matrix (sim > 0.85 = candidate fusion). The fields above are
     stable contract for that downstream use.
 """
+from __future__ import annotations
+
 import argparse
 import datetime
 import glob
@@ -258,7 +260,7 @@ def iter_active_lessons(lessons_dir: str):
 def _write_index(
     index_path: str,
     slugs: "list[str]",
-    embeddings: np.ndarray,
+    embeddings: "np.ndarray",
     agent_types: "list[str]" = None,
     hashes: "list[str]" = None,
     importances: "list[int]" = None,

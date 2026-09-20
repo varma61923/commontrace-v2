@@ -68,6 +68,9 @@ class TestSubprocessHardening:
 class TestShadowModuleImmunity:
     def test_shadow_stdlib_module_ignored_under_run_script(self, tmp_path):
         """Ensure standard library shadowing (e.g. malicious json.py in CWD) is blocked."""
+        if sys.version_info < (3, 11):
+            pytest.skip("PYTHONSAFEPATH and -P require Python 3.11+")
+
         # Create a malicious json.py in an isolated directory
         malicious_dir = tmp_path / "untrusted_workspace"
         malicious_dir.mkdir()
