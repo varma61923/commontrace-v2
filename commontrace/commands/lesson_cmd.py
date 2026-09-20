@@ -201,7 +201,8 @@ def run_new(args: argparse.Namespace) -> int:
 
 def _iter_lesson_paths(root: str, explicit: str | None):
     if explicit:
-        yield explicit
+        safe_path = paths.enforce_boundary(root, explicit)
+        yield safe_path
         return
     ldir = paths.lessons_dir(root)
     for p in sorted(glob.glob(os.path.join(ldir, "lesson_*.md"))):
@@ -248,8 +249,10 @@ def _active_lesson_texts(root: str, *, exclude: str = "") -> list[tuple[str, str
 def run_validate(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     schema = validate.load_schema("lesson.schema.json")
-    if args.path and not os.path.isfile(args.path):
-        frontmatter.read(args.path)
+    if args.path:
+        safe_path = paths.enforce_boundary(root, args.path)
+        if not os.path.isfile(safe_path):
+            frontmatter.read(safe_path)
     n_checked = 0
     n_failed = 0
     for path in _iter_lesson_paths(root, args.path):

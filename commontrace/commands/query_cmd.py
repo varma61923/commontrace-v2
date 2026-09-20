@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import math
 import os
 import sys
 
@@ -24,10 +25,29 @@ from commontrace.commands._shellout import has_attention_deps, run_script
 
 
 def _relevance_floor(raw: str) -> float:
-    value = float(raw)
-    if not 0.0 <= value <= 1.0:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--relevance-floor must be a number, got {raw!r}"
+        ) from None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise argparse.ArgumentTypeError(
             f"--relevance-floor must be in [0.0, 1.0], got {value}"
+        )
+    return value
+
+
+def _holdout_rate(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--holdout-rate must be a number, got {raw!r}"
+        ) from None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"--holdout-rate must be in [0.0, 1.0], got {value}"
         )
     return value
 
@@ -86,7 +106,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     # any operator who set one and not the other pooled two randomizations
     # into one comparison. Passing either flag explicitly still overrides,
     # which is what a one-off experiment needs.
-    p.add_argument("--holdout-rate", type=float, default=None)
+    p.add_argument("--holdout-rate", type=_holdout_rate, default=None)
     p.add_argument("--experiment-salt", default=None)
     p.add_argument(
         "--include-importance-floor",
@@ -463,12 +483,13 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
 
 def _semantic_slugs(args, root: str, missing_hint: str) -> tuple[int, list[str], str]:
     """Run the semantic arm and return (rc, ranked slugs, raw stdout)."""
-    script_args = [args.task, "--top-k", str(args.top_k)]
+    script_args = ["--top-k", str(args.top_k)]
     if args.include_importance_floor is not None:
         script_args.extend(
             ["--include-importance-floor", str(args.include_importance_floor)])
     if args.agent_type:
         script_args.extend(["--agent-type", args.agent_type])
+    script_args.extend(["--", args.task])
     rc, stdout = run_script(
         root, os.path.join("memory", "attention", "query.py"),
         script_args, missing_hint, capture=True,
@@ -720,7 +741,7 @@ def run(args: argparse.Namespace) -> int:
     if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
         return _run_hybrid(args, root, missing_hint)
 
-    script_args = [args.task, "--top-k", str(args.top_k)]
+    script_args = ["--top-k", str(args.top_k)]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
     if args.agent_type:
@@ -730,6 +751,7 @@ def run(args: argparse.Namespace) -> int:
         # fleet and not semantic retrieval -- two retrievers answering
         # different questions from the same store.
         script_args.extend(["--agent-type", args.agent_type])
+    script_args.extend(["--", args.task])
     script_path = os.path.join("memory", "attention", "query.py")
 
     if not args.experiment:
