@@ -4,8 +4,9 @@ inverted-index lexical pruning, and incremental vector caching.
 import hashlib
 import os
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy", reason="numpy is required for memory performance tests")
 
 from commontrace.reference.build_index import (
     EMBEDDING_DIM,

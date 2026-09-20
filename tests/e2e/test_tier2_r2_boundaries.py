@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy", reason="numpy is required for attention memory boundary tests")
 
 from tests.e2e.conftest import CLIResult
 

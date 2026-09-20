@@ -54,6 +54,7 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+    np = None
 
 # Bumped from 1.1.0: additive-only fields `operational_cost` and `semantic_duplicates`
 # (Phase 3, P5 / P8). No existing key was removed or renamed.
@@ -845,7 +846,7 @@ def compute_operational_cost(telemetry_path=None):
 
 
 def _chunked_pairwise_duplicates(
-    embeddings: np.ndarray,
+    embeddings: "np.ndarray",
     slugs: "list[str]",
     threshold: float = 0.85,
     chunk_size: int = 1000,
@@ -854,6 +855,8 @@ def _chunked_pairwise_duplicates(
     the full N x N matrix or full coordinate arrays in memory.
     Guarantees memory usage is bounded to O(chunk_size * N) rather than O(N^2).
     """
+    if not HAS_NUMPY:
+        return []
     n = len(slugs)
     if n < 2 or embeddings.ndim != 2 or embeddings.shape[0] != n:
         return []

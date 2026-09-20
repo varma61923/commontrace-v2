@@ -282,7 +282,7 @@ def test_r4_f3_lexical_dedup_scales_with_corpus() -> None:
 
 def test_r4_f3_chunked_similarity_memory_bounded() -> None:
     """Validate compute_semantic_duplicates on 200 synthetic vectors runs with chunk_size=50."""
-    import numpy as np
+    np = pytest.importorskip("numpy", reason="numpy required for memory bounded chunked similarity test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 200

@@ -16,8 +16,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
 import pytest
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 from tests.e2e.conftest import CLIResult
 
@@ -240,6 +244,7 @@ def test_r4_f2_boundary_subprocess_safe_path_isolated() -> None:
 
 def test_r4_f3_boundary_large_chunk_size_scaling() -> None:
     """Validate compute_semantic_duplicates scaling with chunk_size > len(items)."""
+    np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 100
@@ -259,6 +264,7 @@ def test_r4_f3_boundary_large_chunk_size_scaling() -> None:
 
 def test_r4_f3_boundary_tiny_chunk_size_scaling() -> None:
     """Validate compute_semantic_duplicates scaling with tiny chunk_size=2."""
+    np = pytest.importorskip("numpy", reason="numpy required for benchmark scaling test")
     from commontrace.reference.measure_performance import compute_semantic_duplicates
 
     n = 40
@@ -278,6 +284,7 @@ def test_r4_f3_boundary_tiny_chunk_size_scaling() -> None:
 
 def test_r4_f3_boundary_fast_importances_loader_latency(tmp_path: Path) -> None:
     """Validate load_importances_from_index executes in < 50ms for 500 items."""
+    np = pytest.importorskip("numpy", reason="numpy required for fast importances loader test")
     from commontrace.reference.query import load_importances_from_index
 
     n = 500
