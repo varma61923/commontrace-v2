@@ -9,15 +9,12 @@ Covers Features:
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R3-F1: Centralized Workspace Boundary Enforcement (>=5 tests)
@@ -262,8 +259,9 @@ def test_r3_f3_export_blocks_symlinked_directory_output(
 
 def test_r3_f4_shellout_enforces_python_safe_path() -> None:
     """Validate that _shellout.py sets PYTHONSAFEPATH='1' in subprocess environment."""
-    from commontrace.commands import _shellout
     import inspect
+
+    from commontrace.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["PYTHONSAFEPATH"] = "1"' in source or "PYTHONSAFEPATH" in source
@@ -271,8 +269,9 @@ def test_r3_f4_shellout_enforces_python_safe_path() -> None:
 
 def test_r3_f4_shellout_enforces_python_utf8() -> None:
     """Validate that _shellout.py sets PYTHONUTF8='1' in subprocess environment."""
-    from commontrace.commands import _shellout
     import inspect
+
+    from commontrace.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["PYTHONUTF8"] = "1"' in source or "PYTHONUTF8" in source
@@ -280,8 +279,9 @@ def test_r3_f4_shellout_enforces_python_utf8() -> None:
 
 def test_r3_f4_shellout_uses_shell_false() -> None:
     """Validate that subprocess.run is called without shell=True in _shellout.py."""
-    from commontrace.commands import _shellout
     import inspect
+
+    from commontrace.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert "shell=True" not in source
@@ -319,8 +319,9 @@ def test_r3_f4_cwd_module_shadowing_mitigated(
 
 def test_r3_f4_run_script_sets_canonical_root_in_child_env(isolated_store: Path) -> None:
     """Validate that run_script sets COMMONTRACE_ROOT to canonical resolved path."""
-    from commontrace.commands import _shellout
     import inspect
+
+    from commontrace.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)
     assert 'env["COMMONTRACE_ROOT"] = root' in source

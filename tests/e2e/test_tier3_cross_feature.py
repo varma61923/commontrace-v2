@@ -7,16 +7,10 @@ from __future__ import annotations
 
 import csv
 import json
-import os
-import shutil
 from pathlib import Path
-from typing import Any, Callable
-
-import pytest
-import yaml
+from typing import Callable
 
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # 1. Full Lifecycle Pipeline: Init -> Capture -> Distill -> Approve -> Validate -> Query -> Bench
@@ -334,7 +328,7 @@ def test_tier3_export_lessons_with_status_filtering(
         "--dest", str(store),
     ])
     assert res_act.exit_code == 0
-    lines_act = [json.loads(l) for l in active_out.read_text(encoding="utf-8").strip().split("\n") if l.strip()]
+    lines_act = [json.loads(line) for line in active_out.read_text(encoding="utf-8").strip().split("\n") if line.strip()]
     assert len(lines_act) == 2
     assert all(rec.get("status") == "active" for rec in lines_act)
 
@@ -347,7 +341,7 @@ def test_tier3_export_lessons_with_status_filtering(
         "--dest", str(store),
     ])
     assert res_all.exit_code == 0
-    lines_all = [json.loads(l) for l in all_out.read_text(encoding="utf-8").strip().split("\n") if l.strip()]
+    lines_all = [json.loads(line) for line in all_out.read_text(encoding="utf-8").strip().split("\n") if line.strip()]
     assert len(lines_all) == 4
 
 

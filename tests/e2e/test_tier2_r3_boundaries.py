@@ -9,16 +9,13 @@ Covers Features:
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R3-F1: Boundary Cases for enforce_boundary (>=5 tests)

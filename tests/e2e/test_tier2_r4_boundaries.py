@@ -10,8 +10,6 @@ Covers Features:
 """
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -24,7 +22,6 @@ except ImportError:
     np = None
 
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R4-F1: Boundary Cases for Schema Validation (>=5 tests)
@@ -232,6 +229,7 @@ def test_r4_f2_boundary_leading_slash_treated_as_traversal(tmp_path: Path) -> No
 def test_r4_f2_boundary_subprocess_safe_path_isolated() -> None:
     """Validate subprocess execution runs with PYTHONSAFEPATH enabled."""
     import inspect
+
     from commontrace.commands import _shellout
 
     source = inspect.getsource(_shellout.run_script)

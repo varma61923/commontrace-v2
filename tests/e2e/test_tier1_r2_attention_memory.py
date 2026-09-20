@@ -8,16 +8,14 @@ Covers Features:
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 
 np = pytest.importorskip("numpy", reason="numpy is required for attention memory tests")
 
-from tests.e2e.conftest import CLIResult
-
+from tests.e2e.conftest import CLIResult  # noqa: E402
 
 # ============================================================================
 # R2-F1: Bounded-Memory Semantic Deduplication (>=5 tests)

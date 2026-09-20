@@ -8,15 +8,13 @@ Covers Features:
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 
 np = pytest.importorskip("numpy", reason="numpy is required for attention memory boundary tests")
 
-from tests.e2e.conftest import CLIResult
 
 
 class DummyEmbeddingModel:

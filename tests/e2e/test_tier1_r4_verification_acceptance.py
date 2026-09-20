@@ -13,12 +13,11 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R4-F1: Dedicated Schema Validation Test Suite (>=5 tests)

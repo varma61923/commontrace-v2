@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-import pytest
 import yaml
 
-from commontrace import dosage, frontmatter, redundancy
+from commontrace import dosage, frontmatter
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # Scenario 1: Code-Review Double-Review Pipeline Simulation (SKILL.md)

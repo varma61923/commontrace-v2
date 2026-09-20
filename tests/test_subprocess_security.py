@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from commontrace.commands._shellout import (
     _store_scripts_allowed,
     find_reference_script,

@@ -8,11 +8,11 @@ import pytest
 
 np = pytest.importorskip("numpy", reason="numpy is required for memory performance tests")
 
-from commontrace.reference.build_index import (
+from commontrace.reference.build_index import (  # noqa: E402
     EMBEDDING_DIM,
     build_or_update_index,
 )
-from commontrace.reference.measure_performance import (
+from commontrace.reference.measure_performance import (  # noqa: E402
     SemanticDuplicatesResult,
     _chunked_pairwise_duplicates,
     _lexical_tokens,

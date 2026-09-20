@@ -9,16 +9,11 @@ Covers Features:
 """
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 
-import pytest
-
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R1-F1: CLI Subcommand Input Validation (>=5 tests)
@@ -212,7 +207,7 @@ def test_r1_f3_lesson_new_refuses_oversized_payload(
     isolated_store: Path,
 ) -> None:
     """Validate that text size validator refuses writes exceeding REFUSE_CHARS (1MB)."""
-    from commontrace.commands._validators import check_text_size, REFUSE_CHARS
+    from commontrace.commands._validators import REFUSE_CHARS, check_text_size
     fields = {"description": "X" * (REFUSE_CHARS + 100), "applies_when": "always"}
     assert check_text_size(fields, what="lesson") is False
 

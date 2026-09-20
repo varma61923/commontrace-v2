@@ -9,16 +9,11 @@ Covers Edge Cases, Limits, Extremes for Features:
 """
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 
-import pytest
-
 from tests.e2e.conftest import CLIResult
-
 
 # ============================================================================
 # R1-F1 Boundary Cases (5 tests)
@@ -103,7 +98,6 @@ def test_r1_f1_boundary_empty_fields_capture(cli_runner: Callable[..., CLIResult
 
 def test_r1_f2_boundary_sigint_simulation() -> None:
     """Validate that KeyboardInterrupt in main() maps cleanly to exit code 130."""
-    from commontrace import cli
 
     class MockKeyboardInterruptAction:
         def __call__(self, *args, **kwargs):
@@ -205,7 +199,7 @@ def test_r1_f3_boundary_warn_chars_threshold(
     isolated_store: Path,
 ) -> None:
     """Validate that check_text_size warns when text exceeds WARN_CHARS (256KB) but < 1MB."""
-    from commontrace.commands._validators import check_text_size, WARN_CHARS, REFUSE_CHARS
+    from commontrace.commands._validators import WARN_CHARS, check_text_size
 
     # Between 256KB and 1MB
     text_300k = "B" * (WARN_CHARS + 1000)
@@ -216,7 +210,7 @@ def test_r1_f3_boundary_warn_chars_threshold(
 
 def test_r1_f3_boundary_refuse_chars_threshold() -> None:
     """Validate that check_text_size refuses when text strictly exceeds REFUSE_CHARS (1MB)."""
-    from commontrace.commands._validators import check_text_size, REFUSE_CHARS
+    from commontrace.commands._validators import REFUSE_CHARS, check_text_size
 
     text_over_1mb = "C" * (REFUSE_CHARS + 1)
     fields = {"description": text_over_1mb}
