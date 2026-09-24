@@ -24,6 +24,19 @@ assignments record `ce:<model>(<first stage>)` as their label
 (retrieval_io.eligibility_label), so the audit sees the change rather than
 pooling two rankings.
 
+WHY IT IS NOT THE DEFAULT. On the curated lesson fixture (eight fields,
+top 3; commontrace/reference/measure_retrieval.py) the default is held to
+finding every relevant lesson with collateral under 2.4x, because every
+lesson retrieved is logged into the causal experiment. Fused retrieval
+fills every slot on the page, so its pollution is 3.0x in every field
+(the lexical default: 1.72-2.33x). A floor on the cross-encoder's score
+cuts that to 1.0-1.2x, but no floor keeps recall at 1.0: at -11 one field
+still loses a relevant lesson (0.94), and at -3 recall is 0.83. Measured
+with both models and both lexical scorers. On conversational benchmarks
+reranked fusion is the most accurate stack measured; on a curated store
+under experiment, its collateral dilutes the estimates the product
+exists to report. So it is a choice a store makes, not an upgrade.
+
 HARM WITHDRAWAL stays exact. A withdrawn lesson is scored alongside the pool
 and named only if its score would have put it on the page. A cross-encoder
 scores each pair on its own, so leaving it out moves nothing else.
