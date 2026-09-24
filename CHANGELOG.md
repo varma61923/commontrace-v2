@@ -157,6 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every fused experiment was declared invalid.** The marginal-eligibility
+  check compared each assignment's relevance with the retrieval floor. A
+  fused ranking records its rank-fusion score, which never exceeds 2/61,
+  beside the lexical arm's floor of 0.04, so every fused assignment counted
+  as a lesson that barely matched. Any store using `--fusion rrf`, on
+  `commontrace query` or MCP `retrieve`, had its audit report every lesson
+  100% marginal and INVALIDATES: no causal numbers were shown and harm
+  withdrawal never acted. The check now judges only rows a floor decided
+  (the lexical scorers, and unlabelled rows, which predate fusion). Existing
+  logs are read correctly without migration.
 - **A perfect split could never be declared.** The anytime-valid interval
   returned "no claim" (−100% to +100%) whenever neither arm had seen both
   outcomes, however many occasions had accrued. So a lesson that worked on

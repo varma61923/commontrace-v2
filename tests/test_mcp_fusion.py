@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from commontrace import harm, holdout_io, retrieval_io, semantic_arm
+from commontrace import evidence, harm, holdout_io, integrity, retrieval_io, semantic_arm
 from commontrace.commands import query_cmd
 from tests.test_hybrid_retrieval import _args
 from tests.test_mcp_server import _write_lesson, call, cli
@@ -212,3 +212,17 @@ def test_both_surfaces_refresh_the_index_before_the_arm_ranks(store, monkeypatch
                         lambda args, root, hint, extra=0: rank(root, "", args.top_k + extra)[:2] + ("",))
     assert query_cmd.run(_args(store, TASK)) == 0
     assert events == ["refresh", "rank"]
+
+
+def test_a_fused_experiment_is_not_called_marginal(store, monkeypatch):
+    """Fused rows record a rank-fusion score beside the lexical floor; the
+    audit used to call all of them marginal (tests/test_integrity_fusion.py)."""
+    _stub_both(monkeypatch)
+    server = mcp_server.build_server(store)
+    for i in range(40):
+        call(server, "retrieve", task=TASK, occasion_id=f"o{i}")
+    rows = evidence.analyse(store).rows
+    assert rows and {r.scorer for r in rows} == {"rrf(idf-v2+semantic)"}
+    finding = integrity.check_marginal_eligibility(rows)
+    assert finding.severity == integrity.SEVERITY_OK
+    assert finding.numbers["n_not_floor_gated"] == len(rows)
