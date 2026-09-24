@@ -16,7 +16,7 @@
 # packages from the same original authors, not a typosquat) and
 # `starlette>=0.27`. Neither is pinned anywhere in hub/requirements.txt, so
 # an unconstrained install resolves whatever `mcp` currently allows -- on
-# the day this file was generated, `httpx2==2.12.0` and `starlette==1.6.0`,
+# the day this file was generated, `httpx2==2.13.0` and `starlette==1.6.0`,
 # neither of which existed when this Hub was first built against `mcp`'s
 # streamable-HTTP transport. A future, wider-ranging `mcp` release could
 # just as easily resolve something that quietly changes behavior this
@@ -68,7 +68,7 @@ h11==0.16.0
 httpcore==1.0.9
 httpcore2==2.13.0
 httpx==0.28.1
-httpx2==2.12.0
+httpx2==2.13.0
 idna==3.19
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
