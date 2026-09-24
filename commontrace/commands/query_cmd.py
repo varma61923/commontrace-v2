@@ -893,6 +893,21 @@ def _index_is_unusable(root: str) -> str:
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
 
+    # A store that reranks without fusion reranks the LEXICAL arm, as MCP's
+    # `retrieve` does: the reranker's pool is the floor-cleared lexical
+    # candidates (commontrace/rerank_arm.py), and both surfaces must run the
+    # same treatment under one label. Without this, the same store logged
+    # `semantic` from here and `ce:...(idf-v2)` from its agents -- two
+    # rankings in one experiment. A store whose log says it ran semantic
+    # retrieval is pinned to no reranker (retrieval_io), so it stays here.
+    config = retrieval_io.load_config(root)
+    if (
+        not args.lexical
+        and config.fusion == retrieval_io.FUSION_NONE
+        and config.rerank != retrieval_io.RERANK_NONE
+    ):
+        return _run_lexical(args, root)
+
     if not args.lexical and has_attention_deps():
         reason = _refresh_stale_index(root)
         if reason:

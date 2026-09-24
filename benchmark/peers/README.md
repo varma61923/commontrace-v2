@@ -89,7 +89,7 @@ the two.
 | commontrace fusion (idf-v3) + fast rerank | 0.614 | 0.703 | 0.561 | 0.547 |
 | commontrace fusion (idf-v2) + fast rerank | 0.606 | 0.696 | 0.557 | 0.545 |
 | commontrace lexical (idf-v2) + rerank | 0.597 | 0.624 | 0.562 | 0.577 |
-| commontrace lexical (idf-v2) + fast rerank | 0.562 | 0.615 | 0.518 | 0.518 |
+| commontrace lexical (idf-v2) + fast rerank *(default with the attention extra)* | 0.562 | 0.615 | 0.518 | 0.518 |
 | commontrace fusion (idf-v3 + semantic) | 0.568 | 0.660 | 0.486 | 0.464 |
 | commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
 | mem0 2.x hybrid | 0.543 | 0.625 | 0.466 | 0.446 |
@@ -126,7 +126,7 @@ Recall@10 by question category:
 | commontrace lexical (idf-v2) + rerank | 0.930 | 0.967 | 0.908 | 0.899 |
 | commontrace fusion (idf-v2) + fast rerank | 0.927 | 0.967 | 0.896 | 0.878 |
 | commontrace lexical (idf-v3) | 0.926 | 0.940 | 0.869 | 0.874 |
-| commontrace lexical (idf-v2) + fast rerank | 0.923 | 0.947 | 0.894 | 0.884 |
+| commontrace lexical (idf-v2) + fast rerank *(default with the attention extra)* | 0.923 | 0.947 | 0.894 | 0.884 |
 | commontrace fusion (idf-v2 + semantic) | 0.914 | 0.952 | 0.882 | 0.876 |
 | commontrace fusion (idf-v3 + semantic) | 0.910 | 0.988 | 0.879 | 0.851 |
 | commontrace semantic | 0.907 | 0.936 | 0.852 | 0.847 |

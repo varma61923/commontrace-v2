@@ -920,8 +920,9 @@ LoCoMo's 1,531 questions, CommonTrace's fused retrieval with reranking puts
 an answering turn in the top 5 for 67.0% of questions and in the top 10 for
 72.6%, against 54.3% and 62.5% for mem0 2.x. It leads on every metric and
 in every question category, and stays ahead when mem0 is given the same
-reranker. With the fast reranker, lexical retrieval alone beats mem0 on
-R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms).
+reranker. Lexical retrieval with the fast reranker, the default wherever
+the attention extra is installed, beats mem0 on R@5, NDCG and MRR at about
+half its query latency (30 ms vs 56 ms).
 
 ---
 

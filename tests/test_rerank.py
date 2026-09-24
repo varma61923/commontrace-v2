@@ -298,3 +298,33 @@ def test_the_operator_can_turn_the_default_off(tmp_path, monkeypatch):
     monkeypatch.setenv(retrieval_io.DEFAULT_RERANK_ENV, "none")
     assert main(["init", "--dest", str(tmp_path)]) == 0
     assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_NONE
+
+
+def test_without_fusion_both_surfaces_rerank_the_lexical_arm(store, ce, monkeypatch):
+    """With the attention extra installed and fusion off, `query` used to rank
+    semantically while MCP ranked lexically; a reranking store now runs the
+    same reranked lexical ranking on both, under one label."""
+    _stub_both(monkeypatch)
+    _rerank_store(store)
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_NONE,
+                           rerank=retrieval_io.RERANK_CE_FAST)
+    monkeypatch.setattr(query_cmd, "run_script",
+                        lambda *a, **k: pytest.fail("the semantic arm must not run"))
+    assert query_cmd.run(_args(store, TASK, experiment=True, occasion_id="cli-l", top_k=2)) == 0
+    call(mcp_server.build_server(store), "retrieve", task=TASK, top_k=2, occasion_id="mcp-l")
+    cli_rows, mcp_rows = _logged(store, "cli-l"), _logged(store, "mcp-l")
+    assert set(cli_rows) == set(mcp_rows) and cli_rows
+    for slug in cli_rows:
+        for field in ("scorer", "relevance", "rank"):
+            assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
+    assert {r["scorer"] for r in cli_rows.values()} == {"ce:tinybert2(idf-v2)"}
+
+
+def test_a_store_that_ran_semantic_retrieval_stays_semantic(tmp_path, no_override, monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    root = str(tmp_path)
+    assert main(["init", "--dest", root]) == 0
+    with open(holdout_io.holdout_log_path(root), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"occasion_id": "o", "lesson": "l", "injected": True, "rate": 0.5,
+                             "salt": "s", "scorer": "semantic", "floor": 0.04}) + "\n")
+    assert retrieval_io.load_config(root).rerank == retrieval_io.RERANK_NONE
