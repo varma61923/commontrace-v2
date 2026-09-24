@@ -82,6 +82,7 @@ the two.
 |---|---:|---:|---:|---:|
 | **commontrace fusion (idf-v3) + rerank** | **0.676** | **0.734** | **0.627** | **0.629** |
 | commontrace fusion (idf-v2) + rerank | 0.670 | 0.726 | 0.622 | 0.626 |
+| mem0 2.x + its rerank (same model) | 0.612 | 0.661 | 0.569 | 0.576 |
 | commontrace lexical (idf-v2) + rerank | 0.597 | 0.624 | 0.562 | 0.577 |
 | commontrace fusion (idf-v3 + semantic) | 0.568 | 0.660 | 0.486 | 0.464 |
 | commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
@@ -100,6 +101,7 @@ Recall@10 by question category:
 |---|---:|---:|---:|---:|
 | commontrace fusion (idf-v3) + rerank | **0.833** | 0.783 | **0.475** | **0.445** |
 | commontrace fusion (idf-v2) + rerank | 0.821 | **0.785** | 0.467 | 0.441 |
+| mem0 2.x + its rerank | 0.730 | 0.735 | 0.457 | 0.383 |
 | commontrace fusion (idf-v3) | 0.764 | 0.723 | 0.371 | 0.373 |
 | commontrace fusion (idf-v2) | 0.754 | 0.712 | 0.340 | 0.351 |
 | mem0 2.x hybrid | 0.694 | 0.723 | 0.396 | 0.348 |
@@ -149,6 +151,11 @@ above 500 ms).
   its MRR is 0.626 against 0.446. The reranker closes the one gap fusion
   alone left: multi-hop questions, whose evidence spans several turns,
   where mem0's entity boosts had led (0.396); reranked fusion reaches 0.467.
+- **The lead is not the reranker's alone.** Given the same cross-encoder
+  through its own `rerank=True`, mem0 improves to 0.612 R@5 and 0.661 R@10,
+  and CommonTrace's reranked fusion is still ahead on every metric and every
+  category. The difference is the pool: mem0 reorders the results it would
+  have returned, while CommonTrace hands the reranker a deeper fused pool.
 - **Reranking helps because the pool is good.** The cross-encoder can only
   reorder what the first stage found. Over the lexical arm alone it lifts
   R@5 from 0.472 to 0.597, but R@10 stays at 0.624, because the answer is
