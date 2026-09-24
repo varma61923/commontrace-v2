@@ -99,7 +99,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     """occasion_id -> did the underlying task succeed."""
-    out: dict[str, bool] = {}
+    # Outcomes reported by occasion id alone (holdout_io.record_outcome),
+    # which is how an application measuring memory held by another system
+    # reports them -- it has no episode or trace to carry the verdict. Read
+    # FIRST so that where this store does hold its own record of an
+    # occasion, that richer record is the one that stands.
+    out: dict[str, bool] = dict(holdout_io.read_outcomes(root))
 
     for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
         if "template" in os.path.basename(path):
