@@ -20,7 +20,7 @@ one.
 
 EXPERIMENTS. The reranker decides which lessons make the top k, so it
 decides eligibility: a store that turns it on starts a new treatment, and
-assignments record `ce(<first stage>)` as their label
+assignments record `ce:<model>(<first stage>)` as their label
 (retrieval_io.eligibility_label), so the audit sees the change rather than
 pooling two rankings.
 
@@ -35,12 +35,21 @@ import importlib.util
 import threading
 from collections.abc import Mapping, Sequence
 
-#: The cross-encoder. Trained on MS MARCO passage ranking; 22M parameters,
-#: so a 30-candidate pool reranks in tens of milliseconds on a CPU.
-MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-#: Short model name, recorded in the eligibility label: a different model is
-#: a different ranking, and so a different treatment.
-MODEL_TAG = "minilm6"
+#: The rerank modes a store can configure (retrieval_io.RERANKS), each a
+#: cross-encoder trained on MS MARCO passage ranking, and the short name its
+#: eligibility label records: a different model is a different ranking, and
+#: so a different treatment. Measured over a 30-candidate pool of LoCoMo
+#: turns on a 4-core CPU:
+#:
+#:   mode                 model (params)          rerank p50   fused R@5 / MRR
+#:   cross-encoder        MiniLM-L-6 (22M)        265 ms       0.670 / 0.626
+#:   cross-encoder-fast   TinyBERT-L-2 (4M)       28 ms        0.606 / 0.545
+#:   (no reranking)                                            0.531 / 0.440
+MODELS = {
+    "cross-encoder": ("cross-encoder/ms-marco-MiniLM-L-6-v2", "minilm6"),
+    "cross-encoder-fast": ("cross-encoder/ms-marco-TinyBERT-L-2-v2", "tinybert2"),
+}
+DEFAULT_MODE = "cross-encoder"
 #: How many first-stage candidates the reranker reorders.
 POOL = 30
 #: Characters of lesson text the model reads. Its input is capped at 512
@@ -48,7 +57,7 @@ POOL = 30
 MAX_CHARS = 1200
 
 _LOCK = threading.Lock()
-_MODEL = None
+_LOADED: dict[str, object] = {}
 
 
 def available() -> bool:
@@ -56,16 +65,23 @@ def available() -> bool:
     return importlib.util.find_spec("sentence_transformers") is not None
 
 
-def _load():
-    global _MODEL
-    if _MODEL is None:
+def tag(mode: str) -> str:
+    return MODELS[mode][1]
+
+
+def mode_for_tag(model_tag: str) -> str | None:
+    return next((m for m, (_name, t) in MODELS.items() if t == model_tag), None)
+
+
+def _load(mode: str = DEFAULT_MODE):
+    if mode not in _LOADED:
         from sentence_transformers import CrossEncoder
 
-        _MODEL = CrossEncoder(MODEL, device="cpu")
-    return _MODEL
+        _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu")
+    return _LOADED[mode]
 
 
-def ready() -> str:
+def ready(mode: str = DEFAULT_MODE) -> str:
     """Load the model now; "" when it can rerank, else why not.
 
     Checked BEFORE the first stage runs, because the first stage fetches a
@@ -76,9 +92,9 @@ def ready() -> str:
         return "the reranker needs the attention extra (`pip install commontrace[attention]`)"
     try:
         with _LOCK:
-            _load()
+            _load(mode)
     except Exception as exc:  # noqa: BLE001 - no model is a fallback, never a crash
-        return f"the reranker could not load {MODEL}: {type(exc).__name__}: {exc}"
+        return f"the reranker could not load {MODELS[mode][0]}: {type(exc).__name__}: {exc}"
     return ""
 
 
@@ -122,6 +138,7 @@ def rerank(
     text_of: Mapping[str, str],
     want: int,
     withdrawn: Sequence[str] = (),
+    mode: str = DEFAULT_MODE,
 ) -> tuple[list[tuple[str, float]], list[str]]:
     """Reorder `pool` by cross-encoder score and keep the top `want`.
 
@@ -135,7 +152,7 @@ def rerank(
     if not candidates and not extra:
         return [], []
     with _LOCK:
-        model = _load()
+        model = _load(mode)
         scores = model.predict(
             # Capped here, not only in `lesson_text`, so every caller -- both
             # surfaces and the benchmark -- reranks the same text.

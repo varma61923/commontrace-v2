@@ -916,9 +916,12 @@ and other memory products' retrieval stacks side by side: mem0 2.x's hybrid
 search, Chroma, BM25, dense vectors and BM25+vector hybrids. It uses LoCoMo
 and LongMemEval, the benchmarks those products publish on, and scores
 retrieval from each dataset's evidence labels, with no LLM judge. On
-LoCoMo's 1,531 questions, CommonTrace's fused retrieval with the stemmed
-lexical arm finds the answering turn in the top 10 for 66.0% of questions,
-against 62.5% for mem0 2.x and 61.5% for a BM25+MiniLM hybrid.
+LoCoMo's 1,531 questions, CommonTrace's fused retrieval with reranking puts
+an answering turn in the top 5 for 67.0% of questions and in the top 10 for
+72.6%, against 54.3% and 62.5% for mem0 2.x. It leads on every metric and
+in every question category, and stays ahead when mem0 is given the same
+reranker. With the fast reranker, lexical retrieval alone beats mem0 on
+R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms).
 
 ---
 
@@ -1039,13 +1042,16 @@ slow to run over a whole store, so it runs over the first stage's top 30
 and only reorders them:
 
 ```bash
-commontrace retrieval --fusion rrf --rerank cross-encoder
+commontrace retrieval --fusion rrf --rerank cross-encoder        # most accurate
+commontrace retrieval --fusion rrf --rerank cross-encoder-fast   # ~10x faster
 ```
 
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 5 for 67.0% of questions, up from 53.1% without it; mem0 2.x reaches 54.3%.
-The model (`cross-encoder/ms-marco-MiniLM-L-6-v2`, 22M parameters) comes
-with the attention extra and downloads on first use. Like fusion, it
+`cross-encoder` (`ms-marco-MiniLM-L-6-v2`, 22M parameters) reranks 30
+candidates in about 265 ms on a 4-core CPU; `cross-encoder-fast`
+(`ms-marco-TinyBERT-L-2-v2`, 4M) in about 30 ms, reaching 60.6%. Both come
+with the attention extra and download on first use. Like fusion, it
 decides which lessons make the page, so assignments record it
 (`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new
 treatment. A store that cannot load the model ranks exactly as if it had

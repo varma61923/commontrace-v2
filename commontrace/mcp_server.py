@@ -607,10 +607,10 @@ def build_server(root: str, *, allow_approval: bool = True):
             # page (commontrace/rerank_arm.py), and only if it can actually
             # rerank: otherwise it ranks for the page, as if it had not asked.
             rerank_skipped = ""
-            if retrieval_config.rerank == retrieval_io.RERANK_CE:
+            if retrieval_config.rerank != retrieval_io.RERANK_NONE:
                 with _quiet():
-                    rerank_skipped = rerank_arm.ready()
-            reranking = retrieval_config.rerank == retrieval_io.RERANK_CE and not rerank_skipped
+                    rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
+            reranking = retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped
             depth = rerank_arm.pool_size(want) if reranking else want
             ranked = retrieval.rank_lessons(
                 task, active,
@@ -687,7 +687,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                         [slug for slug, _ in first_stage] + withdrawn_order,
                         path_by_slug, frontmatter.read,
                     ),
-                    want, withdrawn=withdrawn_order,
+                    want, withdrawn=withdrawn_order, mode=retrieval_config.rerank,
                 )
             except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
                 rerank_skipped = f"the reranker failed: {type(exc).__name__}: {exc}"
@@ -711,7 +711,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # what actually ranked this retrieval.
         eligibility_label = retrieval_io.rerank_label(
             retrieval_config.eligibility_label_for(fused=fused is not None),
-            retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+            retrieval_config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
         )
         if reranked is not None or fused is not None:
             page = reranked if reranked is not None else fused

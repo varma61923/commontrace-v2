@@ -417,9 +417,9 @@ def _rerank_depth(config: retrieval_io.RetrievalConfig, top_k: int) -> tuple[boo
     cannot load it ranks for the page, exactly as if it had not asked
     (commontrace/rerank_arm.py).
     """
-    if config.rerank != retrieval_io.RERANK_CE:
+    if config.rerank == retrieval_io.RERANK_NONE:
         return False, top_k, ""
-    skipped = rerank_arm.ready()
+    skipped = rerank_arm.ready(config.rerank)
     if skipped:
         return False, top_k, skipped
     return True, rerank_arm.pool_size(top_k), ""
@@ -431,6 +431,7 @@ def _rerank_pool(
     first_stage: list[tuple[str, float]],
     withdrawn: list[str],
     top_k: int,
+    mode: str,
 ) -> tuple[list[tuple[str, float]] | None, list[str], str]:
     """The reranked page, the withdrawn lessons that would have been on it,
     and why not if reranking failed (then the page is None). MCP's
@@ -443,7 +444,7 @@ def _rerank_pool(
                 [slug for slug, _ in first_stage] + list(withdrawn),
                 path_by_slug, frontmatter.read,
             ),
-            top_k, withdrawn=withdrawn,
+            top_k, withdrawn=withdrawn, mode=mode,
         )
     except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
         return None, withdrawn, f"the reranker failed: {type(exc).__name__}: {exc}"
@@ -485,12 +486,12 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     reranked = None
     if reranking:
         reranked, withdrawn, rerank_skipped = _rerank_pool(
-            args.task, lessons, page, withdrawn, args.top_k)
+            args.task, lessons, page, withdrawn, args.top_k, config.rerank)
         # A failed rerank serves the pool's head (MCP's `retrieve` does the same).
         page = reranked if reranked is not None else page[: args.top_k]
     label = retrieval_io.rerank_label(
         config.scorer,
-        retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+        config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
     )
     _note_rerank_skipped(config, rerank_skipped, label)
     # Only when the pin is an actual DOWNGRADE. A store already running the
@@ -715,11 +716,11 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     reranked = None
     if reranking:
         reranked, withdrawn, rerank_skipped = _rerank_pool(
-            args.task, lessons, fused, withdrawn, args.top_k)
+            args.task, lessons, fused, withdrawn, args.top_k, config.rerank)
         fused = reranked if reranked is not None else fused[: args.top_k]
     label = retrieval_io.rerank_label(
         config.eligibility_label_for(fused=True),
-        retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+        config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
     )
     _note_rerank_skipped(config, rerank_skipped, label)
     if not fused:

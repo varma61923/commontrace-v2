@@ -43,7 +43,7 @@ class FakeCrossEncoder:
 def ce(monkeypatch):
     FakeCrossEncoder.calls = 0
     monkeypatch.setattr(rerank_arm, "available", lambda: True)
-    monkeypatch.setattr(rerank_arm, "_load", lambda: FakeCrossEncoder())
+    monkeypatch.setattr(rerank_arm, "_load", lambda *_a: FakeCrossEncoder())
     return FakeCrossEncoder
 
 
@@ -225,6 +225,23 @@ def test_every_caller_reranks_the_same_capped_text(ce, monkeypatch):
             seen.extend(text for _t, text in pairs)
             return super().predict(pairs, **kw)
 
-    monkeypatch.setattr(rerank_arm, "_load", lambda: Recording())
+    monkeypatch.setattr(rerank_arm, "_load", lambda *_a: Recording())
     rerank_arm.rerank("t", ["a"], {"a": "x" * (rerank_arm.MAX_CHARS * 3)}, 1)
     assert seen == ["x" * rerank_arm.MAX_CHARS]
+
+
+def test_the_fast_model_is_its_own_treatment(store, ce, monkeypatch):
+    """A different model is a different ranking: the label names it, and a
+    store pinned from its log comes back on the same model."""
+    loaded = []
+    monkeypatch.setattr(rerank_arm, "_load", lambda mode="": loaded.append(mode) or FakeCrossEncoder())
+    _stub_both(monkeypatch)
+    _rerank_store(store)
+    retrieval_io.configure(store, rerank=retrieval_io.RERANK_CE_FAST)
+    call(mcp_server.build_server(store), "retrieve", task=TASK, top_k=2, occasion_id="fast-1")
+    assert {r["scorer"] for r in _logged(store, "fast-1").values()} == {
+        "ce:tinybert2(rrf(idf-v2+semantic))"}
+    assert set(loaded) == {retrieval_io.RERANK_CE_FAST}
+    assert retrieval_io.parse_rerank_label("ce:tinybert2(idf-v2)") == (
+        "idf-v2", retrieval_io.RERANK_CE_FAST)
+

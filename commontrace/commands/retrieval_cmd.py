@@ -87,7 +87,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=f"{retrieval_io.RERANK_NONE}: keep the first stage's order (default). "
              f"{retrieval_io.RERANK_CE}: a cross-encoder reads the task and each of the "
              "first stage's top candidates together and reorders them "
-             "(commontrace/rerank_arm.py). It never adds a lesson the first stage did "
+             f"(commontrace/rerank_arm.py). {retrieval_io.RERANK_CE_FAST}: the same with "
+             "a model about ten times faster and less accurate. It never adds a lesson "
+             "the first stage did "
              "not find, but it decides which make the top k, so like --fusion it starts "
              "a new randomization. Needs the attention extra.",
     )

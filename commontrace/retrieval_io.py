@@ -60,9 +60,11 @@ SEMANTIC_ONLY = "semantic"
 #: (commontrace/rerank_arm.py). "none" keeps the first stage's order.
 RERANK_NONE = "none"
 #: A cross-encoder reads the task and each candidate together and reorders
-#: the pool by that score.
+#: the pool by that score (commontrace/rerank_arm.py's MODELS).
 RERANK_CE = "cross-encoder"
-RERANKS = (RERANK_NONE, RERANK_CE)
+#: The same, with a model about ten times faster and less accurate.
+RERANK_CE_FAST = "cross-encoder-fast"
+RERANKS = (RERANK_NONE, RERANK_CE, RERANK_CE_FAST)
 
 # WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
 # ---------------------------------------------------
@@ -91,10 +93,10 @@ def eligibility_label(scorer: str, fusion: str, rerank: str = RERANK_NONE) -> st
 
 def rerank_label(first_stage: str, rerank: str) -> str:
     """`first_stage`'s label, wrapped with the reranker when one reordered it."""
-    if rerank == RERANK_CE:
+    if rerank != RERANK_NONE:
         from commontrace import rerank_arm
 
-        return f"ce:{rerank_arm.MODEL_TAG}({first_stage})"
+        return f"ce:{rerank_arm.tag(rerank)}({first_stage})"
     return first_stage
 
 
@@ -102,7 +104,11 @@ def parse_rerank_label(label: str) -> tuple[str, str]:
     """(first-stage label, rerank mode) for a recorded label."""
     match = _RERANK_LABEL.match(label or "")
     if match:
-        return match.group("inner"), RERANK_CE
+        from commontrace import rerank_arm
+
+        # A model this build does not know is still a reranked ranking; it
+        # is pinned to the default model rather than read as unreranked.
+        return match.group("inner"), rerank_arm.mode_for_tag(match.group("model")) or RERANK_CE
     return label, RERANK_NONE
 
 

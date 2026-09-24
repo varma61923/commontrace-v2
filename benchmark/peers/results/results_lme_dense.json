@@ -1,0 +1,346 @@
+{
+  "dataset": "longmemeval",
+  "n_cases": 60,
+  "results": [
+    {
+      "system": "commontrace semantic (mpnet)",
+      "note": "",
+      "n_queries": 60,
+      "n_docs": 29204,
+      "overall": {
+        "recall@1": 0.5733333333333334,
+        "recall@5": 0.9072222222222222,
+        "recall@10": 0.9355555555555556,
+        "recall@20": 0.9355555555555556,
+        "ndcg@10": 0.8524145982163656,
+        "mrr": 0.8468518518518519
+      },
+      "by_category": {
+        "knowledge-update": {
+          "recall@1": 0.45,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9383212887448401,
+          "mrr": 0.95
+        },
+        "multi-session": {
+          "recall@1": 0.33999999999999997,
+          "recall@5": 0.8433333333333334,
+          "recall@10": 0.9133333333333333,
+          "recall@20": 0.9133333333333333,
+          "ndcg@10": 0.8811492756864345,
+          "mrr": 0.95
+        },
+        "single-session-assistant": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 1.0,
+          "mrr": 1.0
+        },
+        "single-session-preference": {
+          "recall@1": 0.4,
+          "recall@5": 0.8,
+          "recall@10": 0.9,
+          "recall@20": 0.9,
+          "ndcg@10": 0.6824749009949811,
+          "mrr": 0.611111111111111
+        },
+        "single-session-user": {
+          "recall@1": 0.8,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.8817529365307936,
+          "mrr": 0.845
+        },
+        "temporal-reasoning": {
+          "recall@1": 0.45,
+          "recall@5": 0.8,
+          "recall@10": 0.8,
+          "recall@20": 0.8,
+          "ndcg@10": 0.7307891873411443,
+          "mrr": 0.725
+        }
+      },
+      "query_ms_p50": 58.980470999813406,
+      "query_ms_p95": 1285.0179559973185,
+      "index_ms_per_doc": 422.44250659330936,
+      "wall_s": 12349.1
+    },
+    {
+      "system": "commontrace fusion (lexical+semantic, RRF)",
+      "note": "",
+      "n_queries": 60,
+      "n_docs": 29204,
+      "overall": {
+        "recall@1": 0.5983333333333333,
+        "recall@5": 0.9144444444444445,
+        "recall@10": 0.9516666666666667,
+        "recall@20": 0.955,
+        "ndcg@10": 0.8816309325581428,
+        "mrr": 0.8760185185185185
+      },
+      "by_category": {
+        "knowledge-update": {
+          "recall@1": 0.45,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.969342640361727,
+          "mrr": 0.95
+        },
+        "multi-session": {
+          "recall@1": 0.39,
+          "recall@5": 0.7866666666666667,
+          "recall@10": 0.96,
+          "recall@20": 0.9800000000000001,
+          "ndcg@10": 0.9047675719926511,
+          "mrr": 1.0
+        },
+        "single-session-assistant": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 1.0,
+          "mrr": 1.0
+        },
+        "single-session-preference": {
+          "recall@1": 0.4,
+          "recall@5": 0.8,
+          "recall@10": 0.8,
+          "recall@20": 0.8,
+          "ndcg@10": 0.6323465818787766,
+          "mrr": 0.575
+        },
+        "single-session-user": {
+          "recall@1": 0.9,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9630929753571458,
+          "mrr": 0.95
+        },
+        "temporal-reasoning": {
+          "recall@1": 0.45,
+          "recall@5": 0.9,
+          "recall@10": 0.95,
+          "recall@20": 0.95,
+          "ndcg@10": 0.8202358257585567,
+          "mrr": 0.7811111111111111
+        }
+      },
+      "query_ms_p50": 167.8687749990786,
+      "query_ms_p95": 553.9461330008635,
+      "index_ms_per_doc": 0.26830054728790387,
+      "wall_s": 20.5
+    },
+    {
+      "system": "commontrace fusion (idf-v3+semantic, RRF)",
+      "note": "",
+      "n_queries": 60,
+      "n_docs": 29204,
+      "overall": {
+        "recall@1": 0.5733333333333334,
+        "recall@5": 0.91,
+        "recall@10": 0.9883333333333333,
+        "recall@20": 0.9883333333333333,
+        "ndcg@10": 0.8785302413600236,
+        "mrr": 0.8509193121693122
+      },
+      "by_category": {
+        "knowledge-update": {
+          "recall@1": 0.45,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.969342640361727,
+          "mrr": 0.95
+        },
+        "multi-session": {
+          "recall@1": 0.33999999999999997,
+          "recall@5": 0.9099999999999999,
+          "recall@10": 0.9800000000000001,
+          "recall@20": 0.9800000000000001,
+          "ndcg@10": 0.9236169318955556,
+          "mrr": 0.95
+        },
+        "single-session-assistant": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 1.0,
+          "mrr": 1.0
+        },
+        "single-session-preference": {
+          "recall@1": 0.3,
+          "recall@5": 0.8,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.6428526173809581,
+          "mrr": 0.5285714285714286
+        },
+        "single-session-user": {
+          "recall@1": 0.9,
+          "recall@5": 0.9,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9301029995663981,
+          "mrr": 0.9111111111111111
+        },
+        "temporal-reasoning": {
+          "recall@1": 0.45,
+          "recall@5": 0.85,
+          "recall@10": 0.95,
+          "recall@20": 0.95,
+          "ndcg@10": 0.8052662589555025,
+          "mrr": 0.7658333333333334
+        }
+      },
+      "query_ms_p50": 1059.1294919977372,
+      "query_ms_p95": 1348.0373409984168,
+      "index_ms_per_doc": 0.2894104230241414,
+      "wall_s": 59.6
+    },
+    {
+      "system": "dense all-MiniLM-L6-v2 (exact cosine)",
+      "note": "",
+      "n_queries": 60,
+      "n_docs": 29204,
+      "overall": {
+        "recall@1": 0.6566666666666666,
+        "recall@5": 0.9544444444444444,
+        "recall@10": 0.961111111111111,
+        "recall@20": 0.961111111111111,
+        "ndcg@10": 0.9096207511933485,
+        "mrr": 0.9097222222222222
+      },
+      "by_category": {
+        "knowledge-update": {
+          "recall@1": 0.45,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9447857034293369,
+          "mrr": 0.95
+        },
+        "multi-session": {
+          "recall@1": 0.33999999999999997,
+          "recall@5": 0.9266666666666665,
+          "recall@10": 0.9666666666666666,
+          "recall@20": 0.9666666666666666,
+          "ndcg@10": 0.9177689604646675,
+          "mrr": 0.95
+        },
+        "single-session-assistant": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 1.0,
+          "mrr": 1.0
+        },
+        "single-session-preference": {
+          "recall@1": 0.7,
+          "recall@5": 0.9,
+          "recall@10": 0.9,
+          "recall@20": 0.9,
+          "ndcg@10": 0.806160631164485,
+          "mrr": 0.775
+        },
+        "single-session-user": {
+          "recall@1": 0.8,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9130929753571457,
+          "mrr": 0.8833333333333334
+        },
+        "temporal-reasoning": {
+          "recall@1": 0.65,
+          "recall@5": 0.9,
+          "recall@10": 0.9,
+          "recall@20": 0.9,
+          "ndcg@10": 0.8759162367444564,
+          "mrr": 0.9
+        }
+      },
+      "query_ms_p50": 227.6488689967664,
+      "query_ms_p95": 569.9648770023487,
+      "index_ms_per_doc": 28.839978030406694,
+      "wall_s": 858.1
+    },
+    {
+      "system": "hybrid BM25+MiniLM (RRF)",
+      "note": "",
+      "n_queries": 60,
+      "n_docs": 29204,
+      "overall": {
+        "recall@1": 0.6733333333333333,
+        "recall@5": 0.9483333333333334,
+        "recall@10": 0.9633333333333333,
+        "recall@20": 0.9666666666666667,
+        "ndcg@10": 0.9214977879416789,
+        "mrr": 0.9199074074074074
+      },
+      "by_category": {
+        "knowledge-update": {
+          "recall@1": 0.45,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.969342640361727,
+          "mrr": 0.95
+        },
+        "multi-session": {
+          "recall@1": 0.33999999999999997,
+          "recall@5": 0.89,
+          "recall@10": 0.93,
+          "recall@20": 0.95,
+          "ndcg@10": 0.901081728616267,
+          "mrr": 0.95
+        },
+        "single-session-assistant": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 1.0,
+          "mrr": 1.0
+        },
+        "single-session-preference": {
+          "recall@1": 0.7,
+          "recall@5": 0.9,
+          "recall@10": 0.9,
+          "recall@20": 0.9,
+          "ndcg@10": 0.7930676558073393,
+          "mrr": 0.7583333333333333
+        },
+        "single-session-user": {
+          "recall@1": 0.9,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "ndcg@10": 0.9630929753571458,
+          "mrr": 0.95
+        },
+        "temporal-reasoning": {
+          "recall@1": 0.65,
+          "recall@5": 0.9,
+          "recall@10": 0.95,
+          "recall@20": 0.95,
+          "ndcg@10": 0.9024017275075943,
+          "mrr": 0.9111111111111111
+        }
+      },
+      "query_ms_p50": 517.4164730015036,
+      "query_ms_p95": 571.5199489968654,
+      "index_ms_per_doc": 0.10391534443872298,
+      "wall_s": 33.4
+    }
+  ]
+}

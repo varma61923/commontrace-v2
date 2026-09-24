@@ -311,9 +311,9 @@ class Reranked(System):
     `rerank_arm.pool_size(k)` candidates and `rerank_arm.rerank` keeps k.
     Each memory's text is what the cross-encoder reads."""
 
-    def __init__(self, first: System, label: str):
+    def __init__(self, first: System, label: str, mode: str = "cross-encoder"):
         from commontrace import rerank_arm
-        self.first, self.name, self.rerank_arm = first, label, rerank_arm
+        self.first, self.name, self.rerank_arm, self.mode = first, label, rerank_arm, mode
 
     def index(self, docs):
         self.first.index(docs)
@@ -321,7 +321,7 @@ class Reranked(System):
 
     def search(self, query, k):
         pool = self.first.search(query, self.rerank_arm.pool_size(k))
-        page, _ = self.rerank_arm.rerank(query, pool, self.text, k)
+        page, _ = self.rerank_arm.rerank(query, pool, self.text, k, mode=self.mode)
         return [slug for slug, _ in page]
 
 
@@ -450,13 +450,11 @@ def _build_one(n: str, cache: str, workdir: str) -> System:
     if n == "ct-fusion-v3":
         return RRF([CTLexical(scorer="idf-v3"), Dense(mpnet, "commontrace semantic (mpnet)", cache)],
                    "commontrace fusion (idf-v3+semantic, RRF)")
-    if n in ("ct-fusion-rerank", "ct-fusion-v3-rerank", "ct-lexical-rerank"):
-        first = {
-            "ct-fusion-rerank": lambda: _build_one("ct-fusion", cache, workdir),
-            "ct-fusion-v3-rerank": lambda: _build_one("ct-fusion-v3", cache, workdir),
-            "ct-lexical-rerank": CTLexical,
-        }[n]()
-        return Reranked(first, f"{first.name} + cross-encoder rerank")
+    if n.endswith(("-rerank", "-rerank-fast")):
+        base, _, speed = n.partition("-rerank")
+        first = CTLexical() if base == "ct-lexical" else _build_one(base, cache, workdir)
+        mode = "cross-encoder-fast" if speed == "-fast" else "cross-encoder"
+        return Reranked(first, f"{first.name} + {mode} rerank", mode)
     if n == "bm25":
         return BM25()
     if n == "dense-minilm":
