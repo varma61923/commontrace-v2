@@ -1003,11 +1003,25 @@ Fusion is by **rank, not score**: the lexical arm returns an IDF relevance in
 conversion between them. A lesson only one arm surfaced is not penalised for
 the other's silence.
 
+Agents get it too. The MCP `retrieve` tool runs the same semantic ranking
+in-process (`commontrace/semantic_arm.py`), with the model and index held in
+memory rather than reloaded on every call. It uses the same freshness gate
+and fallback as `query`, so an agent and a person at a terminal get the same
+fused ranking and log the same eligibility label.
+
 It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
 eligibility is the denominator of every causal number this product reports —
 so the arm composition is recorded inside the label each holdout assignment
 carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
 reported as a compromised run rather than absorbed silently.
+
+**Stemming.** `commontrace retrieval --scorer idf-v3` makes "retrying" match
+"retry" and "uploads" match "upload". It lifts recall on free-text and
+conversational memory (LongMemEval session recall@5 0.852 → 0.926). It is
+not the default, because in one curated field of the fixture (clinical) it
+retrieves more collateral than `idf-v2`. It has its own floor, which the
+store takes automatically when switching, and like any eligibility change
+it starts a new randomization.
 
 **How much.** `top_k` bounds the count and says nothing about the size — ten
 terse lessons and ten pages of prose are the same `top_k=10`, and the second

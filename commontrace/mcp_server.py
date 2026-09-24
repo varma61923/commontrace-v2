@@ -333,7 +333,7 @@ def _apply_dosage(matched, active, config):
 
 
 def _record_receipt(root, occasion_id, task, active, injected, held, dose, config,
-                    withdrawn=()):
+                    withdrawn=(), scorer=None):
     """One receipt for this retrieval. See commontrace/receipts.py."""
     from commontrace import release as release_mod
 
@@ -376,7 +376,7 @@ def _record_receipt(root, occasion_id, task, active, injected, held, dose, confi
         admitted=admitted,
         withheld=withheld,
         query=task,
-        scorer=config.scorer,
+        scorer=scorer or config.scorer,
         floor=config.floor,
         chars_used=dose.chars_used,
         max_chars=dose.budget.max_chars,
@@ -517,6 +517,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
 
+        When the store has set `commontrace retrieval --fusion rrf` and its
+        semantic index is current, lessons are ranked by keyword AND meaning
+        together (the same fused ranking `commontrace query` gives); each
+        lesson's `score` is then its fused rank score. Otherwise ranking is
+        by keyword, and `fusion_note` says why if fusion was configured.
+
         A turn whose entire content is an acknowledgement -- "ok", "thanks",
         "go ahead" -- is answered immediately with `skipped: true` and no
         ranking pass, because there is nothing in it for a lesson to match.
@@ -541,18 +547,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             # (path, frontmatter) shape -- not a parallel implementation. If
             # the two surfaces ranked differently, a fleet's shell-capable and
             # shell-less agents would be reading different memory.
-            # Lexical, deliberately, even when the attention extra is
-            # installed. This is a long-running server answering one
-            # retrieval per agent turn, and the semantic path is a subprocess
-            # that loads a sentence-transformer model and reads an index that
-            # nothing rebuilds automatically -- so it would be both slow per
-            # call and stale by default here. Since scoring became
-            # IDF-weighted and length-normalized (commontrace/retrieval.py),
-            # lexical reads the lesson files as they are right now and cannot
-            # go stale, which is the better trade for this surface. The CLI
-            # falls back to exactly this retriever whenever its index is
-            # stale, so the two surfaces agree in the common case rather
-            # than only in name.
+            # Lexical always runs; the semantic arm is fused in below only
+            # when the store configured fusion AND its index is fresh -- the
+            # same rule `commontrace query` applies, via the same function
+            # (commontrace/semantic_arm.py). Lexical reads the lesson files
+            # as they are right now and cannot go stale, which is why it is
+            # the fallback on both surfaces.
             # `load_active_with_terms`, not `query_cmd._iter_active_lessons`
             # directly, so this long-lived server benefits from the same
             # incremental cache the CLI does -- re-tokenizing only the lesson
@@ -568,6 +568,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             # Never drops a `core: true` lesson (see
             # commontrace/dosage.py's module docstring) -- core is the
             # fleet's unconditional position, present every call by design.
+            already_shown: set[str] = set()
             if exclude_shown:
                 already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
                 if already_shown:
@@ -615,31 +616,92 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
-        ranked, withdrawn_ranked = harm.split(
-            ranked, harmful,
-            {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)},
-            want,
-        )
-        withdrawn_slugs = {r.slug for r in withdrawn_ranked}
+        core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
+        ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, want)
+        withdrawn_order = [r.slug for r in withdrawn_ranked]
+
+        # The semantic arm, fused with the lexical one by rank, when the store
+        # configured fusion -- the same function `commontrace query` runs in
+        # a subprocess, held in memory here (commontrace/semantic_arm.py), and
+        # the same steps as its `_run_hybrid`: the same index-freshness gate
+        # (a stale or empty index falls back to lexical, as there), the same
+        # over-fetch and harm split, the same exclude_shown filter on this
+        # arm's output, the same RRF constant. A surface that fused
+        # differently would be a second treatment in the same experiment.
+        fused: list[tuple[str, float]] | None = None
+        fusion_skipped = ""
+        if retrieval_config.fusion == retrieval_io.FUSION_RRF:
+            from commontrace import semantic_arm
+            from commontrace.commands import query_cmd
+
+            if not semantic_arm.available():
+                fusion_skipped = (
+                    "the semantic arm needs the attention extra "
+                    "(`pip install commontrace[attention]`)"
+                )
+            else:
+                fusion_skipped = query_cmd._index_is_unusable(root)
+            if not fusion_skipped:
+                rc, semantic, _warnings = semantic_arm.ranked_slugs(
+                    root, task, want + len(harmful), agent_type or None,
+                )
+                if rc != 0:
+                    fusion_skipped = "the semantic arm failed: " + "; ".join(_warnings)
+                else:
+                    semantic, withdrawn_semantic = harm.split(
+                        semantic, harmful, core_slugs, want, slug_of=lambda s: s,
+                    )
+                    if already_shown:
+                        semantic = [
+                            s for s in semantic if s in core_slugs or s not in already_shown
+                        ]
+                    fused = retrieval.reciprocal_rank_fusion(
+                        {"lexical": [r.slug for r in ranked], "semantic": semantic},
+                        k=retrieval_config.rrf_k, top_k=want,
+                    )
+                    withdrawn_order = list(dict.fromkeys(withdrawn_order + withdrawn_semantic))
+
+        description_of = {str(fm.get("name", "")): str(fm.get("description", "")) for _, fm in active}
+        withdrawn_slugs = set(withdrawn_order)
         withdrawn_items = [
-            {"slug": r.slug, "description": r.description, "reason": harm.REASON}
-            for r in withdrawn_ranked
+            {"slug": slug, "description": description_of.get(slug, ""), "reason": harm.REASON}
+            for slug in withdrawn_order
         ]
 
+        # The label every assignment records, and the relevance beside it:
+        # what actually ranked this retrieval.
+        eligibility_label = retrieval_config.eligibility if fused is not None else retrieval_config.scorer
+        if fused is not None:
+            lexical_by_slug = {r.slug: r for r in ranked}
+            path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
+            relevance_by_slug = dict(fused)
+            to_read = [
+                (slug, path_by_slug[slug], score) for slug, score in fused if slug in path_by_slug
+            ]
+        else:
+            lexical_by_slug = {r.slug: r for r in ranked}
+            relevance_by_slug = {r.slug: r.relevance for r in ranked}
+            to_read = [(r.slug, r.path, r.relevance) for r in ranked]
+
         matched_items = []
-        for r in ranked:
+        for slug, path, relevance in to_read:
             # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
             # only, and the body is where the rule actually is -- returning a
             # lesson without it would hand the agent a title and no
             # instruction. Only the top-k are re-read, not the whole store.
             try:
-                fm, body = frontmatter.read(r.path)
+                fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001
                 continue
             item = _lesson_wire(fm, body, include_body=True)
-            item["score"] = round(r.score, 3)
-            item["matched"] = list(r.matched_terms or [])
-            item["_relevance"] = r.relevance
+            lexical_hit = lexical_by_slug.get(slug)
+            if fused is None:
+                item["score"] = round(lexical_hit.score, 3)
+            else:
+                # The fused rank score: what decided this position.
+                item["score"] = round(relevance, 4)
+            item["matched"] = list(lexical_hit.matched_terms or []) if lexical_hit else []
+            item["_relevance"] = relevance
             matched_items.append(item)
 
         # ALWAYS-ON lessons, and the budget everything is admitted against
@@ -687,8 +749,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                     # Same evidence `commontrace query` records. Omitting it
                     # here would make an agent-driven fleet's log unauditable
                     # by exactly the checks a shell-driven one gets.
-                    relevance={r.slug: r.relevance for r in ranked},
-                    scorer=retrieval_config.scorer,
+                    relevance=relevance_by_slug,
+                    scorer=eligibility_label,
                     floor=retrieval_config.floor,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -733,23 +795,17 @@ def build_server(root: str, *, allow_approval: bool = True):
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
         }
-        if retrieval_config.fusion != retrieval_io.FUSION_NONE:
-            # This surface is lexical by design (see the comment above the
-            # ranking call: the semantic arm is a subprocess that loads a
-            # sentence-transformer and reads an index nothing rebuilds
-            # automatically). Said out loud rather than ignored, because the
-            # store configured a DIFFERENT eligibility rule and the two
-            # surfaces must not silently disagree about which lessons are
-            # eligible -- that is two treatments pooled into one experiment.
-            # The assignment below records the lexical label, which is what
-            # actually ran, so integrity.check_scorer_drift sees the mix.
+        if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None:
+            # Configured but not run -- said out loud, because the store asked
+            # for a DIFFERENT eligibility rule. The assignment records the
+            # lexical label, which is what actually ran, so integrity.
+            # check_scorer_drift sees the mix; `commontrace query` falls back
+            # the same way, for the same reasons.
             result["fusion_note"] = (
-                f"this store configures fusion={retrieval_config.fusion!r}, which "
-                "this surface does not run: the semantic arm needs a model load "
-                "per call and an index nothing rebuilds automatically. Lessons "
-                "here were ranked lexically, and the holdout assignment records "
-                f"{retrieval_config.scorer!r} accordingly. Run an experiment on "
-                "one surface at a time, or set fusion=none."
+                f"this store configures fusion={retrieval_config.fusion!r}, but this "
+                f"retrieval was lexical: {fusion_skipped or 'fusion did not run'}. "
+                f"The holdout assignment records {retrieval_config.scorer!r} "
+                "accordingly."
             )
         if core_items:
             result["core"] = [item["slug"] for item in core_items if item.get("slug")]
@@ -820,7 +876,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             try:
                 _record_receipt(
                     root, occasion_id, task, active, injected, held, dose,
-                    retrieval_config, withdrawn=withdrawn_slugs,
+                    retrieval_config, withdrawn=withdrawn_slugs, scorer=eligibility_label,
                 )
             except Exception as exc:  # noqa: BLE001
                 result["receipt_error"] = (

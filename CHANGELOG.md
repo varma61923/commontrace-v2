@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agents now get fused retrieval.** When a store has set
+  `commontrace retrieval --fusion rrf`, the MCP `retrieve` tool ranks by
+  keyword and meaning together, as `commontrace query` does. Before this it
+  stayed lexical, because the semantic arm was a subprocess that reloaded
+  a sentence-transformer on every call. That cost agents nine points of
+  LoCoMo recall@10 (0.540 vs 0.632; `benchmark/peers/`).
+  - The semantic script's ranking is now one function, `rank()`, which
+    both surfaces call. The subprocess prints it (byte-identical output,
+    checked against the previous script), and `commontrace/semantic_arm.py`
+    calls it in-process with the model and index held in memory.
+  - Same freshness gate and fallback on both surfaces; same over-fetch,
+    harm split and `exclude_shown` filter on the semantic arm; same RRF
+    constant; same eligibility label and relevance on the holdout log and
+    the receipt.
+  - A test runs both surfaces on one store with the same semantic ranking
+    and requires identical eligibility, labels and logged relevance,
+    including under `exclude_shown`.
+- **`idf-v3`, an opt-in stemmed lexical scorer.** It is `idf-v2` with every
+  term Porter-stemmed, so "resets", "reset" and "resetting" are one term.
+  The stemmer is a stdlib implementation of the 1980 algorithm
+  (`commontrace/_stem.py`), and it matches NLTK's reference on all 12,281
+  words tested. The scorer has its own floor (0.064), chosen jointly
+  against the field fixture, `commons/eval` and LoCoMo. On LongMemEval,
+  which played no part in that choice, it raises session recall@5 from
+  0.852 to 0.926. It is not the default: at its floor, one of the eight
+  curated fields (clinical) retrieves more collateral than under
+  `idf-v2`, and the default has to beat the historical scorer in every
+  field. Opt in with `commontrace retrieval --scorer idf-v3`; switching
+  scorer starts a new randomization, like any eligibility change.
+
 - **A lesson proven to make outcomes worse can now be withdrawn
   automatically.** `commontrace retrieval --on-harm withdraw` stops `query`
   and the MCP `retrieve` tool from injecting any lesson whose verdict is
@@ -66,6 +96,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Local retrieval is 6.9× faster at 6,400 lessons (~300ms → ~44ms),
+  with identical rankings.** Measured with
+  `commontrace/reference/measure_local_latency.py`.
+  - The lesson cache now keeps its parsed, validated file in memory,
+    keyed on the file's identity, instead of re-decoding and
+    re-validating it on every call. Every lesson file is still stat'ed on
+    every call, so staleness is detected exactly as before.
+  - `rank_lessons` keeps an inverted index per store snapshot, keyed on
+    each lesson's path and file stamp, and scores only lessons that share
+    a term with the query.
+  - It selects the top k instead of sorting every match.
+  - Proven bit-identical to the previous code on 13,725 rankings under
+    three hash seeds: every relevance, tie order and adjustment matches.
+    Relevance decides eligibility, so an experiment cannot tell the
+    difference.
+  - On LoCoMo the lexical query is 0.6ms at p50, against 5.9ms before and
+    0.9ms for `rank_bm25`.
+  - The CI latency gate is tightened from 2,000ms to 500ms at 6,400 lessons.
 - **`commontrace experiment`, its `--strict` gate and `commontrace pilot`
   now read a running experiment the way the MCP tools and the Hub do.**
   They tested against a fixed 5% threshold, so one store could fail its

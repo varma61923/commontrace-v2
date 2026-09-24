@@ -119,7 +119,7 @@ class ImportancesResult(tuple):
         return obj
 
 
-def load_importances() -> "ImportancesResult":
+def load_importances(lessons_dir: str | None = None) -> "ImportancesResult":
     """Return ({slug: importance} for every ACTIVE lesson (default 3 if missing),
     n_frontmatters_parsed) -- the second value counts every lesson_*.md (excluding the
     template) whose frontmatter was successfully parsed, active or not, for Alpha
@@ -127,7 +127,8 @@ def load_importances() -> "ImportancesResult":
     out: dict[str, int] = {}
     n_parsed = 0
     newest_active_mtime = 0.0
-    for path in sorted(glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))):
+    lessons_dir = LESSONS_DIR if lessons_dir is None else lessons_dir
+    for path in sorted(glob.glob(os.path.join(lessons_dir, "lesson_*.md"))):
         if os.path.basename(path) == "lesson_template.md":
             continue
         try:
@@ -356,37 +357,31 @@ def _positive_int(raw: str) -> int:
     return value
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("query", help="Incoming task / query string (verbatim)")
-    parser.add_argument("--top-k", type=_positive_int, default=10, help="Top-K cosine hits (default 10)")
-    parser.add_argument(
-        "--include-importance-floor",
-        type=int,
-        default=4,
-        help="Always include lessons with importance >= this (safety override, default 4)",
-    )
-    parser.add_argument(
-        "--agent-type", default=None,
-        help="Restrict results to one fleet. Requires an index built with the "
-             "agent_types column; an older index has no way to tell fleets apart "
-             "and the filter is reported as not applied rather than silently ignored.",
-    )
-    args = parser.parse_args()
+class Ranked:
+    """What one semantic retrieval produced, before anything is printed.
 
-    # Latency covers the whole retrieval stage (index load through brief assembly below),
-    # not just the cosine matmul -- that's what actually costs an Alpha invocation wall-clock
-    # time and is what STATUS.md P5 asks to measure.
-    _t0 = time.monotonic()
+    `lines` is exactly the brief `main()` prints -- header lines start with
+    `#`, hit lines are `<slug> | cosine=<x> | importance=<n>` -- and
+    `stderr` the warnings it prints, in order. `rc` is main()'s exit code.
+    """
 
-    if not os.path.exists(INDEX_PATH):
-        print(
-            f"[ERR] No index found at {INDEX_PATH}. Run build_index.py first.",
-            file=sys.stderr,
-        )
-        return 1
+    def __init__(self, rc, lines=(), stderr=(), stats=None):
+        self.rc = rc
+        self.lines = list(lines)
+        self.stderr = list(stderr)
+        self.stats = stats or {}
 
-    fast_importances = None
+
+_MODELS: dict = {}
+
+
+def load_index(index_path):
+    """(model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
+    from index.npz, or a `Ranked` failure explaining why it cannot be used."""
+    if not os.path.exists(index_path):
+        return Ranked(1, stderr=[
+            f"[ERR] No index found at {index_path}. Run build_index.py first.",
+        ])
     try:
         # `with`, not a bare np.load(): NpzFile keeps the underlying zip
         # file open until closed, and array access below (data[...])
@@ -397,7 +392,7 @@ def main() -> int:
         # blocks a subsequent `build_index.py --force` from replacing this
         # same file (already fixed the same way in build_index.py's own
         # np.load call; this brings query.py in line with it).
-        with np.load(INDEX_PATH, allow_pickle=False) as data:
+        with np.load(index_path, allow_pickle=False) as data:
             model_name = str(data["model_name"])
             embeddings = data["embeddings"]  # already L2-normalized
             slugs = data["slugs"]
@@ -408,22 +403,16 @@ def main() -> int:
             n_lessons = int(data["n_lessons"])
             fast_importances = load_importances_from_index(data)
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
-        print(
-            f"[ERR] Index file at {INDEX_PATH} is corrupted ({exc}). "
+        return Ranked(1, stderr=[
+            f"[ERR] Index file at {index_path} is corrupted ({exc}). "
             "Please rebuild the index: python memory/attention/build_index.py --force",
-            file=sys.stderr,
-        )
-        return 1
+        ])
+    return (model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
 
-    if model_name != _TRUSTED_MODEL_NAME:
-        print(
-            f"[WARN] {INDEX_PATH} declares model_name={model_name!r}, which does not "
-            f"match the expected {_TRUSTED_MODEL_NAME!r}. Refusing to load an "
-            "untrusted model name from an index file -- run build_index.py --force "
-            "to regenerate a trustworthy index.",
-            file=sys.stderr,
-        )
-        return 1
+
+def load_model():
+    """The trusted model, or a `Ranked` failure. Never any other model: see
+    _TRUSTED_MODEL_NAME."""
     try:
         # SentenceTransformer downloads the model from Hugging Face Hub on
         # first use if it isn't already in the local cache
@@ -433,17 +422,48 @@ def main() -> int:
         # uncaught this raised a raw OSError/traceback from deep inside
         # huggingface_hub instead of the clean, actionable error every
         # other failure path in this function already gives.
-        model = SentenceTransformer(_TRUSTED_MODEL_NAME)
+        return SentenceTransformer(_TRUSTED_MODEL_NAME)
     except OSError as exc:
-        print(
+        return Ranked(1, stderr=[
             f"[ERR] Could not load model {_TRUSTED_MODEL_NAME!r}: {exc}\n"
             "If this host has no internet access, pre-download the model on a "
             "connected machine and copy ~/.cache/huggingface/ over, or set "
             "HF_HUB_OFFLINE=1 once it's cached locally.",
-            file=sys.stderr,
-        )
-        return 1
-    q_emb = model.encode(args.query, normalize_embeddings=True, convert_to_numpy=True)
+        ])
+
+
+def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
+         index_path=None, lessons_dir=None, index=None, model=None) -> Ranked:
+    """One semantic retrieval, as a value. `main()` prints it; a long-lived
+    process (commontrace/semantic_arm.py, behind the MCP server) calls this
+    directly with the index and model it already holds, so the two can never
+    rank differently.
+
+    `index` is load_index()'s tuple and `model` load_model()'s result; either
+    is loaded here when not given.
+    """
+    index_path = INDEX_PATH if index_path is None else index_path
+    lessons_dir = LESSONS_DIR if lessons_dir is None else lessons_dir
+    stderr: list[str] = []
+
+    if index is None:
+        index = load_index(index_path)
+    if isinstance(index, Ranked):
+        return index
+    model_name, embeddings, slugs, agent_types, n_lessons, fast_importances = index
+
+    if model_name != _TRUSTED_MODEL_NAME:
+        return Ranked(1, stderr=[
+            f"[WARN] {index_path} declares model_name={model_name!r}, which does not "
+            f"match the expected {_TRUSTED_MODEL_NAME!r}. Refusing to load an "
+            "untrusted model name from an index file -- run build_index.py --force "
+            "to regenerate a trustworthy index.",
+        ])
+    if model is None:
+        model = load_model()
+    if isinstance(model, Ranked):
+        return model
+    q_emb = model.encode(query, normalize_embeddings=True, convert_to_numpy=True)
 
     # An index built by a different (or later, wider) embedding model has a
     # different column count, and `embeddings @ q_emb` raises numpy's own
@@ -456,21 +476,17 @@ def main() -> int:
     # `slugs[idx]` below indexes unconditionally, so an index truncated by a
     # previous crash mid-write would raise IndexError past the same point.
     if embeddings.ndim != 2 or embeddings.shape[1] != q_emb.shape[0]:
-        print(
-            f"[ERR] {INDEX_PATH} has embedding dimension {embeddings.shape}, which "
+        return Ranked(1, stderr=[
+            f"[ERR] {index_path} has embedding dimension {embeddings.shape}, which "
             f"does not match this model's {q_emb.shape[0]}. Rebuild the index: "
             "python memory/attention/build_index.py --force",
-            file=sys.stderr,
-        )
-        return 1
+        ])
     if embeddings.shape[0] != len(slugs):
-        print(
-            f"[ERR] {INDEX_PATH} has {embeddings.shape[0]} embedding row(s) but "
+        return Ranked(1, stderr=[
+            f"[ERR] {index_path} has {embeddings.shape[0]} embedding row(s) but "
             f"{len(slugs)} slug(s) -- the index is truncated or corrupted. Rebuild it: "
             "python memory/attention/build_index.py --force",
-            file=sys.stderr,
-        )
-        return 1
+        ])
 
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
@@ -480,12 +496,14 @@ def main() -> int:
     # Falls back to disk scan (load_importances()) if index lacks metadata.
     if fast_importances is not None:
         importances_res = fast_importances
-        importances, n_frontmatters_parsed = importances_res
+        # A copy: the index tuple may be held across calls (semantic_arm),
+        # and the newer-than-index additions below must not accumulate in it.
+        importances, n_frontmatters_parsed = dict(importances_res[0]), importances_res[1]
         try:
-            idx_mtime = os.path.getmtime(INDEX_PATH)
+            idx_mtime = os.path.getmtime(index_path)
         except OSError:
             idx_mtime = 0.0
-        for path in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md")):
+        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
             if os.path.basename(path) == "lesson_template.md":
                 continue
             try:
@@ -506,7 +524,7 @@ def main() -> int:
             except OSError:
                 pass
     else:
-        importances_res = load_importances()
+        importances_res = load_importances(lessons_dir)
         importances, n_frontmatters_parsed = importances_res
 
     # Top-K by cosine (descending), active lessons only. index.npz keeps a
@@ -519,20 +537,19 @@ def main() -> int:
     order = np.argsort(scores)[::-1]
     active_order = [idx for idx in order if str(slugs[idx]) in importances]
 
-    if args.agent_type:
+    if agent_type:
         if agent_types is None:
-            print(
-                f"[WARN] --agent-type {args.agent_type!r} was NOT applied: this index "
+            stderr.append(
+                f"[WARN] --agent-type {agent_type!r} was NOT applied: this index "
                 "predates the agent_types column. Rebuild with `commontrace index "
-                "--force` to filter by fleet.",
-                file=sys.stderr,
+                "--force` to filter by fleet."
             )
         else:
             active_order = [
                 idx for idx in active_order
-                if str(agent_types[idx]) == args.agent_type
+                if str(agent_types[idx]) == agent_type
             ]
-    top_k_idx = list(active_order[: args.top_k])
+    top_k_idx = list(active_order[: top_k])
 
     # Safety override: include all active lessons with importance >= floor. This must
     # check every lesson currently on disk (`importances`, from load_importances()), not
@@ -541,7 +558,7 @@ def main() -> int:
     # index's own slugs silently breaks this script's own documented safety guarantee for
     # exactly the lessons most likely to need it (freshly-authored critical rules).
     indexed_slugs = {str(s) for s in slugs}
-    floor = args.include_importance_floor
+    floor = include_importance_floor
     missing_from_index = []
     # importance is schema-bounded to [1, 5] (protocol/schemas/lesson.schema.json),
     # so floor <= 0 can never exclude anything on its own merits -- every lesson's
@@ -567,8 +584,8 @@ def main() -> int:
     # edited-but-not-renamed lesson, a below-floor addition/removal, or a forgotten
     # rebuild after any lesson-store change. See check_staleness()'s docstring.
     stale_reasons = check_staleness(
-        INDEX_PATH,
-        LESSONS_DIR,
+        index_path,
+        lessons_dir,
         indexed_slugs,
         set(importances.keys()),
         newest_active_mtime=(
@@ -577,23 +594,21 @@ def main() -> int:
     )
 
     brief_lines = [
-        f"# Top-{args.top_k} retrieval ({override_desc})",
+        f"# Top-{top_k} retrieval ({override_desc})",
         f"# Index: {n_lessons} lessons, model={model_name}",
-        f"# Query: {args.query!r}",
+        f"# Query: {query!r}",
     ]
     if stale_reasons:
         brief_lines.append(f"# WARNING: index may be stale -- {'; '.join(stale_reasons)}")
-        print(
-            f"[WARN] {INDEX_PATH} may be stale -- {'; '.join(stale_reasons)}. "
+        stderr.append(
+            f"[WARN] {index_path} may be stale -- {'; '.join(stale_reasons)}. "
             "Cosine scores below may not reflect current lesson content. Rebuild: "
-            "python memory/attention/build_index.py --force",
-            file=sys.stderr,
+            "python memory/attention/build_index.py --force"
         )
     if missing_from_index:
-        print(
+        stderr.append(
             f"# WARNING: {len(missing_from_index)} importance>={floor} lesson(s) not yet in "
-            "the index (run build_index.py) -- included below with cosine=N/A",
-            file=sys.stderr,
+            "the index (run build_index.py) -- included below with cosine=N/A"
         )
     for idx in top_k_idx:
         slug = str(slugs[idx])
@@ -603,7 +618,42 @@ def main() -> int:
     for slug, imp in missing_from_index:
         brief_lines.append(f"{slug} | cosine=N/A | importance={imp}")
 
-    for line in brief_lines:
+    return Ranked(0, brief_lines, stderr, {
+        "n_frontmatters_parsed": n_frontmatters_parsed,
+        "n_candidates_surfaced": len(top_k_idx),
+        "n_missing_from_index": len(missing_from_index),
+        "index_stale": bool(stale_reasons),
+    })
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("query", help="Incoming task / query string (verbatim)")
+    parser.add_argument("--top-k", type=_positive_int, default=10, help="Top-K cosine hits (default 10)")
+    parser.add_argument(
+        "--include-importance-floor",
+        type=int,
+        default=4,
+        help="Always include lessons with importance >= this (safety override, default 4)",
+    )
+    parser.add_argument(
+        "--agent-type", default=None,
+        help="Restrict results to one fleet. Requires an index built with the "
+             "agent_types column; an older index has no way to tell fleets apart "
+             "and the filter is reported as not applied rather than silently ignored.",
+    )
+    args = parser.parse_args()
+
+    # Latency covers the whole retrieval stage (index load through brief assembly below),
+    # not just the cosine matmul -- that's what actually costs an Alpha invocation wall-clock
+    # time and is what STATUS.md P5 asks to measure.
+    _t0 = time.monotonic()
+    result = rank(args.query, args.top_k, args.include_importance_floor, args.agent_type)
+    for message in result.stderr:
+        print(message, file=sys.stderr)
+    if result.rc != 0:
+        return result.rc
+    for line in result.lines:
         print(line)
 
     # Alpha operational-cost telemetry (Phase 3, P5): latency, frontmatters parsed, number
@@ -612,7 +662,7 @@ def main() -> int:
     # the attention layer surfaced), and a cheap word-count*1.3 estimate of the resulting
     # brief's token cost (no tokenizer dependency added just for an estimate).
     elapsed_ms = (time.monotonic() - _t0) * 1000.0
-    brief_text = "\n".join(brief_lines)
+    brief_text = "\n".join(result.lines)
     estimated_tokens = len(brief_text.split()) * 1.3
     _append_telemetry(
         {
@@ -621,10 +671,10 @@ def main() -> int:
             # multi-agent runners in different timezones.
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "latency_ms": elapsed_ms,
-            "n_frontmatters_parsed": n_frontmatters_parsed,
-            "n_candidates_surfaced": len(top_k_idx),
-            "n_missing_from_index": len(missing_from_index),
-            "index_stale": bool(stale_reasons),
+            "n_frontmatters_parsed": result.stats["n_frontmatters_parsed"],
+            "n_candidates_surfaced": result.stats["n_candidates_surfaced"],
+            "n_missing_from_index": result.stats["n_missing_from_index"],
+            "index_stale": result.stats["index_stale"],
             "estimated_tokens": estimated_tokens,
             "top_k": args.top_k,
             "query_chars": len(args.query),
