@@ -184,3 +184,31 @@ def test_exclude_shown_leaves_both_surfaces_logging_the_same_relevance(store, mo
     assert "refund-threshold" not in cli_rows and cli_rows
     assert {s: r["relevance"] for s, r in cli_rows.items()} == {
         s: r["relevance"] for s, r in mcp_rows.items()}
+
+
+def test_both_surfaces_refresh_the_index_before_the_arm_ranks(store, monkeypatch):
+    """A lesson approved since the last build must reach the semantic arm
+    without anyone running `commontrace index`: each surface refreshes a
+    stale index first (tests/test_semantic_arm.py covers the refresh itself)."""
+    _stub_both(monkeypatch)
+    events = []
+
+    def refresh(root):
+        events.append("refresh")
+        return ""
+
+    def rank(root, query, top_k, agent_type=None):
+        events.append("rank")
+        return 0, SEMANTIC[:top_k], []
+
+    monkeypatch.setattr(semantic_arm, "ensure_fresh", refresh)
+    monkeypatch.setattr(semantic_arm, "ranked_slugs", rank)
+    call(mcp_server.build_server(store), "retrieve", task=TASK)
+    assert events == ["refresh", "rank"]
+
+    events.clear()
+    monkeypatch.setattr(query_cmd, "_refresh_stale_index", refresh)
+    monkeypatch.setattr(query_cmd, "_semantic_slugs",
+                        lambda args, root, hint, extra=0: rank(root, "", args.top_k + extra)[:2] + ("",))
+    assert query_cmd.run(_args(store, TASK)) == 0
+    assert events == ["refresh", "rank"]
