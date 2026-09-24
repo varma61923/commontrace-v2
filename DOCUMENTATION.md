@@ -836,18 +836,18 @@ Note v2.3: the scalability of Alpha retrieval to 100+ lessons (contextual limit,
 
 Note v0.1 `/dreamer` (2026-05-27): several limitations historically listed below (periodic memory base consolidation not implemented, cross-lesson audit absent, strategic course correction vs specifications missing) are now **addressed by the companion skill `/dreamer`** (cf. §6.4) — Dreamer proposes fusions/archives/reformulations of lessons to Lambda Phase 11, and raises strategic questions to the human. The `/commontrace`-internal limitations (temporal decay §8.2, auto bump uses→importance §8.3) remain relevant: Dreamer can detect and **propose** these updates, but does not implement an automatic importance evolution mechanism — it proposes, Lambda audits, the orchestrator applies.
 
-### 8.1 Benchmark Not Yet Implemented
+### 8.1 Benchmark (implemented)
 
-No benchmark script currently measures the target metrics:
-- `lesson_quality` — % of Omega proposals marked ACCEPTED by Lambda (signal of proposal quality + Omega/Lambda alignment)
-- `implicit_retrieval` — % of lessons retrieved by Alpha that actually helped according to `lessons_hit` (signal of retrieval precision)
-- `transfer_gap` — % of cross-project hits (lesson seeded on project X that helps on project Y), measure of generalization capacity
+`commontrace bench` (`commontrace/reference/measure_performance.py`) computes the three target metrics from episode frontmatter:
+- `lesson_quality` — % of Omega proposals validated by Lambda, plus Lambda's acceptance, rejection and refinement rates from `lambda_decisions`
+- `implicit_retrieval` — strict (precision) and permissive (richness) ratios of `lessons_hit` over `lessons_retrieved_by_alpha`
+- `transfer_gap` — % of cross-project hits (see 8.4 for why it is only partially measurable)
 
-Recommendation from the research: build a dedicated benchmark (~50 trios situation-failure / lesson / isomorphic-future-situation) reusing the Evo-Memory streaming format + AgentErrorBench error taxonomy. ~3-5 days of annotation. To do as a separate step.
+It persists every run, and supports `--diff`, `--history`, alert thresholds and `--strict` for CI. What is still open is the dedicated evaluation set the research recommended (~50 situation-failure / lesson / isomorphic-future-situation trios); retrieval quality itself is measured separately against public benchmarks in `benchmark/peers/`.
 
-### 8.2 Temporal Decay Not Implemented
+### 8.2 Temporal Decay (implemented, opt-in)
 
-An active lesson remains retrievable indefinitely, even if it has never helped. The `decay = importance × exp(-(today - last_hit) / tau)` mechanism would surface recently useful lessons and relegate old ones — but would risk forgetting rare but critical lessons (importance 5 on a showstopper that only occurs every 6 months). Likely need for coupling with a separate `recency` factor. To discuss when we have more empirical data on Alpha retrieval.
+`commontrace retrieval --recency-weight <0-1>` (`commontrace/recency.py`) lets a lesson's `last_hit` freshness move its rank among lessons that already cleared the relevance floor. It is off by default and never changes which lessons are eligible, only their order, so a rare but critical lesson is not forgotten: it still matches when its situation recurs.
 
 ### 8.3 Automatic Bump uses → importance Not Implemented
 
