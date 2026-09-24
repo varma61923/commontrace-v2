@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Search results now carry each lesson's measured causal evidence.**
+  Once an org has holdout data, every `search_traces` result includes
+  `evidence`: its `verdict` (HELPS, HURTS, NO_MEASURABLE_EFFECT,
+  UNDERPOWERED or NOT_MEASURED), `effect`, `ci_95` and arm sizes. Before
+  this, a lesson proven to help and one measured to make outcomes worse
+  came back looking identical; only `working_set` ever showed an effect.
+  The verdict is `causal_effects`' own, so every surface agrees. No
+  numbers are shown while the experiment is compromised. The analysis is
+  cached per org and recomputed only when that org's experiment data or
+  settings change (or after five minutes, since the validity audit
+  depends on occasion age); an org with no holdout data gets no extra
+  fields at all.
 - **Knowledge Base queries no longer re-read the corpus on every call.**
   `commons_search` at 20,000 entries went from ~1.6s to ~29ms, and a
   50-failure `commons_overlap` from ~1.9s to ~210ms (A/B on identical

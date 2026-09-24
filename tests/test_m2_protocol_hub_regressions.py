@@ -261,7 +261,13 @@ class TestSearchTracesTenantIsolation:
 
             session.execute.return_value = result_mock
 
-            with patch("hub.crud._hydrate", new_callable=AsyncMock) as mock_hydrate:
+            # _attach_evidence is patched out for the same reason _hydrate is:
+            # this test is about the retrieval-count UPDATE, and the evidence
+            # step's aggregate query cannot be answered by a mocked session.
+            # It issues only SELECTs; its own org scoping is tested against a
+            # real database in hub/tests/test_search_evidence.py.
+            with patch("hub.crud._hydrate", new_callable=AsyncMock) as mock_hydrate, \
+                    patch("hub.crud._attach_evidence", new_callable=AsyncMock):
                 mock_hydrate.return_value = []
                 await crud.search_traces(session, org_id=org_id)
 

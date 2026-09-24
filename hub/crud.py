@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import secrets
+import time
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -1063,7 +1064,7 @@ async def search_traces(
             .where(Trace.org_id == org_id, Trace.id.in_([t.id for t in traces]))
             .values(retrievals=Trace.retrievals + 1)
         )
-    return {
+    result = {
         "traces": await _hydrate(session, traces, brief=brief),
         "limit": limit,
         "offset": offset,
@@ -1071,6 +1072,8 @@ async def search_traces(
         "terms": list(chosen.all_terms),
         "terms_ignored": list(chosen.ignored),
     }
+    await _attach_evidence(session, org_id, result)
+    return result
 
 
 async def _record_search(session: AsyncSession, org_id: str, *, terms: list[str], results: int) -> None:
@@ -3276,6 +3279,139 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
             "by the client or not at all."
         ),
     }
+
+
+# --- Causal evidence on retrieval -------------------------------------
+#
+# search_traces used to return every lesson the same way, whatever the
+# holdout had established about it: one proven to help, one never measured,
+# and one measured to make outcomes WORSE were indistinguishable to the
+# agent choosing among them. The measurement existed (causal_effects) and
+# reached only the working_set, which by construction shows the winners.
+#
+# Other memory systems have started returning "why to trust this" with a
+# memory -- provenance of what it was derived from, or the agent's own
+# report of which memory it used, which their own changelogs record agents
+# skipping. What this attaches is the randomized comparison: of the
+# occasions where this lesson was eligible, how the ones it was injected
+# into turned out against the ones it was withheld from.
+#
+# Computed by causal_effects, unchanged, so a verdict here is always the
+# same verdict every other surface reports -- including the Benjamini-
+# Hochberg correction across all of the org's traces, which is why this
+# cannot be computed for just the traces a search returned. That analysis
+# is too expensive to repeat on every search, so it is cached per org and
+# recomputed only when the org's current experiment changes (new
+# assignments, recorded outcomes, deletions, or a new salt, rate or
+# preregistration), and in any case at least every _EVIDENCE_TTL_SECONDS:
+# the validity audit judges pending occasions by their age, so its answer
+# can move with the clock alone.
+#
+# A COMPROMISED experiment yields no numbers, for the reason working_set
+# gives: effects a named mechanism is biasing must not steer a choice.
+
+_EVIDENCE_TTL_SECONDS = 300.0
+_EVIDENCE_CACHE_MAX_ORGS = 1024
+_evidence_cache: dict[str, tuple[tuple, float, dict]] = {}
+
+
+async def _evidence_key(session: AsyncSession, org_id: str) -> tuple:
+    org = await session.get(Organization, org_id)
+    salt = org.holdout_salt if org else ""
+    count, resolved, last_created, last_resolved = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count(HoldoutObservation.succeeded),
+                func.max(HoldoutObservation.created_at),
+                func.max(HoldoutObservation.resolved_at),
+            ).where(HoldoutObservation.org_id == org_id, HoldoutObservation.salt == salt)
+        )
+    ).one()
+    prereg = json.dumps(org.holdout_prereg, sort_keys=True, default=str) if org and org.holdout_prereg else ""
+    return (salt, org.holdout_rate if org else 0.0, prereg, count, resolved, last_created, last_resolved)
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 3)
+
+
+async def causal_evidence(session: AsyncSession, org_id: str) -> dict:
+    """Per-trace causal evidence for this org, cached as described above.
+
+    Returns {"available", "reason", "measured_at", "by_trace"}. `available`
+    is False with a reason when there is nothing honest to show, and
+    `by_trace` is then empty. An org with no experiment data at all is
+    answered without running the analysis.
+    """
+    key = await _evidence_key(session, org_id)
+    cached = _evidence_cache.get(org_id)
+    now = time.monotonic()
+    if cached is not None and cached[0] == key and now - cached[1] < _EVIDENCE_TTL_SECONDS:
+        return cached[2]
+
+    measured_at = datetime.now(timezone.utc).isoformat()
+    if key[3] == 0:
+        evidence = {"available": False, "reason": "no experiment data", "measured_at": measured_at, "by_trace": {}}
+    else:
+        causal = await causal_effects(session, org_id)
+        if not (causal.get("integrity") or {}).get("effects_readable", True):
+            evidence = {
+                "available": False,
+                "reason": (
+                    "The experiment is COMPROMISED, so no effects are shown. Read "
+                    "`fleet_outcomes.causal.integrity` for what to fix."
+                ),
+                "measured_at": measured_at,
+                "by_trace": {},
+            }
+        else:
+            evidence = {
+                "available": True,
+                "reason": "",
+                "measured_at": measured_at,
+                "by_trace": {
+                    e["trace_id"]: {
+                        "verdict": e["verdict"],
+                        "effect": _round(e.get("effect")),
+                        "ci_95": [_round(v) for v in (e.get("ci_95") or [])],
+                        "n_injected": e.get("n_injected"),
+                        "n_withheld": e.get("n_withheld"),
+                        "last_measured_at": e.get("last_measured_at") or "",
+                    }
+                    for e in causal.get("effects", [])
+                },
+            }
+
+    if org_id not in _evidence_cache and len(_evidence_cache) >= _EVIDENCE_CACHE_MAX_ORGS:
+        # Oldest computation first; a busy Hub serves more orgs than it can
+        # hold, and the evicted ones simply recompute on their next search.
+        _evidence_cache.pop(min(_evidence_cache, key=lambda k: _evidence_cache[k][1]))
+    _evidence_cache[org_id] = (key, now, evidence)
+    return evidence
+
+
+async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> None:
+    """Add each returned trace's causal evidence to a search result.
+
+    Nothing is added for an org that has never run an experiment: every
+    field on a search result costs the calling agent tokens on every call,
+    and "not measured" repeated on every row says nothing a missing field
+    does not. Once there is experiment data, every row says where it stands
+    -- including NOT_MEASURED, because then its absence is informative.
+    """
+    evidence = await causal_evidence(session, org_id)
+    if not evidence["available"] and evidence["reason"] == "no experiment data":
+        return
+    result["evidence"] = {
+        "available": evidence["available"],
+        "reason": evidence["reason"],
+        "measured_at": evidence["measured_at"],
+    }
+    if not evidence["available"]:
+        return
+    for trace in result.get("traces", []):
+        trace["evidence"] = evidence["by_trace"].get(trace.get("id"), {"verdict": "NOT_MEASURED"})
 
 
 async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
