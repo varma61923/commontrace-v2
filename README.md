@@ -920,9 +920,10 @@ LoCoMo's 1,531 questions, CommonTrace's fused retrieval with reranking puts
 an answering turn in the top 5 for 67.0% of questions and in the top 10 for
 72.6%, against 54.3% and 62.5% for mem0 2.x. It leads on every metric and
 in every question category, and stays ahead when mem0 is given the same
-reranker. Lexical retrieval with the fast reranker, the default wherever
-the attention extra is installed, beats mem0 on R@5, NDCG and MRR at about
-half its query latency (30 ms vs 56 ms).
+reranker. The default wherever the attention extra is installed, gated
+fusion with the fast reranker, beats mem0 on every aggregate metric (R@5
+59.8%, R@10 66.9%); lexical retrieval with the fast reranker alone beats it
+on R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms).
 
 ---
 
@@ -1047,15 +1048,22 @@ commontrace retrieval --fusion rrf --rerank cross-encoder        # most accurate
 commontrace retrieval --fusion rrf --rerank cross-encoder-fast   # ~10x faster
 ```
 
-**On by default, in its fast form.** A store that has not chosen a reranker,
-and has no experiment history, gets `cross-encoder-fast` over the lexical
-arm whenever the attention extra is installed. It reorders only lessons that
-cleared the relevance floor, onto a page no longer than before, so on the
-curated fixture it finds every relevant lesson with exactly the old
-collateral in every field, and puts the right one first more often. On
-LoCoMo it lifts R@5 from 47.2% to 56.2%, above mem0 2.x's 54.3%, for about
-30 ms. A store mid-experiment stays on what its log says it ran, and
-`COMMONTRACE_DEFAULT_RERANK=none` turns the default off.
+**Gated fusion, on by default.** Plain fusion fills every slot on the page
+with whatever the semantic arm ranked, so a curated store under experiment
+logs lessons the task was not about. Gated fusion (`--fusion gated`) feeds
+both arms to the reranker but lets a lesson that did not clear the relevance
+floor onto the page only when the cross-encoder vouches for it. On the
+curated fixture every field keeps exactly its recall and collateral; on
+LoCoMo it reaches R@5 59.8% and R@10 66.9%, ahead of mem0 2.x (54.3%, 62.5%)
+on every aggregate metric.
+
+A store that has not chosen, and has no experiment history, gets gated
+fusion with `cross-encoder-fast` wherever the attention extra is installed
+(lexical retrieval with the fast reranker if the semantic arm is turned
+off). The first retrieval embeds the store's lessons; later ones re-embed
+only what changed. A store mid-experiment stays on what its log says it
+ran. `COMMONTRACE_DEFAULT_FUSION=none` keeps the reranker without the
+semantic index, and `COMMONTRACE_DEFAULT_RERANK=none` turns both off.
 
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 5 for 67.0% of questions, up from 53.1% without it; mem0 2.x reaches 54.3%.

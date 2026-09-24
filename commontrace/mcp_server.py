@@ -612,10 +612,14 @@ def build_server(root: str, *, allow_approval: bool = True):
                     rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
             reranking = retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped
             depth = rerank_arm.pool_size(want) if reranking else want
+            # Gated fusion ranks below the floor too: such a lesson can still
+            # reach the page if the reranker vouches for it (`floor_cleared`
+            # below keeps the ones that need no vouching).
+            gated = retrieval_config.fusion == retrieval_io.FUSION_GATED and reranking
             ranked = retrieval.rank_lessons(
                 task, active,
                 top_k=depth + len(harmful),
-                floor=retrieval_config.floor,
+                floor=0.0 if gated else retrieval_config.floor,
                 scorer=retrieval_config.scorer,
                 term_cache=term_cache,
                 reliability_lookup=reliability_lookup,
@@ -629,6 +633,9 @@ def build_server(root: str, *, allow_approval: bool = True):
         core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
         ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, depth)
         withdrawn_order = [r.slug for r in withdrawn_ranked]
+        floor_cleared = {
+            r.slug for r in ranked + withdrawn_ranked if r.relevance >= retrieval_config.floor
+        }
 
         # The semantic arm, fused with the lexical one by rank, when the store
         # configured fusion -- the same function `commontrace query` runs in
@@ -640,7 +647,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         # differently would be a second treatment in the same experiment.
         fused: list[tuple[str, float]] | None = None
         fusion_skipped = ""
-        if retrieval_config.fusion == retrieval_io.FUSION_RRF:
+        if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated:
+            fusion_skipped = (
+                "gated fusion admits semantic candidates only on the reranker's word, "
+                f"and the reranker did not run: {rerank_skipped or 'rerank is off'}"
+            )
+        if retrieval_config.fusion == retrieval_io.FUSION_RRF or gated:
             from commontrace import semantic_arm
 
             if not semantic_arm.available():
@@ -667,11 +679,24 @@ def build_server(root: str, *, allow_approval: bool = True):
                         semantic = [
                             s for s in semantic if s in core_slugs or s not in already_shown
                         ]
-                    fused = retrieval.reciprocal_rank_fusion(
-                        {"lexical": [r.slug for r in ranked], "semantic": semantic},
-                        k=retrieval_config.rrf_k, top_k=depth,
-                    )
+                    if gated:
+                        # The pool, not a ranking: the reranker orders it and
+                        # the gate decides what may be on the page.
+                        fused = [
+                            (slug, 0.0)
+                            for slug in dict.fromkeys([r.slug for r in ranked] + semantic)
+                        ]
+                    else:
+                        fused = retrieval.reciprocal_rank_fusion(
+                            {"lexical": [r.slug for r in ranked], "semantic": semantic},
+                            k=retrieval_config.rrf_k, top_k=depth,
+                        )
                     withdrawn_order = list(dict.fromkeys(withdrawn_order + withdrawn_semantic))
+        if gated and fused is None:
+            # The semantic arm did not run, so this is plain reranked lexical
+            # retrieval and is labelled as such: the floor applies, as there.
+            ranked = [r for r in ranked if r.slug in floor_cleared]
+            withdrawn_order = [s for s in withdrawn_order if s in floor_cleared]
 
         # Second stage: the reranker reorders the pool and keeps the page
         # (commontrace/rerank_arm.py). Same step, same order, as
@@ -688,6 +713,10 @@ def build_server(root: str, *, allow_approval: bool = True):
                         path_by_slug, frontmatter.read,
                     ),
                     want, withdrawn=withdrawn_order, mode=retrieval_config.rerank,
+                    admit=(
+                        rerank_arm.admit_gated(floor_cleared, retrieval_config.rerank)
+                        if gated and fused is not None else None
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
                 rerank_skipped = f"the reranker failed: {type(exc).__name__}: {exc}"
@@ -696,6 +725,11 @@ def build_server(root: str, *, allow_approval: bool = True):
             # out of memory, in practice. Serve the pool's head rather than
             # nothing. Withdrawn lessons found anywhere in the pool stay
             # named: over-naming a lesson measured to hurt is the safe side.
+            if gated:
+                # Unvetted semantic and below-floor candidates never reach
+                # the page: serve the floor-cleared lexical head, labelled so.
+                ranked = [r for r in ranked if r.slug in floor_cleared]
+                fused = None
             ranked = ranked[:want]
             if fused is not None:
                 fused = fused[:want]

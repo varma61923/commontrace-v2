@@ -328,3 +328,93 @@ def test_a_store_that_ran_semantic_retrieval_stays_semantic(tmp_path, no_overrid
         fh.write(json.dumps({"occasion_id": "o", "lesson": "l", "injected": True, "rate": 0.5,
                              "salt": "s", "scorer": "semantic", "floor": 0.04}) + "\n")
     assert retrieval_io.load_config(root).rerank == retrieval_io.RERANK_NONE
+
+
+# --- gated fusion --------------------------------------------------------------
+
+class GateCrossEncoder(FakeCrossEncoder):
+    """Scores 3 per marker word, minus 5: a lesson with no marker scores -5,
+    below the gate (-4); one with a marker scores -2 or more, above it."""
+
+    def predict(self, pairs, **kw):
+        return [3.0 * x - 5.0 for x in super().predict(pairs, **kw)]
+
+
+@pytest.fixture
+def gate_ce(monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(rerank_arm, "_load", lambda *_a: GateCrossEncoder())
+
+
+def test_the_gate_filters_the_pool_and_the_withdrawn():
+    admit = rerank_arm.admit_gated({"cleared"}, "cross-encoder")
+    assert admit("cleared", -50.0) and admit("vouched", -4.0) and not admit("other", -4.1)
+
+
+def test_gated_fusion_admits_what_the_reranker_vouches_for(store, gate_ce, monkeypatch):
+    """suppression-list cleared the lexical floor: admitted though it scores
+    -5. unsubscribe-sync only the semantic arm found, and the reranker vouches
+    for it (-2): admitted. refund-threshold, also semantic-only, scores -5:
+    kept off the page, where plain fusion would have put it."""
+    _stub_both(monkeypatch)
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,
+                           rerank=retrieval_io.RERANK_CE)
+    out = call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="g-1")
+    page = _slugs(out, "lessons", "withheld")
+    assert {"suppression-list", "unsubscribe-sync"} <= page
+    assert "refund-threshold" not in page
+    assert {r["scorer"] for r in _logged(store, "g-1").values()} == {
+        "ce:minilm6(gated(idf-v2+semantic))"}
+
+
+def test_both_surfaces_gate_the_same_way(store, gate_ce, monkeypatch):
+    _stub_both(monkeypatch)
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,
+                           rerank=retrieval_io.RERANK_CE_FAST)
+    assert query_cmd.run(_args(store, TASK, experiment=True, occasion_id="cli-g")) == 0
+    call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="mcp-g")
+    cli_rows, mcp_rows = _logged(store, "cli-g"), _logged(store, "mcp-g")
+    assert set(cli_rows) == set(mcp_rows) and "refund-threshold" not in cli_rows
+    for slug in cli_rows:
+        for field in ("scorer", "relevance", "rank"):
+            assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
+
+
+def test_gated_fusion_without_a_reranker_is_lexical_and_says_so(store, monkeypatch):
+    _stub_both(monkeypatch)
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,
+                           rerank=retrieval_io.RERANK_CE)
+    monkeypatch.setattr(rerank_arm, "available", lambda: False)
+    out = call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="g-no")
+    assert "reranker" in out["fusion_note"]
+    assert "unsubscribe-sync" not in _slugs(out, "lessons", "withheld")
+    assert {r["scorer"] for r in _logged(store, "g-no").values()} == {"idf-v2"}
+
+
+def test_a_new_store_fuses_gated_by_default_where_both_models_are_installed(
+    tmp_path, no_override, monkeypatch,
+):
+    from commontrace import semantic_arm
+
+    monkeypatch.delenv(retrieval_io.DEFAULT_FUSION_ENV, raising=False)
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(semantic_arm, "available", lambda: True)
+    root = str(tmp_path)
+    assert main(["init", "--dest", root]) == 0
+    config = retrieval_io.load_config(root)
+    assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE_FAST)
+    assert config.eligibility == "ce:tinybert2(gated(idf-v2+semantic))"
+    monkeypatch.setenv(retrieval_io.DEFAULT_FUSION_ENV, "none")
+    assert retrieval_io.load_config(root).fusion == retrieval_io.FUSION_NONE
+
+
+def test_a_gated_store_is_pinned_to_gated_by_its_log(tmp_path, no_override, monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: False)
+    root = str(tmp_path)
+    assert main(["init", "--dest", root]) == 0
+    with open(holdout_io.holdout_log_path(root), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"occasion_id": "o", "lesson": "l", "injected": True, "rate": 0.5,
+                             "salt": "s", "scorer": "ce:tinybert2(gated(idf-v2+semantic))",
+                             "floor": 0.04}) + "\n")
+    config = retrieval_io.load_config(root)
+    assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE_FAST)

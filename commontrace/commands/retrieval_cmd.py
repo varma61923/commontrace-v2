@@ -36,7 +36,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "rank (Reciprocal Rank Fusion), so a lesson either arm surfaces is "
             "retrievable. The arms fail on different queries, which is exactly when "
             "fusing beats picking -- but it also changes which lessons are ELIGIBLE, "
-            "so a store mid-experiment starts a new randomization by switching."
+            "so a store mid-experiment starts a new randomization by switching. "
+            f"{retrieval_io.FUSION_GATED}: both arms feed the reranker, but a lesson "
+            "that did not clear the relevance floor reaches the page only if the "
+            "cross-encoder vouches for it, so the page is never filled with lessons "
+            "the task is not about (the default for a new store where the attention "
+            "extra is installed; needs --rerank)."
         ),
     )
     p.add_argument(

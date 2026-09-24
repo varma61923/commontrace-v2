@@ -325,6 +325,34 @@ class Reranked(System):
         return [slug for slug, _ in page]
 
 
+class Gated(System):
+    """Gated fusion as `--fusion gated` runs it: the lexical arm (ranked
+    without its floor) and the semantic arm each hand over
+    `rerank_arm.pool_size(k)` candidates; the reranker orders the pool and
+    `rerank_arm.admit_gated` lets a candidate that did not clear the lexical
+    floor onto the page only if the cross-encoder vouches for it."""
+
+    def __init__(self, dense: System, mode: str, label: str):
+        from commontrace import rerank_arm, retrieval
+        self.lex, self.dense, self.mode, self.name = CTLexical(), dense, mode, label
+        self.rerank_arm, self.retrieval = rerank_arm, retrieval
+
+    def index(self, docs):
+        self.lex.index(docs)
+        self.dense.index(docs)
+        self.text = {d.id: d.text for d in docs}
+
+    def search(self, query, k):
+        depth = self.rerank_arm.pool_size(k)
+        ranked = self.retrieval.rank_lessons(query, self.lex.lessons, top_k=depth, floor=0.0,
+                                             term_cache=self.lex.term_cache)
+        cleared = {r.slug for r in ranked if r.relevance >= self.retrieval.DEFAULT_FLOOR}
+        pool = list(dict.fromkeys([r.slug for r in ranked] + self.dense.search(query, depth)))
+        page, _ = self.rerank_arm.rerank(query, pool, self.text, k, mode=self.mode,
+                                         admit=self.rerank_arm.admit_gated(cleared, self.mode))
+        return [slug for slug, _ in page]
+
+
 class Chroma(System):
     """chromadb, in-process, default embedding function (ONNX all-MiniLM-L6-v2, HNSW)."""
 
@@ -450,6 +478,10 @@ def _build_one(n: str, cache: str, workdir: str) -> System:
     if n == "ct-fusion-v3":
         return RRF([CTLexical(scorer="idf-v3"), Dense(mpnet, "commontrace semantic (mpnet)", cache)],
                    "commontrace fusion (idf-v3+semantic, RRF)")
+    if n in ("ct-gated", "ct-gated-fast"):
+        mode = "cross-encoder-fast" if n == "ct-gated-fast" else "cross-encoder"
+        return Gated(Dense(mpnet, "commontrace semantic (mpnet)", cache), mode,
+                     f"commontrace gated fusion ({mode})")
     if n.endswith(("-rerank", "-rerank-fast")):
         base, _, speed = n.partition("-rerank")
         first = CTLexical() if base == "ct-lexical" else _build_one(base, cache, workdir)

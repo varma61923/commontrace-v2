@@ -16,7 +16,8 @@ python benchmark/peers/peerbench.py --dataset locomo \
     --systems ct-lexical-rerank,ct-fusion-rerank,ct-fusion-v3-rerank,mem0-rerank
 python benchmark/peers/peerbench.py --dataset longmemeval --per-type 10 \
     --systems ct-lexical,ct-lexical:idf-v3,ct-semantic,ct-fusion,ct-fusion-v3,bm25,dense-minilm,hybrid
-# Reranked systems; append -fast for the fast model (ct-fusion-rerank-fast, ...)
+# Reranked and gated systems; append -fast for the fast model (ct-fusion-rerank-fast, ...)
+python benchmark/peers/peerbench.py --dataset locomo --systems ct-gated-fast,ct-gated
 python benchmark/peers/peerbench.py --dataset longmemeval --per-type 10 \
     --systems ct-lexical-rerank,ct-fusion-rerank,ct-fusion-v3-rerank
 ```
@@ -64,6 +65,7 @@ k results is scored on what it returned.
 | commontrace lexical (idf-v3) | the same, opt-in stemmed scorer |
 | commontrace semantic | the semantic arm's model (`multi-qa-mpnet-base-dot-v1`), exact cosine |
 | commontrace fusion | lexical + semantic, fused by rank (RRF, k=60), as `--fusion rrf` does: each arm contributes the requested number of results |
+| commontrace gated fusion | both arms hand over 30 candidates (the lexical arm without its floor); the reranker orders them, and a candidate that did not clear the lexical floor reaches the page only if the cross-encoder scores it at least -4, as `--fusion gated` does. The default where the attention extra is installed, with the fast model |
 | commontrace + rerank | the first stage hands its top 30 to `commontrace/rerank_arm.py`, which reorders them with a cross-encoder, as `--rerank` does: `ms-marco-MiniLM-L-6-v2` (`cross-encoder`) or `ms-marco-TinyBERT-L-2-v2` (`cross-encoder-fast`) |
 | BM25 (Okapi) | `rank_bm25`; the keyword arm of the hybrid search Graphiti/Zep, Hindsight and mem0 describe |
 | dense MiniLM | `all-MiniLM-L6-v2`, exact cosine; the default local embedding in Chroma, mem0's HF provider and LlamaIndex examples |
@@ -85,11 +87,13 @@ the two.
 |---|---:|---:|---:|---:|
 | **commontrace fusion (idf-v3) + rerank** | **0.676** | **0.734** | **0.627** | **0.629** |
 | commontrace fusion (idf-v2) + rerank | 0.670 | 0.726 | 0.622 | 0.626 |
+| commontrace gated fusion, accurate model | 0.679 | 0.731 | 0.627 | 0.630 |
 | mem0 2.x + its rerank (same model) | 0.612 | 0.661 | 0.569 | 0.576 |
 | commontrace fusion (idf-v3) + fast rerank | 0.614 | 0.703 | 0.561 | 0.547 |
+| **commontrace gated fusion, fast model** *(default with the attention extra)* | **0.598** | **0.669** | **0.545** | **0.537** |
 | commontrace fusion (idf-v2) + fast rerank | 0.606 | 0.696 | 0.557 | 0.545 |
 | commontrace lexical (idf-v2) + rerank | 0.597 | 0.624 | 0.562 | 0.577 |
-| commontrace lexical (idf-v2) + fast rerank *(default with the attention extra)* | 0.562 | 0.615 | 0.518 | 0.518 |
+| commontrace lexical (idf-v2) + fast rerank | 0.562 | 0.615 | 0.518 | 0.518 |
 | commontrace fusion (idf-v3 + semantic) | 0.568 | 0.660 | 0.486 | 0.464 |
 | commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
 | mem0 2.x hybrid | 0.543 | 0.625 | 0.466 | 0.446 |
@@ -107,6 +111,8 @@ Recall@10 by question category:
 |---|---:|---:|---:|---:|
 | commontrace fusion (idf-v3) + rerank | **0.833** | 0.783 | **0.475** | **0.445** |
 | commontrace fusion (idf-v2) + rerank | 0.821 | **0.785** | 0.467 | 0.441 |
+| commontrace gated fusion, accurate | 0.826 | 0.806 | 0.473 | 0.371 |
+| commontrace gated fusion, fast *(default)* | 0.765 | 0.755 | 0.393 | 0.332 |
 | mem0 2.x + its rerank | 0.730 | 0.735 | 0.457 | 0.383 |
 | commontrace fusion (idf-v3) | 0.764 | 0.723 | 0.371 | 0.373 |
 | commontrace fusion (idf-v2) | 0.754 | 0.712 | 0.340 | 0.351 |
@@ -126,7 +132,7 @@ Recall@10 by question category:
 | commontrace lexical (idf-v2) + rerank | 0.930 | 0.967 | 0.908 | 0.899 |
 | commontrace fusion (idf-v2) + fast rerank | 0.927 | 0.967 | 0.896 | 0.878 |
 | commontrace lexical (idf-v3) | 0.926 | 0.940 | 0.869 | 0.874 |
-| commontrace lexical (idf-v2) + fast rerank *(default with the attention extra)* | 0.923 | 0.947 | 0.894 | 0.884 |
+| commontrace gated fusion, fast *(default with the attention extra)*, and lexical + fast rerank | 0.923 | 0.947 | 0.894 | 0.884 |
 | commontrace fusion (idf-v2 + semantic) | 0.914 | 0.952 | 0.882 | 0.876 |
 | commontrace fusion (idf-v3 + semantic) | 0.910 | 0.988 | 0.879 | 0.851 |
 | commontrace semantic | 0.907 | 0.936 | 0.852 | 0.847 |
@@ -157,6 +163,7 @@ earlier run, when benchmarks shared it, so read them as upper bounds.
 | BM25 (`rank_bm25`) | 0.8 ms | 0.04 ms | 0.466 |
 | dense MiniLM (exact) | 9 ms | 4.5 ms (embedding) | 0.388 |
 | commontrace lexical + fast rerank | 30 ms | 0.04 ms | 0.562 |
+| commontrace gated fusion, fast *(default with the extra)* | 165 ms | as fusion | 0.598 |
 | commontrace fusion | 37 ms | 39.5 ms (mpnet embedding, once per lesson; the index refreshes itself) | 0.531 |
 | mem0 2.x | 56 ms | 38–55 ms (embedding, lemmatizing, entity extraction per add) | 0.543 |
 | commontrace fusion + fast rerank | 75 ms | as fusion | 0.606 |
@@ -177,6 +184,27 @@ retrieval, including checking every lesson file for changes, takes about
 above 500 ms).
 
 ## What the numbers say
+
+- **Out of the box, CommonTrace now beats mem0 on every aggregate metric on
+  LoCoMo.** Where the attention extra is installed, a new store uses gated
+  fusion with the fast reranker: R@5 0.598, R@10 0.669, NDCG 0.545, MRR
+  0.537, against mem0's 0.543, 0.625, 0.466 and 0.446. It leads on
+  single-hop and temporal questions; mem0 keeps multi-hop (0.396 vs 0.393)
+  and open-domain (0.348 vs 0.332) by a small margin. With the accurate
+  reranker, gated fusion leads every category and is the most accurate
+  configuration measured (R@5 0.679, MRR 0.630).
+- **Gated fusion is the one fused ranking that passes the curated-store
+  gates.** Plain fusion fills every slot on the page with whatever the
+  semantic arm ranked, which puts unrelated lessons into every experiment.
+  Gated fusion admits a lesson that did not clear the relevance floor only
+  when the cross-encoder vouches for it (score at least -4). On the curated
+  fixture unrelated lessons score -8 to -11, so every field keeps exactly
+  its recall and collateral; on LoCoMo the semantic arm's real finds get
+  through.
+- **On LongMemEval the default does not move.** Every question already has
+  30 floor-cleared lexical candidates, and the fast cross-encoder scores
+  long conversational turns low, so no semantic candidate is vouched for;
+  the default stays at R@5 0.923, behind dense MiniLM's 0.954.
 
 - **On LoCoMo, with reranking, CommonTrace leads every system measured, on
   every metric and in every question category.** Fused retrieval reranked by a small

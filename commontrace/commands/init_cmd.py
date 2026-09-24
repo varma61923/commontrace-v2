@@ -132,10 +132,11 @@ def run(args: argparse.Namespace) -> int:
         # recorded decision, not a side effect of what happens to be
         # installed on the machine that ran `init`.
         print(
-            "[commontrace] The attention extra is installed, so retrieval reranks its "
-            "candidates with a fast cross-encoder by default. For the most accurate "
-            "retrieval, rank by keyword and meaning together and use the full model:\n"
-            "  commontrace retrieval --fusion rrf --rerank cross-encoder"
+            "[commontrace] The attention extra is installed, so retrieval searches by "
+            "keyword and meaning and a fast cross-encoder decides what reaches the page "
+            "(gated fusion). The first retrieval embeds the store's lessons. For the "
+            "most accurate retrieval, use the full model:\n"
+            "  commontrace retrieval --rerank cross-encoder"
         )
 
     print()

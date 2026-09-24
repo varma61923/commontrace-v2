@@ -432,6 +432,7 @@ def _rerank_pool(
     withdrawn: list[str],
     top_k: int,
     mode: str,
+    admit=None,
 ) -> tuple[list[tuple[str, float]] | None, list[str], str]:
     """The reranked page, the withdrawn lessons that would have been on it,
     and why not if reranking failed (then the page is None). MCP's
@@ -444,7 +445,7 @@ def _rerank_pool(
                 [slug for slug, _ in first_stage] + list(withdrawn),
                 path_by_slug, frontmatter.read,
             ),
-            top_k, withdrawn=withdrawn, mode=mode,
+            top_k, withdrawn=withdrawn, mode=mode, admit=admit,
         )
     except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
         return None, withdrawn, f"the reranker failed: {type(exc).__name__}: {exc}"
@@ -668,14 +669,26 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     harmful = evidence.withdrawn(root, config.harm_policy)
     core = _core_slugs(lessons)
     reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k)
+    if config.fusion == retrieval_io.FUSION_GATED and not reranking:
+        # Gated fusion admits semantic candidates only on the reranker's
+        # word; without one it is reranked-or-plain lexical retrieval, and is
+        # run and labelled as that (MCP's `retrieve` does the same).
+        print(
+            "[commontrace] gated fusion needs the reranker, which did not run "
+            f"({rerank_skipped or 'rerank is off'}); this query used lexical retrieval.",
+            file=sys.stderr,
+        )
+        return _run_lexical(args, root)
+    gated = config.fusion == retrieval_io.FUSION_GATED
     lexical = retrieval.rank_lessons(
-        args.task, lessons, top_k=depth + len(harmful), floor=floor,
+        args.task, lessons, top_k=depth + len(harmful), floor=0.0 if gated else floor,
         scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
     lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
+    floor_cleared = {r.slug for r in lexical + withdrawn_lexical if r.relevance >= floor}
 
     rc, semantic, stdout = _semantic_slugs(
         args, root, missing_hint, extra=len(harmful) + depth - args.top_k)
@@ -706,17 +719,27 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         )
         return _run_lexical(args, root)
 
-    fused = retrieval.reciprocal_rank_fusion(
-        {"lexical": [r.slug for r in lexical], "semantic": semantic},
-        k=config.rrf_k, top_k=depth,
-    )
+    if gated:
+        # The pool, not a ranking: the reranker orders it and the gate
+        # decides what may be on the page (commontrace/rerank_arm.py).
+        fused = [(slug, 0.0) for slug in dict.fromkeys([r.slug for r in lexical] + semantic)]
+    else:
+        fused = retrieval.reciprocal_rank_fusion(
+            {"lexical": [r.slug for r in lexical], "semantic": semantic},
+            k=config.rrf_k, top_k=depth,
+        )
     # Named once each, in the order the arms found them.
     withdrawn = list(dict.fromkeys(
         [r.slug for r in withdrawn_lexical] + list(withdrawn_semantic)))
     reranked = None
     if reranking:
         reranked, withdrawn, rerank_skipped = _rerank_pool(
-            args.task, lessons, fused, withdrawn, args.top_k, config.rerank)
+            args.task, lessons, fused, withdrawn, args.top_k, config.rerank,
+            admit=rerank_arm.admit_gated(floor_cleared, config.rerank) if gated else None)
+        if reranked is None and gated:
+            # Unvetted candidates never reach the page: serve reranked-or-
+            # plain lexical retrieval instead, labelled as that.
+            return _run_lexical(args, root)
         fused = reranked if reranked is not None else fused[: args.top_k]
     label = retrieval_io.rerank_label(
         config.eligibility_label_for(fused=True),
@@ -944,7 +967,7 @@ def run(args: argparse.Namespace) -> int:
     # on changes which lessons are eligible, which is the denominator of any
     # running experiment, so it is a decision the store records rather than
     # something a new release switches on underneath a pilot.
-    if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
+    if retrieval_io.load_config(root).fusion in (retrieval_io.FUSION_RRF, retrieval_io.FUSION_GATED):
         return _run_hybrid(args, root, missing_hint)
 
     # The script knows nothing of the harm policy, so it is over-asked by the

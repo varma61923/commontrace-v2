@@ -46,7 +46,13 @@ FUSION_NONE = "none"
 #: Reciprocal Rank Fusion over both arms (commontrace/retrieval.py). Position
 #: only, because cosine and IDF relevance are not on a comparable scale.
 FUSION_RRF = "rrf"
-FUSIONS = (FUSION_NONE, FUSION_RRF)
+#: Both arms feed the reranker, but a candidate that did not clear the lexical
+#: relevance floor reaches the page only if the cross-encoder vouches for it
+#: (commontrace/rerank_arm.py, GATE_THRESHOLDS). Floor-cleared lessons are
+#: admitted exactly as without fusion, so, unlike `rrf`, the page is never
+#: filled with lessons the task is not about. Needs a reranker.
+FUSION_GATED = "gated"
+FUSIONS = (FUSION_NONE, FUSION_RRF, FUSION_GATED)
 
 #: The label an assignment records when the semantic arm ALONE decided
 #: eligibility -- `commontrace query` with fusion=none and the attention
@@ -70,6 +76,35 @@ RERANKS = (RERANK_NONE, RERANK_CE, RERANK_CE_FAST)
 #: (`default_rerank`). For operators who want no model download, and for
 #: test suites that must not depend on which extras are installed.
 DEFAULT_RERANK_ENV = "COMMONTRACE_DEFAULT_RERANK"
+
+
+#: Overrides the fusion mode a store gets when it has not chosen one
+#: (`default_fusion`), e.g. to keep the reranker but skip the semantic index.
+DEFAULT_FUSION_ENV = "COMMONTRACE_DEFAULT_FUSION"
+
+
+def default_fusion() -> str:
+    """The fusion mode a store gets when it has not chosen one and has no
+    experiment history: gated fusion wherever the default reranker runs
+    (it needs one), else none.
+
+    Gated fusion passes every gate the default ranking is held to: a lesson
+    that clears the lexical floor is admitted exactly as before, and anything
+    else only when the cross-encoder vouches for it, so on the curated
+    fixture every field keeps its recall and collateral unchanged. On LoCoMo
+    it lifts R@5 from 0.562 to 0.598 and R@10 from 0.615 to 0.669 over
+    reranked lexical retrieval, ahead of mem0 2.x on every metric
+    (benchmark/peers/). Its cost is the semantic index: the first retrieval
+    embeds the store's lessons, later ones only what changed.
+    """
+    override = os.environ.get(DEFAULT_FUSION_ENV, "")
+    if override in FUSIONS:
+        return override
+    from commontrace import semantic_arm
+
+    if default_rerank() != RERANK_NONE and semantic_arm.available():
+        return FUSION_GATED
+    return FUSION_NONE
 
 
 def default_rerank() -> str:
@@ -107,7 +142,7 @@ def default_rerank() -> str:
 # label means the existing drift check catches it for free -- no second column
 # that an older reader would ignore, and no second check that could disagree
 # with the first about the same fact.
-_FUSION_LABEL = re.compile(r"^rrf\((?P<lexical>[^+()]+)\+semantic\)$")
+_FUSION_LABEL = re.compile(r"^(?P<mode>rrf|gated)\((?P<lexical>[^+()]+)\+semantic\)$")
 # A reranked ranking wraps the first stage's label with the model that
 # reordered it: a different model is a different treatment.
 _RERANK_LABEL = re.compile(r"^ce:(?P<model>[^()]+)\((?P<inner>.+)\)$")
@@ -115,7 +150,7 @@ _RERANK_LABEL = re.compile(r"^ce:(?P<model>[^()]+)\((?P<inner>.+)\)$")
 
 def eligibility_label(scorer: str, fusion: str, rerank: str = RERANK_NONE) -> str:
     """What to record as the `scorer` of an assignment made under these settings."""
-    label = f"rrf({scorer}+semantic)" if fusion == FUSION_RRF else scorer
+    label = f"{fusion}({scorer}+semantic)" if fusion in (FUSION_RRF, FUSION_GATED) else scorer
     return rerank_label(label, rerank)
 
 
@@ -150,7 +185,7 @@ def parse_eligibility_label(label: str) -> tuple[str, str]:
     label, _rerank = parse_rerank_label(label)
     match = _FUSION_LABEL.match(label or "")
     if match:
-        return match.group("lexical"), FUSION_RRF
+        return match.group("lexical"), match.group("mode")
     if label == SEMANTIC_ONLY:
         # No lexical scorer decided eligibility; the lexical fallback is the
         # default one.
@@ -218,10 +253,10 @@ class RetrievalConfig:
         return eligibility_label(self.scorer, self.fusion, self.rerank)
 
     def eligibility_label_for(self, *, fused: bool) -> str:
-        """The FIRST stage's label as it actually ran: fused only if the
-        semantic arm did run. A reranker's wrapper is added by the caller,
-        only if it ran (`rerank_label`)."""
-        return eligibility_label(self.scorer, FUSION_RRF if fused else FUSION_NONE)
+        """The FIRST stage's label as it actually ran: fused (in this
+        store's fusion mode) only if the semantic arm did run. A reranker's
+        wrapper is added by the caller, only if it ran (`rerank_label`)."""
+        return eligibility_label(self.scorer, self.fusion if fused else FUSION_NONE)
     configured_at: str = ""
     note: str = ""
     # True when these settings were inferred for an existing store rather than
@@ -318,6 +353,17 @@ def _last_logged_settings(root: str) -> tuple[str, float] | None:
     return None
 
 
+def _unchosen_fusion(root: str) -> str:
+    """The fusion mode for a store whose settings never named one: what its
+    log says it ran, else the default (the same rule as `_unchosen_rerank`)."""
+    logged = _last_logged_settings(root)
+    if logged is not None:
+        return parse_eligibility_label(logged[0])[1]
+    if has_recorded_assignments(root):
+        return FUSION_NONE
+    return default_fusion()
+
+
 def _unchosen_rerank(root: str) -> str:
     """The reranker for a store whose settings never named one.
 
@@ -370,9 +416,10 @@ def load_config(root: str) -> RetrievalConfig:
                     # raising: this file is read on every retrieval, and a
                     # typo must not stop a fleet retrieving.
                     fusion=(
-                        str(raw.get("fusion") or FUSION_NONE)
-                        if str(raw.get("fusion") or FUSION_NONE) in FUSIONS
-                        else FUSION_NONE
+                        str(raw["fusion"])
+                        if raw.get("fusion") in FUSIONS
+                        else FUSION_NONE if raw.get("fusion")
+                        else _unchosen_fusion(root)
                     ),
                     rrf_k=max(1, _int_or(raw.get("rrf_k"), retrieval.DEFAULT_RRF_K)),
                     # Same posture as fusion: an unrecognised value reads as
@@ -428,7 +475,7 @@ def load_config(root: str) -> RetrievalConfig:
             floor=0.0,
             pinned_for_running_experiment=True,
         )
-    return RetrievalConfig(rerank=default_rerank())
+    return RetrievalConfig(fusion=default_fusion(), rerank=default_rerank())
 
 
 def configure(root: str, *, scorer: str | None = None, floor: float | None = None,

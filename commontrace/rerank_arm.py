@@ -35,7 +35,10 @@ still loses a relevant lesson (0.94), and at -3 recall is 0.83. Measured
 with both models and both lexical scorers. On conversational benchmarks
 reranked fusion is the most accurate stack measured; on a curated store
 under experiment, its collateral dilutes the estimates the product
-exists to report. So it is a choice a store makes, not an upgrade.
+exists to report. So plain fusion is a choice a store makes, not an
+upgrade; gated fusion (GATE_THRESHOLDS below) is the fused ranking that
+passes those gates, and is the default where the attention extra is
+installed.
 
 HARM WITHDRAWAL stays exact. A withdrawn lesson is scored alongside the pool
 and named only if its score would have put it on the page. A cross-encoder
@@ -46,7 +49,7 @@ from __future__ import annotations
 
 import importlib.util
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 #: The rerank modes a store can configure (retrieval_io.RERANKS), each a
 #: cross-encoder trained on MS MARCO passage ranking, and the short name its
@@ -63,6 +66,19 @@ MODELS = {
     "cross-encoder-fast": ("cross-encoder/ms-marco-TinyBERT-L-2-v2", "tinybert2"),
 }
 DEFAULT_MODE = "cross-encoder"
+
+#: GATED FUSION (retrieval_io.FUSION_GATED). Plain fusion fills every slot on
+#: the page with whatever the semantic arm ranked, relevant or not, which the
+#: curated fixture's collateral ceiling rejects (below). Gated fusion lets a
+#: candidate that did NOT clear the lexical floor onto the page only when the
+#: cross-encoder scores it at least this high; floor-cleared lessons are
+#: admitted exactly as without fusion. On the fixture the unrelated lessons
+#: score -8 to -11 against the tasks, so every field keeps its recall and
+#: collateral unchanged at any threshold down to -6 (measured, both models).
+#: On LoCoMo, at -4: R@5 0.598 and R@10 0.669 with the fast model (lexical +
+#: fast rerank: 0.562 / 0.615; mem0 2.x: 0.543 / 0.625), and 0.679 / 0.731
+#: with the accurate one.
+GATE_THRESHOLDS = {"cross-encoder": -4.0, "cross-encoder-fast": -4.0}
 #: How many first-stage candidates the reranker reorders.
 POOL = 30
 #: Characters of lesson text the model reads. Its input is capped at 512
@@ -145,6 +161,15 @@ def pool_size(want: int) -> int:
     return max(want, POOL)
 
 
+def admit_gated(floor_cleared: set[str], mode: str = DEFAULT_MODE) -> Callable[[str, float], bool]:
+    """Gated fusion's admission rule: a lesson the lexical arm scored at or
+    above the relevance floor is always admissible, as it is without fusion;
+    any other candidate, a semantic-arm find or a below-floor lexical match,
+    only if the cross-encoder scores it at least `GATE_THRESHOLDS[mode]`."""
+    threshold = GATE_THRESHOLDS[mode]
+    return lambda slug, score: slug in floor_cleared or score >= threshold
+
+
 def rerank(
     task: str,
     pool: Sequence[str],
@@ -152,13 +177,17 @@ def rerank(
     want: int,
     withdrawn: Sequence[str] = (),
     mode: str = DEFAULT_MODE,
+    admit: Callable[[str, float], bool] | None = None,
 ) -> tuple[list[tuple[str, float]], list[str]]:
     """Reorder `pool` by cross-encoder score and keep the top `want`.
 
     Returns (page, withdrawn_on_page): the page as (slug, score) in rank
     order, and those of `withdrawn` whose score would have placed them on
-    it. Ties keep first-stage order. Raises whatever the model raises; the
-    caller decides how to fall back.
+    it. Ties keep first-stage order. `admit(slug, score)`, when given,
+    decides which scored candidates may be on the page at all (gated
+    fusion: `admit_gated`); a withdrawn lesson it would not admit is not
+    named. Raises whatever the model raises; the caller decides how to fall
+    back.
     """
     candidates = [s for s in pool if s in text_of]
     extra = [s for s in withdrawn if s in text_of and s not in set(candidates)]
@@ -173,10 +202,14 @@ def rerank(
             batch_size=64, show_progress_bar=False,
         )
     scored = [(s, float(x)) for s, x in zip(candidates, scores[: len(candidates)])]
+    if admit is not None:
+        scored = [(s, x) for s, x in scored if admit(s, x)]
     order = sorted(range(len(scored)), key=lambda i: (-scored[i][1], i))
     page = [scored[i] for i in order[:want]]
     on_page = []
     for slug, score in zip(extra, scores[len(candidates):]):
+        if admit is not None and not admit(slug, float(score)):
+            continue
         # Its position among the pool, had it stayed in: the lessons that
         # outscore it go above it.
         above = sum(1 for _s, x in scored if x > float(score))

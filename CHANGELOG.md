@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Gated fusion (`commontrace retrieval --fusion gated`), the new default
+  where the attention extra is installed.** Both arms feed the reranker,
+  but a lesson that did not clear the lexical relevance floor reaches the
+  page only when the cross-encoder scores it at least -4
+  (`rerank_arm.GATE_THRESHOLDS`). Floor-cleared lessons are admitted as
+  before, so on the curated fixture every field keeps exactly its recall
+  and collateral, which plain fusion does not (3.0x collateral, over the
+  2.4x ceiling). On LoCoMo it reaches R@5 0.598, R@10 0.669, NDCG 0.545 and
+  MRR 0.537 with the fast reranker, ahead of mem0 2.x (0.543, 0.625, 0.466,
+  0.446), and 0.679 / 0.731 / 0.627 / 0.630 with the accurate one. On
+  LongMemEval it matches lexical retrieval with the fast reranker. Both
+  surfaces run it identically and log `ce:<model>(gated(<scorer>+semantic))`;
+  without a reranker it runs as lexical retrieval and says so. Stores with
+  experiment history keep what their log says they ran;
+  `COMMONTRACE_DEFAULT_FUSION=none` keeps the old default.
+
 - **Lambda's verdicts are kept, and measured.** Episodes now record
   `lambda_decisions`: Lambda's verdict on every Omega proposal, rejected and
   sent-back ones included. `commontrace bench` reports the acceptance,
