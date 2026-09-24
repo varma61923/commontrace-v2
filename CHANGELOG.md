@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A reproducible peer benchmark** (`benchmark/peers/`). It runs
+  CommonTrace against mem0 2.x, Chroma, BM25, dense and hybrid retrieval
+  on LoCoMo (1,531 questions) and a stratified LongMemEval subset, scored
+  from the datasets' evidence labels with no LLM involved.
+  - CommonTrace fusion with `idf-v3` leads LoCoMo: recall@10 0.665,
+    against 0.625 for mem0 and 0.574 for a BM25+MiniLM hybrid.
+  - CommonTrace's default lexical retriever matches or beats BM25 on both
+    datasets and is faster per query.
+  - Peers that need an LLM to build or search memory were not run, and
+    the page says so.
 - **Agents now get fused retrieval.** When a store has set
   `commontrace retrieval --fusion rrf`, the MCP `retrieve` tool ranks by
   keyword and meaning together, as `commontrace query` does. Before this it

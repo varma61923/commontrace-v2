@@ -909,6 +909,17 @@ generation (Omega) and retrieval (Alpha) doing its job. It does **not**
 answer "did the fleet's behavior actually change," which is a different,
 business-facing question — see the next section.
 
+### Against other memory systems
+
+[`benchmark/peers/`](benchmark/peers/README.md) runs CommonTrace's retrievers
+and other memory products' retrieval stacks side by side: mem0 2.x's hybrid
+search, Chroma, BM25, dense vectors and BM25+vector hybrids. It uses LoCoMo
+and LongMemEval, the benchmarks those products publish on, and scores
+retrieval from each dataset's evidence labels, with no LLM judge. On
+LoCoMo's 1,531 questions, CommonTrace's fused retrieval with the stemmed
+lexical arm finds the answering turn in the top 10 for 66.5% of questions,
+against 62.5% for mem0 2.x and 57.4% for a BM25+MiniLM hybrid.
+
 ---
 
 ## Outcome Metrics
