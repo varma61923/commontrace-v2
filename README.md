@@ -1046,6 +1046,16 @@ commontrace retrieval --fusion rrf --rerank cross-encoder        # most accurate
 commontrace retrieval --fusion rrf --rerank cross-encoder-fast   # ~10x faster
 ```
 
+**On by default, in its fast form.** A store that has not chosen a reranker,
+and has no experiment history, gets `cross-encoder-fast` over the lexical
+arm whenever the attention extra is installed. It reorders only lessons that
+cleared the relevance floor, onto a page no longer than before, so on the
+curated fixture it finds every relevant lesson with exactly the old
+collateral in every field, and puts the right one first more often. On
+LoCoMo it lifts R@5 from 47.2% to 56.2%, above mem0 2.x's 54.3%, for about
+30 ms. A store mid-experiment stays on what its log says it ran, and
+`COMMONTRACE_DEFAULT_RERANK=none` turns the default off.
+
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 5 for 67.0% of questions, up from 53.1% without it; mem0 2.x reaches 54.3%.
 `cross-encoder` (`ms-marco-MiniLM-L-6-v2`, 22M parameters) reranks 30

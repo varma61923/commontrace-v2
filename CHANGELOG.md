@@ -135,6 +135,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Fast reranking is on by default where the attention extra is installed.**
+  A store that has not chosen a reranker and has no experiment history
+  reranks the lexical arm's floor-cleared candidates with
+  `cross-encoder-fast` (~30 ms). On the curated fixture it keeps every
+  field's recall and collateral exactly as before and raises precision@1;
+  on LoCoMo, R@5 rises from 0.472 to 0.562 (mem0 2.x: 0.543) and MRR from
+  0.387 to 0.518. Stores with logged assignments stay on what their log
+  says they ran, configured or not. `COMMONTRACE_DEFAULT_RERANK=none` turns
+  the default off. Fusion stays opt-in: it fills every slot on the page,
+  which the fixture's collateral ceiling rejects.
+
 - **Local retrieval is 6.9× faster at 6,400 lessons (~300ms → ~44ms),
   with identical rankings.** Measured with
   `commontrace/reference/measure_local_latency.py`.

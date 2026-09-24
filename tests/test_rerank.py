@@ -245,3 +245,56 @@ def test_the_fast_model_is_its_own_treatment(store, ce, monkeypatch):
     assert retrieval_io.parse_rerank_label("ce:tinybert2(idf-v2)") == (
         "idf-v2", retrieval_io.RERANK_CE_FAST)
 
+
+
+# --- the default -------------------------------------------------------------
+
+@pytest.fixture
+def no_override(monkeypatch):
+    monkeypatch.delenv(retrieval_io.DEFAULT_RERANK_ENV, raising=False)
+
+
+def test_a_new_store_reranks_by_default_when_the_model_is_installed(tmp_path, no_override, monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    assert main(["init", "--dest", str(tmp_path)]) == 0
+    assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_CE_FAST
+    monkeypatch.setattr(rerank_arm, "available", lambda: False)
+    assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_NONE
+
+
+def test_a_store_mid_experiment_does_not_gain_a_reranker_on_upgrade(tmp_path, no_override, monkeypatch):
+    """Configured before reranking existed, with assignments logged under the
+    lexical label: it stays lexical, configured file or not."""
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    root = str(tmp_path)
+    assert main(["init", "--dest", root]) == 0
+    retrieval_io.configure(root, floor=0.05)
+    config_file = retrieval_io.config_path(root)
+    raw = json.load(open(config_file))
+    raw.pop("rerank")
+    json.dump(raw, open(config_file, "w"))
+    with open(holdout_io.holdout_log_path(root), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"occasion_id": "o", "lesson": "l", "injected": True, "rate": 0.5,
+                             "salt": "s", "scorer": "idf-v2", "floor": 0.05}) + "\n")
+    assert retrieval_io.load_config(root).rerank == retrieval_io.RERANK_NONE
+    import os
+
+    os.remove(config_file)
+    assert retrieval_io.load_config(root).rerank == retrieval_io.RERANK_NONE
+
+
+def test_a_default_reranked_store_stays_reranked_once_it_has_history(tmp_path, no_override, monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    root = str(tmp_path)
+    assert main(["init", "--dest", root]) == 0
+    with open(holdout_io.holdout_log_path(root), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"occasion_id": "o", "lesson": "l", "injected": True, "rate": 0.5,
+                             "salt": "s", "scorer": "ce:tinybert2(idf-v2)", "floor": 0.04}) + "\n")
+    assert retrieval_io.load_config(root).rerank == retrieval_io.RERANK_CE_FAST
+
+
+def test_the_operator_can_turn_the_default_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setenv(retrieval_io.DEFAULT_RERANK_ENV, "none")
+    assert main(["init", "--dest", str(tmp_path)]) == 0
+    assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_NONE

@@ -15,6 +15,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (see memory/attention/README.md).
 sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
 
+# A store that never chose a reranker gets the fast one when the attention
+# extra is installed (retrieval_io.default_rerank). The suite runs with both
+# kinds of install, so it pins the default off and the tests of the default
+# set it themselves (tests/test_rerank.py). Subprocesses inherit it.
+os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
+
 
 def _write_frontmatter_file(path, fm, body):
     # Use yaml.safe_dump -- same YAML-writing path production's frontmatter.write() uses --

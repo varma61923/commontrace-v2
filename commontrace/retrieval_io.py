@@ -66,6 +66,34 @@ RERANK_CE = "cross-encoder"
 RERANK_CE_FAST = "cross-encoder-fast"
 RERANKS = (RERANK_NONE, RERANK_CE, RERANK_CE_FAST)
 
+#: Overrides the reranker a store gets when it has not chosen one
+#: (`default_rerank`). For operators who want no model download, and for
+#: test suites that must not depend on which extras are installed.
+DEFAULT_RERANK_ENV = "COMMONTRACE_DEFAULT_RERANK"
+
+
+def default_rerank() -> str:
+    """The reranker a store gets when it has not chosen one and has no
+    experiment history to stay consistent with.
+
+    The fast cross-encoder when the attention extra is installed, else none.
+    It passes every gate the default ranking is held to: it reorders only
+    lessons that already cleared the relevance floor, onto a page no longer
+    than the lexical one, so on the curated fixture it finds every relevant
+    lesson with exactly the lexical default's collateral in every field --
+    and puts the right one first more often. On LoCoMo it lifts R@5 from
+    0.472 to 0.562 and MRR from 0.387 to 0.518 (benchmark/peers/), for about
+    30 ms per retrieval. Fusion stays opt-in: it fills every slot on the
+    page, which the fixture's collateral ceiling rejects
+    (commontrace/rerank_arm.py).
+    """
+    override = os.environ.get(DEFAULT_RERANK_ENV, "")
+    if override in RERANKS:
+        return override
+    from commontrace import rerank_arm
+
+    return RERANK_CE_FAST if rerank_arm.available() else RERANK_NONE
+
 # WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
 # ---------------------------------------------------
 # The holdout log records `scorer` and `floor` as the evidence of what decided
@@ -290,6 +318,21 @@ def _last_logged_settings(root: str) -> tuple[str, float] | None:
     return None
 
 
+def _unchosen_rerank(root: str) -> str:
+    """The reranker for a store whose settings never named one.
+
+    What its log says it ran, when it has one: the reranker decides
+    eligibility, so a store mid-experiment must not gain one on upgrade (or
+    lose one when its settings are next read). Otherwise the default.
+    """
+    logged = _last_logged_settings(root)
+    if logged is not None:
+        return parse_rerank_label(logged[0])[1]
+    if has_recorded_assignments(root):
+        return RERANK_NONE
+    return default_rerank()
+
+
 def load_config(root: str) -> RetrievalConfig:
     """This store's retrieval settings, or the right defaults if unset.
 
@@ -342,7 +385,7 @@ def load_config(root: str) -> RetrievalConfig:
                     rerank=(
                         str(raw.get("rerank"))
                         if raw.get("rerank") in RERANKS
-                        else RERANK_NONE
+                        else _unchosen_rerank(root)
                     ),
                     configured_at=str(raw.get("configured_at") or ""),
                     note=str(raw.get("note") or ""),
@@ -385,7 +428,7 @@ def load_config(root: str) -> RetrievalConfig:
             floor=0.0,
             pinned_for_running_experiment=True,
         )
-    return RetrievalConfig()
+    return RetrievalConfig(rerank=default_rerank())
 
 
 def configure(root: str, *, scorer: str | None = None, floor: float | None = None,
