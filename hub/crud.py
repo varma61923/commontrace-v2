@@ -30,7 +30,21 @@ import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, literal, or_, select, union, update
+from sqlalchemy import (
+    Boolean,
+    Float,
+    Select,
+    and_,
+    case,
+    delete,
+    distinct,
+    func,
+    literal,
+    or_,
+    select,
+    union,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +54,7 @@ from commontrace import (
     decay,
     distill,
     experiment,
+    harm,
     integrity,
     prereg,
     raw_export,
@@ -1028,6 +1043,7 @@ async def search_traces(
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
+    harmful: dict[str, dict] = {}
     if query and not chosen.used:
         # A query was asked and nothing survived to match on -- either it
         # reduced to no lexemes at all (stopwords), or every lexeme was too
@@ -1044,11 +1060,22 @@ async def search_traces(
         rows: list[Trace] = []
         has_more = False
     else:
+        # Traces this org's experiment measured making outcomes worse, if
+        # the org withdraws them (commontrace/harm.py). Filtered in the
+        # query, so paging and `has_more` stay exact and the slot goes to
+        # the next-ranked trace; ts_rank scores each row on its own, so no
+        # other trace's rank moves.
+        harmful = await _withdrawn_traces(session, org_id)
+        page_stmt = stmt.where(Trace.id.notin_(list(harmful))) if harmful else stmt
         # Fetch one more than asked so has_more is exact without a COUNT(*).
-        stmt = stmt.offset(offset).limit(limit + 1)
-        rows = list((await session.execute(stmt)).scalars().all())
+        rows = list((await session.execute(page_stmt.offset(offset).limit(limit + 1))).scalars().all())
         has_more = len(rows) > limit
     traces = list(rows[:limit])
+    withdrawn: list[dict] = []
+    if harmful:
+        traces, withdrawn = await _withdraw_from_page(
+            session, org_id, stmt, traces, harmful, offset=offset, limit=limit,
+        )
 
     if query:
         # Recorded on the FIRST page only. Paging through a result set is
@@ -1072,8 +1099,108 @@ async def search_traces(
         "terms": list(chosen.all_terms),
         "terms_ignored": list(chosen.ignored),
     }
+    if withdrawn:
+        # Named, never silent, and without their text: they are here to say
+        # what was not handed over and why, not to be used.
+        result["withdrawn"] = withdrawn
+        result["withdrawn_note"] = harm.note(len(withdrawn))
     await _attach_evidence(session, org_id, result)
     return result
+
+
+async def _withdrawn_traces(session: AsyncSession, org_id: str) -> dict[str, dict]:
+    """trace id -> evidence, for every trace this org's harm policy withdraws.
+
+    Empty unless the org has chosen `withdraw` AND its experiment's evidence
+    is readable -- the same evidence, cached the same way, that search
+    attaches (causal_evidence), so the verdict acted on is always the one
+    shown, and it is the anytime-valid one (causal_effects analyses with
+    sequential=True).
+    """
+    # session.get, not a column select: _evidence_key loads the same row, so
+    # the identity map makes this one fetch per search rather than two.
+    org = await session.get(Organization, org_id)
+    if org is None or org.harm_policy != harm.POLICY_WITHDRAW:
+        return {}
+    evidence = await causal_evidence(session, org_id)
+    if not evidence["available"]:
+        return {}
+    return harm.hurts(evidence["by_trace"])
+
+
+async def _withdraw_from_page(
+    session: AsyncSession,
+    org_id: str,
+    unfiltered: Select,
+    traces: list[Trace],
+    harmful: dict[str, dict],
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[Trace], list[dict]]:
+    """(traces to return, withdrawn entries) for one page of a search.
+
+    Two things beyond the SQL filter.
+
+    NAMED WHERE IT WOULD HAVE BEEN. A withdrawn trace is reported on the
+    page it would have appeared on without the policy, found by running the
+    same ranking unfiltered for ids only. One ranked off this page would not
+    have been handed over anyway, and naming it would say this search kept
+    out something it was never going to give.
+
+    ITS NEAR-DUPLICATES GO WITH IT. The holdout randomizes a near-duplicate
+    cluster as one unit under its oldest member (_cluster_representatives),
+    so the verdict on that member IS the verdict on the cluster: occasions
+    where a re-telling was what the agent saw were counted under the
+    original's id. Withdrawing the original alone would hand the same
+    content back through a re-telling, and randomize it under a new id.
+    """
+    would_have_shown = (
+        await session.execute(
+            unfiltered.with_only_columns(Trace.id).offset(offset).limit(limit)
+        )
+    ).scalars().all()
+    withdrawn = [
+        {"id": trace_id, "reason": harm.REASON, "evidence": harmful[trace_id]}
+        for trace_id in would_have_shown if trace_id in harmful
+    ]
+
+    if traces:
+        # Live originals only. An amendment is a near-duplicate of the trace
+        # it superseded by construction, and it is usually the FIX -- so
+        # clustering against a superseded original would withdraw the
+        # correction on the strength of the text it replaced. The amendment
+        # has its own id and gets its own trial.
+        originals = list((await session.execute(
+            select(Trace).where(
+                Trace.org_id == org_id, Trace.id.in_(list(harmful)),
+                Trace.quarantined.is_(False), Trace.superseded_at.is_(None),
+            )
+        )).scalars().all())
+        page = await _hydrate(session, traces)
+        representative_of = _cluster_representatives(page + await _hydrate(session, originals))
+        harmful_units = {representative_of.get(t.id, t.id): t.id for t in originals}
+        kept: list[Trace] = []
+        for trace in traces:
+            unit = representative_of.get(trace.id, trace.id)
+            if unit in harmful_units:
+                withdrawn.append({
+                    "id": trace.id,
+                    "reason": "near_duplicate_of_withdrawn",
+                    "duplicate_of": harmful_units[unit],
+                    "evidence": harmful[harmful_units[unit]],
+                })
+            else:
+                kept.append(trace)
+        traces = kept
+
+    titles = dict((await session.execute(
+        select(Trace.id, Trace.title).where(
+            Trace.org_id == org_id, Trace.id.in_([w["id"] for w in withdrawn]))
+    )).all()) if withdrawn else {}
+    for entry in withdrawn:
+        entry["title"] = titles.get(entry["id"], "")
+    return traces, withdrawn
 
 
 async def _record_search(session: AsyncSession, org_id: str, *, terms: list[str], results: int) -> None:

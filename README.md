@@ -576,6 +576,45 @@ memory, with the same validity checks as above.
   different one for an occasion already on record raises rather than
   silently changing the result.
 
+#### When a lesson is proven to hurt: stop handing it out
+
+A HURTS verdict is only useful if something happens next. Opt in, and
+retrieval stops injecting a lesson the experiment has shown makes outcomes
+worse:
+
+```bash
+commontrace retrieval --on-harm withdraw     # default: inform
+```
+
+The lesson is not hidden. Every retrieval it would have appeared in names it
+under `withdrawn` (MCP `retrieve`) or a `withdrawn --` line (`commontrace
+query`), with its effect and interval, and the retrieval receipt records why.
+Its slot goes to the next-ranked lesson.
+
+This doesn't bias the experiment that produced the verdict:
+
+- It acts only on the **anytime-valid** verdict (a confidence sequence that
+  holds at every sample size). Stopping when a boundary is crossed is the
+  one look a fixed 5% threshold can't survive. A modest harm that a fixed
+  test would already call HURTS stays in service until the sequential
+  bound agrees.
+- It is decided **before arms are assigned**, so a withdrawn lesson is never
+  logged as treated or withheld on an occasion it was absent from.
+- Ranking runs with the lesson still present, and the lesson is removed
+  afterwards, so every other lesson's relevance, and therefore its
+  eligibility, is unchanged.
+- Nothing happens while the experiment's audit is COMPROMISED. A new
+  randomization (`commontrace experiment --configure`) starts every lesson
+  with no verdict, which is how a rewritten lesson gets a second trial.
+- `core: true` lessons are exempt: they are never randomized, and core
+  means "present every time".
+
+On the Hub, `python -m hub.manage harm-policy <org_id> withdraw` does the
+same for `search_traces`. The trace's near-duplicates are withdrawn with it,
+because the holdout randomizes a duplicate cluster as one unit, so the
+verdict belongs to the whole cluster. Amendments are not: an amendment has
+its own id, is usually the fix, and gets its own trial.
+
 ### 10 — Run the pilot as one command: map, measure, and a yes/no
 
 ```bash

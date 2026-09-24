@@ -8,8 +8,10 @@ import sys
 
 from commontrace import (
     dosage,
+    evidence,
     evidence_io,
     frontmatter,
+    harm,
     holdout_io,
     lesson_cache,
     paths,
@@ -199,6 +201,58 @@ def _ranking_adjustments(
     return reliability_lookup, recency_lu
 
 
+def _core_slugs(lessons: list[tuple[str, dict]]) -> set[str]:
+    return {str(fm.get("name", "")) for _path, fm in lessons if dosage.is_core(fm)}
+
+
+def _print_withdrawn(slugs: list[str], harmful: dict[str, dict]) -> None:
+    """Name what the store's harm policy kept out, with the numbers.
+
+    Never silent, for the reason `not injected` is printed: a lesson that
+    matched and was not handed over is a fact about this retrieval, and one
+    that was kept out because it was measured to make outcomes WORSE is the
+    one an operator most needs to be able to find.
+    """
+    if not slugs:
+        return
+    parts = []
+    for slug in slugs:
+        ev = harmful.get(slug, {})
+        effect = ev.get("effect")
+        lo, hi = (ev.get("ci_95") or [None, None])[:2]
+        figure = f"effect {effect:+.1%}" if isinstance(effect, (int, float)) else "HURTS"
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            figure += f", 95% CI {lo:+.1%} to {hi:+.1%}"
+        parts.append(f"{slug} ({figure})")
+    print("\n[commontrace] withdrawn -- measured to make outcomes worse, so not "
+          "injected (commontrace retrieval --on-harm): " + ", ".join(parts))
+
+
+def _withdraw_from_semantic(
+    stdout: str, harmful: dict[str, dict], core: set[str], top_k: int,
+) -> tuple[str, list[str]]:
+    """The semantic arm's output with withdrawn lessons removed.
+
+    The arm is a separate script with no notion of a harm policy, so it is
+    asked for `top_k + len(harmful)` hits and the withdrawn ones are taken
+    out of its output here -- the same over-fetch-then-remove the lexical
+    ranking does (commontrace/harm.py:split), so the slot a withdrawn lesson
+    vacates goes to the next hit rather than to nothing.
+    """
+    if not harmful:
+        return stdout, []
+    kept_slugs, removed_slugs = harm.split(
+        _slugs_from_semantic_output(stdout), harmful, core, top_k, slug_of=lambda s: s,
+    )
+    keep = set(kept_slugs)
+    lines = []
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        if slug is None or slug in keep:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
+
+
 def _apply_dosage(
     active: list[tuple[str, dict]],
     ranked: list[tuple[str, float]],
@@ -363,12 +417,18 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
+    # Ranked with any withdrawn lesson still present and removed afterwards,
+    # exactly as MCP's `retrieve()` does (commontrace/harm.py).
+    harmful = evidence.withdrawn(root, config.harm_policy)
     ranked = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        args.task, lessons, top_k=args.top_k + len(harmful), floor=floor,
+        scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
+    ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), args.top_k)
+    withdrawn = [r.slug for r in withdrawn_ranked]
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and
     # saying so on every query would be noise nobody can act on -- and noise
@@ -393,6 +453,9 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         # command that moves the caller forward -- see commontrace/store_state.py.
         # The old message said "try lesson list" unconditionally, which shows
         # an empty list in exactly the cases where the user is most lost.
+        if withdrawn:
+            _print_withdrawn(withdrawn, harmful)
+            return 0
         print(store_state.why_no_results(root, searched="query"))
         return 0
 
@@ -414,6 +477,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             "--max-lessons`/`--max-chars`. Dropped: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+        _print_withdrawn(withdrawn, harmful)
         return 0
 
     # BEFORE the arms are assigned, and in the same order MCP's own
@@ -468,6 +532,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             "\n[commontrace] not injected: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+    _print_withdrawn(withdrawn, harmful)
     print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
@@ -481,9 +546,15 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
 
 
 
-def _semantic_slugs(args, root: str, missing_hint: str) -> tuple[int, list[str], str]:
-    """Run the semantic arm and return (rc, ranked slugs, raw stdout)."""
-    script_args = ["--top-k", str(args.top_k)]
+def _semantic_slugs(
+    args, root: str, missing_hint: str, extra: int = 0,
+) -> tuple[int, list[str], str]:
+    """Run the semantic arm and return (rc, ranked slugs, raw stdout).
+
+    `extra` over-fetches for lessons the caller will remove afterwards
+    (commontrace/harm.py).
+    """
+    script_args = ["--top-k", str(args.top_k + extra)]
     if args.include_importance_floor is not None:
         script_args.extend(
             ["--include-importance-floor", str(args.include_importance_floor)])
@@ -530,14 +601,20 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     already_shown = _already_shown(args, root)
     lessons = _exclude_shown(lessons, already_shown)
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
+    harmful = evidence.withdrawn(root, config.harm_policy)
+    core = _core_slugs(lessons)
     lexical = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        args.task, lessons, top_k=args.top_k + len(harmful), floor=floor,
+        scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
+    lexical, withdrawn_lexical = harm.split(lexical, harmful, core, args.top_k)
 
-    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)
+    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint, extra=len(harmful))
+    semantic, withdrawn_semantic = harm.split(
+        semantic, harmful, core, args.top_k, slug_of=lambda s: s)
     if already_shown and rc == 0:
         # The semantic arm runs as a separate subprocess
         # (memory/attention/query.py) with no knowledge of --exclude-shown,
@@ -567,7 +644,13 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         {"lexical": [r.slug for r in lexical], "semantic": semantic},
         k=config.rrf_k, top_k=args.top_k,
     )
+    # Named once each, in the order the arms found them.
+    withdrawn = list(dict.fromkeys(
+        [r.slug for r in withdrawn_lexical] + list(withdrawn_semantic)))
     if not fused:
+        if withdrawn:
+            _print_withdrawn(withdrawn, harmful)
+            return 0
         print(store_state.why_no_results(root, searched="query"))
         return 0
 
@@ -590,6 +673,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             "--max-lessons`/`--max-chars`. Dropped: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+        _print_withdrawn(withdrawn, harmful)
         return 0
 
     eligible = [c.slug for c in dose.admitted if not c.core]
@@ -639,6 +723,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             "\n[commontrace] not injected: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+    _print_withdrawn(withdrawn, harmful)
     print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
@@ -741,7 +826,12 @@ def run(args: argparse.Namespace) -> int:
     if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
         return _run_hybrid(args, root, missing_hint)
 
-    script_args = ["--top-k", str(args.top_k)]
+    # The script knows nothing of the harm policy, so it is over-asked by the
+    # number of withdrawn lessons and they are removed from what it returns
+    # (`_withdraw_from_semantic`) -- which means its output has to be
+    # captured, not streamed, whenever there is anything to withdraw.
+    harmful = evidence.withdrawn(root, retrieval_io.load_config(root).harm_policy)
+    script_args = ["--top-k", str(args.top_k + len(harmful))]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
     if args.agent_type:
@@ -754,8 +844,21 @@ def run(args: argparse.Namespace) -> int:
     script_args.extend(["--", args.task])
     script_path = os.path.join("memory", "attention", "query.py")
 
+    core: set[str] = set()
+    if harmful:
+        core = _core_slugs(_iter_active_lessons(root, args.agent_type))
+
     if not args.experiment:
-        return run_script(root, script_path, script_args, missing_hint)
+        if not harmful:
+            return run_script(root, script_path, script_args, missing_hint)
+        rc, stdout = run_script(root, script_path, script_args, missing_hint, capture=True)
+        if rc != 0:
+            sys.stdout.write(stdout)
+            return rc
+        stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
+        sys.stdout.write(stdout)
+        _print_withdrawn(withdrawn, harmful)
+        return 0
 
     if not args.occasion_id:
         print(
@@ -778,10 +881,13 @@ def run(args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stdout.write(stdout)
         return rc
+    # Before the arms are assigned: a withdrawn lesson is never eligible.
+    stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
 
     slugs = _slugs_from_semantic_output(stdout)
     if not slugs:
         sys.stdout.write(stdout)
+        _print_withdrawn(withdrawn, harmful)
         print(
             "[commontrace] --experiment: the semantic retriever returned no lessons, "
             "so no holdout arms were recorded for this occasion.",
@@ -796,6 +902,7 @@ def run(args: argparse.Namespace) -> int:
             print(f"{slug} | [WITHHELD - holdout]")
         else:
             print(line)
+    _print_withdrawn(withdrawn, harmful)
     print(
         f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
         f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "

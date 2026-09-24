@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from commontrace import holdout_io, paths, retrieval, retrieval_io
+from commontrace import harm, holdout_io, paths, retrieval, retrieval_io
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -70,6 +70,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "its rank among lessons that already cleared --floor. 0 (the default) "
              "disables this. Same non-eligibility-changing scope as --reliability-weight.",
     )
+    p.add_argument(
+        "--on-harm", dest="harm_policy", default=None, choices=list(harm.POLICIES),
+        help=f"{harm.POLICY_INFORM}: a lesson the experiment measured making outcomes "
+             "WORSE is still injected, with its verdict attached (default). "
+             f"{harm.POLICY_WITHDRAW}: it is no longer injected, and is named with its "
+             "evidence wherever it matched instead (commontrace/harm.py). Acts only on "
+             "the anytime-valid verdict of a readable experiment, before arms are "
+             "assigned, so it does not start a new randomization.",
+    )
     p.add_argument("--note", default="", help="Why these settings, recorded alongside them.")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -81,6 +90,7 @@ def run(args: argparse.Namespace) -> int:
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
         args.redundancy_threshold, args.reliability_weight, args.recency_weight,
+        args.harm_policy,
     )
     if all(value is None for value in setting):
         config = retrieval_io.load_config(root)
@@ -106,6 +116,12 @@ def run(args: argparse.Namespace) -> int:
             "  recency weight    : "
             + ("off" if config.recency_weight <= 0 else f"{config.recency_weight:.2f}")
         )
+        print(
+            "  on harm           : "
+            + ("withdraw (a lesson measured HURTS is not injected)"
+               if config.harm_policy == harm.POLICY_WITHDRAW
+               else "inform (a lesson measured HURTS is injected, with its verdict)")
+        )
         print(f"  logged as: {config.eligibility}")
         if config.note:
             print(f"  note   : {config.note}")
@@ -126,6 +142,7 @@ def run(args: argparse.Namespace) -> int:
             redundancy_threshold=args.redundancy_threshold,
             reliability_weight=args.reliability_weight,
             recency_weight=args.recency_weight,
+            harm_policy=args.harm_policy,
             note=args.note,
         )
     except ValueError as exc:
@@ -137,7 +154,8 @@ def run(args: argparse.Namespace) -> int:
         f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,} "
         f"redundancy={config.redundancy_threshold:.2f} "
         f"reliability_weight={config.reliability_weight:.2f} "
-        f"recency_weight={config.recency_weight:.2f}"
+        f"recency_weight={config.recency_weight:.2f} "
+        f"on_harm={config.harm_policy}"
     )
 
     # The consequence, stated at the moment it is caused -- the same posture

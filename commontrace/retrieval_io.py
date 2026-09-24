@@ -36,7 +36,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 
-from commontrace import dosage, paths, retrieval
+from commontrace import dosage, harm, paths, retrieval
 
 CONFIG_NAME = "retrieval.json"
 
@@ -126,6 +126,12 @@ class RetrievalConfig:
     #: moves its rank among lessons that already cleared `floor`. Same
     #: default-off reasoning as `reliability_weight`.
     recency_weight: float = 0.0
+    #: What retrieval does with a lesson the experiment measured making
+    #: outcomes worse (commontrace/harm.py): "inform" (the default) attaches
+    #: the verdict and still injects it; "withdraw" stops injecting it and
+    #: names it instead. Default-off for the reason every setting here that
+    #: changes what a running fleet is given is.
+    harm_policy: str = harm.POLICY_INFORM
 
     @property
     def eligibility(self) -> str:
@@ -267,6 +273,13 @@ def load_config(root: str) -> RetrievalConfig:
                         else FUSION_NONE
                     ),
                     rrf_k=max(1, _int_or(raw.get("rrf_k"), retrieval.DEFAULT_RRF_K)),
+                    # Same posture as fusion: an unrecognised value reads as
+                    # the default rather than stopping retrieval.
+                    harm_policy=(
+                        str(raw.get("harm_policy"))
+                        if raw.get("harm_policy") in harm.POLICIES
+                        else harm.POLICY_INFORM
+                    ),
                     configured_at=str(raw.get("configured_at") or ""),
                     note=str(raw.get("note") or ""),
                 )
@@ -314,6 +327,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
               fusion: str | None = None, max_lessons: int | None = None,
               max_chars: int | None = None, redundancy_threshold: float | None = None,
               reliability_weight: float | None = None, recency_weight: float | None = None,
+              harm_policy: str | None = None,
               note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings.
 
@@ -372,6 +386,12 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             f"recency weight must be in [0.0, 1.0] (0 disables it), "
             f"got {new_recency_weight}"
         )
+    new_harm_policy = current.harm_policy if harm_policy is None else harm_policy
+    if new_harm_policy not in harm.POLICIES:
+        raise ValueError(
+            f"unknown harm policy {new_harm_policy!r}: expected one of "
+            f"{', '.join(repr(p) for p in harm.POLICIES)}"
+        )
 
     config = RetrievalConfig(
         scorer=new_scorer,
@@ -385,6 +405,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
         redundancy_threshold=new_redundancy,
         reliability_weight=new_reliability_weight,
         recency_weight=new_recency_weight,
+        harm_policy=new_harm_policy,
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         note=note or current.note,
     )
@@ -413,6 +434,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                         "redundancy_threshold": config.redundancy_threshold,
                         "reliability_weight": config.reliability_weight,
                         "recency_weight": config.recency_weight,
+                        "harm_policy": config.harm_policy,
                         "configured_at": config.configured_at,
                         "note": config.note,
                     },

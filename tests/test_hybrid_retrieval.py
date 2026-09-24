@@ -362,7 +362,7 @@ class TestHybridThroughTheCommand:
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
         monkeypatch.setattr(
             query_cmd, "_semantic_slugs",
-            lambda args, root, hint: (rc, list(slugs), ""),
+            lambda args, root, hint, extra=0: (rc, list(slugs), ""),
         )
 
     def test_a_semantic_only_lesson_is_returned(self, store, monkeypatch, capsys):

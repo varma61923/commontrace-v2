@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from commontrace import experiment, holdout_io, integrity, paths
+from commontrace import experiment, harm, holdout_io, integrity, paths
 
 TTL_SECONDS = 300.0
 _cache: dict[str, tuple[tuple, float, dict]] = {}
@@ -56,7 +56,14 @@ def analyse(root: str) -> Analysis:
     if not rows:
         return Analysis(all_rows, rows, rate, corrupt, wanted_salt, n_other_salt, None, [])
     report = integrity.audit(rows)
-    effects = experiment.analyze(experiment_cmd._observations(rows))
+    # sequential=True for the reason hub/crud.py:causal_effects gives: these
+    # surfaces are looks at a RUNNING experiment, taken on every retrieval
+    # and whenever an agent asks, and a fixed threshold tested that often is
+    # crossed by luck (measured on this estimator: a false verdict in over a
+    # quarter of null runs). A store that withdraws harmful lessons acts on
+    # this verdict automatically (commontrace/harm.py), so it has to be one
+    # that survives having been watched.
+    effects = experiment.analyze(experiment_cmd._observations(rows), sequential=True)
     return Analysis(all_rows, rows, rate, corrupt, wanted_salt, n_other_salt, report, effects)
 
 
@@ -149,3 +156,23 @@ def attach(root: str, result: dict, *lists: str) -> None:
     for name in lists:
         for lesson in result.get(name) or []:
             lesson["evidence"] = evidence["by_lesson"].get(lesson.get("slug"), {"verdict": "NOT_MEASURED"})
+
+
+def withdrawn(root: str, policy: str) -> dict[str, dict]:
+    """slug -> evidence, for every lesson this store's harm policy withdraws
+    (commontrace/harm.py).
+
+    Empty unless the policy is `withdraw` AND the evidence is readable, so
+    the default policy never runs the analysis on its behalf. Never raises:
+    this runs on every retrieval, and failing to read the evidence must
+    leave retrieval exactly as it was, not stop it.
+    """
+    if policy != harm.POLICY_WITHDRAW:
+        return {}
+    try:
+        evidence = for_lessons(root)
+    except Exception:  # noqa: BLE001 - see docstring
+        return {}
+    if not evidence.get("available"):
+        return {}
+    return harm.hurts(evidence.get("by_lesson", {}))

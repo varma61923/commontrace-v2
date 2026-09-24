@@ -85,6 +85,7 @@ from commontrace import (
     dosage,
     evidence_io,
     frontmatter,
+    harm,
     holdout_io,
     lesson_cache,
     lesson_io,
@@ -331,7 +332,8 @@ def _apply_dosage(matched, active, config):
     return admitted, kept_core, dose
 
 
-def _record_receipt(root, occasion_id, task, active, injected, held, dose, config):
+def _record_receipt(root, occasion_id, task, active, injected, held, dose, config,
+                    withdrawn=()):
     """One receipt for this retrieval. See commontrace/receipts.py."""
     from commontrace import release as release_mod
 
@@ -365,6 +367,7 @@ def _record_receipt(root, occasion_id, task, active, injected, held, dose, confi
     withheld = tuple(
         [(item.get("slug", ""), "control arm (holdout)") for item in held]
         + [(d.slug, d.reason) for d in dose.dropped]
+        + [(slug, "measured harm (withdrawn)") for slug in sorted(withdrawn)]
     )
     receipts.record(root, receipts.Receipt(
         occasion_id=occasion_id,
@@ -591,9 +594,16 @@ def build_server(root: str, *, allow_approval: bool = True):
                 recency.recency_lookup(active)
                 if retrieval_config.recency_weight > 0 else None
             )
+            # Lessons this store's experiment measured making outcomes worse,
+            # if it withdraws them (commontrace/harm.py). Ranked WITH the rest
+            # and removed afterwards, over-fetching by their number, so every
+            # other lesson's relevance and the slot a withdrawn one vacates
+            # are exactly what they would be if it did not exist.
+            harmful = evidence_mod.withdrawn(root, retrieval_config.harm_policy)
+            want = max(1, min(int(top_k), 50))
             ranked = retrieval.rank_lessons(
                 task, active,
-                top_k=max(1, min(int(top_k), 50)),
+                top_k=want + len(harmful),
                 floor=retrieval_config.floor,
                 scorer=retrieval_config.scorer,
                 term_cache=term_cache,
@@ -604,6 +614,17 @@ def build_server(root: str, *, allow_approval: bool = True):
             )
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
+
+        ranked, withdrawn_ranked = harm.split(
+            ranked, harmful,
+            {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)},
+            want,
+        )
+        withdrawn_slugs = {r.slug for r in withdrawn_ranked}
+        withdrawn_items = [
+            {"slug": r.slug, "description": r.description, "reason": harm.REASON}
+            for r in withdrawn_ranked
+        ]
 
         matched_items = []
         for r in ranked:
@@ -748,6 +769,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             result["core_redundancy"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.noted
             ]
+        if withdrawn_items:
+            # Named, never silent -- the same rule as `not_injected`. No body:
+            # like a withheld lesson, it is here to say what was not handed
+            # over and why, not to be used.
+            result["withdrawn"] = withdrawn_items
+            result["withdrawn_note"] = harm.note(len(withdrawn_items))
         if occasion_id:
             result["withheld"] = held
             result["holdout_rate"] = config.rate if config.running else 0.0
@@ -759,7 +786,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "nothing causal can be measured. An operator starts one with "
                 "`commontrace experiment --configure --rate <r>`."
             )
-        if not injected and not held:
+        if not injected and not held and not withdrawn_items:
             result["note"] = (
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."
@@ -785,7 +812,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # what was retrieved rather than changing it.
         try:
             with _quiet():
-                evidence_mod.attach(root, result, "lessons", "withheld")
+                evidence_mod.attach(root, result, "lessons", "withheld", "withdrawn")
         except Exception as exc:  # noqa: BLE001
             result["evidence_error"] = f"{type(exc).__name__}: {exc}"
 
@@ -793,7 +820,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             try:
                 _record_receipt(
                     root, occasion_id, task, active, injected, held, dose,
-                    retrieval_config,
+                    retrieval_config, withdrawn=withdrawn_slugs,
                 )
             except Exception as exc:  # noqa: BLE001
                 result["receipt_error"] = (

@@ -167,6 +167,16 @@ class Organization(Base):
     # together for exactly that reason.
     holdout_prereg: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # What search does with a trace this org's experiment measured making
+    # outcomes WORSE (commontrace/harm.py): "inform" (the default) returns it
+    # with its HURTS verdict attached; "withdraw" stops returning it and
+    # names it instead. Default-off because switching it on changes what a
+    # running fleet is given, which is a decision rather than an upgrade
+    # side effect.
+    harm_policy: Mapped[str] = mapped_column(
+        String(16), default="inform", server_default="inform", nullable=False
+    )
+
     # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
     #
     # A two-call design, deliberately: `request_account_deletion` alone

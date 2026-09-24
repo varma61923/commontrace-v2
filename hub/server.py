@@ -706,6 +706,11 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
         HELPS, and treat HURTS as a lesson that made outcomes worse. No
         numbers are shown while the experiment is compromised.
 
+        If your org has chosen to withdraw such lessons, they are not
+        returned; the ones that would have been on this page are listed
+        under `withdrawn` (id, title, reason, evidence -- no text), along
+        with their near-duplicates. Do not go looking for them.
+
         Pass `occasion_id` -- your own identifier for the task you are
         about to do -- and, IF an operator has started a randomized
         holdout for your org, the response also carries a `holdout` block

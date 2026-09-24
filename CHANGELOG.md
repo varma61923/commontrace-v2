@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A lesson proven to make outcomes worse can now be withdrawn
+  automatically.** `commontrace retrieval --on-harm withdraw` stops `query`
+  and the MCP `retrieve` tool from injecting any lesson whose verdict is
+  HURTS. Instead, the lesson is named with its effect and interval
+  wherever it would have appeared, and in the retrieval receipt. It acts
+  only on the anytime-valid verdict of a readable experiment. It is
+  applied before arms are assigned, and after ranking, so no other
+  lesson's relevance or eligibility moves. Core lessons are exempt, and
+  a new randomization gives every lesson a fresh trial. The default,
+  `inform`, is unchanged behaviour (`commontrace/harm.py`). On the Hub,
+  `python -m hub.manage harm-policy <org> withdraw` does the same for
+  `search_traces` (new `organizations.harm_policy` column). The filter
+  runs in the query, so paging stays exact, and a withdrawn trace's
+  near-duplicates are withdrawn with it: the holdout measured them as
+  one unit, so leaving a re-telling in would hand the same content back.
+
 - **Search results now carry each lesson's measured causal evidence.**
   Once an org has holdout data, every `search_traces` result includes
   `evidence`: its `verdict` (HELPS, HURTS, NO_MEASURABLE_EFFECT,
@@ -64,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no loss of the actionable behavioral contract.
 
 ### Fixed
+
+- **A perfect split could never be declared.** The anytime-valid interval
+  returned "no claim" (−100% to +100%) whenever neither arm had seen both
+  outcomes, however many occasions had accrued. So a lesson that worked on
+  every occasion it was injected into, and never without it, stayed
+  UNDERPOWERED forever, on the Hub as well as locally. That case now uses
+  the variance bound that holds for any 0/1 outcome (¼ per observation).
+  A small sample still makes no claim; a large one concludes.
+- **The local evidence surfaces now read a running experiment the way the
+  Hub does.** The evidence on `retrieve` results and `experiment_status`
+  used a fixed 5% threshold. Both are looked at on every call, and a
+  fixed threshold under repeated looks is crossed by luck. They now use
+  the same anytime-valid boundary as the Hub's `causal_effects`.
 
 - **A torn line in the holdout or outcome log no longer takes the next
   record with it.** A writer that died mid-line left the file without a
