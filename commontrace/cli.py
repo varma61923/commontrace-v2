@@ -117,10 +117,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        res = args.func(args)
+        return 0 if res is None else int(res)
     except FrontmatterError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
         return 1
+    except (argparse.ArgumentError, argparse.ArgumentTypeError) as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         # 130 is the shell convention for SIGINT; a traceback here is noise.
         print("\n[commontrace] interrupted.", file=sys.stderr)

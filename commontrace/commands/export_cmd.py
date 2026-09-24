@@ -147,8 +147,9 @@ def run(args: argparse.Namespace) -> int:
     opened = None
     if args.out:
         try:
-            opened = open(args.out, "w", encoding="utf-8", newline="\n")
-        except OSError as exc:
+            safe_out = paths.safe_prepare_output_path(args.out)
+            opened = open(safe_out, "w", encoding="utf-8", newline="\n")
+        except (OSError, ValueError) as exc:
             print(f"[commontrace] could not write {args.out!r}: {exc}", file=sys.stderr)
             return 1
         out = opened

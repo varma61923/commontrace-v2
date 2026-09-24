@@ -28,9 +28,20 @@ import sys
 import time
 import zipfile
 
-import numpy as np
-import yaml
-from sentence_transformers import SentenceTransformer
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 # The only model this project's build_index.py ever writes into index.npz. index.npz
 # is a local build artifact, but it can arrive on a machine via a git clone/fork/sync
@@ -165,6 +176,35 @@ def load_importances() -> "ImportancesResult":
         except (TypeError, ValueError):
             out[str(slug)] = 3
     return ImportancesResult(out, n_parsed, newest_active_mtime)
+
+
+def load_importances_from_index(data) -> "ImportancesResult | None":
+    """Extract ({slug: importance} for active lessons, n_parsed=0) directly from index.npz.
+    Returns None if importances/statuses metadata is not co-located in the index.
+    """
+    if isinstance(data, (str, os.PathLike)):
+        try:
+            with np.load(data, allow_pickle=False) as npz:
+                return load_importances_from_index(npz)
+        except Exception:
+            return None
+    files = data.files if hasattr(data, "files") else data
+    if "importances" not in files or "statuses" not in files:
+        return None
+    try:
+        raw_importances = data["importances"]
+        raw_statuses = data["statuses"]
+        slugs = data["slugs"]
+        out: dict[str, int] = {}
+        for i, s in enumerate(slugs):
+            if str(raw_statuses[i]) == "active":
+                try:
+                    out[str(s)] = int(raw_importances[i])
+                except (TypeError, ValueError):
+                    out[str(s)] = 3
+        return ImportancesResult(out, 0, 0.0)
+    except Exception:
+        return None
 
 
 # Each record here is small, fixed-shape operational-cost metadata (see the
@@ -346,6 +386,7 @@ def main() -> int:
         )
         return 1
 
+    fast_importances = None
     try:
         # `with`, not a bare np.load(): NpzFile keeps the underlying zip
         # file open until closed, and array access below (data[...])
@@ -365,6 +406,7 @@ def main() -> int:
             # index cannot answer that question" from "no lesson matches".
             agent_types = data["agent_types"] if "agent_types" in data.files else None
             n_lessons = int(data["n_lessons"])
+            fast_importances = load_importances_from_index(data)
     except (zipfile.BadZipFile, OSError, ValueError, EOFError, KeyError) as exc:
         print(
             f"[ERR] Index file at {INDEX_PATH} is corrupted ({exc}). "
@@ -433,12 +475,39 @@ def main() -> int:
     # cosine == dot when both are unit-norm
     scores = embeddings @ q_emb
 
-    # Loaded here, once, and reused below for the top-K filter as well as the
-    # importance-floor override -- load_importances() only walks currently
-    # ACTIVE lesson files on disk, so this is also the authoritative "is this
-    # index slug still active" set.
-    importances_res = load_importances()
-    importances, n_frontmatters_parsed = importances_res
+    # Fast path: load importances directly from co-located index.npz metadata,
+    # eliminating O(N) disk I/O and YAML parsing per query.
+    # Falls back to disk scan (load_importances()) if index lacks metadata.
+    if fast_importances is not None:
+        importances_res = fast_importances
+        importances, n_frontmatters_parsed = importances_res
+        try:
+            idx_mtime = os.path.getmtime(INDEX_PATH)
+        except OSError:
+            idx_mtime = 0.0
+        for path in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md")):
+            if os.path.basename(path) == "lesson_template.md":
+                continue
+            try:
+                if os.path.getmtime(path) > idx_mtime:
+                    with open(path, "r", encoding="utf-8-sig") as fh:
+                        content = fh.read()
+                    delims = list(_DELIM_RE.finditer(content))
+                    if len(delims) >= 2:
+                        fm = _load_frontmatter(content[delims[0].end():delims[1].start()]) or {}
+                        if isinstance(fm, dict) and fm.get("status", "active") == "active":
+                            s = fm.get("name")
+                            if s and _SLUG_RE.match(str(s)):
+                                try:
+                                    importances[str(s)] = int(fm.get("importance", 3))
+                                except (TypeError, ValueError):
+                                    importances[str(s)] = 3
+                                n_frontmatters_parsed += 1
+            except OSError:
+                pass
+    else:
+        importances_res = load_importances()
+        importances, n_frontmatters_parsed = importances_res
 
     # Top-K by cosine (descending), active lessons only. index.npz keeps a
     # row for every lesson it was built from; a lesson archived (or deleted
@@ -502,7 +571,9 @@ def main() -> int:
         LESSONS_DIR,
         indexed_slugs,
         set(importances.keys()),
-        newest_active_mtime=getattr(importances_res, "newest_active_mtime", None),
+        newest_active_mtime=(
+            getattr(importances_res, "newest_active_mtime", None) if n_frontmatters_parsed > 0 else None
+        ),
     )
 
     brief_lines = [

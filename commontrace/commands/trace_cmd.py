@@ -25,7 +25,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _iter_trace_paths(root: str, explicit: str | None):
     if explicit:
-        yield explicit
+        safe_path = paths.enforce_boundary(root, explicit)
+        yield safe_path
         return
     tdir = paths.traces_dir(root)
     for p in sorted(glob.glob(os.path.join(tdir, "*.md"))):
@@ -37,8 +38,10 @@ def _iter_trace_paths(root: str, explicit: str | None):
 def run_validate(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     schema = validate.load_schema("trace.schema.json")
-    if args.path and not os.path.isfile(args.path):
-        frontmatter.read(args.path)
+    if args.path:
+        safe_path = paths.enforce_boundary(root, args.path)
+        if not os.path.isfile(safe_path):
+            frontmatter.read(safe_path)
     n_checked = 0
     n_failed = 0
     for path in _iter_trace_paths(root, args.path):
