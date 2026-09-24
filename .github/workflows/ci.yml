@@ -105,16 +105,17 @@ jobs:
       - name: Install commontrace (core, no extras)
         run: python -m pip install -e .
 
-      # Measured on a dedicated dev box: ~250ms at 6,400 lessons. CI runners
-      # are slower and noisier, so this ceiling has real headroom above
-      # that -- it exists to catch a regression of ORDERS of magnitude
-      # (back toward the ~8s the uncached path measured at the same size),
-      # not to chase this specific machine's number.
-      - name: Local-tier retrieval must not regress back to O(N) YAML re-parsing
+      # Measured on a dev box at 6,400 lessons: ~300ms before the in-memory
+      # lesson-cache memo and per-store ranking index, ~45ms after. CI
+      # runners are slower and noisier, so the ceiling keeps ~10x headroom
+      # over the current number while still failing a regression back to
+      # rebuilding every lesson's statistics per query (and far below the
+      # ~8s of the original uncached YAML re-parsing).
+      - name: Local-tier retrieval must not regress back to O(N) re-parsing or re-indexing
         run: |
           python -m commontrace.reference.measure_local_latency \
             --sizes 100,400,1600,6400 --runs 3 \
-            --max-total-ms 2000 --max-alpha 1.5
+            --max-total-ms 500 --max-alpha 1.5
 
   sdk-typescript:
     # audit 6.4: "a TypeScript client is the first [non-Python SDK] worth

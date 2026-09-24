@@ -18,11 +18,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "which lessons are logged as eligible.",
     )
     p.add_argument(
-        "--scorer", default=None, choices=[retrieval.SCORER_IDF, retrieval.SCORER_COUNT],
-        help=f"{retrieval.SCORER_IDF}: IDF-weighted and length-normalized, comparable "
-             f"across fields (default). {retrieval.SCORER_COUNT}: the historical raw "
-             "word-overlap sum, kept so a store mid-experiment can stay on what its "
-             "existing assignments were made under.",
+        "--scorer", default=None, choices=list(retrieval.LEXICAL_SCORERS),
+        help=f"{retrieval.SCORER_IDF_V3}: IDF-weighted, length-normalized and "
+             "Porter-stemmed, comparable across fields (default). "
+             f"{retrieval.SCORER_IDF_V2}: the same without stemming. "
+             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. The "
+             "older two are kept so a store mid-experiment can stay on what its "
+             "existing assignments were made under; switching scorer takes that "
+             "scorer's default floor unless --floor is given.",
     )
     p.add_argument(
         "--fusion", default=None, choices=list(retrieval_io.FUSIONS),

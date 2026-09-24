@@ -20,6 +20,7 @@ derived from the store's own corpus can, with nothing hardcoded per field.
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from typing import Any
 
 from commontrace._lexical import STOPWORDS as _STOPWORDS
 from commontrace._lexical import WORD_RE as _WORD_RE
+from commontrace._stem import stem as _stem
 
 # The relevance floor a lesson must clear to be retrieved at all, when a store
 # has not configured its own (commontrace/retrieval_io.py). See `rank_lessons`
@@ -65,12 +67,61 @@ from commontrace._lexical import WORD_RE as _WORD_RE
 # are disproportionately marginal-relevance or concentrated, rather than
 # silently pooling them into the causal estimate. See
 # tests/test_cross_field_retrieval.py for the CI gate this corresponds to.
-DEFAULT_FLOOR = 0.04
+IDF_V2_FLOOR = 0.04
 
 # Scorer identities, recorded on every holdout assignment so an experiment can
 # never silently pool occasions scored two different ways.
-SCORER_IDF = "idf-v2"
+#
+# idf-v3 is idf-v2 with every term Porter-stemmed (commontrace/_stem.py), so
+# "reset", "resets" and "resetting" are one term. OPT-IN, not the default:
+# see IDF_V3_FLOOR below for what it buys and the one place it costs. A
+# scorer is recorded on every holdout assignment, so a store can switch
+# only by starting a new randomization, never mid-experiment.
+SCORER_IDF_V3 = "idf-v3"
+SCORER_IDF_V2 = "idf-v2"
+SCORER_IDF = SCORER_IDF_V2
 SCORER_COUNT = "count-v1"
+LEXICAL_SCORERS = (SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
+
+# idf-v3's floor, chosen the way IDF_V2_FLOOR was: jointly against every
+# corpus with a gate on it, never one alone. Stemming lets more lessons
+# match, so relevance sits higher on the same scale and the floor has to
+# rise with it -- at 0.04, legal-field pollution on the six-field fixture
+# went to 2.50x, over its 2.4x ceiling. Measured together
+# (commontrace/reference/measure_retrieval.py, commons/eval/
+# retrieval_tiers.py, and the public LoCoMo dialogue benchmark in
+# benchmark/peers/):
+#
+#   scorer  floor   fixture worst   fixture   commons   commons   LoCoMo
+#                   pollution       min P@1   R@5       neg@1     R@10    MRR
+#   idf-v2  0.04    2.33x           0.89      0.913     1.00      0.540   0.387
+#   idf-v3  0.04    2.50x           1.00      0.978     1.00      0.580   0.421
+#   idf-v3  0.064   2.17x   <- here 1.00      0.957     0.86      0.558   0.414
+#   idf-v3  0.08    1.78x           1.00        --        --      0.472   0.390
+#
+# Why it is not the default: at 0.064 it is better than idf-v2 on the worst
+# field and in seven of the eight fields, but NOT in clinical (1.72x ->
+# 2.06x) -- Porter conflates derivations ("medically"/"medication" ->
+# "medic", "authorization" -> "author"), and a small curated store feels
+# every extra match. Raising the floor until every field is cleaner (0.08)
+# gives back the recall that was the point. tests/test_cross_field_
+# retrieval.py requires the DEFAULT scorer to beat the historical one in
+# every single field, and that bar is not lowered to ship this. Stores of
+# conversational or free-text memory, where recall is the constraint, are
+# the case for opting in.
+IDF_V3_FLOOR = 0.064
+
+# The default for the default scorer.
+DEFAULT_FLOOR = IDF_V2_FLOOR
+
+
+def default_floor(scorer: str) -> float:
+    """The floor a store gets for `scorer` when it has not set its own."""
+    if scorer == SCORER_COUNT:
+        return 0.0
+    if scorer == SCORER_IDF_V2:
+        return IDF_V2_FLOOR
+    return IDF_V3_FLOOR
 
 # BM25's length-normalization strength. 0 disables it; 1 normalizes fully.
 _LENGTH_B = 0.5
@@ -84,6 +135,15 @@ _LENGTH_CLAMP = (0.5, 1.5)
 
 def _tokenize(text: str) -> list[str]:
     return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+
+
+def _terms_for(scorer: str, terms) -> set[str]:
+    """The terms a scorer compares: stemmed for idf-v3, as tokenized for
+    the others. Applied to already-tokenized terms, so a `term_cache` built
+    for one scorer serves every scorer."""
+    if scorer == SCORER_IDF_V3:
+        return {_stem(t) for t in terms}
+    return set(terms)
 
 
 @dataclass(frozen=True)
@@ -205,6 +265,115 @@ def _rank_int(value: Any) -> int:
         return 0
 
 
+@dataclass(frozen=True)
+class _CorpusIndex:
+    """Everything `rank_lessons` derives from the corpus rather than the query.
+
+    n_terms[i]    lesson i's distinct terms across all fields (length factor)
+    postings      term -> (lesson indices containing it, ascending;
+                           per lesson, the summed weight of the fields it is in;
+                           per lesson, the strongest such field's weight)
+    doc_freq      term -> number of lessons containing it
+    """
+
+    n_terms: list[int]
+    postings: dict[str, tuple[tuple[int, ...], tuple[float, ...], tuple[float, ...]]]
+    doc_freq: dict[str, int]
+    n_docs: int
+    avg_field_len: float
+    max_idf: float
+
+
+def _build_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
+    n_terms: list[int] = []
+    postings: dict[str, tuple[list[int], list[float], list[float]]] = {}
+    for i, (path, fm) in enumerate(lessons):
+        cached = term_cache.get(path) if term_cache else None
+        if cached is not None and len(cached) == len(_FIELD_WEIGHTS):
+            pairs = zip(cached, _FIELD_WEIGHTS)
+        else:
+            pairs = ((_tokenize(text), weight) for text, weight in _lesson_text_weighted(fm))
+        # term -> [summed weight of the fields containing it, strongest one]
+        in_doc: dict[str, list[float]] = {}
+        for raw_terms, weight in pairs:
+            for term in _terms_for(scorer, raw_terms):
+                entry = in_doc.get(term)
+                if entry is None:
+                    in_doc[term] = [weight, weight]
+                else:
+                    entry[0] += weight
+                    if weight > entry[1]:
+                        entry[1] = weight
+        for term, (weight_sum, best) in in_doc.items():
+            post = postings.get(term)
+            if post is None:
+                post = postings[term] = ([], [], [])
+            post[0].append(i)
+            post[1].append(weight_sum)
+            post[2].append(best)
+        n_terms.append(len(in_doc))
+    doc_freq = {term: len(post[0]) for term, post in postings.items()}
+    n_docs = len(lessons)
+    return _CorpusIndex(
+        n_terms=n_terms,
+        postings={term: (tuple(a), tuple(b), tuple(c)) for term, (a, b, c) in postings.items()},
+        doc_freq=doc_freq,
+        n_docs=n_docs,
+        avg_field_len=(sum(n_terms) / len(n_terms)) if n_terms else 0.0,
+        max_idf=max((_idf(n_docs, df) for df in doc_freq.values()), default=0.0),
+    )
+
+
+# Recently built indexes, keyed by exactly what they were built from. A
+# long-lived MCP server answers every `retrieve` against the same store, and
+# rebuilding every lesson's term sets and the document-frequency table on
+# each call made ranking linear in the store's size: 153ms per query at
+# 6,400 lessons, for statistics that had not changed. Small, because a
+# process ranks against one store (occasionally a filtered view of it, e.g.
+# `exclude_shown`), and each entry holds a whole store's term sets.
+_INDEX_CACHE: dict[tuple, tuple[tuple, _CorpusIndex]] = {}
+_INDEX_CACHE_MAX = 4
+
+
+def _corpus_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
+    """The corpus index for `lessons`, reused while none of them changed.
+
+    Reuse needs proof the corpus is the same one: `term_cache` must carry
+    each lesson file's (mtime_ns, size) -- commontrace/lesson_cache.py's
+    TermCache does -- and the key is every lesson's path AND stamp, in
+    order, so a changed, added, removed or re-ordered lesson is a different
+    key. Anything without stamps (a caller's own list, a test) builds a
+    fresh index every call, which is the behaviour before this existed.
+    Either way the index, and so every relevance, is identical: this only
+    decides whether it is rebuilt.
+    """
+    stamps = getattr(term_cache, "stamps", None)
+    if not stamps:
+        return _build_index(lessons, term_cache, scorer)
+    if lessons is getattr(term_cache, "lessons", None) and term_cache.fingerprint is not None:
+        # The unfiltered snapshot this term cache was built with: its
+        # fingerprint, and that fingerprint's hash, were computed once.
+        fingerprint, fp_hash = term_cache.fingerprint, term_cache.fingerprint_hash
+    else:
+        try:
+            fingerprint = tuple((path, stamps[path]) for path, _fm in lessons)
+        except KeyError:
+            return _build_index(lessons, term_cache, scorer)
+        fp_hash = hash(fingerprint)
+    # Keyed by the hash (a large tuple re-hashes on every lookup), and a hit
+    # is only a hit if the full fingerprint matches too -- by identity for
+    # the same snapshot, which is the common case and costs nothing.
+    key = (scorer, fp_hash)
+    hit = _INDEX_CACHE.get(key)
+    if hit is not None and (hit[0] is fingerprint or hit[0] == fingerprint):
+        return hit[1]
+    index = _build_index(lessons, term_cache, scorer)
+    if key not in _INDEX_CACHE and len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
+        _INDEX_CACHE.pop(next(iter(_INDEX_CACHE)))
+    _INDEX_CACHE[key] = (fingerprint, index)
+    return index
+
+
 def rank_lessons(
     task: str,
     lessons: list[tuple[str, dict]],
@@ -237,8 +406,8 @@ def rank_lessons(
     so `score > 0` was the only gate that could be written, and every lesson
     sharing one incidental word with the query was retrieved.
 
-    Only lessons at or above `floor` are returned. `floor=None` uses
-    DEFAULT_FLOOR; pass 0.0 to disable the gate.
+    Only lessons at or above `floor` are returned. `floor=None` uses the
+    scorer's own default (`default_floor`); pass 0.0 to disable the gate.
 
     Ties break toward higher `importance` (a lesson explicitly marked more
     consequential wins), then toward more prior `uses`.
@@ -281,43 +450,18 @@ def rank_lessons(
     floor, the holdout log, and every existing caller keep reading the exact
     number they always did.
     """
-    query_terms = set(_tokenize(task))
+    query_terms = _terms_for(scorer, _tokenize(task))
     if not query_terms:
         return []
     if floor is None:
-        floor = 0.0 if scorer == SCORER_COUNT else DEFAULT_FLOOR
+        floor = default_floor(scorer)
 
     # Corpus statistics over the candidate set: document frequency per term,
-    # and mean term count per weighted field. Recomputed on every call
-    # because `lessons` is the candidate set for THIS call and must reflect
-    # the store as it is right now -- a stale IDF table would rank against a
-    # corpus that no longer exists. What can be skipped, via `term_cache`, is
-    # re-tokenizing field text that has not changed since it was last read;
-    # the statistics built FROM those terms are still fresh every time.
-    field_terms_by_lesson: list[list[tuple[set[str], float]]] = []
-    doc_freq: dict[str, int] = {}
-    field_len_totals: list[float] = []
-    for path, fm in lessons:
-        cached = term_cache.get(path) if term_cache else None
-        per_field: list[tuple[set[str], float]] = []
-        seen_in_doc: set[str] = set()
-        if cached is not None and len(cached) == len(_FIELD_WEIGHTS):
-            for cached_terms, weight in zip(cached, _FIELD_WEIGHTS):
-                terms = set(cached_terms)
-                per_field.append((terms, weight))
-                seen_in_doc |= terms
-        else:
-            for field_text, weight in _lesson_text_weighted(fm):
-                terms = set(_tokenize(field_text))
-                per_field.append((terms, weight))
-                seen_in_doc |= terms
-        for term in seen_in_doc:
-            doc_freq[term] = doc_freq.get(term, 0) + 1
-        field_terms_by_lesson.append(per_field)
-        field_len_totals.append(float(len(seen_in_doc)))
-
-    n_docs = len(lessons)
-    avg_field_len = (sum(field_len_totals) / len(field_len_totals)) if field_len_totals else 0.0
+    # and mean term count per weighted field -- built once per store snapshot
+    # and reused while the store is unchanged (`_corpus_index`).
+    index = _corpus_index(lessons, term_cache, scorer)
+    doc_freq = index.doc_freq
+    n_docs = index.n_docs
 
     # The denominator: the query's total information content -- over EVERY
     # query term, not just the ones some lesson happens to contain.
@@ -337,7 +481,6 @@ def rank_lessons(
     query_idf = {
         t: _idf(n_docs, doc_freq[t]) for t in query_terms if doc_freq.get(t, 0) > 0
     }
-    corpus_idfs = [_idf(n_docs, df) for df in doc_freq.values()]
     # The reference scale is the most informative term the corpus contains,
     # not the query's own total. Dividing by the query's own IDF sum makes the
     # measure self-normalizing, which hides exactly what IDF is for: a query
@@ -345,7 +488,7 @@ def rank_lessons(
     # 100% of its own information covered by every lesson, and scored ~1.0.
     # Against an absolute reference it scores what it is worth -- near zero --
     # while a discriminating match still reaches the top of the scale.
-    max_idf = max(corpus_idfs) if corpus_idfs else 0.0
+    max_idf = index.max_idf
     total_query_idf = len(query_terms) * max_idf
 
     # (RankedLesson, importance, uses) rather than a separate by_slug dict
@@ -356,42 +499,51 @@ def rank_lessons(
     # specific (path, fm) pair that produced them, not to a name that may
     # not be unique.
     scored: list[tuple[RankedLesson, int, int]] = []
-    for (path, fm), per_field in zip(lessons, field_terms_by_lesson):
-        score = 0.0
-        matched: set[str] = set()
-        # Best field weight per matched term, so a term repeated across four
-        # fields is credited once at its strongest position rather than four
-        # times -- the other half of the breadth-beats-precision problem.
-        best_weight: dict[str, float] = {}
-        for terms, weight in per_field:
-            hits = query_terms & terms
-            if not hits:
-                continue
-            score += weight * len(hits)
-            matched |= hits
-            for term in hits:
-                if weight > best_weight.get(term, 0.0):
-                    best_weight[term] = weight
+    # Only lessons sharing a term with the query can score above zero, and a
+    # zero score is never returned -- so only those are visited, in corpus
+    # order, which keeps the stable sort's tie order exactly what a full pass
+    # produced.
+    # One pass over the query terms' postings. Each lesson's `score` is the
+    # sum, over the fields a matched term appears in, of that field's weight;
+    # its `covered` credits each matched term once, at its strongest field --
+    # a term repeated across four fields is not counted four times, the
+    # other half of the breadth-beats-precision problem. Terms are visited in
+    # sorted order, so each lesson's `covered` is summed in sorted-term
+    # order: str hashing (hence set iteration order) is PYTHONHASHSEED-
+    # randomized per process, floating-point addition is not associative,
+    # and summing in an unspecified order made `rel` -- tested against
+    # `floor` before it is rounded -- vary at the ULP level between
+    # processes (measured: 99.7% of realistic (idf, weight) draws are
+    # order-dependent). A lesson within a few ULP of the floor could clear it
+    # in one process and not another, and eligibility is the denominator of
+    # a causal estimate (commontrace/integrity.py). `score` is a sum of
+    # multiples of 0.5 and exact in any order.
+    #
+    # Only lessons sharing a term with the query can score above zero, and a
+    # zero score is never returned, so only those are visited -- in corpus
+    # order, which keeps the stable selection's tie order exactly what a full
+    # pass produced.
+    acc: dict[int, list] = {}
+    for term in sorted(query_terms):
+        post = index.postings.get(term)
+        if post is None:
+            continue
+        term_idf = query_idf.get(term, 0.0)
+        for i, weight_sum, best in zip(*post):
+            a = acc.get(i)
+            if a is None:
+                a = acc[i] = [0.0, 0.0, []]
+            a[0] += weight_sum
+            a[1] += term_idf * (best / _MAX_FIELD_WEIGHT)
+            a[2].append(term)
+    for i in sorted(acc):
+        (path, fm) = lessons[i]
+        score, covered, matched = acc[i]
 
         if scorer == SCORER_COUNT:
             rel = score
         elif total_query_idf > 0 and matched:
-            lam = _length_factor(len(set().union(*(t for t, _w in per_field))), avg_field_len)
-            # sorted(), not a bare set iteration: `matched` is a set[str], and
-            # str hashing (hence set iteration order) is PYTHONHASHSEED-
-            # randomized per process. Floating-point addition is not
-            # associative, so summing in an unspecified order made `covered`
-            # -- and therefore `rel`, tested against `floor` a few lines below
-            # before it is rounded -- vary at the ULP level between processes.
-            # Measured: 99.7% of realistic (idf, weight) draws produce a
-            # summation-order-dependent total. A lesson landing within a few
-            # ULP of the floor could clear it in one process and not another
-            # -- and eligibility is the denominator of a causal estimate
-            # (commontrace/integrity.py), so it must not depend on hash seed.
-            covered = sum(
-                query_idf.get(term, 0.0) * (best_weight[term] / _MAX_FIELD_WEIGHT)
-                for term in sorted(matched)
-            )
+            lam = _length_factor(index.n_terms[i], index.avg_field_len)
             # Clamped: `lam` may exceed 1.0 for a lesson shorter than average
             # (a deliberate small boost), and the bound this measure documents
             # -- and that the shared floor depends on -- must hold regardless.
@@ -412,31 +564,40 @@ def rank_lessons(
             adjusted = min(1.0, max(0.0,
                 rel + reliability_weight * reliability_adj + recency_weight * recency_adj,
             ))
+            # The sort key plus what is needed to build the result -- the
+            # RankedLesson itself is only built for the lessons returned.
             scored.append((
-                RankedLesson(
-                    path=path,
-                    slug=slug,
-                    description=str(fm.get("description", "")),
-                    score=score,
-                    matched_terms=sorted(matched),
-                    relevance=round(rel, 6),
-                    scorer=scorer,
-                    reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
-                    recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
-                ),
-                adjusted,
-                _rank_int(fm.get("importance", 0)),
-                _rank_int(fm.get("uses", 0)),
+                adjusted, score,
+                _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)),
+                path, fm, slug, matched, rel, reliability_adj, recency_adj,
             ))
 
-    scored.sort(key=lambda item: (item[1], item[0].score, item[2], item[3]), reverse=True)
     # max(0, ...): a plain `scored[:top_k]` on a negative top_k is a Python
     # slice, not a bounds check -- `scored[:-1]` means "all but the last
     # item", not "nothing", so a negative top_k silently returned nearly
     # the whole ranked list instead of failing. query_cmd.py's CLI already
     # rejects a negative --top-k before it reaches here; this clamp is the
     # same guarantee for any other caller of this function directly.
-    return [lesson for lesson, _, _, _ in scored[: max(0, top_k)]]
+    #
+    # heapq.nlargest is documented as equivalent to
+    # sorted(..., reverse=True)[:n] -- the same stable order, ties included
+    # -- without sorting every lesson that cleared the floor to return three.
+    top = heapq.nlargest(max(0, top_k), scored, key=lambda item: item[:4])
+    return [
+        RankedLesson(
+            path=path,
+            slug=slug,
+            description=str(fm.get("description", "")),
+            score=score,
+            matched_terms=list(matched),
+            relevance=round(rel, 6),
+            scorer=scorer,
+            reliability_adjustment=round(reliability_adj, 6) if reliability_lookup else 0.0,
+            recency_adjustment=round(recency_adj, 6) if recency_lookup else 0.0,
+        )
+        for (_adj, score, _imp, _uses, path, fm, slug, matched, rel,
+             reliability_adj, recency_adj) in top
+    ]
 
 
 # --- Combining two rankings that do not share a scale -----------------------

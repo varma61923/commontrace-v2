@@ -80,6 +80,9 @@ commontrace/**
 !commontrace/decay.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
+# retrieval.py's own import: the Porter stemmer behind the opt-in idf-v3
+# scorer. Pure stdlib (functools).
+!commontrace/_stem.py
 # Secret/PII/prompt-injection screening (OWASP ASI06), imported at module
 # level by hub/abuse.py:suspicion_reason so the same content-safety scan
 # a customer's own `commontrace lesson approve` runs also gates

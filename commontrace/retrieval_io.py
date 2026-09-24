@@ -248,11 +248,13 @@ def load_config(root: str) -> RetrievalConfig:
                 raw = json.load(fh)
             if isinstance(raw, dict):
                 scorer = str(raw.get("scorer") or retrieval.SCORER_IDF)
-                if scorer not in (retrieval.SCORER_IDF, retrieval.SCORER_COUNT):
+                if scorer not in retrieval.LEXICAL_SCORERS:
                     scorer = retrieval.SCORER_IDF
                 return RetrievalConfig(
                     scorer=scorer,
-                    floor=_float_or(raw.get("floor"), retrieval.DEFAULT_FLOOR),
+                    # The scorer's own default when unset: each scorer's
+                    # relevance sits on its own scale (retrieval.default_floor).
+                    floor=_float_or(raw.get("floor"), retrieval.default_floor(scorer)),
                     # Absent in a config written before budgets existed,
                     # which is the overwhelmingly common case: such a store
                     # gets the defaults rather than zero, because a budget
@@ -347,12 +349,20 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
     """
     current = load_config(root)
     new_scorer = current.scorer if scorer is None else scorer
-    if new_scorer not in (retrieval.SCORER_IDF, retrieval.SCORER_COUNT):
+    if new_scorer not in retrieval.LEXICAL_SCORERS:
         raise ValueError(
-            f"unknown scorer {new_scorer!r}: expected "
-            f"{retrieval.SCORER_IDF!r} or {retrieval.SCORER_COUNT!r}"
+            f"unknown scorer {new_scorer!r}: expected one of "
+            f"{', '.join(repr(s) for s in retrieval.LEXICAL_SCORERS)}"
         )
-    new_floor = current.floor if floor is None else float(floor)
+    # A scorer change without an explicit floor takes the new scorer's own
+    # default: relevance sits on a different scale under each, so carrying
+    # the old floor across would silently mean a different cut.
+    if floor is not None:
+        new_floor = float(floor)
+    elif new_scorer != current.scorer:
+        new_floor = retrieval.default_floor(new_scorer)
+    else:
+        new_floor = current.floor
     if not 0.0 <= new_floor <= 1.0:
         raise ValueError(f"relevance floor must be in [0.0, 1.0], got {new_floor}")
     new_fusion = current.fusion if fusion is None else fusion
