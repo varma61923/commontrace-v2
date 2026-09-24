@@ -133,8 +133,9 @@ def run(args: argparse.Namespace) -> int:
         # installed on the machine that ran `init`.
         print(
             "[commontrace] The attention extra is installed. For the most accurate "
-            "retrieval, rank by keyword and meaning together:\n"
-            "  commontrace retrieval --fusion rrf"
+            "retrieval, rank by keyword and meaning together and rerank the top "
+            "candidates:\n"
+            "  commontrace retrieval --fusion rrf --rerank cross-encoder"
         )
 
     print()

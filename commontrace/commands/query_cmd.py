@@ -17,6 +17,7 @@ from commontrace import (
     paths,
     recency,
     redundancy,
+    rerank_arm,
     retrieval,
     retrieval_io,
     revision,
@@ -409,6 +410,56 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
     return seen
 
 
+def _rerank_depth(config: retrieval_io.RetrievalConfig, top_k: int) -> tuple[bool, int, str]:
+    """(reranking, how deep the first stage fetches, why not reranking).
+
+    Same gate as MCP's `retrieve`: a store that configured the reranker but
+    cannot load it ranks for the page, exactly as if it had not asked
+    (commontrace/rerank_arm.py).
+    """
+    if config.rerank != retrieval_io.RERANK_CE:
+        return False, top_k, ""
+    skipped = rerank_arm.ready()
+    if skipped:
+        return False, top_k, skipped
+    return True, rerank_arm.pool_size(top_k), ""
+
+
+def _rerank_pool(
+    task: str,
+    lessons: list[tuple[str, dict]],
+    first_stage: list[tuple[str, float]],
+    withdrawn: list[str],
+    top_k: int,
+) -> tuple[list[tuple[str, float]] | None, list[str], str]:
+    """The reranked page, the withdrawn lessons that would have been on it,
+    and why not if reranking failed (then the page is None). MCP's
+    `retrieve` runs the same step on the same inputs."""
+    path_by_slug = {str(fm.get("name", "")): path for path, fm in lessons}
+    try:
+        page, on_page = rerank_arm.rerank(
+            task, [slug for slug, _ in first_stage],
+            rerank_arm.texts(
+                [slug for slug, _ in first_stage] + list(withdrawn),
+                path_by_slug, frontmatter.read,
+            ),
+            top_k, withdrawn=withdrawn,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
+        return None, withdrawn, f"the reranker failed: {type(exc).__name__}: {exc}"
+    return page, on_page, ""
+
+
+def _note_rerank_skipped(config: retrieval_io.RetrievalConfig, why: str, label: str) -> None:
+    if config.rerank != retrieval_io.RERANK_NONE and why:
+        print(
+            f"[commontrace] this store configures rerank={config.rerank!r}, but this query "
+            f"kept the first stage's order: {why}. The holdout assignment records "
+            f"{label!r} accordingly.",
+            file=sys.stderr,
+        )
+
+
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
@@ -420,15 +471,28 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     # Ranked with any withdrawn lesson still present and removed afterwards,
     # exactly as MCP's `retrieve()` does (commontrace/harm.py).
     harmful = evidence.withdrawn(root, config.harm_policy)
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k)
     ranked = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k + len(harmful), floor=floor,
+        args.task, lessons, top_k=depth + len(harmful), floor=floor,
         scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
-    ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), args.top_k)
+    ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), depth)
     withdrawn = [r.slug for r in withdrawn_ranked]
+    page = [(r.slug, r.relevance) for r in ranked]
+    reranked = None
+    if reranking:
+        reranked, withdrawn, rerank_skipped = _rerank_pool(
+            args.task, lessons, page, withdrawn, args.top_k)
+        # A failed rerank serves the pool's head (MCP's `retrieve` does the same).
+        page = reranked if reranked is not None else page[: args.top_k]
+    label = retrieval_io.rerank_label(
+        config.scorer,
+        retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+    )
+    _note_rerank_skipped(config, rerank_skipped, label)
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and
     # saying so on every query would be noise nobody can act on -- and noise
@@ -467,9 +531,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     # lessons from this command than from its own agents retrieving over
     # MCP, which is two treatments under one experiment.
     ranked_by_slug = {r.slug: r for r in ranked}
-    considered, dose = _apply_dosage(
-        lessons, [(r.slug, r.relevance) for r in ranked], config,
-    )
+    considered, dose = _apply_dosage(lessons, page, config)
     if not dose.admitted:
         print(
             f"[commontrace] {len(ranked)} lesson(s) matched, but this store's injection "
@@ -503,7 +565,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         withheld = _apply_holdout(
             args, root, eligible,
             relevance={c.slug: c.relevance for c in dose.admitted},
-            scorer=config.scorer,
+            scorer=label,
             floor=floor,
         )
 
@@ -515,7 +577,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             continue
         r = ranked_by_slug.get(c.slug)
         if r is not None:
-            print(f"{c.slug:45s} rel={r.relevance:4.2f}  {r.description}")
+            ce = f" ce={c.relevance:+5.2f}" if reranked is not None else ""
+            print(f"{c.slug:45s} rel={r.relevance:4.2f}{ce}  {r.description}")
             print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
         else:
             # A core lesson admitted alongside the ranked set rather than
@@ -603,18 +666,20 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     harmful = evidence.withdrawn(root, config.harm_policy)
     core = _core_slugs(lessons)
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k)
     lexical = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k + len(harmful), floor=floor,
+        args.task, lessons, top_k=depth + len(harmful), floor=floor,
         scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
-    lexical, withdrawn_lexical = harm.split(lexical, harmful, core, args.top_k)
+    lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
 
-    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint, extra=len(harmful))
+    rc, semantic, stdout = _semantic_slugs(
+        args, root, missing_hint, extra=len(harmful) + depth - args.top_k)
     semantic, withdrawn_semantic = harm.split(
-        semantic, harmful, core, args.top_k, slug_of=lambda s: s)
+        semantic, harmful, core, depth, slug_of=lambda s: s)
     if already_shown and rc == 0:
         # The semantic arm runs as a separate subprocess
         # (memory/attention/query.py) with no knowledge of --exclude-shown,
@@ -642,11 +707,21 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
 
     fused = retrieval.reciprocal_rank_fusion(
         {"lexical": [r.slug for r in lexical], "semantic": semantic},
-        k=config.rrf_k, top_k=args.top_k,
+        k=config.rrf_k, top_k=depth,
     )
     # Named once each, in the order the arms found them.
     withdrawn = list(dict.fromkeys(
         [r.slug for r in withdrawn_lexical] + list(withdrawn_semantic)))
+    reranked = None
+    if reranking:
+        reranked, withdrawn, rerank_skipped = _rerank_pool(
+            args.task, lessons, fused, withdrawn, args.top_k)
+        fused = reranked if reranked is not None else fused[: args.top_k]
+    label = retrieval_io.rerank_label(
+        config.eligibility_label_for(fused=True),
+        retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+    )
+    _note_rerank_skipped(config, rerank_skipped, label)
     if not fused:
         if withdrawn:
             _print_withdrawn(withdrawn, harmful)
@@ -693,7 +768,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             # recording the lexical relevance would describe a ranking this
             # query did not perform.
             relevance={c.slug: c.relevance for c in dose.admitted},
-            scorer=config.eligibility,
+            scorer=label,
             floor=floor,
         )
 
@@ -710,7 +785,9 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         if slug in semantic:
             arms.append("semantic")
         score_label = (
-            f"rrf={fused_score_by_slug[slug]:5.3f}" if slug in fused_score_by_slug
+            (f"ce={fused_score_by_slug[slug]:+5.2f}" if reranked is not None
+             else f"rrf={fused_score_by_slug[slug]:5.3f}")
+            if slug in fused_score_by_slug
             # A core lesson admitted alongside the fused set rather than
             # because either arm ranked it -- see commontrace/dosage.py.
             else "[core]     "

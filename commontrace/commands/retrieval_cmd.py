@@ -82,6 +82,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "the anytime-valid verdict of a readable experiment, before arms are "
              "assigned, so it does not start a new randomization.",
     )
+    p.add_argument(
+        "--rerank", default=None, choices=list(retrieval_io.RERANKS),
+        help=f"{retrieval_io.RERANK_NONE}: keep the first stage's order (default). "
+             f"{retrieval_io.RERANK_CE}: a cross-encoder reads the task and each of the "
+             "first stage's top candidates together and reorders them "
+             "(commontrace/rerank_arm.py). It never adds a lesson the first stage did "
+             "not find, but it decides which make the top k, so like --fusion it starts "
+             "a new randomization. Needs the attention extra.",
+    )
     p.add_argument("--note", default="", help="Why these settings, recorded alongside them.")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -93,7 +102,7 @@ def run(args: argparse.Namespace) -> int:
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
         args.redundancy_threshold, args.reliability_weight, args.recency_weight,
-        args.harm_policy,
+        args.harm_policy, args.rerank,
     )
     if all(value is None for value in setting):
         config = retrieval_io.load_config(root)
@@ -103,6 +112,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"  fusion : {config.fusion}"
               + (f"  (k={config.rrf_k})" if config.fusion == retrieval_io.FUSION_RRF
                  else ""))
+        print(f"  rerank : {config.rerank}")
         print(f"  budget : {config.max_lessons} lessons, {config.max_chars:,} chars")
         print(
             "  redundancy: "
@@ -146,6 +156,7 @@ def run(args: argparse.Namespace) -> int:
             reliability_weight=args.reliability_weight,
             recency_weight=args.recency_weight,
             harm_policy=args.harm_policy,
+            rerank=args.rerank,
             note=args.note,
         )
     except ValueError as exc:
@@ -154,7 +165,7 @@ def run(args: argparse.Namespace) -> int:
 
     print(
         f"[commontrace] retrieval: scorer={config.scorer} floor={config.floor:.2f} "
-        f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,} "
+        f"fusion={config.fusion} rerank={config.rerank} budget={config.max_lessons}/{config.max_chars:,} "
         f"redundancy={config.redundancy_threshold:.2f} "
         f"reliability_weight={config.reliability_weight:.2f} "
         f"recency_weight={config.recency_weight:.2f} "
@@ -168,7 +179,7 @@ def run(args: argparse.Namespace) -> int:
     # an unconfigured store's config defaults to DEFAULT_HOLDOUT_RATE, so
     # `running` is True for a store that has never run an experiment at all,
     # and warning there would teach people to ignore the warning.
-    # Fusion belongs here for the same reason scorer and floor do: it decides
+    # Fusion and reranking belong here for the same reason scorer and floor do: it decides
     # which lessons are eligible on an occasion. The budget deliberately does
     # NOT -- it changes how many of the eligible set are injected, which the
     # holdout already records per lesson, not which lessons have an arm.
@@ -176,6 +187,7 @@ def run(args: argparse.Namespace) -> int:
         config.scorer != before.scorer
         or abs(config.floor - before.floor) > 1e-9
         or config.fusion != before.fusion
+        or config.rerank != before.rerank
     )
     has_history = retrieval_io.has_recorded_assignments(root)
     if changed_eligibility and has_history and holdout_io.load_config(root).running:

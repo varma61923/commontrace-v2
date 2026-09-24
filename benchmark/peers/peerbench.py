@@ -305,6 +305,26 @@ class RRF(System):
         return [slug for slug, _ in fused]
 
 
+class Reranked(System):
+    """A first stage reordered by commontrace's reranker, as `--rerank
+    cross-encoder` runs it: the first stage hands over
+    `rerank_arm.pool_size(k)` candidates and `rerank_arm.rerank` keeps k.
+    Each memory's text is what the cross-encoder reads."""
+
+    def __init__(self, first: System, label: str):
+        from commontrace import rerank_arm
+        self.first, self.name, self.rerank_arm = first, label, rerank_arm
+
+    def index(self, docs):
+        self.first.index(docs)
+        self.text = {d.id: d.text for d in docs}
+
+    def search(self, query, k):
+        pool = self.first.search(query, self.rerank_arm.pool_size(k))
+        page, _ = self.rerank_arm.rerank(query, pool, self.text, k)
+        return [slug for slug, _ in page]
+
+
 class Chroma(System):
     """chromadb, in-process, default embedding function (ONNX all-MiniLM-L6-v2, HNSW)."""
 
@@ -334,11 +354,17 @@ class Mem0(System):
 
     name = "mem0 2.x (vector+BM25+entities, infer=False)"
 
-    def __init__(self, workdir: str):
+    def __init__(self, workdir: str, rerank: bool = False):
         os.environ.setdefault("OPENAI_API_KEY", "sk-unused-no-llm-calls")
         os.environ["MEM0_TELEMETRY"] = "False"
         self.workdir = workdir
         self.n = 0
+        # mem0's own reranker, with the same cross-encoder commontrace's
+        # uses. mem0 reorders the results it would return (`limit`); it does
+        # not fetch a deeper pool, so this is measured as it ships.
+        self.rerank = rerank
+        if rerank:
+            self.name = "mem0 2.x + its cross-encoder rerank (same model)"
 
     def index(self, docs):
         from mem0 import Memory
@@ -350,6 +376,9 @@ class Mem0(System):
                 "collection_name": f"case{self.n}", "embedding_model_dims": 384,
                 "path": os.path.join(self.workdir, f"qd{os.getpid()}-{self.n}"), "on_disk": False}},
         }
+        if self.rerank:
+            cfg["reranker"] = {"provider": "sentence_transformer", "config": {
+                "model": "cross-encoder/ms-marco-MiniLM-L-6-v2", "device": "cpu"}}
         self.m = Memory.from_config(cfg)
         self.user = f"u{self.n}"
         self.by_text: dict[str, str] = {}
@@ -357,7 +386,8 @@ class Mem0(System):
             self.m.add(d.text, user_id=self.user, infer=False, metadata={"doc": d.id})
 
     def search(self, query, k):
-        res = self.m.search(query, filters={"user_id": self.user}, top_k=k)["results"]
+        res = self.m.search(query, filters={"user_id": self.user}, top_k=k,
+                            rerank=self.rerank)["results"]
         return [r["metadata"]["doc"] for r in res if r.get("metadata", {}).get("doc")]
 
 
@@ -420,6 +450,13 @@ def _build_one(n: str, cache: str, workdir: str) -> System:
     if n == "ct-fusion-v3":
         return RRF([CTLexical(scorer="idf-v3"), Dense(mpnet, "commontrace semantic (mpnet)", cache)],
                    "commontrace fusion (idf-v3+semantic, RRF)")
+    if n in ("ct-fusion-rerank", "ct-fusion-v3-rerank", "ct-lexical-rerank"):
+        first = {
+            "ct-fusion-rerank": lambda: _build_one("ct-fusion", cache, workdir),
+            "ct-fusion-v3-rerank": lambda: _build_one("ct-fusion-v3", cache, workdir),
+            "ct-lexical-rerank": CTLexical,
+        }[n]()
+        return Reranked(first, f"{first.name} + cross-encoder rerank")
     if n == "bm25":
         return BM25()
     if n == "dense-minilm":
@@ -431,6 +468,8 @@ def _build_one(n: str, cache: str, workdir: str) -> System:
         return Chroma()
     if n == "mem0":
         return Mem0(workdir)
+    if n == "mem0-rerank":
+        return Mem0(workdir, rerank=True)
     raise SystemExit(f"unknown system {n}")
 
 

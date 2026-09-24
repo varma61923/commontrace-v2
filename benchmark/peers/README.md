@@ -12,6 +12,8 @@ python -m spacy download en_core_web_sm            # mem0's lemmatizer
 python benchmark/peers/peerbench.py --download      # LoCoMo + LongMemEval
 python benchmark/peers/peerbench.py --dataset locomo \
     --systems ct-lexical,ct-lexical:idf-v3,ct-semantic,ct-fusion,ct-fusion-v3,bm25,dense-minilm,hybrid,chroma,mem0
+python benchmark/peers/peerbench.py --dataset locomo \
+    --systems ct-lexical-rerank,ct-fusion-rerank,ct-fusion-v3-rerank,mem0-rerank
 python benchmark/peers/peerbench.py --dataset longmemeval --per-type 10 \
     --systems ct-lexical,ct-lexical:idf-v3,ct-semantic,ct-fusion,ct-fusion-v3,bm25,dense-minilm,hybrid
 ```
@@ -59,11 +61,13 @@ k results is scored on what it returned.
 | commontrace lexical (idf-v3) | the same, opt-in stemmed scorer |
 | commontrace semantic | the semantic arm's model (`multi-qa-mpnet-base-dot-v1`), exact cosine |
 | commontrace fusion | lexical + semantic, fused by rank (RRF, k=60), as `--fusion rrf` does: each arm contributes the requested number of results |
+| commontrace + rerank | the first stage hands its top 30 to `commontrace/rerank_arm.py`, which reorders them with a cross-encoder (`ms-marco-MiniLM-L-6-v2`), as `--rerank cross-encoder` does |
 | BM25 (Okapi) | `rank_bm25`; the keyword arm of the hybrid search Graphiti/Zep, Hindsight and mem0 describe |
 | dense MiniLM | `all-MiniLM-L6-v2`, exact cosine; the default local embedding in Chroma, mem0's HF provider and LlamaIndex examples |
 | hybrid BM25 + MiniLM | the two fused the same way: the keyword + vector pattern Graphiti/Zep describe |
 | Chroma | `chromadb` 1.5.9, in-process, default embedding function (ONNX MiniLM, HNSW) |
 | mem0 | `mem0ai` 2.2.0 with `infer=False` (memories stored verbatim, no LLM): its hybrid search -- MiniLM vectors, lemmatized BM25, entity boosts -- on local Qdrant |
+| mem0 + rerank | the same, with mem0's own `sentence_transformer` reranker on the same cross-encoder, `rerank=True`. mem0 reorders the results it would return; it does not fetch a deeper pool |
 
 **Not run**, because retrieving at all requires an LLM call to build or
 query their memory (no API keys were used): Zep/Graphiti, Letta, Hindsight,
@@ -76,7 +80,10 @@ the two.
 
 | System | R@5 | R@10 | NDCG@10 | MRR |
 |---|---:|---:|---:|---:|
-| **commontrace fusion (idf-v3 + semantic)** | **0.568** | **0.660** | **0.486** | **0.464** |
+| **commontrace fusion (idf-v3) + rerank** | **0.676** | **0.734** | **0.627** | **0.629** |
+| commontrace fusion (idf-v2) + rerank | 0.670 | 0.726 | 0.622 | 0.626 |
+| commontrace lexical (idf-v2) + rerank | 0.597 | 0.624 | 0.562 | 0.577 |
+| commontrace fusion (idf-v3 + semantic) | 0.568 | 0.660 | 0.486 | 0.464 |
 | commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
 | mem0 2.x hybrid | 0.543 | 0.625 | 0.466 | 0.446 |
 | hybrid BM25 + MiniLM | 0.499 | 0.615 | 0.433 | 0.407 |
@@ -91,9 +98,11 @@ Recall@10 by question category:
 
 | System | single-hop | temporal | multi-hop | open-domain |
 |---|---:|---:|---:|---:|
-| commontrace fusion (idf-v3) | **0.764** | **0.723** | 0.371 | **0.373** |
+| commontrace fusion (idf-v3) + rerank | **0.833** | 0.783 | **0.475** | **0.445** |
+| commontrace fusion (idf-v2) + rerank | 0.821 | **0.785** | 0.467 | 0.441 |
+| commontrace fusion (idf-v3) | 0.764 | 0.723 | 0.371 | 0.373 |
 | commontrace fusion (idf-v2) | 0.754 | 0.712 | 0.340 | 0.351 |
-| mem0 2.x hybrid | 0.694 | **0.723** | **0.396** | 0.348 |
+| mem0 2.x hybrid | 0.694 | 0.723 | 0.396 | 0.348 |
 | hybrid BM25 + MiniLM | 0.718 | 0.686 | 0.318 | 0.319 |
 | BM25 (Okapi) | 0.643 | 0.625 | 0.215 | 0.277 |
 
@@ -133,13 +142,22 @@ above 500 ms).
 
 ## What the numbers say
 
-- **CommonTrace's fused retrieval is the most accurate stack measured on
-  LoCoMo.** With the stemmed lexical arm it beats mem0's current hybrid
-  search on every aggregate metric, leads on single-hop and open-domain
-  questions and ties on temporal ones. mem0 is better on multi-hop
-  questions, whose evidence spans several turns; its entity boosts link
-  those turns. With the default lexical arm, fusion finds more answers in
-  the top 10 than mem0 (0.645 vs 0.625) and ranks them slightly lower.
+- **With reranking, CommonTrace leads every system measured, on every
+  metric and every LoCoMo category.** Fused retrieval reranked by a small
+  cross-encoder puts an answering turn in the top 5 for 67.0% of questions
+  (67.6% with the stemmed arm), against 54.3% for mem0's hybrid search, and
+  its MRR is 0.626 against 0.446. The reranker closes the one gap fusion
+  alone left: multi-hop questions, whose evidence spans several turns,
+  where mem0's entity boosts had led (0.396); reranked fusion reaches 0.467.
+- **Reranking helps because the pool is good.** The cross-encoder can only
+  reorder what the first stage found. Over the lexical arm alone it lifts
+  R@5 from 0.472 to 0.597, but R@10 stays at 0.624, because the answer is
+  not in a keyword pool it cannot see past. Over the fused pool, R@10 rises
+  to 0.726.
+- **Without reranking, fusion is still ahead.** With the stemmed lexical arm
+  it beats mem0's hybrid search on every aggregate metric; with the default
+  arm it finds more answers in the top 10 (0.645 vs 0.625) and ranks them
+  slightly lower.
 - **CommonTrace's default lexical retriever matches or beats BM25** on both
   datasets and is faster per query. On LongMemEval it leads BM25 by 2.7
   points of R@5 and 3.3 of R@10.

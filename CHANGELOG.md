@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-encoder reranking, opt-in** (`commontrace retrieval --rerank
+  cross-encoder`, `commontrace/rerank_arm.py`). The first stage (lexical, or
+  fused with the semantic arm) hands its top 30 candidates to a small
+  cross-encoder (`ms-marco-MiniLM-L-6-v2`), which reads the task and each
+  lesson together and reorders them; the page is its top k. On LoCoMo's
+  1,531 questions, fused retrieval with reranking finds an answering turn
+  in the top 5 for 67.0% of questions and in the top 10 for 72.6%, against
+  54.3% and 62.5% for mem0 2.x. It reorders only what the first stage
+  found, after the floor, `exclude_shown` and core handling, and never
+  adds a lesson. Both surfaces run it identically; assignments record
+  `ce:minilm6(<first stage>)`, so turning it on reads as a new treatment.
+  A withdrawn lesson is named only if its score would have put it on the
+  page. A store that cannot load the model ranks exactly as if it had not
+  asked, and says so (`rerank_note`).
 - **A reproducible peer benchmark** (`benchmark/peers/`). It runs
   CommonTrace against mem0 2.x, Chroma, BM25, dense and hybrid retrieval
   on LoCoMo (1,531 questions) and a stratified LongMemEval subset, scored

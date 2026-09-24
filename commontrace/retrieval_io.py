@@ -56,6 +56,14 @@ FUSIONS = (FUSION_NONE, FUSION_RRF)
 #: missing extra) pooled two treatments with nothing to show it.
 SEMANTIC_ONLY = "semantic"
 
+#: Second-stage reranking of the first stage's candidates
+#: (commontrace/rerank_arm.py). "none" keeps the first stage's order.
+RERANK_NONE = "none"
+#: A cross-encoder reads the task and each candidate together and reorders
+#: the pool by that score.
+RERANK_CE = "cross-encoder"
+RERANKS = (RERANK_NONE, RERANK_CE)
+
 # WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
 # ---------------------------------------------------
 # The holdout log records `scorer` and `floor` as the evidence of what decided
@@ -70,21 +78,42 @@ SEMANTIC_ONLY = "semantic"
 # that an older reader would ignore, and no second check that could disagree
 # with the first about the same fact.
 _FUSION_LABEL = re.compile(r"^rrf\((?P<lexical>[^+()]+)\+semantic\)$")
+# A reranked ranking wraps the first stage's label with the model that
+# reordered it: a different model is a different treatment.
+_RERANK_LABEL = re.compile(r"^ce:(?P<model>[^()]+)\((?P<inner>.+)\)$")
 
 
-def eligibility_label(scorer: str, fusion: str) -> str:
+def eligibility_label(scorer: str, fusion: str, rerank: str = RERANK_NONE) -> str:
     """What to record as the `scorer` of an assignment made under these settings."""
-    if fusion == FUSION_RRF:
-        return f"rrf({scorer}+semantic)"
-    return scorer
+    label = f"rrf({scorer}+semantic)" if fusion == FUSION_RRF else scorer
+    return rerank_label(label, rerank)
+
+
+def rerank_label(first_stage: str, rerank: str) -> str:
+    """`first_stage`'s label, wrapped with the reranker when one reordered it."""
+    if rerank == RERANK_CE:
+        from commontrace import rerank_arm
+
+        return f"ce:{rerank_arm.MODEL_TAG}({first_stage})"
+    return first_stage
+
+
+def parse_rerank_label(label: str) -> tuple[str, str]:
+    """(first-stage label, rerank mode) for a recorded label."""
+    match = _RERANK_LABEL.match(label or "")
+    if match:
+        return match.group("inner"), RERANK_CE
+    return label, RERANK_NONE
 
 
 def parse_eligibility_label(label: str) -> tuple[str, str]:
     """Inverse of `eligibility_label`: (lexical scorer, fusion mode).
 
     A label this build does not recognise is read as a plain scorer with no
-    fusion, which is what every pre-fusion log line is.
+    fusion, which is what every pre-fusion log line is. A reranker's wrapper
+    is looked through (`parse_rerank_label` reads it).
     """
+    label, _rerank = parse_rerank_label(label)
     match = _FUSION_LABEL.match(label or "")
     if match:
         return match.group("lexical"), FUSION_RRF
@@ -144,11 +173,21 @@ class RetrievalConfig:
     #: names it instead. Default-off for the reason every setting here that
     #: changes what a running fleet is given is.
     harm_policy: str = harm.POLICY_INFORM
+    #: Second-stage reranking (commontrace/rerank_arm.py). Off by default: it
+    #: changes which lessons make the top k, so turning it on is a new
+    #: treatment, and it needs the attention extra.
+    rerank: str = RERANK_NONE
 
     @property
     def eligibility(self) -> str:
         """The label an assignment made under these settings records."""
-        return eligibility_label(self.scorer, self.fusion)
+        return eligibility_label(self.scorer, self.fusion, self.rerank)
+
+    def eligibility_label_for(self, *, fused: bool) -> str:
+        """The FIRST stage's label as it actually ran: fused only if the
+        semantic arm did run. A reranker's wrapper is added by the caller,
+        only if it ran (`rerank_label`)."""
+        return eligibility_label(self.scorer, FUSION_RRF if fused else FUSION_NONE)
     configured_at: str = ""
     note: str = ""
     # True when these settings were inferred for an existing store rather than
@@ -294,6 +333,11 @@ def load_config(root: str) -> RetrievalConfig:
                         if raw.get("harm_policy") in harm.POLICIES
                         else harm.POLICY_INFORM
                     ),
+                    rerank=(
+                        str(raw.get("rerank"))
+                        if raw.get("rerank") in RERANKS
+                        else RERANK_NONE
+                    ),
                     configured_at=str(raw.get("configured_at") or ""),
                     note=str(raw.get("note") or ""),
                 )
@@ -326,6 +370,7 @@ def load_config(root: str) -> RetrievalConfig:
             scorer=scorer,
             floor=floor,
             fusion=fusion,
+            rerank=parse_rerank_label(label)[1],
             pinned_for_running_experiment=True,
         )
     if has_recorded_assignments(root):
@@ -341,7 +386,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
               fusion: str | None = None, max_lessons: int | None = None,
               max_chars: int | None = None, redundancy_threshold: float | None = None,
               reliability_weight: float | None = None, recency_weight: float | None = None,
-              harm_policy: str | None = None,
+              harm_policy: str | None = None, rerank: str | None = None,
               note: str = "") -> RetrievalConfig:
     """Persist this store's retrieval settings. Returns the new settings.
 
@@ -353,7 +398,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
     with nothing printed. A partial write is the wrong shape for a settings
     file that more than one command edits.
 
-    Callers that change `scorer`, `floor` or `fusion` on a store with a
+    Callers that change `scorer`, `floor`, `fusion` or `rerank` on a store with a
     running experiment must rotate the holdout salt afterwards
     (holdout_io.configure): all three change which lessons are eligible, so
     the assignments before and after describe two different treatments,
@@ -408,6 +453,12 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
             f"recency weight must be in [0.0, 1.0] (0 disables it), "
             f"got {new_recency_weight}"
         )
+    new_rerank = current.rerank if rerank is None else rerank
+    if new_rerank not in RERANKS:
+        raise ValueError(
+            f"unknown reranker {new_rerank!r}: expected one of "
+            f"{', '.join(repr(r) for r in RERANKS)}"
+        )
     new_harm_policy = current.harm_policy if harm_policy is None else harm_policy
     if new_harm_policy not in harm.POLICIES:
         raise ValueError(
@@ -428,6 +479,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
         reliability_weight=new_reliability_weight,
         recency_weight=new_recency_weight,
         harm_policy=new_harm_policy,
+        rerank=new_rerank,
         configured_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         note=note or current.note,
     )
@@ -457,6 +509,7 @@ def configure(root: str, *, scorer: str | None = None, floor: float | None = Non
                         "reliability_weight": config.reliability_weight,
                         "recency_weight": config.recency_weight,
                         "harm_policy": config.harm_policy,
+                        "rerank": config.rerank,
                         "configured_at": config.configured_at,
                         "note": config.note,
                     },

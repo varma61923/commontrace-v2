@@ -1033,6 +1033,24 @@ so the arm composition is recorded inside the label each holdout assignment
 carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
 reported as a compromised run rather than absorbed silently.
 
+**Reranking.** Both arms score the task and a lesson separately. A
+cross-encoder reads them together, which ranks far better and is far too
+slow to run over a whole store, so it runs over the first stage's top 30
+and only reorders them:
+
+```bash
+commontrace retrieval --fusion rrf --rerank cross-encoder
+```
+
+On LoCoMo, fused retrieval with reranking puts an answering turn in the top
+5 for 67.0% of questions, up from 53.1% without it; mem0 2.x reaches 54.3%.
+The model (`cross-encoder/ms-marco-MiniLM-L-6-v2`, 22M parameters) comes
+with the attention extra and downloads on first use. Like fusion, it
+decides which lessons make the page, so assignments record it
+(`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new
+treatment. A store that cannot load the model ranks exactly as if it had
+not asked, and says so.
+
 **Stemming.** `commontrace retrieval --scorer idf-v3` makes "retrying" match
 "retry" and "uploads" match "upload". It lifts recall on free-text and
 conversational memory (LongMemEval session recall@5 0.852 → 0.926). It is

@@ -95,6 +95,7 @@ from commontrace import (
     receipts,
     recency,
     redundancy,
+    rerank_arm,
     retrieval,
     retrieval_io,
     revision,
@@ -602,9 +603,18 @@ def build_server(root: str, *, allow_approval: bool = True):
             # are exactly what they would be if it did not exist.
             harmful = evidence_mod.withdrawn(root, retrieval_config.harm_policy)
             want = max(1, min(int(top_k), 50))
+            # A reranking store hands the reranker a deeper pool than the
+            # page (commontrace/rerank_arm.py), and only if it can actually
+            # rerank: otherwise it ranks for the page, as if it had not asked.
+            rerank_skipped = ""
+            if retrieval_config.rerank == retrieval_io.RERANK_CE:
+                with _quiet():
+                    rerank_skipped = rerank_arm.ready()
+            reranking = retrieval_config.rerank == retrieval_io.RERANK_CE and not rerank_skipped
+            depth = rerank_arm.pool_size(want) if reranking else want
             ranked = retrieval.rank_lessons(
                 task, active,
-                top_k=want + len(harmful),
+                top_k=depth + len(harmful),
                 floor=retrieval_config.floor,
                 scorer=retrieval_config.scorer,
                 term_cache=term_cache,
@@ -617,7 +627,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
         core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
-        ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, want)
+        ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, depth)
         withdrawn_order = [r.slug for r in withdrawn_ranked]
 
         # The semantic arm, fused with the lexical one by rank, when the store
@@ -645,13 +655,13 @@ def build_server(root: str, *, allow_approval: bool = True):
                     fusion_skipped = semantic_arm.ensure_fresh(root)
             if not fusion_skipped:
                 rc, semantic, _warnings = semantic_arm.ranked_slugs(
-                    root, task, want + len(harmful), agent_type or None,
+                    root, task, depth + len(harmful), agent_type or None,
                 )
                 if rc != 0:
                     fusion_skipped = "the semantic arm failed: " + "; ".join(_warnings)
                 else:
                     semantic, withdrawn_semantic = harm.split(
-                        semantic, harmful, core_slugs, want, slug_of=lambda s: s,
+                        semantic, harmful, core_slugs, depth, slug_of=lambda s: s,
                     )
                     if already_shown:
                         semantic = [
@@ -659,9 +669,36 @@ def build_server(root: str, *, allow_approval: bool = True):
                         ]
                     fused = retrieval.reciprocal_rank_fusion(
                         {"lexical": [r.slug for r in ranked], "semantic": semantic},
-                        k=retrieval_config.rrf_k, top_k=want,
+                        k=retrieval_config.rrf_k, top_k=depth,
                     )
                     withdrawn_order = list(dict.fromkeys(withdrawn_order + withdrawn_semantic))
+
+        # Second stage: the reranker reorders the pool and keeps the page
+        # (commontrace/rerank_arm.py). Same step, same order, as
+        # `commontrace query`'s _rerank_pool.
+        path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
+        first_stage = fused if fused is not None else [(r.slug, r.relevance) for r in ranked]
+        reranked: list[tuple[str, float]] | None = None
+        if reranking:
+            try:
+                reranked, withdrawn_order = rerank_arm.rerank(
+                    task, [slug for slug, _ in first_stage],
+                    rerank_arm.texts(
+                        [slug for slug, _ in first_stage] + withdrawn_order,
+                        path_by_slug, frontmatter.read,
+                    ),
+                    want, withdrawn=withdrawn_order,
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
+                rerank_skipped = f"the reranker failed: {type(exc).__name__}: {exc}"
+        if reranking and reranked is None:
+            # The model loaded (rerank_arm.ready) and then failed to score --
+            # out of memory, in practice. Serve the pool's head rather than
+            # nothing. Withdrawn lessons found anywhere in the pool stay
+            # named: over-naming a lesson measured to hurt is the safe side.
+            ranked = ranked[:want]
+            if fused is not None:
+                fused = fused[:want]
 
         description_of = {str(fm.get("name", "")): str(fm.get("description", "")) for _, fm in active}
         withdrawn_slugs = set(withdrawn_order)
@@ -672,13 +709,16 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         # The label every assignment records, and the relevance beside it:
         # what actually ranked this retrieval.
-        eligibility_label = retrieval_config.eligibility if fused is not None else retrieval_config.scorer
-        if fused is not None:
+        eligibility_label = retrieval_io.rerank_label(
+            retrieval_config.eligibility_label_for(fused=fused is not None),
+            retrieval_io.RERANK_CE if reranked is not None else retrieval_io.RERANK_NONE,
+        )
+        if reranked is not None or fused is not None:
+            page = reranked if reranked is not None else fused
             lexical_by_slug = {r.slug: r for r in ranked}
-            path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
-            relevance_by_slug = dict(fused)
+            relevance_by_slug = dict(page)
             to_read = [
-                (slug, path_by_slug[slug], score) for slug, score in fused if slug in path_by_slug
+                (slug, path_by_slug[slug], score) for slug, score in page if slug in path_by_slug
             ]
         else:
             lexical_by_slug = {r.slug: r for r in ranked}
@@ -697,10 +737,10 @@ def build_server(root: str, *, allow_approval: bool = True):
                 continue
             item = _lesson_wire(fm, body, include_body=True)
             lexical_hit = lexical_by_slug.get(slug)
-            if fused is None:
+            if fused is None and reranked is None:
                 item["score"] = round(lexical_hit.score, 3)
             else:
-                # The fused rank score: what decided this position.
+                # The fused or reranked score: what decided this position.
                 item["score"] = round(relevance, 4)
             item["matched"] = list(lexical_hit.matched_terms or []) if lexical_hit else []
             item["_relevance"] = relevance
@@ -806,8 +846,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             result["fusion_note"] = (
                 f"this store configures fusion={retrieval_config.fusion!r}, but this "
                 f"retrieval was lexical: {fusion_skipped or 'fusion did not run'}. "
-                f"The holdout assignment records {retrieval_config.scorer!r} "
+                f"The holdout assignment records {eligibility_label!r} "
                 "accordingly."
+            )
+        if retrieval_config.rerank != retrieval_io.RERANK_NONE and reranked is None:
+            # Same posture as fusion_note: asked for, not run, said so.
+            result["rerank_note"] = (
+                f"this store configures rerank={retrieval_config.rerank!r}, but this "
+                f"retrieval kept the first stage's order: {rerank_skipped or 'the reranker did not run'}. "
+                f"The holdout assignment records {eligibility_label!r} accordingly."
             )
         if core_items:
             result["core"] = [item["slug"] for item in core_items if item.get("slug")]

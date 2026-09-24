@@ -279,12 +279,20 @@ def run(args: argparse.Namespace) -> int:
         # (benchmark/peers/), both find ~10 points less than the two fused.
         from commontrace import retrieval_io
 
-        if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_NONE:
+        config = retrieval_io.load_config(root)
+        if config.fusion == retrieval_io.FUSION_NONE:
             _info(
                 "retrieval fusion",
                 "off -- the attention extra is installed, so keyword + meaning ranking "
                 "is available: `commontrace retrieval --fusion rrf` (starts a new "
                 "randomization if an experiment is running)",
+            )
+        if config.rerank == retrieval_io.RERANK_NONE:
+            _info(
+                "retrieval reranking",
+                "off -- the attention extra is installed, so a cross-encoder can "
+                "reorder the top candidates: `commontrace retrieval --rerank "
+                "cross-encoder` (starts a new randomization if an experiment is running)",
             )
     else:
         _info(
