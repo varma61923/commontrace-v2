@@ -84,7 +84,6 @@ from commontrace import (
     cache_gate,
     dosage,
     evidence_io,
-    experiment,
     frontmatter,
     holdout_io,
     lesson_cache,
@@ -104,6 +103,7 @@ from commontrace import (
     trace_io,
     validate,
 )
+from commontrace import evidence as evidence_mod
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
@@ -498,6 +498,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         does not fail loudly, it silently biases the measured effect toward
         zero. Report the result afterwards with `capture(occasion_id=...)`.
 
+        Once the store has holdout data, each lesson also carries `evidence`:
+        its measured `verdict` (HELPS / HURTS / NO_MEASURABLE_EFFECT /
+        UNDERPOWERED / NOT_MEASURED) with `effect` and `ci_95`. Prefer HELPS,
+        and treat HURTS as a lesson that made outcomes worse. No numbers are
+        shown while the experiment is compromised.
+
         `exclude_shown`, if given an occasion id, skips any (non-core)
         lesson already logged as injected for that occasion in a prior
         `--experiment`-mode call -- for a long multi-turn task that calls
@@ -773,6 +779,16 @@ def build_server(root: str, *, allow_approval: bool = True):
         # one corrupts the experiment silently), a receipt only records what
         # already happened. Losing one costs an audit trail entry; refusing
         # to serve a lesson over it costs the fleet its memory.
+        # Each returned lesson's measured causal verdict, as the Hub's search
+        # carries it (commontrace/evidence.py). Failure must not fail the
+        # retrieval, for the same reason as the receipt below: it describes
+        # what was retrieved rather than changing it.
+        try:
+            with _quiet():
+                evidence_mod.attach(root, result, "lessons", "withheld")
+        except Exception as exc:  # noqa: BLE001
+            result["evidence_error"] = f"{type(exc).__name__}: {exc}"
+
         if occasion_id:
             try:
                 _record_receipt(
@@ -1253,14 +1269,15 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         import dataclasses
 
-        from commontrace import integrity
-        from commontrace.commands import experiment_cmd
-
+        # commontrace/evidence.py:analyse is the one place the local
+        # experiment is computed, so this report and the evidence `retrieve`
+        # attaches to each lesson can never disagree.
         try:
             with _quiet():
-                all_rows, rate, corrupt = experiment_cmd._load(root)
+                analysis = evidence_mod.analyse(root)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the experiment: {type(exc).__name__}: {exc}")
+        all_rows, corrupt = analysis.all_rows, analysis.corrupt
 
         if not all_rows:
             return _ok(
@@ -1277,7 +1294,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # flags as COMPROMISED even when the currently-running experiment is
         # perfectly clean -- and the CLI and this tool would then disagree
         # about the same store.
-        rows, wanted_salt, n_other_salt = experiment_cmd.scope_to_current_salt(root, all_rows)
+        rows, wanted_salt, n_other_salt = analysis.rows, analysis.wanted_salt, analysis.n_other_salt
         if not rows:
             return _ok(
                 running=False, integrity=None, effects=[], projections=[],
@@ -1288,9 +1305,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                      "`experiment --configure`.",
             )
 
-        report = integrity.audit(rows)
-        observations = experiment_cmd._observations(rows)
-        effects = experiment.analyze(observations)
+        report, effects = analysis.report, analysis.effects
         return _ok(
             running=True,
             # NOT `rate` from `_load()` above -- that is an average over

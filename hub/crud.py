@@ -3301,11 +3301,12 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
 # Hochberg correction across all of the org's traces, which is why this
 # cannot be computed for just the traces a search returned. That analysis
 # is too expensive to repeat on every search, so it is cached per org and
-# recomputed only when the org's current experiment changes (new
-# assignments, recorded outcomes, deletions, or a new salt, rate or
-# preregistration), and in any case at least every _EVIDENCE_TTL_SECONDS:
-# the validity audit judges pending occasions by their age, so its answer
-# can move with the clock alone.
+# recomputed only when the org's current experiment changes (recorded
+# outcomes, deletions of resolved rows, or a new salt, rate or
+# preregistration -- see _evidence_key for why not new assignments), and in
+# any case at least every _EVIDENCE_TTL_SECONDS: the validity audit judges
+# pending occasions by their age, so its answer can move with the clock
+# alone.
 #
 # A COMPROMISED experiment yields no numbers, for the reason working_set
 # gives: effects a named mechanism is biasing must not steer a choice.
@@ -3316,20 +3317,33 @@ _evidence_cache: dict[str, tuple[tuple, float, dict]] = {}
 
 
 async def _evidence_key(session: AsyncSession, org_id: str) -> tuple:
+    """What the evidence depends on, cheaply: the experiment's settings, and
+    its RESOLVED occasions.
+
+    Deliberately not new assignments. Searching with an occasion_id writes
+    one, so a key that counted them changed on every search of an org
+    running an experiment -- recomputing the whole analysis on exactly the
+    traffic the cache exists to absorb. Effects are estimated from resolved
+    occasions only, so a new pending assignment cannot move one; what it
+    can move, slowly, is the audit's attrition check, and _EVIDENCE_TTL_
+    SECONDS already bounds how long that goes unseen.
+    """
     org = await session.get(Organization, org_id)
     salt = org.holdout_salt if org else ""
-    count, resolved, last_created, last_resolved = (
+    observed, resolved, last_resolved = (
         await session.execute(
             select(
                 func.count(),
                 func.count(HoldoutObservation.succeeded),
-                func.max(HoldoutObservation.created_at),
                 func.max(HoldoutObservation.resolved_at),
             ).where(HoldoutObservation.org_id == org_id, HoldoutObservation.salt == salt)
         )
     ).one()
     prereg = json.dumps(org.holdout_prereg, sort_keys=True, default=str) if org and org.holdout_prereg else ""
-    return (salt, org.holdout_rate if org else 0.0, prereg, count, resolved, last_created, last_resolved)
+    # `observed > 0` rather than the count itself: it only has to tell
+    # "never measured anything" apart from "has data", which decides whether
+    # evidence is shown at all, without changing on every assignment.
+    return (salt, org.holdout_rate if org else 0.0, prereg, observed > 0, resolved, last_resolved)
 
 
 def _round(value: float | None) -> float | None:
@@ -3351,7 +3365,7 @@ async def causal_evidence(session: AsyncSession, org_id: str) -> dict:
         return cached[2]
 
     measured_at = datetime.now(timezone.utc).isoformat()
-    if key[3] == 0:
+    if not key[3]:
         evidence = {"available": False, "reason": "no experiment data", "measured_at": measured_at, "by_trace": {}}
     else:
         causal = await causal_effects(session, org_id)

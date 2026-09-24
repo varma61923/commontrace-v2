@@ -20,7 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cached per org and recomputed only when that org's experiment data or
   settings change (or after five minutes, since the validity audit
   depends on occasion age); an org with no holdout data gets no extra
-  fields at all.
+  fields at all. The local store's `retrieve` MCP tool carries the same
+  evidence (`commontrace/evidence.py`), computed by the one function
+  `experiment_status` now uses as well.
+- **Fixed before release: the evidence cache recomputed on every search
+  during an experiment.** Its first key counted holdout assignments, and a
+  search with an `occasion_id` writes one, so an org running an experiment
+  rebuilt the whole analysis on every search. It now tracks resolved
+  outcomes and settings; a pending assignment cannot move an effect.
 - **Knowledge Base queries no longer re-read the corpus on every call.**
   `commons_search` at 20,000 entries went from ~1.6s to ~29ms, and a
   50-failure `commons_overlap` from ~1.9s to ~210ms (A/B on identical

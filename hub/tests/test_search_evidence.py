@@ -186,11 +186,28 @@ class TestTheCache:
         calls = await self._counting(monkeypatch)
         await _search(session_factory, org)
         await _assign(session_factory, org, [trace], "d-new")
-        await _search(session_factory, org)
-        assert calls["n"] == 2, "a new assignment must invalidate the evidence"
         await _resolve(session_factory, org, "d-new", True)
         await _search(session_factory, org)
-        assert calls["n"] == 3, "a newly recorded outcome must invalidate the evidence"
+        assert calls["n"] == 2, "a newly recorded outcome must invalidate the evidence"
+
+    async def test_searching_during_an_experiment_does_not_recompute_each_time(
+        self, session_factory, org, monkeypatch
+    ):
+        """The regression this guards: searching with an occasion_id writes
+        a holdout assignment, so a key that counted assignments rebuilt the
+        whole analysis on every search of an org running an experiment --
+        the one workload the cache exists for. A pending assignment cannot
+        move an effect, which is estimated from resolved occasions only."""
+        [trace] = await _lessons(session_factory, org, ["busy lesson"])
+        await _drive(session_factory, org, trace, 40, 0.8, 0.4, "b")
+        calls = await self._counting(monkeypatch)
+        for i in range(5):
+            # What hub/server.py's search_traces tool does with an occasion_id:
+            # search, then assign arms for the results it returned.
+            async with session_scope(session_factory) as session:
+                result = await crud.search_traces(session, org, tags=[TAG], limit=20)
+                await crud.holdout_for_results(session, org, result["traces"], f"live-{i}")
+        assert calls["n"] == 1
 
     async def test_a_new_experiment_recomputes(self, session_factory, org, monkeypatch):
         [trace] = await _lessons(session_factory, org, ["rotated lesson"])
