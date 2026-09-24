@@ -150,6 +150,25 @@ hybrid keeps MRR by a hundredth. mem0 was not run on LongMemEval: its
 per-memory ingestion (55 ms each) over 29,204 turns was out of this run's
 compute budget.
 
+## Rerankers tried
+
+Over the lexical arm on LongMemEval (60 questions), 30 candidates, 4-core
+CPU. The shipped models are the first two.
+
+| Reranker | Params | R@5 | R@10 | NDCG@10 | MRR | Rerank p50 |
+|---|---:|---:|---:|---:|---:|---:|
+| `ms-marco-MiniLM-L-6-v2` (`cross-encoder`) | 22M | 0.930 | 0.967 | 0.908 | 0.899 | ~0.8 s |
+| `ms-marco-TinyBERT-L-2-v2` (`cross-encoder-fast`) | 4M | 0.923 | 0.947 | 0.894 | 0.884 | ~90 ms |
+| `ms-marco-MiniLM-L-12-v2` | 33M | 0.930 | 0.967 | 0.911 | 0.908 | ~1.5 s |
+| `BAAI/bge-reranker-base` | 278M | 0.943 | 0.967 | 0.933 | 0.927 | ~4.6 s |
+| `mixedbread-ai/mxbai-rerank-xsmall-v1` | 71M | **0.963** | **0.967** | **0.956** | **0.958** | ~35 s |
+
+mxbai's xsmall reranker is the only configuration measured that beats dense
+MiniLM on every LongMemEval metric, but on this CPU it takes about 35 s to
+read 30 long turns, even capped at 256 tokens, so it is not offered.
+Shortening what the fast model reads (400 or 800 characters instead of
+1,200) changes nothing measurable.
+
 ## Speed
 
 Query latency, p50 on LoCoMo (conversations of about 600 memories), on a
