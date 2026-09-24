@@ -137,7 +137,9 @@ def rerank(
     with _LOCK:
         model = _load()
         scores = model.predict(
-            [(task, text_of[s]) for s in candidates + extra],
+            # Capped here, not only in `lesson_text`, so every caller -- both
+            # surfaces and the benchmark -- reranks the same text.
+            [(task, text_of[s][:MAX_CHARS]) for s in candidates + extra],
             batch_size=64, show_progress_bar=False,
         )
     scored = [(s, float(x)) for s, x in zip(candidates, scores[: len(candidates)])]

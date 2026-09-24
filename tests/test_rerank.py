@@ -215,3 +215,16 @@ def test_withdrawal_names_only_what_the_reranked_page_would_have_shown(store, ce
     monkeypatch.setattr(query_cmd, "_print_withdrawn", lambda slugs, harmful: printed.extend(slugs))
     assert query_cmd.run(_args(store, TASK, top_k=1, lexical=True)) == 0
     assert printed == ["vendor-optout"]
+
+
+def test_every_caller_reranks_the_same_capped_text(ce, monkeypatch):
+    seen = []
+
+    class Recording(FakeCrossEncoder):
+        def predict(self, pairs, **kw):
+            seen.extend(text for _t, text in pairs)
+            return super().predict(pairs, **kw)
+
+    monkeypatch.setattr(rerank_arm, "_load", lambda: Recording())
+    rerank_arm.rerank("t", ["a"], {"a": "x" * (rerank_arm.MAX_CHARS * 3)}, 1)
+    assert seen == ["x" * rerank_arm.MAX_CHARS]
