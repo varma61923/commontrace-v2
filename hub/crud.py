@@ -5525,6 +5525,18 @@ async def browse_commons(
     rather than being filtered out, for the identical reason given there --
     "it did not work for the fleets who tried it" is information, and
     hiding it would answer a browse with a rosier corpus than exists.
+    Below that, `trust` decides, and nothing a caller can write with its own
+    traffic appears in the order at all.
+
+    That promise is enforced in the SQL, not only in the Python sort after
+    it, because this query pages. An ORDER BY that disagrees with the final
+    sort does not merely look untidy -- it picks which entries reach the
+    page the reader sees, and a later re-sort can only rearrange what it was
+    handed. Ordering by `commons_hits` here did exactly that: it put the
+    most-queried entries on page 1 regardless of standing, so a disputed
+    entry with traffic outranked a corroborated one without it, and the
+    "sorts to the back" property held only within whichever page the reader
+    happened to be on.
     """
     limit = _clamp_int(limit, 1, MAX_BROWSE_COMMONS_LIMIT, BROWSE_COMMONS_LIMIT)
     offset = _clamp_int(offset, 0, 100_000, 0)
@@ -5547,13 +5559,50 @@ async def browse_commons(
     total = await session.scalar(
         select(func.count()).select_from(Trace).where(*conditions)
     )
+    # `disputed` is the ONLY standing that changes an entry's position, and
+    # it is exactly two columns against two module constants -- so it is
+    # expressed here rather than mirrored from `entry_standing`'s full
+    # ladder, which also depends on `now` and would be a second
+    # implementation to keep in step. Built from the constants themselves,
+    # so a policy change moves both at once.
+    is_disputed = case(
+        (
+            and_(
+                Trace.commons_votes >= commons.MIN_VOTES_FOR_STANDING,
+                Trace.trust < commons.DISPUTED_TRUST_CEILING,
+            ),
+            1,
+        ),
+        else_=0,
+    )
     rows = (
         await session.execute(
             select(Trace)
             .where(*conditions)
+            # Ordered in SQL by the SAME keys the Python sort below applies,
+            # and that agreement is the correctness property, not a tidiness
+            # one: this query PAGINATES. Whatever it orders by decides which
+            # entries are on page 1 at all, so a Python re-sort on different
+            # keys can only reorder within a page it did not choose -- the
+            # "disputed sorts to the back" promise in this docstring was
+            # holding per page while a disputed entry with enough traffic sat
+            # on page 1 and a better one waited on page 2.
+            #
+            # None of these keys is caller-writable. `commons_hits` used to
+            # lead here, which made the catalogue's front page purchasable
+            # with query volume -- see STRATEGY.md §26.6; it is the same
+            # defect as the commons_search tie-break, on a surface that fix
+            # missed. `trust` is one org, one vote, gated by
+            # _established_voters_only; created_at and id are stable and make
+            # the order total, so paging cannot skip or repeat an entry.
+            .order_by(
+                is_disputed.asc(),
+                Trace.trust.desc(),
+                Trace.created_at.desc(),
+                Trace.id.desc(),
+            )
             # One extra row, the same trick search_traces uses, so `has_more`
             # costs no second COUNT round trip.
-            .order_by(Trace.commons_hits.desc(), Trace.created_at.desc())
             .limit(limit + 1)
             .offset(offset)
         )
@@ -5618,7 +5667,21 @@ async def browse_commons(
             "revisions": trace.depth or 0,
             "created_at": _iso(trace.created_at),
         })
-    entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))
+    # The same leading keys as the SQL ORDER BY above, so the page's
+    # contents and its order are decided by one rule rather than two.
+    # `standing` is used here because it is already computed per entry, and
+    # it agrees with the SQL `is_disputed` by construction:
+    # `counts_as_coverage` is false for exactly the `disputed` label, which
+    # is exactly that predicate.
+    #
+    # created_at and id are deliberately NOT repeated: this sort is stable,
+    # so entries equal on these two keep the order the query returned them
+    # in, which is already created_at DESC then id DESC. Restating them
+    # would mean inverting strings to sort descending, and a second copy of
+    # a tie-break is a second thing that can disagree with the first.
+    entries.sort(
+        key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["trust"])
+    )
 
     return {
         "entries": entries,
