@@ -5,6 +5,7 @@ import os
 
 from commontrace import paths, templates
 from commontrace.commands import _validators
+from commontrace.commands._shellout import has_attention_deps
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -125,6 +126,16 @@ def run(args: argparse.Namespace) -> int:
             ))
 
         print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
+
+    if has_attention_deps():
+        # Recommended, not switched on: whether a store fuses must be its
+        # recorded decision, not a side effect of what happens to be
+        # installed on the machine that ran `init`.
+        print(
+            "[commontrace] The attention extra is installed. For the most accurate "
+            "retrieval, rank by keyword and meaning together:\n"
+            "  commontrace retrieval --fusion rrf"
+        )
 
     print()
     print("Next steps:")

@@ -13,18 +13,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CommonTrace against mem0 2.x, Chroma, BM25, dense and hybrid retrieval
   on LoCoMo (1,531 questions) and a stratified LongMemEval subset, scored
   from the datasets' evidence labels with no LLM involved.
-  - CommonTrace fusion with `idf-v3` leads LoCoMo: recall@10 0.665,
-    against 0.625 for mem0 and 0.574 for a BM25+MiniLM hybrid.
+  - CommonTrace fusion with `idf-v3` leads LoCoMo: recall@10 0.660,
+    against 0.625 for mem0 and 0.615 for a BM25+MiniLM hybrid. Fused
+    systems are measured at the depth the product fuses.
   - CommonTrace's default lexical retriever matches or beats BM25 on both
     datasets and is faster per query.
   - Peers that need an LLM to build or search memory were not run, and
     the page says so.
+- **The semantic index keeps itself current.** A lesson approved or edited
+  after the last `commontrace index` used to make the index stale. Every
+  retrieval then silently fell back to keyword-only ranking and logged
+  those occasions under a different eligibility label, which the audit
+  reads as a changed treatment. Now both `query` and the MCP `retrieve`
+  tool refresh a stale index before ranking, re-embedding only lessons
+  whose text changed. The MCP server uses the model it already holds, and
+  the index builder takes that model and a logger that keeps progress off
+  its stdio protocol channel.
 - **Agents now get fused retrieval.** When a store has set
   `commontrace retrieval --fusion rrf`, the MCP `retrieve` tool ranks by
   keyword and meaning together, as `commontrace query` does. Before this it
   stayed lexical, because the semantic arm was a subprocess that reloaded
   a sentence-transformer on every call. That cost agents nine points of
-  LoCoMo recall@10 (0.540 vs 0.632; `benchmark/peers/`).
+  LoCoMo recall@10 (0.540 vs 0.645; `benchmark/peers/`).
   - The semantic script's ranking is now one function, `rank()`, which
     both surfaces call. The subprocess prints it (byte-identical output,
     checked against the previous script), and `commontrace/semantic_arm.py`

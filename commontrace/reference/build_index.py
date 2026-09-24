@@ -312,10 +312,17 @@ def build_or_update_index(
     output_path: str,
     model_name: str = _TRUSTED_MODEL_NAME,
     force_rebuild: bool = False,
+    model: Any = None,
+    log: Any = print,
 ) -> dict[str, Any]:
     """Computes SHA-256 hash of lesson content. Reuses precomputed embeddings for unchanged
     hashes from output_path. Encodes only new/modified lessons.
     Saves embeddings, slugs, hashes, importances, and statuses into output_path (.npz).
+
+    `model` is an already-loaded instance of `model_name`, for a long-lived process
+    that holds one (commontrace/semantic_arm.py); `log` receives the progress lines,
+    which such a process must keep off stdout -- the MCP server's stdout is its
+    protocol channel.
     """
     if np is None:
         raise ImportError("numpy is required to build or update the attention index.")
@@ -378,11 +385,13 @@ def build_or_update_index(
             texts_to_encode.append(text)
 
     if texts_to_encode:
-        if SentenceTransformer is None:
-            raise ImportError("sentence_transformers is required to encode new or modified lessons.")
-        print(f"Loading model {model_name} (cached under ~/.cache/huggingface/) ...")
-        model = SentenceTransformer(model_name)
-        print(f"Encoding {len(texts_to_encode)} lessons (reusing {len(reused_embeddings)} cached) ...")
+        if model is None:
+            if SentenceTransformer is None:
+                raise ImportError(
+                    "sentence_transformers is required to encode new or modified lessons.")
+            log(f"Loading model {model_name} (cached under ~/.cache/huggingface/) ...")
+            model = SentenceTransformer(model_name)
+        log(f"Encoding {len(texts_to_encode)} lessons (reusing {len(reused_embeddings)} cached) ...")
         new_embs = model.encode(
             texts_to_encode,
             normalize_embeddings=True,

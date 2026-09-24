@@ -137,3 +137,89 @@ def test_a_corrupt_index_is_an_error_not_a_crash(tmp_path, arm):
         fh.write(b"not a zip")
     rc, slugs, warnings = semantic_arm.ranked_slugs(root, "retry", 2)
     assert rc != 0 and slugs == [] and "corrupted" in warnings[0]
+
+
+# --- the index keeps itself current ------------------------------------------
+
+class WideFakeModel(FakeModel):
+    """FakeModel at the real model's width, so the reference builder (which
+    writes EMBEDDING_DIM-wide rows) can use it."""
+
+    def encode(self, text, **kw):
+        if isinstance(text, (list, tuple)):
+            return np.stack([self.encode(t) for t in text])
+        v = np.zeros(768, dtype=np.float32)
+        v[: len(VOCAB)] = super().encode(text)
+        return v
+
+
+@pytest.fixture
+def wide_arm(monkeypatch):
+    loads = []
+
+    def fake_st(name):
+        loads.append(name)
+        return WideFakeModel()
+
+    monkeypatch.setattr(semantic_arm, "_SCRIPT", None)
+    monkeypatch.setattr(semantic_arm, "_BUILDER", None)
+    monkeypatch.setattr(semantic_arm, "_MODEL", None)
+    monkeypatch.setattr(semantic_arm, "_INDEX", {})
+    script = semantic_arm._script(os.getcwd())
+    monkeypatch.setattr(script, "SentenceTransformer", fake_st)
+    builder = semantic_arm._builder(os.getcwd())
+    monkeypatch.setattr(builder, "SentenceTransformer",
+                        lambda name: pytest.fail("the builder must reuse the held model"))
+    return loads
+
+
+def _add_lesson(root, slug, desc, importance=3):
+    path = os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(f"---\nname: {slug}\ndescription: {desc}\nimportance: {importance}\n"
+                 "status: active\n---\nbody\n")
+    # The index was built a while ago; this lesson was approved since.
+    past = os.path.getmtime(path) - 60
+    os.utime(semantic_arm.index_path(root), (past, past))
+
+
+def test_a_stale_index_is_refreshed_before_ranking(tmp_path, wide_arm):
+    from commontrace.commands.query_cmd import _index_is_unusable
+
+    root = str(tmp_path / "store")
+    os.makedirs(paths.lessons_dir(root))
+    os.makedirs(os.path.dirname(semantic_arm.index_path(root)))
+    for slug, (desc, imp) in LESSONS.items():
+        with open(os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(f"---\nname: {slug}\ndescription: {desc}\nimportance: {imp}\n"
+                     "status: active\n---\nbody\n")
+    assert semantic_arm.ensure_fresh(root) == ""  # built from nothing
+    _add_lesson(root, "refund-password-check", "password check before a refund")
+    assert _index_is_unusable(root)  # the precondition: stale
+
+    assert semantic_arm.ensure_fresh(root) == ""
+    assert _index_is_unusable(root) == ""
+    rc, slugs, _w = semantic_arm.ranked_slugs(root, "password refund", 1)
+    assert rc == 0 and slugs[0] == "refund-password-check"
+    assert wide_arm == ["multi-qa-mpnet-base-dot-v1"]  # one load, shared by build and rank
+
+
+def test_the_cli_refreshes_a_stale_index_and_falls_back_only_if_that_fails(tmp_path, monkeypatch):
+    from commontrace.commands import query_cmd
+
+    state = {"stale": "lesson_x.md changed after the index was last built", "calls": 0}
+    monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: state["stale"])
+
+    def build(root, relative, args, hint, capture=False):
+        state["calls"] += 1
+        state["stale"] = ""
+        return 0, "Index built: 5 lessons (1 encoded, 4 reused from cache)\n"
+
+    monkeypatch.setattr(query_cmd, "run_script", build)
+    assert query_cmd._refresh_stale_index(str(tmp_path)) == ""
+    assert state["calls"] == 1
+
+    state["stale"] = "no semantic index has been built yet"
+    monkeypatch.setattr(query_cmd, "run_script", lambda *a, **k: (1, ""))
+    assert query_cmd._refresh_stale_index(str(tmp_path)) == "no semantic index has been built yet"

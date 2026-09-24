@@ -917,8 +917,8 @@ search, Chroma, BM25, dense vectors and BM25+vector hybrids. It uses LoCoMo
 and LongMemEval, the benchmarks those products publish on, and scores
 retrieval from each dataset's evidence labels, with no LLM judge. On
 LoCoMo's 1,531 questions, CommonTrace's fused retrieval with the stemmed
-lexical arm finds the answering turn in the top 10 for 66.5% of questions,
-against 62.5% for mem0 2.x and 57.4% for a BM25+MiniLM hybrid.
+lexical arm finds the answering turn in the top 10 for 66.0% of questions,
+against 62.5% for mem0 2.x and 61.5% for a BM25+MiniLM hybrid.
 
 ---
 
@@ -1019,6 +1019,13 @@ in-process (`commontrace/semantic_arm.py`), with the model and index held in
 memory rather than reloaded on every call. It uses the same freshness gate
 and fallback as `query`, so an agent and a person at a terminal get the same
 fused ranking and log the same eligibility label.
+
+The semantic index keeps itself current. When a lesson has been added or
+edited since the last build, both surfaces refresh the index before ranking,
+re-embedding only the lessons whose text changed. Before, the store fell back
+to keyword-only retrieval until someone ran `commontrace index`. The first
+fused retrieval on a store with no index embeds every lesson once, which costs
+the same as running `commontrace index`.
 
 It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
 eligibility is the denominator of every causal number this product reports —

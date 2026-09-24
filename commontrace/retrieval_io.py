@@ -48,6 +48,14 @@ FUSION_NONE = "none"
 FUSION_RRF = "rrf"
 FUSIONS = (FUSION_NONE, FUSION_RRF)
 
+#: The label an assignment records when the semantic arm ALONE decided
+#: eligibility -- `commontrace query` with fusion=none and the attention
+#: extra installed. It used to record no label at all, and
+#: integrity.check_scorer_drift skips unlabeled rows, so a store whose
+#: occasions flipped between this path and lexical (a stale index, a
+#: missing extra) pooled two treatments with nothing to show it.
+SEMANTIC_ONLY = "semantic"
+
 # WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
 # ---------------------------------------------------
 # The holdout log records `scorer` and `floor` as the evidence of what decided
@@ -80,6 +88,10 @@ def parse_eligibility_label(label: str) -> tuple[str, str]:
     match = _FUSION_LABEL.match(label or "")
     if match:
         return match.group("lexical"), FUSION_RRF
+    if label == SEMANTIC_ONLY:
+        # No lexical scorer decided eligibility; the lexical fallback is the
+        # default one.
+        return retrieval.SCORER_IDF, FUSION_NONE
     return label, FUSION_NONE
 
 

@@ -499,12 +499,16 @@ class TestMcpSurfaceIsHonestAboutFusion:
     disagree about which lessons are eligible -- a disagreement is two
     treatments pooled into one experiment."""
 
-    def test_the_mcp_surface_says_it_is_not_fusing(self, store):
+    def test_the_mcp_surface_says_when_it_is_not_fusing(self, store, monkeypatch):
+        """The MCP surface now fuses when it can (tests/test_mcp_fusion.py).
+        When it cannot -- here, no attention extra -- it says so, and names
+        the label the log will carry."""
         pytest.importorskip("mcp")
         import asyncio
 
-        from commontrace import mcp_server
+        from commontrace import mcp_server, semantic_arm
 
+        monkeypatch.setattr(semantic_arm, "available", lambda: False)
         _write_config(store, fusion="rrf")
         server = mcp_server.build_server(store)
         result = asyncio.run(server.call_tool(
@@ -534,3 +538,42 @@ class TestMcpSurfaceIsHonestAboutFusion:
         else:
             payload = json.loads(result.content[0].text)
         assert "fusion_note" not in payload
+
+
+class TestTheSemanticOnlyPathIsLabelled:
+    """With fusion=none and the attention extra installed, `query` ranks by
+    the semantic arm alone. Its assignments used to carry no eligibility
+    label, and the drift check skips unlabeled rows -- so a store flipping
+    between this path and lexical pooled two treatments invisibly."""
+
+    def test_its_assignments_record_the_semantic_label(self, store, monkeypatch, capsys):
+        from commontrace import holdout_io
+
+        holdout_io.configure(store, rate=0.5)
+        monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
+        monkeypatch.setattr(query_cmd, "_refresh_stale_index", lambda root: "")
+        monkeypatch.setattr(
+            query_cmd, "run_script",
+            lambda *a, **k: (0, "# header\nsuppression-list | cosine=0.9 | importance=3\n"),
+        )
+        rc = query_cmd.run(_args(store, "password reset email suppression",
+                                 experiment=True, occasion_id="sem-1"))
+        assert rc == 0
+        with open(holdout_io.holdout_log_path(store), encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        assert {r.get("scorer") for r in rows if r["occasion_id"] == "sem-1"} == {"semantic"}
+
+    def test_a_log_mixing_it_with_lexical_is_drift(self):
+        from commontrace import integrity
+
+        rows = [
+            integrity.Assignment(lesson="a", occasion_id=f"o{i}", injected=bool(i % 2),
+                                 succeeded=True, salt="s",
+                                 scorer="semantic" if i < 10 else "idf-v2")
+            for i in range(20)
+        ]
+        assert integrity.check_scorer_drift(rows).severity == integrity.SEVERITY_INVALIDATES
+
+    def test_pinning_from_a_semantic_label_gives_a_real_lexical_scorer(self):
+        assert retrieval_io.parse_eligibility_label("semantic") == (
+            retrieval.SCORER_IDF, retrieval_io.FUSION_NONE)

@@ -632,7 +632,6 @@ def build_server(root: str, *, allow_approval: bool = True):
         fusion_skipped = ""
         if retrieval_config.fusion == retrieval_io.FUSION_RRF:
             from commontrace import semantic_arm
-            from commontrace.commands import query_cmd
 
             if not semantic_arm.available():
                 fusion_skipped = (
@@ -640,7 +639,10 @@ def build_server(root: str, *, allow_approval: bool = True):
                     "(`pip install commontrace[attention]`)"
                 )
             else:
-                fusion_skipped = query_cmd._index_is_unusable(root)
+                # Refreshed first if stale (commontrace/semantic_arm.py): a
+                # stale index used to send the store back to lexical here.
+                with _quiet():
+                    fusion_skipped = semantic_arm.ensure_fresh(root)
             if not fusion_skipped:
                 rc, semantic, _warnings = semantic_arm.ranked_slugs(
                     root, task, want + len(harmful), agent_type or None,

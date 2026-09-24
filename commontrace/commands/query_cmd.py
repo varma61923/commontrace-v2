@@ -736,6 +736,34 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     return 0
 
 
+def _refresh_stale_index(root: str) -> str:
+    """Bring a stale semantic index up to date; "" if usable afterwards,
+    else why not.
+
+    A stale index used to send `query` to lexical retrieval until someone
+    remembered `commontrace index` -- quietly degrading a store that opted
+    into semantic or fused retrieval, and logging those occasions under a
+    different eligibility label than the rest of its experiment. The builder
+    re-embeds only lessons whose text changed, and the MCP server refreshes
+    the same way in-process (commontrace/semantic_arm.py), so both surfaces
+    rank against the same index.
+    """
+    reason = _index_is_unusable(root)
+    if not reason:
+        return ""
+    rc, out = run_script(
+        root, os.path.join("memory", "attention", "build_index.py"), [],
+        "The reference attention scripts ship inside the package.", capture=True,
+    )
+    after = _index_is_unusable(root)
+    if rc == 0 and not after:
+        print(f"[commontrace] semantic index was stale ({reason}); refreshed it. "
+              f"{out.strip().splitlines()[-1] if out.strip() else ''}".rstrip(),
+              file=sys.stderr)
+        return ""
+    return after or reason
+
+
 def _index_is_unusable(root: str) -> str:
     """Why the semantic index cannot be trusted right now, or "" if it can.
 
@@ -788,7 +816,7 @@ def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
 
     if not args.lexical and has_attention_deps():
-        reason = _index_is_unusable(root)
+        reason = _refresh_stale_index(root)
         if reason:
             # Fall back to the retriever that is correct right now rather than
             # to silence. Lexical reads the lesson files themselves, so it
@@ -895,7 +923,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    withheld = _apply_holdout(args, root, slugs)
+    withheld = _apply_holdout(args, root, slugs, scorer=retrieval_io.SEMANTIC_ONLY)
     for line in stdout.splitlines():
         slug = _slug_of_semantic_line(line)
         if slug is not None and slug in withheld:

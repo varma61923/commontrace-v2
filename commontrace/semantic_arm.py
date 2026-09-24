@@ -7,7 +7,7 @@ an MCP server answering a `retrieve` on every agent turn, which is why that
 surface stayed lexical even when a store had configured fusion, and agents
 were given the weaker ranking. Measured on LoCoMo (benchmark/peers/),
 lexical alone found 54% of the answering turns in its top 10; fused with
-this arm, 63% (66.5% with the idf-v3 lexical arm).
+this arm, 64.5% (66% with the idf-v3 lexical arm).
 
 This module runs the SAME ranking function the subprocess runs
 (`query.rank`), holding the model and the parsed index in memory between
@@ -19,6 +19,18 @@ only decides whether it is re-loaded.
 The index is reloaded when index.npz changes (inode, mtime, size). The
 model is loaded once, on first use, and never replaced: it is the one
 trusted model name the reference script hardcodes.
+
+THE INDEX KEEPS ITSELF CURRENT. Nothing used to rebuild index.npz: a lesson
+approved after the last `commontrace index` made the index stale, and a stale
+index sent every retrieval back to lexical-only -- silently degrading the
+store that opted into fusion, and, worse, logging those occasions under the
+lexical label, so an experiment's log mixed two eligibility rules and the
+audit reported it as a changed treatment. Now a stale index is refreshed
+before ranking (`ensure_fresh`): the builder re-embeds only lessons whose
+text changed (build_index.build_or_update_index keys vectors by content
+hash), using the model this process already holds. `commontrace query` does
+the same through the index command, so both surfaces rank against the same,
+current index.
 """
 
 from __future__ import annotations
@@ -31,10 +43,12 @@ from commontrace import paths
 
 _LOCK = threading.Lock()
 _SCRIPT = None
+_BUILDER = None
 _MODEL = None
 _INDEX: dict[str, tuple[tuple, object]] = {}
 
 QUERY_SCRIPT = os.path.join("memory", "attention", "query.py")
+BUILD_SCRIPT = os.path.join("memory", "attention", "build_index.py")
 
 
 def available() -> bool:
@@ -46,21 +60,73 @@ def available() -> bool:
     )
 
 
+def _load_reference(root: str, relative: str, name: str):
+    from commontrace.commands._shellout import find_reference_script
+
+    path = find_reference_script(root, relative)
+    if path is None:
+        return None
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _script(root: str):
     """The reference query module, loaded from the same file the CLI would run."""
     global _SCRIPT
-    if _SCRIPT is not None:
-        return _SCRIPT
-    from commontrace.commands._shellout import find_reference_script
+    if _SCRIPT is None:
+        _SCRIPT = _load_reference(root, QUERY_SCRIPT, "commontrace_reference_query")
+    return _SCRIPT
 
-    path = find_reference_script(root, QUERY_SCRIPT)
-    if path is None:
-        return None
-    spec = importlib.util.spec_from_file_location("commontrace_reference_query", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _SCRIPT = module
-    return module
+
+def _builder(root: str):
+    """The reference index builder, loaded from the file `commontrace index` runs."""
+    global _BUILDER
+    if _BUILDER is None:
+        _BUILDER = _load_reference(root, BUILD_SCRIPT, "commontrace_reference_build_index")
+    return _BUILDER
+
+
+def _model(script):
+    """The trusted model, loaded once per process; a Ranked failure otherwise."""
+    global _MODEL
+    if _MODEL is None:
+        model = script.load_model()
+        if isinstance(model, script.Ranked):
+            return model
+        _MODEL = model
+    return _MODEL
+
+
+def ensure_fresh(root: str) -> str:
+    """Refresh the semantic index if it is stale. Returns "" when it is
+    usable afterwards, else why not.
+
+    Staleness is decided by the same check `commontrace query` uses
+    (query_cmd._index_is_unusable). Only lessons whose text changed are
+    re-embedded.
+    """
+    from commontrace.commands.query_cmd import _index_is_unusable
+
+    reason = _index_is_unusable(root)
+    if not reason:
+        return ""
+    with _LOCK:
+        script, builder = _script(root), _builder(root)
+        if script is None or builder is None:
+            return reason
+        model = _model(script)
+        if isinstance(model, script.Ranked):
+            return "; ".join(model.stderr) or reason
+        try:
+            builder.build_or_update_index(
+                paths.lessons_dir(root), index_path(root),
+                model=model, log=lambda *_a, **_k: None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed refresh falls back, never crashes retrieval
+            return f"{reason}; refreshing it failed: {type(exc).__name__}: {exc}"
+    return _index_is_unusable(root)
 
 
 def _identity(path: str) -> tuple | None:
@@ -101,16 +167,13 @@ def ranked_slugs(
                 _INDEX.pop(ipath, None)
                 return index.rc, [], index.stderr
             _INDEX[ipath] = (identity, index)
-        global _MODEL
-        if _MODEL is None:
-            model = script.load_model()
-            if isinstance(model, script.Ranked):
-                return model.rc, [], model.stderr
-            _MODEL = model
+        model = _model(script)
+        if isinstance(model, script.Ranked):
+            return model.rc, [], model.stderr
         result = script.rank(
             query, top_k, 4, agent_type,
             index_path=ipath, lessons_dir=paths.lessons_dir(root),
-            index=index, model=_MODEL,
+            index=index, model=model,
         )
     if result.rc != 0:
         return result.rc, [], result.stderr

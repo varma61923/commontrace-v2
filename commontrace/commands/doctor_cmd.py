@@ -274,6 +274,18 @@ def run(args: argparse.Namespace) -> int:
     # spend someone's attention.
     if attention_extra:
         _check("attention extra (numpy + sentence-transformers)", True, "installed")
+        # Installed but not fused: this store's `query` ranks by meaning
+        # alone and its agents by keyword alone -- measured on LoCoMo
+        # (benchmark/peers/), both find ~10 points less than the two fused.
+        from commontrace import retrieval_io
+
+        if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_NONE:
+            _info(
+                "retrieval fusion",
+                "off -- the attention extra is installed, so keyword + meaning ranking "
+                "is available: `commontrace retrieval --fusion rrf` (starts a new "
+                "randomization if an experiment is running)",
+            )
     else:
         _info(
             "attention extra (numpy + sentence-transformers)",

@@ -4,7 +4,7 @@
 Until this existed the MCP surface was lexical-only, because the semantic
 arm was a subprocess that loads a model per call -- so a store that set
 `fusion=rrf` gave its shell users the fused ranking and its agents the
-weaker one (on LoCoMo, 54% vs 63% of answering turns in the top 10;
+weaker one (on LoCoMo, 54% vs 64.5% of answering turns in the top 10;
 benchmark/peers/). commontrace/semantic_arm.py now runs the same ranking
 function in-process.
 
@@ -52,6 +52,7 @@ def store(tmp_path):
 def _stub_both(monkeypatch, slugs=SEMANTIC, rc=0):
     """The same fixed semantic ranking behind both surfaces."""
     monkeypatch.setattr(semantic_arm, "available", lambda: True)
+    monkeypatch.setattr(semantic_arm, "ensure_fresh", lambda root: "")
     monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
     monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
     monkeypatch.setattr(
@@ -111,7 +112,7 @@ def test_the_receipt_records_the_fused_label(store, monkeypatch):
 
 @pytest.mark.parametrize("why,setup", [
     ("attention extra", lambda mp: mp.setattr(semantic_arm, "available", lambda: False)),
-    ("index", lambda mp: mp.setattr(query_cmd, "_index_is_unusable",
+    ("index", lambda mp: mp.setattr(semantic_arm, "ensure_fresh",
                                     lambda root: "no semantic index has been built yet")),
     ("failed", lambda mp: mp.setattr(semantic_arm, "ranked_slugs",
                                      lambda *a, **k: (1, [], ["corrupt index"]))),

@@ -58,10 +58,10 @@ k results is scored on what it returned.
 | commontrace lexical (idf-v2) | `rank_lessons` exactly as `retrieve`/`query` run it, default scorer |
 | commontrace lexical (idf-v3) | the same, opt-in stemmed scorer |
 | commontrace semantic | the semantic arm's model (`multi-qa-mpnet-base-dot-v1`), exact cosine |
-| commontrace fusion | lexical + semantic, fused by rank (RRF, k=60), as `--fusion rrf` does |
+| commontrace fusion | lexical + semantic, fused by rank (RRF, k=60), as `--fusion rrf` does: each arm contributes the requested number of results |
 | BM25 (Okapi) | `rank_bm25`; the keyword arm of the hybrid search Graphiti/Zep, Hindsight and mem0 describe |
 | dense MiniLM | `all-MiniLM-L6-v2`, exact cosine; the default local embedding in Chroma, mem0's HF provider and LlamaIndex examples |
-| hybrid BM25 + MiniLM | the two fused by RRF: the keyword + vector pattern Graphiti/Zep describe |
+| hybrid BM25 + MiniLM | the two fused the same way: the keyword + vector pattern Graphiti/Zep describe |
 | Chroma | `chromadb` 1.5.9, in-process, default embedding function (ONNX MiniLM, HNSW) |
 | mem0 | `mem0ai` 2.2.0 with `infer=False` (memories stored verbatim, no LLM): its hybrid search -- MiniLM vectors, lemmatized BM25, entity boosts -- on local Qdrant |
 
@@ -76,10 +76,10 @@ the two.
 
 | System | R@5 | R@10 | NDCG@10 | MRR |
 |---|---:|---:|---:|---:|
-| **commontrace fusion (idf-v3 + semantic)** | **0.567** | **0.665** | **0.491** | **0.469** |
+| **commontrace fusion (idf-v3 + semantic)** | **0.568** | **0.660** | **0.486** | **0.464** |
+| commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
 | mem0 2.x hybrid | 0.543 | 0.625 | 0.466 | 0.446 |
-| commontrace fusion (idf-v2 + semantic) | 0.539 | 0.632 | 0.461 | 0.441 |
-| hybrid BM25 + MiniLM | 0.486 | 0.574 | 0.420 | 0.404 |
+| hybrid BM25 + MiniLM | 0.499 | 0.615 | 0.433 | 0.407 |
 | commontrace semantic | 0.460 | 0.561 | 0.402 | 0.383 |
 | commontrace lexical (idf-v3) | 0.492 | 0.558 | 0.430 | 0.412 |
 | commontrace lexical (idf-v2) | 0.472 | 0.540 | 0.406 | 0.387 |
@@ -91,10 +91,10 @@ Recall@10 by question category:
 
 | System | single-hop | temporal | multi-hop | open-domain |
 |---|---:|---:|---:|---:|
-| commontrace fusion (idf-v3) | **0.769** | **0.731** | 0.374 | **0.367** |
-| mem0 2.x hybrid | 0.694 | 0.723 | **0.396** | 0.348 |
-| commontrace fusion (idf-v2) | 0.728 | 0.728 | 0.342 | 0.291 |
-| hybrid BM25 + MiniLM | 0.654 | 0.674 | 0.309 | 0.299 |
+| commontrace fusion (idf-v3) | **0.764** | **0.723** | 0.371 | **0.373** |
+| commontrace fusion (idf-v2) | 0.754 | 0.712 | 0.340 | 0.351 |
+| mem0 2.x hybrid | 0.694 | **0.723** | **0.396** | 0.348 |
+| hybrid BM25 + MiniLM | 0.718 | 0.686 | 0.318 | 0.319 |
 | BM25 (Okapi) | 0.643 | 0.625 | 0.215 | 0.277 |
 
 ## LongMemEval: 60 questions, session-level
@@ -122,7 +122,7 @@ shared the machine with each other.
 | BM25 (`rank_bm25`) | 0.8 ms | 0.04 ms |
 | dense MiniLM (exact) | 9 ms | 4.5 ms (embedding) |
 | mem0 2.x | 58 ms | 55 ms (embedding, lemmatizing, entity extraction per add) |
-| commontrace fusion | 100–130 ms | 39.5 ms (mpnet embedding, once, in `commontrace index`) |
+| commontrace fusion | 120–140 ms | 39.5 ms (mpnet embedding, once per lesson; the index refreshes itself) |
 | Chroma (in-process) | 265 ms | 43 ms (ONNX embedding + HNSW) |
 
 The semantic arm's cost is the query embedding by a 110M-parameter model on
@@ -135,9 +135,11 @@ above 500 ms).
 
 - **CommonTrace's fused retrieval is the most accurate stack measured on
   LoCoMo.** With the stemmed lexical arm it beats mem0's current hybrid
-  search on every aggregate metric and three of four categories. mem0 is
-  better on multi-hop questions, whose evidence spans several turns; its
-  entity boosts link those turns.
+  search on every aggregate metric, leads on single-hop and open-domain
+  questions and ties on temporal ones. mem0 is better on multi-hop
+  questions, whose evidence spans several turns; its entity boosts link
+  those turns. With the default lexical arm, fusion finds more answers in
+  the top 10 than mem0 (0.645 vs 0.625) and ranks them slightly lower.
 - **CommonTrace's default lexical retriever matches or beats BM25** on both
   datasets and is faster per query. On LongMemEval it leads BM25 by 2.7
   points of R@5 and 3.3 of R@10.

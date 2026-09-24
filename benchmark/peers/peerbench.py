@@ -286,8 +286,13 @@ class BM25(System):
 
 
 class RRF(System):
-    def __init__(self, arms: list[System], label: str, k: int = 60, depth: int = 50):
-        self.arms, self.name, self.k, self.depth = arms, label, k, depth
+    """Rank fusion as `--fusion rrf` runs it: each arm is asked for the same
+    number of results the caller asked for, and the two lists are fused by
+    position (RRF, k=60) -- the product fuses `top_k` from each arm, so this
+    does too, rather than a deeper pool the product never sees."""
+
+    def __init__(self, arms: list[System], label: str, k: int = 60):
+        self.arms, self.name, self.k = arms, label, k
 
     def index(self, docs):
         for a in self.arms:
@@ -296,7 +301,7 @@ class RRF(System):
     def search(self, query, k):
         from commontrace import retrieval
         fused = retrieval.reciprocal_rank_fusion(
-            {a.name: a.search(query, self.depth) for a in self.arms}, k=self.k, top_k=k)
+            {a.name: a.search(query, k) for a in self.arms}, k=self.k, top_k=k)
         return [slug for slug, _ in fused]
 
 
