@@ -542,6 +542,40 @@ Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 outcome data behind the outcome metrics (§ [Outcome Metrics](#outcome-metrics)
 below) — all optional, all additive to the base capture.
 
+#### Already have a memory store? Measure it without migrating
+
+The same experiment runs on memories held by any other system — a vector
+database, a memory SDK, a LangGraph store, your own table. Wrap the
+retrieval call you already make; nothing is copied into CommonTrace and
+nothing is written back to your store.
+
+```python
+from commontrace.measure import CausalMemory
+
+memory = CausalMemory(my_store.search)   # any callable returning ranked items
+
+items = memory.recall(task.query, occasion_id=task.id)   # extra kwargs pass through
+# ...run the task with `items`...
+memory.record_outcome(task.id, succeeded=task.passed)
+```
+
+Then `commontrace experiment` in the same store reports a verdict per
+memory, with the same validity checks as above.
+
+- **Ids.** Each item needs a stable id — an `id` or `key` field or
+  attribute, or pass `key=`. There is deliberately no fallback to
+  `str(item)`: that usually embeds a memory address that changes between
+  processes, which would scramble the arms without raising anything.
+- **Edited memories.** Stores that update a memory in place keep its id
+  while its text changes. The item's text (`memory`, `text`, `content` or
+  `value`, or pass `text=`) is fingerprinted so the two versions are not
+  measured as one.
+- **Pinned memories.** Pass `pinned=[...]` for ids that must always be
+  delivered; they are never withheld and never enter the experiment.
+- **Outcomes.** Reporting the same outcome twice is harmless; reporting a
+  different one for an occasion already on record raises rather than
+  silently changing the result.
+
 ### 10 — Run the pilot as one command: map, measure, and a yes/no
 
 ```bash

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`commontrace.measure.CausalMemory`** — wraps any retrieval callable so
+  memories held by another system (a vector database, a memory SDK, a
+  LangGraph store) get the same per-memory causal verdict from
+  `commontrace experiment` as this store's own lessons, without migrating
+  them. See README § "Already have a memory store?".
+- **`holdout_io.record_outcome`** — report a task outcome by occasion id
+  alone, for applications with no episode or trace file to carry it.
+  Repeated identical reports are a no-op; a contradicting report raises.
+
 ### Changed
 
 - **Trimmed `hub/server.py`'s `search_traces` MCP tool docstring** —
@@ -23,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no loss of the actionable behavioral contract.
 
 ### Fixed
+
+- **A torn line in the holdout or outcome log no longer takes the next
+  record with it.** A writer that died mid-line left the file without a
+  trailing newline, so the next append was glued onto the fragment and
+  the reader dropped both. Appends now terminate a fragment first.
+- **The Knowledge Base catalogue (`browse_commons`) is no longer ordered by
+  query traffic**, which any caller can inflate. It now orders by standing,
+  then trust, with a total tie-break, in SQL as well as after it — so
+  "disputed entries sort last" holds across pages, not just within one.
 
 - **`hub/console.py`'s `alerts_create` could 500 on a malformed request
   instead of returning its intended validation error.** `form.get(...)`
