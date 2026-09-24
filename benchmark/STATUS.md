@@ -261,6 +261,8 @@ In decreasing priority order (the first ones unblock missing metrics, the last o
 
 ### P1 — Persist Lambda Reports in the Episode
 
+**Implemented.** Episodes carry `lambda_decisions` (SKILL.md Phase 11, step 5), and `commontrace bench` reports Lambda's acceptance, rejection and refinement rates (`lambda_review` in the JSON report). Rejection *reasons* stay in the run's final report; categorizing them is still open.
+
 Add a frontmatter field `lambda_decisions: {proposal_slug: verdict}` or structured block `## LAMBDA OUTPUT` (verbatim) in the episode body. Proposed format:
 ```yaml
 lambda_decisions:

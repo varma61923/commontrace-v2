@@ -509,6 +509,51 @@ def compute_lesson_quality(episodes):
     return sum(ratios) / len(ratios), len(ratios)
 
 
+LAMBDA_VERDICTS = ("ACCEPTED", "REJECTED", "NEEDS_REFINEMENT")
+
+
+def _normalize_verdict(raw):
+    """'needs refinement', 'NEEDS-REFINEMENT' and 'NEEDS_REFINEMENT' are one
+    verdict; anything else outside LAMBDA_VERDICTS is counted as 'OTHER'
+    rather than dropped, so a typo is visible instead of shrinking the total."""
+    verdict = str(raw or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return verdict if verdict in LAMBDA_VERDICTS else "OTHER"
+
+
+def compute_lambda_review(episodes):
+    """Lambda's per-proposal verdicts, from each episode's `lambda_decisions`
+    (slug -> ACCEPTED | REJECTED | NEEDS_REFINEMENT, written in Phase 11).
+
+    `lesson_quality` sees only which proposals were APPLIED, so it cannot
+    tell a proposal Lambda rejected from one it sent back for refinement --
+    and those call for different fixes (Omega proposing the wrong things vs
+    proposing the right things badly). Episodes that predate the field are
+    skipped, not counted as empty reviews.
+
+    Returns None when no episode carries the field.
+    """
+    counts = {v: 0 for v in (*LAMBDA_VERDICTS, "OTHER")}
+    n_episodes = 0
+    for ep in episodes:
+        decisions = ep.get("lambda_decisions")
+        if not isinstance(decisions, dict) or not decisions:
+            continue
+        n_episodes += 1
+        for verdict in decisions.values():
+            counts[_normalize_verdict(verdict)] += 1
+    total = sum(counts.values())
+    if not total:
+        return None
+    return {
+        "n_episodes": n_episodes,
+        "n_proposals": total,
+        "counts": counts,
+        "acceptance_rate": counts["ACCEPTED"] / total,
+        "rejection_rate": counts["REJECTED"] / total,
+        "refinement_rate": counts["NEEDS_REFINEMENT"] / total,
+    }
+
+
 def compute_implicit_retrieval(episodes):
     """Two angles on retrieval quality:
 
@@ -1462,6 +1507,19 @@ def render_markdown(r, alerts=None):
         out.append(f"-> **{fmt_pct(lq['value'])}** across {lq['n']} valid episodes")
     out.append("")
 
+    lr = r.get("lambda_review")
+    if lr:
+        out.append("#### Lambda verdicts")
+        out.append(
+            f"{lr['n_proposals']} proposals over {lr['n_episodes']} episodes: "
+            f"**{fmt_pct(lr['acceptance_rate'])} accepted**, "
+            f"{fmt_pct(lr['rejection_rate'])} rejected, "
+            f"{fmt_pct(lr['refinement_rate'])} sent back for refinement"
+            + (f", {lr['counts']['OTHER']} with an unrecognised verdict" if lr["counts"]["OTHER"] else "")
+            + "."
+        )
+        out.append("")
+
     out.append("### implicit_retrieval (2 angles)")
     out.append("Precision and richness of Alpha retrieval. `hit` is not bounded by `retrieved` —")
     out.append("see semantic doc (counter-examples / background rules can count as hits).")
@@ -1939,6 +1997,7 @@ def main():
         "lesson_quality": {"value": lq_value, "n": lq_n},
         "implicit_retrieval": {"strict": ir_strict, "permissive": ir_permissive, "n": ir_n},
         "transfer_gap": {"value": tg_value, "n": tg_n, "untraceable": tg_untraceable},
+        "lambda_review": compute_lambda_review(episodes),
         "episodes": episodes,
         "extras": extras,
         "operational_cost": operational_cost,

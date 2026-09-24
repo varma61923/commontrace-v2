@@ -339,6 +339,7 @@ Strict frontmatter, parsable by `yaml.safe_load`:
 | `lessons_hit` | list[string] | yes | Slugs of lessons that actually helped (according to A/B reports + orchestrator retro). **NOT bounded by `retrieved`**: may include background-active lessons (counter-examples, implicit methodological rules, exceptions). The benchmark calculates two complementary ratios: **strict** (hit ∩ retrieved / retrieved = Alpha retrieval precision) and **permissive** (hit / retrieved = application richness, can be > 100%). |
 | `lessons_proposed_by_omega` | list[string] | yes | Slugs of new lessons proposed by Omega (before Lambda validation) |
 | `lessons_validated_by_lambda` | list[string] | yes | Slugs effectively validated by Lambda in Phase 11 and applied by the orchestrator — filled AFTER the fact. Renamed in v2.2 from `lessons_validated_by_user`. |
+| `lambda_decisions` | map[string, string] | no | Lambda's verdict on every Omega proposal: `ACCEPTED`, `REJECTED` or `NEEDS_REFINEMENT`. `commontrace bench` reports acceptance, rejection and refinement rates from it; episodes written before the field existed are skipped. |
 
 Body sections: `## What happened` (5-10 factual lines), `## What surprised me` (verbatim retro Phase 9), `## What worked well` (0-N items), `## What worked less well` (0-N items).
 

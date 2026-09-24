@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lambda's verdicts are kept, and measured.** Episodes now record
+  `lambda_decisions`: Lambda's verdict on every Omega proposal, rejected and
+  sent-back ones included. `commontrace bench` reports the acceptance,
+  rejection and refinement rates from it (`lambda_review`). Before, only the
+  applied proposals were recorded, so `lesson_quality` could not tell a
+  proposal Lambda rejected from one it sent back for refinement: two
+  different failures of Omega with two different fixes. Episodes that
+  predate the field are skipped, and an unrecognised verdict is counted, not
+  dropped.
+
 - **Cross-encoder reranking, opt-in** (`commontrace retrieval --rerank
   cross-encoder|cross-encoder-fast`, `commontrace/rerank_arm.py`). The first
   stage (lexical, or fused with the semantic arm) hands its top 30
