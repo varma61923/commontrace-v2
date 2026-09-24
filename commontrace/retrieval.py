@@ -109,6 +109,22 @@ LEXICAL_SCORERS = (SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
 # every single field, and that bar is not lowered to ship this. Stores of
 # conversational or free-text memory, where recall is the constraint, are
 # the case for opting in.
+#
+# Lighter stemmers were measured as a default candidate, on the same corpora
+# plus LongMemEval (session R@5 / R@10):
+#
+#   stemmer                  floor  worst   every   commons  LoCoMo  LME
+#                                   field   field   R@5      R@10    R@5 / R@10
+#   none (idf-v2)            0.04   2.33x   yes     0.913    0.540   0.852 / 0.940
+#   Porter step 1 only       0.064  2.06x   NO      0.978    0.550   0.916 / 0.950
+#   (plurals, -ed, -ing)     0.068  2.06x   yes     0.957    0.533   0.908 / 0.922
+#   Harman S-stemmer         0.064  2.06x   yes     0.913    0.522   0.888 / 0.913
+#   Porter (idf-v3)          0.072  2.00x   yes     0.957    0.523   0.901 / 0.907
+#
+# Every floor high enough to pass the clinical field gives back top-10
+# recall on both public datasets, so none replaced idf-v2 as the default:
+# the gain in precision is real, but a default must not find fewer of the
+# lessons that answer the task.
 IDF_V3_FLOOR = 0.064
 
 # The default for the default scorer.
