@@ -923,7 +923,9 @@ in every question category, and stays ahead when mem0 is given the same
 reranker. The default wherever the attention extra is installed, gated
 fusion with the fast reranker, beats mem0 on every aggregate metric (R@5
 59.8%, R@10 66.9%); lexical retrieval with the fast reranker alone beats it
-on R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms).
+on R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms). On
+all 470 LongMemEval questions, reranked lexical retrieval beats dense
+MiniLM and a BM25 + MiniLM hybrid on R@5, NDCG and MRR.
 
 ---
 
