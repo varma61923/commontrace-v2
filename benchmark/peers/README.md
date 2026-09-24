@@ -18,6 +18,9 @@ python benchmark/peers/peerbench.py --dataset longmemeval --per-type 10 \
     --systems ct-lexical,ct-lexical:idf-v3,ct-semantic,ct-fusion,ct-fusion-v3,bm25,dense-minilm,hybrid
 # Reranked and gated systems; append -fast for the fast model (ct-fusion-rerank-fast, ...)
 python benchmark/peers/peerbench.py --dataset locomo --systems ct-gated-fast,ct-gated
+# All of LongMemEval_S (470 questions): --per-type 1000
+python benchmark/peers/peerbench.py --dataset longmemeval --per-type 1000 \
+    --systems bm25,ct-lexical,ct-lexical:idf-v3,ct-lexical-rerank-fast,ct-lexical-rerank,dense-minilm,hybrid
 python benchmark/peers/peerbench.py --dataset longmemeval --per-type 10 \
     --systems ct-lexical-rerank,ct-fusion-rerank,ct-fusion-v3-rerank
 ```
@@ -150,6 +153,32 @@ hybrid keeps MRR by a hundredth. mem0 was not run on LongMemEval: its
 per-memory ingestion (55 ms each) over 29,204 turns was out of this run's
 compute budget.
 
+## LongMemEval: all 470 questions, session-level
+
+The 60-question subset above is too small to separate systems a point or
+two apart. The systems that need no embedding index of our own, and dense
+MiniLM (about 4.5 ms per turn to embed), were run on every non-abstention
+question of LongMemEval_S: 470 haystacks, about 235,000 turns. Embedding
+them with mpnet would take this CPU several hours per run, so the fused and
+gated systems are not here; on the 60-question subset gated fusion and
+reranked lexical retrieval were identical.
+
+| System | R@5 | R@10 | NDCG@10 | MRR |
+|---|---:|---:|---:|---:|
+| **commontrace lexical (idf-v2) + rerank** | **0.945** | 0.960 | **0.935** | **0.945** |
+| commontrace lexical (idf-v2) + fast rerank | 0.938 | 0.958 | 0.924 | 0.931 |
+| hybrid BM25 + MiniLM | 0.935 | **0.968** | 0.922 | 0.929 |
+| dense MiniLM | 0.929 | 0.958 | 0.903 | 0.910 |
+| commontrace lexical (idf-v3) | 0.907 | 0.931 | 0.890 | 0.912 |
+| commontrace lexical (idf-v2) | 0.886 | 0.940 | 0.880 | 0.892 |
+| BM25 (Okapi) | 0.878 | 0.933 | 0.871 | 0.882 |
+
+On the full dataset dense MiniLM's lead on the subset disappears. Reranked
+lexical retrieval beats it, and the BM25 + MiniLM hybrid, on R@5, NDCG and
+MRR, with the fast model as well as the accurate one; the hybrid keeps
+R@10. The default lexical scorer leads BM25 by 0.8 points of R@5 and 0.7
+of R@10.
+
 ## Rerankers tried
 
 Over the lexical arm on LongMemEval (60 questions), 30 candidates, 4-core
@@ -220,10 +249,14 @@ above 500 ms).
   fixture unrelated lessons score -8 to -11, so every field keeps exactly
   its recall and collateral; on LoCoMo the semantic arm's real finds get
   through.
-- **On LongMemEval the default does not move.** Every question already has
+- **On LongMemEval, reranking is what carries.** Every question already has
   30 floor-cleared lexical candidates, and the fast cross-encoder scores
-  long conversational turns low, so no semantic candidate is vouched for;
-  the default stays at R@5 0.923, behind dense MiniLM's 0.954.
+  long conversational turns low, so gated fusion vouches for no semantic
+  candidate and matches reranked lexical retrieval. On all 470 questions
+  that beats dense MiniLM and the BM25 + MiniLM hybrid on R@5, NDCG and
+  MRR (0.938 / 0.924 / 0.931 with the fast model; the hybrid keeps R@10,
+  0.968 vs 0.958). The 60-question subset had MiniLM ahead on R@5; it was
+  sampling noise.
 
 - **On LoCoMo, with reranking, CommonTrace leads every system measured, on
   every metric and in every question category.** Fused retrieval reranked by a small
