@@ -66,6 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`commontrace experiment`, its `--strict` gate and `commontrace pilot`
+  now read a running experiment the way the MCP tools and the Hub do.**
+  They tested against a fixed 5% threshold, so one store could fail its
+  CI gate on a HURTS that `retrieve` reported as UNDERPOWERED, and the
+  pilot report could disagree with both. `--strict` runs on every build,
+  and a fixed threshold checked that often is crossed by luck. A verdict
+  now has to clear the anytime-valid boundary everywhere. `--fixed-horizon`
+  keeps the one-shot reading for a finished run nobody acted on midway.
 - **Trimmed `hub/server.py`'s `search_traces` MCP tool docstring** —
   every registered tool's docstring is sent to every connected agent's
   system context on every session, so a near-verbatim restatement of the

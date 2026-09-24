@@ -529,6 +529,13 @@ CI [12%, 56%], p = 0.002)"**.
   Benjamini-Hochberg-corrected across all tested lessons, because at
   α = 0.05 over 100 lessons ~5 look significant by chance and those are
   exactly the ones that get quoted.
+- Every look is treated as a look at a **running** experiment. A verdict
+  must clear a confidence interval that holds at every sample size, because
+  a fixed 5% threshold checked on every CI build, or every time someone
+  opens the report, is eventually crossed by luck. `commontrace
+  experiment`, `--strict`, `pilot`, the MCP tools and the Hub all read it
+  this way, so they give the same verdict. `--fixed-horizon` is the
+  one-shot reading, for a finished run that nobody acted on midway.
 - "No measurable effect" is always reported alongside the **minimum
   detectable effect** for that sample, so it reads as a statement about the
   experiment's power rather than about the lesson.
