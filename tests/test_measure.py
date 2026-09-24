@@ -17,6 +17,25 @@ from commontrace import experiment, holdout_io
 from commontrace.commands import experiment_cmd
 from commontrace.measure import CausalMemory, content_revision
 
+# Pinned, not left to holdout_io.configure: that derives a fresh salt from
+# the clock and a uuid on every call, which re-randomizes which occasions
+# land in which arm on every run. At alpha=0.05 a memory with no effect is
+# then called HELPS on roughly one randomization in twenty -- that is the
+# test's false-positive rate working as designed, and CI hit it. These
+# tests check that the pipeline is wired correctly, not how often the
+# statistics err, so the randomization is fixed and every run is identical.
+FIXED_SALT = "test-measure-fixed-salt"
+
+
+def _configure(root, rate):
+    holdout_io.configure(str(root), rate=rate)
+    path = holdout_io.config_path(str(root))
+    with open(path, encoding="utf-8") as fh:
+        config = json.load(fh)
+    config["salt"] = FIXED_SALT
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(config, fh)
+
 
 class FakeStore:
     """Returns every memory it holds, in rank order, as dicts shaped like a
@@ -47,7 +66,7 @@ def _analyze(root):
 
 class TestEndToEnd:
     def test_a_memory_that_helps_is_found_and_one_that_does_not_is_not(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         store = FakeStore([
             {"id": "good", "memory": "set an idempotency key on webhook handlers"},
             {"id": "neutral", "memory": "the office is closed on Fridays"},
@@ -70,7 +89,7 @@ class TestEndToEnd:
     def test_every_eligible_memory_is_logged_in_both_arms(self, tmp_path):
         """The withheld arm is the evidence. A wrapper that logged only what
         it delivered would have no control group at all."""
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m1", "memory": "a"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
         delivered = 0
@@ -85,7 +104,7 @@ class TestEndToEnd:
 
 class TestWhatIsDelivered:
     def test_order_is_preserved_and_only_withheld_items_are_removed(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         ids = [f"m{i}" for i in range(12)]
         store = FakeStore([{"id": i, "memory": i} for i in ids])
         memory = CausalMemory(store.search, root=str(tmp_path))
@@ -94,7 +113,7 @@ class TestWhatIsDelivered:
         assert out == [i for i in ids if i not in withheld]
 
     def test_pinned_memories_are_always_delivered_and_never_logged(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.99)
+        _configure(tmp_path, 0.99)
         store = FakeStore([{"id": "proven", "memory": "x"}, {"id": "new", "memory": "y"}])
         memory = CausalMemory(store.search, root=str(tmp_path), pinned=["proven"])
         for i in range(20):
@@ -102,7 +121,7 @@ class TestWhatIsDelivered:
         assert {r["lesson"] for r in _log_rows(tmp_path)} == {"new"}
 
     def test_a_duplicate_result_is_one_observation(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m", "memory": "a"}, {"id": "m", "memory": "a"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
         out = memory.recall("q", occasion_id="o1")
@@ -111,7 +130,7 @@ class TestWhatIsDelivered:
         assert len(out) in (0, 2)
 
     def test_a_stopped_experiment_passes_everything_through_and_logs_nothing(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.0)
+        _configure(tmp_path, 0.0)
         store = FakeStore([{"id": "m", "memory": "a"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
         assert len(memory.recall("q", occasion_id="o1")) == 1
@@ -138,14 +157,14 @@ class TestIdentity:
             memory.recall("q", occasion_id="o1")
 
     def test_a_custom_key_is_used(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         store = FakeStore([{"uuid": "abc", "memory": "a"}])
         memory = CausalMemory(store.search, root=str(tmp_path), key=lambda m: m["uuid"])
         memory.recall("q", occasion_id="o1")
         assert _log_rows(tmp_path)[0]["lesson"] == "abc"
 
     def test_objects_with_attributes_work(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
 
         class Item:
             def __init__(self, key, value):
@@ -162,7 +181,7 @@ class TestRevisions:
     def test_an_in_place_update_is_a_different_revision(self, tmp_path):
         """A store that rewrites a memory under the same id must not have
         both versions pooled as one treatment."""
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         store = FakeStore([{"id": "m", "memory": "old advice"}])
         memory = CausalMemory(store.search, root=str(tmp_path))
         memory.recall("q", occasion_id="o1")
@@ -173,7 +192,7 @@ class TestRevisions:
         assert None not in revs
 
     def test_no_text_means_unknown_revision_not_a_guess(self, tmp_path):
-        holdout_io.configure(str(tmp_path), rate=0.5)
+        _configure(tmp_path, 0.5)
         memory = CausalMemory(lambda q: [{"id": "m"}], root=str(tmp_path))
         memory.recall("q", occasion_id="o1")
         assert _log_rows(tmp_path)[0]["revision"] is None

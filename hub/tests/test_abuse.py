@@ -501,16 +501,44 @@ async def test_pg_rate_limiter_sweeps_idle_rows(pg_limiter_factory):
     state (which would be observably identical here, but the row must
     actually be gone -- unbounded table growth is the bug this guards
     against for a long-running Hub)."""
-    limiter = pg_limiter_factory(per_minute=60, burst=1)
+    # per_minute=1: a token takes a full minute to refill, so nothing below
+    # can be explained by refill rather than by the sweep.
+    limiter = pg_limiter_factory(per_minute=1, burst=1)
     limiter._IDLE_TTL_SECONDS = 0.05
-    limiter._SWEEP_INTERVAL_SECONDS = 0.0
 
+    # Sweeping stays OFF while the bucket is exhausted. With it on, every
+    # allow() fires a background sweep with a 50ms TTL, and if the pool's
+    # loop thread stalls for 50ms after the first call -- routine on a
+    # loaded CI runner -- that sweep deletes the row before the second
+    # call's upsert, which then sees a brand-new bucket and is allowed.
+    # That is the sweep working, not the limiter failing, but it made this
+    # assertion depend on scheduling. Reproduced by blocking the loop for
+    # 100ms ahead of the sweep: fails 3/3 as written before, passes after.
+    limiter._SWEEP_INTERVAL_SECONDS = 3600.0
     assert await limiter.allow("idle-org") is True
     assert await limiter.allow("idle-org") is False  # bucket exhausted
 
     time.sleep(0.2)  # past the idle TTL
+    limiter._SWEEP_INTERVAL_SECONDS = 0.0
     assert await limiter.allow("busy-org") is True  # triggers the sweep as a side effect
-    time.sleep(0.2)  # let the fire-and-forget sweep task actually run
+
+    # The sweep is fire-and-forget, so wait for its effect rather than for a
+    # fixed interval, and check the thing this test exists for directly:
+    # the row is actually gone, not merely unreachable.
+    async def idle_rows() -> int:
+        return await limiter._await_on_pool_loop(
+            limiter._shared.pool.fetchval(
+                "SELECT count(*) FROM hub_rate_limit_buckets "
+                "WHERE limiter_name = $1 AND bucket_key = $2",
+                limiter._limiter_name,
+                "idle-org",
+            )
+        )
+
+    deadline = time.monotonic() + 10.0
+    while await idle_rows() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert await idle_rows() == 0, "the idle bucket's row was never swept"
 
     # A fresh call for the swept key behaves like a brand-new key -- full
     # burst capacity again, not a resumed or exhausted bucket.
