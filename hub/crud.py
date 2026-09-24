@@ -45,7 +45,7 @@ from commontrace import (
     revision,
     value,
 )
-from hub import audit, commons, outcomes, plans
+from hub import audit, commons, commons_cache, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
     RateLimited,
@@ -394,6 +394,81 @@ def commons_visible() -> list:
         Trace.commons_retracted_at.is_(None),
         Trace.superseded_at.is_(None),
     ]
+
+
+@dataclasses.dataclass
+class _CommonsCorpus:
+    """What commons_overlap/commons_search scan: `ids` and `signatures` in
+    scan order, and `total`, the count before the scan cap. `rows` carries
+    the already-loaded full rows on the direct path and is None on the
+    cached one, where only matched rows are ever loaded."""
+
+    total: int
+    ids: list[str]
+    signatures: object
+    rows: dict[str, Trace] | None
+
+
+async def _commons_corpus(session: AsyncSession, org_id: str, agent_type: str) -> _CommonsCorpus:
+    """The Knowledge Base corpus one caller's query scans.
+
+    With numpy, from this process's cached snapshot (hub/commons_cache.py),
+    which is rebuilt only when the corpus changed. Without it, loaded the
+    way it always was. Both apply the same visibility rule, the same
+    exclusion of the caller's own rows, the same agent_type filter, the
+    same created_at DESC, id DESC order and the same scan cap, so a match
+    and a tie resolve identically either way.
+    """
+    cap = commons.max_corpus_scan()
+    if commons_cache.available():
+        snap = await commons_cache.snapshot(session, commons_visible())
+        total, ids, signatures = commons_cache.select_for(snap, org_id, agent_type, cap)
+        return _CommonsCorpus(total=total, ids=ids, signatures=signatures, rows=None)
+
+    where = [
+        *commons_visible(),
+        Trace.commons_signature.isnot(None),
+        Trace.org_id != org_id,
+    ]
+    if agent_type:
+        where.append(Trace.agent_type == agent_type)
+    total = (
+        await session.execute(select(func.count()).select_from(Trace).where(*where))
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*where)
+            .order_by(Trace.created_at.desc(), Trace.id.desc())
+            .limit(cap)
+        )
+    ).scalars().all()
+    return _CommonsCorpus(
+        total=total,
+        ids=[r.id for r in rows],
+        signatures=[r.commons_signature or [] for r in rows],
+        rows={r.id: r for r in rows},
+    )
+
+
+async def _commons_rows(
+    session: AsyncSession, corpus: _CommonsCorpus, ids: list[str]
+) -> dict[str, Trace]:
+    """Full rows for the entries that matched, keyed by id.
+
+    On the cached path these are read now, with commons_visible() applied
+    again: the snapshot may be a moment old, and an entry retracted in that
+    moment must drop out of the answer rather than be served. Its caller
+    treats a missing id as no match.
+    """
+    if corpus.rows is not None:
+        return {i: corpus.rows[i] for i in ids if i in corpus.rows}
+    if not ids:
+        return {}
+    got = (
+        await session.execute(select(Trace).where(Trace.id.in_(set(ids)), *commons_visible()))
+    ).scalars().all()
+    return {r.id: r for r in got}
 
 
 def standing_of(trace: Trace, now: datetime | None = None) -> str:
@@ -4971,37 +5046,22 @@ async def commons_overlap(
     # commons_seed and review_kb_submission write. Retracted entries are
     # excluded there too. hub/tests/test_commons_search.py and
     # test_commons.py both assert a non-seed shared row is invisible to
-    # this scan.
-    where = [
-        *commons_visible(),
-        Trace.commons_signature.isnot(None),
-        Trace.org_id != org_id,
-    ]
-    # Optional semantic narrowing. Not an approximation: a support fleet's
-    # failures genuinely should not be scored against CUDA substrate. It is
-    # also the cheapest way to keep the scan small as the corpus grows,
-    # because it runs in Postgres instead of Python.
+    # this scan. _commons_corpus applies it on both of its paths, and
+    # _commons_rows applies it again to every matched row.
+    #
+    # agent_type is optional semantic narrowing, not an approximation: a
+    # support fleet's failures genuinely should not be scored against CUDA
+    # substrate.
     if agent_type:
         reject_unstorable_text(agent_type, "agent_type")
-        where.append(Trace.agent_type == agent_type)
 
-    total_corpus = (
-        await session.execute(select(func.count()).select_from(Trace).where(*where))
-    ).scalar_one()
-
-    # Bounded scan. See commons.MAX_COMMONS_CORPUS for why this exists and
-    # what the real fix past it is. Ordered by recency so a truncated scan
-    # is at least a *defined* subset rather than whatever the planner
-    # returned first.
-    rows = (
-        await session.execute(
-            select(Trace)
-            .where(*where)
-            .order_by(Trace.created_at.desc(), Trace.id.desc())
-            .limit(commons.max_corpus_scan())
-        )
-    ).scalars().all()
-    corpus_truncated = total_corpus > len(rows)
+    # Bounded scan: see commons.MAX_COMMONS_CORPUS for the ceiling, and
+    # hub/commons_cache.py for why the corpus is no longer re-read from the
+    # database on every call. Ordered by recency so a truncated scan is a
+    # *defined* subset rather than whatever the planner returned first.
+    corpus = await _commons_corpus(session, org_id, agent_type)
+    total_corpus = corpus.total
+    corpus_truncated = total_corpus > len(corpus.ids)
 
     # Up to MAX_SUBMITTED_FAILURES (500) signatures against up to
     # max_corpus_scan() (20,000, or 2,000 without numpy) corpus rows is a
@@ -5012,8 +5072,11 @@ async def commons_overlap(
     # runs; the GIL still serializes the actual comparisons, but that's a
     # throughput cost to this one call, not an availability cost to
     # everyone else's requests.
-    best = await asyncio.to_thread(
-        commons.best_matches, submitted, [r.commons_signature or [] for r in rows]
+    best = await asyncio.to_thread(commons.best_matches, submitted, corpus.signatures)
+
+    # Only the rows that matched are ever loaded in full.
+    matched_rows = await _commons_rows(
+        session, corpus, [corpus.ids[idx] for idx, sim in best if idx >= 0 and sim >= threshold]
     )
 
     matches: list[dict] = []
@@ -5026,7 +5089,11 @@ async def commons_overlap(
     for (label, _sig), (idx, sim) in zip(submitted, best):
         if idx < 0 or sim < threshold:
             continue
-        hit = rows[idx]
+        hit = matched_rows.get(corpus.ids[idx])
+        if hit is None:
+            # Left the Knowledge Base after the snapshot was taken (see
+            # _commons_rows). Not served, and not counted.
+            continue
         # Counted as matched regardless of standing: commons_hits answers
         # "how often was this entry served", which is what makes
         # `kb-review` able to rank a bad entry by how much traffic it is
@@ -5143,7 +5210,7 @@ async def commons_overlap(
     n_failures = len(submitted)
     return {
         "n_failures": n_failures,
-        "n_commons_traces": len(rows),
+        "n_commons_traces": len(corpus.ids),
         "n_commons_traces_total": total_corpus,
         "corpus_truncated": corpus_truncated,
         "n_covered": n_covered,
@@ -5158,7 +5225,7 @@ async def commons_overlap(
         "by_agent_type": dict(sorted(by_domain.items(), key=lambda kv: -kv[1])),
         "matches": matches,
         "disputed_matches": disputed_matches,
-        "note": _commons_note(n_failures, len(rows), corpus_truncated, total_corpus),
+        "note": _commons_note(n_failures, len(corpus.ids), corpus_truncated, total_corpus),
     }
 
 
@@ -5257,45 +5324,32 @@ async def commons_search(
 
     # See commons_overlap's identical filter: commons_visible() is what
     # guarantees the corpus can never contain another customer's trace, not
-    # just a policy that happens to hold today.
-    where = [
-        *commons_visible(),
-        Trace.commons_signature.isnot(None),
-        Trace.org_id != org_id,
-    ]
+    # just a policy that happens to hold today. _commons_corpus and
+    # _commons_rows apply it here exactly as they do there.
     if agent_type:
         reject_unstorable_text(agent_type, "agent_type")
-        where.append(Trace.agent_type == agent_type)
 
-    total_corpus = (
-        await session.execute(select(func.count()).select_from(Trace).where(*where))
-    ).scalar_one()
-
-    rows = (
-        await session.execute(
-            select(Trace)
-            .where(*where)
-            .order_by(Trace.created_at.desc(), Trace.id.desc())
-            .limit(commons.max_corpus_scan())
-        )
-    ).scalars().all()
+    corpus = await _commons_corpus(session, org_id, agent_type)
+    total_corpus = corpus.total
 
     # Offloaded for the same reason commons_overlap offloads: a CPU-bound
     # scan on the event loop starves every other request this process is
     # serving, not just this one.
-    ranked = await asyncio.to_thread(
-        commons.rank_candidates, sig, [r.commons_signature or [] for r in rows], limit
-    )
+    ranked = await asyncio.to_thread(commons.rank_candidates, sig, corpus.signatures, limit)
+    ranked_rows = await _commons_rows(session, corpus, [corpus.ids[idx] for idx, _sim in ranked])
 
     now = datetime.now(timezone.utc)
     candidates = [
         {
             "rank": 0,
             "similarity": round(sim, 4),
-            "commons_hits": rows[idx].commons_hits,
-            "trace": _to_commons_wire(rows[idx], now),
+            "commons_hits": ranked_rows[corpus.ids[idx]].commons_hits,
+            "trace": _to_commons_wire(ranked_rows[corpus.ids[idx]], now),
         }
         for idx, sim in ranked
+        # An entry that left the Knowledge Base after the snapshot was taken
+        # is not served (see _commons_rows).
+        if corpus.ids[idx] in ranked_rows
     ]
     # Disputed entries sort behind everything else, however similar. Within
     # each group similarity decides the order, and trust only breaks ties --
@@ -5362,9 +5416,9 @@ async def commons_search(
         "n_disputed": sum(
             1 for c in candidates if not commons.counts_as_coverage(c["trace"]["standing"])
         ),
-        "n_commons_traces": len(rows),
+        "n_commons_traces": len(corpus.ids),
         "n_commons_traces_total": total_corpus,
-        "corpus_truncated": total_corpus > len(rows),
+        "corpus_truncated": total_corpus > len(corpus.ids),
         "candidates": candidates,
         "note": _SEARCH_NOTE,
     }

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Knowledge Base queries no longer re-read the corpus on every call.**
+  `commons_search` at 20,000 entries went from ~1.6s to ~29ms, and a
+  50-failure `commons_overlap` from ~1.9s to ~210ms (A/B on identical
+  data; the speedup grows with the corpus). Measured first: ~1.4s of each
+  query was loading and decoding rows, ~3ms was the comparison. Each Hub
+  process now keeps the matchable corpus in memory (`hub/commons_cache.py`)
+  and reloads it only when a trigger-maintained version in the new
+  `commons_corpus_state` table moves. Results are unchanged: every matched
+  row is re-read with the visibility filter applied, and a test compares
+  the cached and direct paths on corpora built to exercise every exclusion
+  and a truncating scan cap. **Requires migration `c3e8a1f05b92`.**
 - **`commontrace.measure.CausalMemory`** — wraps any retrieval callable so
   memories held by another system (a vector database, a memory SDK, a
   LangGraph store) get the same per-memory causal verdict from
