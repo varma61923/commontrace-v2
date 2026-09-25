@@ -66,7 +66,7 @@ The `/commontrace` v2 mechanism is an **experimentation ground for the CommonTra
 
 The `/commontrace` v2.3 pipeline involves 6 agents. An orchestrator (main agent) coordinates; 5 sub-agents (Alpha, A, B, Omega, Lambda) are each a fresh sub-agent spawned asynchronously. Each has an autonomous brief and a strict scope — the briefs are copied verbatim from `SKILL.md`, not reformulated by the orchestrator (preserves fidelity to the canonical design).
 
-Added in v2.3 is a **semantic attention layer** (infrastructure, NOT a 7th agent) under `memory/attention/`: a numpy index of local embeddings (model `multi-qa-mpnet-base-dot-v1`) queried by Alpha via `query.py` as a Phase 0 pre-filter. This layer has no mandate of its own, no brief, no autonomy — it is an index called synchronously by Alpha to scale retrieval to 100+ lessons. Technical details in §4.6.
+Added in v2.3 is a **semantic attention layer** (infrastructure, NOT a 7th agent) under `memory/attention/`: a numpy index of local embeddings (model `Snowflake/snowflake-arctic-embed-m-v1.5` for a new index; `multi-qa-mpnet-base-dot-v1` for one built before it) queried by Alpha via `query.py` as a Phase 0 pre-filter. This layer has no mandate of its own, no brief, no autonomy — it is an index called synchronously by Alpha to scale retrieval to 100+ lessons. Technical details in §4.6.
 
 Added in parallel is a **companion skill `/dreamer` v0.1** (2026-05-27) under `$COMMONTRACE_ROOT/../dreamer/`: an autonomous agent that consumes the memory base and attention layer of `/commontrace` (without modifying `/commontrace` itself — Dreamer is a separate skill invocable via `/dreamer <project>`). The Dreamer sub-agent is spawned in Phase 1 of a session for an exhaustive autonomous reading (specs + code + docs + memory + state of the art if relevant), then the orchestrator dialogues with the user in open chat (not via a structured prompt) on the proposals section by section. For memory base modifications, Dreamer goes through Lambda Phase 11 `/commontrace` (existing mechanism, not reinvented). For code/doc modifications, Dreamer applies under tracked Git commits `[Dreamer] <summary>` after user validation. Full details in §6.4.
 
@@ -435,7 +435,22 @@ memory/attention/
 
 #### Embedding Model
 
-`multi-qa-mpnet-base-dot-v1` (sentence-transformers, ~420 MB, 768 dim). Chosen for:
+A new index is built with `Snowflake/snowflake-arctic-embed-m-v1.5`
+(sentence-transformers, 109M parameters, ~440 MB, 768 dim). An index built
+before it keeps `multi-qa-mpnet-base-dot-v1`, the original model (same size and
+width), until it is rebuilt with `--model`: the model decides which lessons the
+semantic arm surfaces, so it is part of the treatment an experiment records
+(fused and semantic-only labels name it: `gated(idf-v2+semantic@arctic-m)`).
+Only these two names are ever loaded (`TRUSTED_MODELS` in
+`commontrace/reference/query.py`), whatever an index file claims.
+
+arctic-embed replaced mpnet as the default because it finds more: on LoCoMo's
+1,531 questions its exact cosine search puts an answering turn's share of 0.706
+in the top 10, against 0.561 for mpnet (`benchmark/peers/`). Queries carry the
+model's retrieval instruction ("Represent this sentence for searching relevant
+passages: "); lessons are encoded as they are.
+
+Both models are:
 - Optimized for Q&A retrieval (matching incoming task ↔ lesson description)
 - **Strictly local** execution after initial download (cache under `~/.cache/huggingface/`) — no runtime API call, no telemetry
 - L2-normalized embeddings (cosine == dot product = 1 scalar mat-mul for the query)
@@ -457,7 +472,7 @@ Stable contract (reused by Dreamer v2.4 hooks — cf. §6.4):
 |-----------------|-------------------|-------------------------------------------------|
 | `slugs`         | `np.ndarray[str]` | Lesson identifiers, ordered                     |
 | `embeddings`    | `np.ndarray[N,D]` | L2-normalized embeddings (cosine = dot)         |
-| `model_name`    | `str`             | `"multi-qa-mpnet-base-dot-v1"`                  |
+| `model_name`    | `str`             | one of `TRUSTED_MODELS` (the model that built it) |
 | `encoded_field` | `str`             | Human-readable schema of encoded fields         |
 | `timestamp`     | `str`             | ISO-8601 build time                             |
 | `n_lessons`     | `int`             | Number of active lessons indexed                |

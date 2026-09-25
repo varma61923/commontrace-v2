@@ -739,7 +739,7 @@ GO.
    ```
    commontrace index
    ```
-   Expected output: `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. If it fails (sentence-transformers unavailable, no network for the model download, etc.), the orchestrator notes it in the final report but does not block the run — `commontrace query` detects the stale index and falls back to lexical retrieval, so retrieval keeps working until the next successful rebuild. Manual rebuild: `commontrace index --force`.
+   Expected output: `Index built: N lessons, model=Snowflake/snowflake-arctic-embed-m-v1.5, dim=768` (an index built before that model keeps `multi-qa-mpnet-base-dot-v1`). If it fails (sentence-transformers unavailable, no network for the model download, etc.), the orchestrator notes it in the final report but does not block the run — `commontrace query` detects the stale index and falls back to lexical retrieval, so retrieval keeps working until the next successful rebuild. Manual rebuild: `commontrace index --force`.
 7. Includes in the final user report:
    - List of ACCEPTED proposals applied
    - List of REJECTED proposals with Lambda reason (traceability)

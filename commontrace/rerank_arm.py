@@ -78,7 +78,22 @@ DEFAULT_MODE = "cross-encoder"
 #: On LoCoMo, at -4: R@5 0.598 and R@10 0.669 with the fast model (lexical +
 #: fast rerank: 0.562 / 0.615; mem0 2.x: 0.543 / 0.625), and 0.679 / 0.731
 #: with the accurate one.
-GATE_THRESHOLDS = {"cross-encoder": -4.0, "cross-encoder-fast": -4.0}
+#:
+#: The threshold is part of the treatment, so it is set per semantic-arm
+#: embedder (retrieval_io.EMBEDDER_TAGS) and a store keeps the one its label
+#: names: "" is the original model, whose stores keep -4. With
+#: snowflake-arctic-embed-m the semantic arm finds more of what the page
+#: needs, and the gate can be looser before the fixture notices: re-measured
+#: with that arm, every field keeps recall 1.0 and its collateral down to -9
+#: (accurate) and -10 (fast); at -10 and -11 respectively a field's
+#: collateral rises. -8 keeps a margin under both. On LoCoMo, at -8: R@5
+#: 0.608 / R@10 0.694 fast, 0.703 / 0.762 accurate.
+GATE_THRESHOLDS = {
+    ("cross-encoder", ""): -4.0,
+    ("cross-encoder-fast", ""): -4.0,
+    ("cross-encoder", "arctic-m"): -8.0,
+    ("cross-encoder-fast", "arctic-m"): -8.0,
+}
 #: How many first-stage candidates the reranker reorders.
 POOL = 30
 #: Characters of lesson text the model reads. Its input is capped at 512
@@ -161,12 +176,22 @@ def pool_size(want: int) -> int:
     return max(want, POOL)
 
 
-def admit_gated(floor_cleared: set[str], mode: str = DEFAULT_MODE) -> Callable[[str, float], bool]:
+def gate_threshold(mode: str, embedder: str = "") -> float:
+    """The gate for `mode` with a semantic arm whose embedder tag is
+    `embedder`; an embedder this build has no threshold for gets the
+    original, strictest one."""
+    return GATE_THRESHOLDS.get((mode, embedder), GATE_THRESHOLDS[(mode, "")])
+
+
+def admit_gated(
+    floor_cleared: set[str], mode: str = DEFAULT_MODE, embedder: str = "",
+) -> Callable[[str, float], bool]:
     """Gated fusion's admission rule: a lesson the lexical arm scored at or
     above the relevance floor is always admissible, as it is without fusion;
     any other candidate, a semantic-arm find or a below-floor lexical match,
-    only if the cross-encoder scores it at least `GATE_THRESHOLDS[mode]`."""
-    threshold = GATE_THRESHOLDS[mode]
+    only if the cross-encoder scores it at least `gate_threshold(mode,
+    embedder)`."""
+    threshold = gate_threshold(mode, embedder)
     return lambda slug, score: slug in floor_cleared or score >= threshold
 
 

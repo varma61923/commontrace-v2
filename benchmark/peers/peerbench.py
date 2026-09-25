@@ -246,10 +246,14 @@ class CTLexical(System):
 
 
 class Dense(System):
-    """Exact cosine search over unit-normalized sentence embeddings."""
+    """Exact cosine search over unit-normalized sentence embeddings.
+    `query_prefix` is the instruction a model wants on queries (documents
+    are encoded as they are)."""
 
-    def __init__(self, model: str, label: str, cache_dir: str, note: str = ""):
+    def __init__(self, model: str, label: str, cache_dir: str, note: str = "",
+                 query_prefix: str = ""):
         self.model, self.name, self.cache_dir, self.note = model, label, cache_dir, note
+        self.query_prefix = query_prefix
 
     def index(self, docs):
         self.ids = [d.id for d in docs]
@@ -257,7 +261,7 @@ class Dense(System):
 
     def search(self, query, k):
         import numpy as np
-        q = encoder(self.model).encode([query], normalize_embeddings=True,
+        q = encoder(self.model).encode([self.query_prefix + query], normalize_embeddings=True,
                                        convert_to_numpy=True, show_progress_bar=False)[0]
         scores = self.vecs @ q
         top = np.argsort(-scores)[:k]
@@ -332,10 +336,10 @@ class Gated(System):
     `rerank_arm.admit_gated` lets a candidate that did not clear the lexical
     floor onto the page only if the cross-encoder vouches for it."""
 
-    def __init__(self, dense: System, mode: str, label: str):
+    def __init__(self, dense: System, mode: str, label: str, embedder: str = ""):
         from commontrace import rerank_arm, retrieval
         self.lex, self.dense, self.mode, self.name = CTLexical(), dense, mode, label
-        self.rerank_arm, self.retrieval = rerank_arm, retrieval
+        self.rerank_arm, self.retrieval, self.embedder = rerank_arm, retrieval, embedder
 
     def index(self, docs):
         self.lex.index(docs)
@@ -349,7 +353,8 @@ class Gated(System):
         cleared = {r.slug for r in ranked if r.relevance >= self.retrieval.DEFAULT_FLOOR}
         pool = list(dict.fromkeys([r.slug for r in ranked] + self.dense.search(query, depth)))
         page, _ = self.rerank_arm.rerank(query, pool, self.text, k, mode=self.mode,
-                                         admit=self.rerank_arm.admit_gated(cleared, self.mode))
+                                         admit=self.rerank_arm.admit_gated(
+                                             cleared, self.mode, self.embedder))
         return [slug for slug, _ in page]
 
 
@@ -464,26 +469,52 @@ def build(names: list[str], cache: str, workdir: str) -> list[System]:
     return out
 
 
+def _semantic(model: str, cache: str) -> System:
+    """CommonTrace's semantic arm with `model`: the product's own query
+    instruction for it (commontrace/reference/query.py TRUSTED_MODELS)."""
+    import importlib.util
+
+    from commontrace.commands._shellout import packaged_reference_dir
+    from commontrace.retrieval_io import embedder_tag
+
+    spec = importlib.util.spec_from_file_location(
+        "peerbench_reference_query", os.path.join(packaged_reference_dir(), "query.py"))
+    ref = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ref)
+    tag = embedder_tag(model) or "mpnet"
+    return Dense(model, f"commontrace semantic ({tag})", cache,
+                 query_prefix=ref.TRUSTED_MODELS[model])
+
+
 def _build_one(n: str, cache: str, workdir: str) -> System:
-    mpnet = "multi-qa-mpnet-base-dot-v1"  # the model commontrace index builds with
+    from commontrace.retrieval_io import embedder_tag
+
+    # The model a new commontrace index builds with; `-mpnet` suffixed
+    # systems use the original model, which existing indexes keep.
+    model = "Snowflake/snowflake-arctic-embed-m-v1.5"
+    if n.endswith("-mpnet"):
+        n, model = n[: -len("-mpnet")], "multi-qa-mpnet-base-dot-v1"
+    tag = embedder_tag(model) or "mpnet"
     if n == "ct-lexical":
         return CTLexical()
     if n.startswith("ct-lexical:"):
         return CTLexical(scorer=n.split(":", 1)[1])
     if n == "ct-semantic":
-        return Dense(mpnet, "commontrace semantic (mpnet)", cache)
+        return _semantic(model, cache)
     if n == "ct-fusion":
-        return RRF([CTLexical(), Dense(mpnet, "commontrace semantic (mpnet)", cache)],
-                   "commontrace fusion (lexical+semantic, RRF)")
+        return RRF([CTLexical(), _semantic(model, cache)],
+                   f"commontrace fusion (lexical+semantic {tag}, RRF)")
     if n == "ct-fusion-v3":
-        return RRF([CTLexical(scorer="idf-v3"), Dense(mpnet, "commontrace semantic (mpnet)", cache)],
-                   "commontrace fusion (idf-v3+semantic, RRF)")
+        return RRF([CTLexical(scorer="idf-v3"), _semantic(model, cache)],
+                   f"commontrace fusion (idf-v3+semantic {tag}, RRF)")
     if n in ("ct-gated", "ct-gated-fast"):
         mode = "cross-encoder-fast" if n == "ct-gated-fast" else "cross-encoder"
-        return Gated(Dense(mpnet, "commontrace semantic (mpnet)", cache), mode,
-                     f"commontrace gated fusion ({mode})")
+        return Gated(_semantic(model, cache), mode,
+                     f"commontrace gated fusion ({mode}, {tag})", embedder_tag(model))
     if n.endswith(("-rerank", "-rerank-fast")):
         base, _, speed = n.partition("-rerank")
+        if base != "ct-lexical" and model != "Snowflake/snowflake-arctic-embed-m-v1.5":
+            base += "-mpnet"
         first = CTLexical() if base == "ct-lexical" else _build_one(base, cache, workdir)
         mode = "cross-encoder-fast" if speed == "-fast" else "cross-encoder"
         return Reranked(first, f"{first.name} + {mode} rerank", mode)

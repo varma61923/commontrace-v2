@@ -142,7 +142,16 @@ def run(args: argparse.Namespace) -> int:
                if config.harm_policy == harm.POLICY_WITHDRAW
                else "inform (a lesson measured HURTS is injected, with its verdict)")
         )
-        print(f"  logged as: {config.eligibility}")
+        logged_as = config.eligibility
+        if config.fusion != retrieval_io.FUSION_NONE:
+            from commontrace import semantic_arm
+
+            # A fused label names the semantic arm's model, which is the
+            # index's (commontrace/reference/query.py TRUSTED_MODELS).
+            logged_as = retrieval_io.eligibility_label(
+                config.scorer, config.fusion, config.rerank,
+                embedder=retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
+        print(f"  logged as: {logged_as}")
         if config.note:
             print(f"  note   : {config.note}")
         if config.pinned_for_running_experiment:

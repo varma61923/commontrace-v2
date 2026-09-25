@@ -142,15 +142,41 @@ def default_rerank() -> str:
 # label means the existing drift check catches it for free -- no second column
 # that an older reader would ignore, and no second check that could disagree
 # with the first about the same fact.
-_FUSION_LABEL = re.compile(r"^(?P<mode>rrf|gated)\((?P<lexical>[^+()]+)\+semantic\)$")
+#
+# The semantic arm's embedding model moves it too, so a fused label names the
+# model after an `@` -- except the original model, whose label is unchanged,
+# so a store that has logged under it reads as the same treatment it always
+# was.
+_FUSION_LABEL = re.compile(
+    r"^(?P<mode>rrf|gated)\((?P<lexical>[^+()@]+)\+semantic(?:@(?P<embedder>[\w.-]+))?\)$")
+
+#: The short name each trusted embedding model (commontrace/reference/
+#: query.py's TRUSTED_MODELS) records in a fused label. "" is the original
+#: model, recorded as no name at all.
+EMBEDDER_TAGS = {
+    "multi-qa-mpnet-base-dot-v1": "",
+    "Snowflake/snowflake-arctic-embed-m-v1.5": "arctic-m",
+}
+
+
+def embedder_tag(model_name: str | None) -> str:
+    """The label's name for `model_name`; "" for the original model or an
+    unknown one (the index loader refuses an untrusted model anyway)."""
+    return EMBEDDER_TAGS.get(model_name or "", "")
 # A reranked ranking wraps the first stage's label with the model that
 # reordered it: a different model is a different treatment.
 _RERANK_LABEL = re.compile(r"^ce:(?P<model>[^()]+)\((?P<inner>.+)\)$")
 
 
-def eligibility_label(scorer: str, fusion: str, rerank: str = RERANK_NONE) -> str:
-    """What to record as the `scorer` of an assignment made under these settings."""
-    label = f"{fusion}({scorer}+semantic)" if fusion in (FUSION_RRF, FUSION_GATED) else scorer
+def eligibility_label(
+    scorer: str, fusion: str, rerank: str = RERANK_NONE, embedder: str = "",
+) -> str:
+    """What to record as the `scorer` of an assignment made under these
+    settings. `embedder` is the semantic arm's `embedder_tag`."""
+    if fusion in (FUSION_RRF, FUSION_GATED):
+        label = f"{fusion}({scorer}+semantic{'@' + embedder if embedder else ''})"
+    else:
+        label = scorer
     return rerank_label(label, rerank)
 
 
@@ -175,6 +201,26 @@ def parse_rerank_label(label: str) -> tuple[str, str]:
     return label, RERANK_NONE
 
 
+def semantic_only_label(embedder: str = "") -> str:
+    """The label of a ranking the semantic arm decided alone, naming its
+    embedder as a fused label does."""
+    return f"{SEMANTIC_ONLY}@{embedder}" if embedder else SEMANTIC_ONLY
+
+
+def _is_semantic_only(label: str) -> bool:
+    return label == SEMANTIC_ONLY or (label or "").startswith(SEMANTIC_ONLY + "@")
+
+
+def parse_embedder(label: str) -> str:
+    """The embedder tag a recorded label names ("" for the original model or
+    a label with no semantic arm)."""
+    label = parse_rerank_label(label)[0] or ""
+    if _is_semantic_only(label):
+        return label.partition("@")[2]
+    match = _FUSION_LABEL.match(label)
+    return (match.group("embedder") or "") if match else ""
+
+
 def parse_eligibility_label(label: str) -> tuple[str, str]:
     """Inverse of `eligibility_label`: (lexical scorer, fusion mode).
 
@@ -186,7 +232,7 @@ def parse_eligibility_label(label: str) -> tuple[str, str]:
     match = _FUSION_LABEL.match(label or "")
     if match:
         return match.group("lexical"), match.group("mode")
-    if label == SEMANTIC_ONLY:
+    if _is_semantic_only(label):
         # No lexical scorer decided eligibility; the lexical fallback is the
         # default one.
         return retrieval.SCORER_IDF, FUSION_NONE
@@ -252,11 +298,14 @@ class RetrievalConfig:
         """The label an assignment made under these settings records."""
         return eligibility_label(self.scorer, self.fusion, self.rerank)
 
-    def eligibility_label_for(self, *, fused: bool) -> str:
+    def eligibility_label_for(self, *, fused: bool, embedder: str = "") -> str:
         """The FIRST stage's label as it actually ran: fused (in this
-        store's fusion mode) only if the semantic arm did run. A reranker's
-        wrapper is added by the caller, only if it ran (`rerank_label`)."""
-        return eligibility_label(self.scorer, self.fusion if fused else FUSION_NONE)
+        store's fusion mode, with the semantic arm's `embedder` tag) only if
+        the semantic arm did run. A reranker's wrapper is added by the
+        caller, only if it ran (`rerank_label`)."""
+        if not fused:
+            return eligibility_label(self.scorer, FUSION_NONE)
+        return eligibility_label(self.scorer, self.fusion, embedder=embedder)
     configured_at: str = ""
     note: str = ""
     # True when these settings were inferred for an existing store rather than
@@ -351,6 +400,25 @@ def _last_logged_settings(root: str) -> tuple[str, float] | None:
                 return None
         return None  # a complete row that simply predates these fields
     return None
+
+
+def logged_embedding_model(root: str) -> str | None:
+    """The embedding model this store's most recent assignment was ranked
+    with, when the semantic arm took part in it; None otherwise.
+
+    What an index rebuilt from nothing (deleted, or never built on this
+    machine) is built with, so a store mid-experiment keeps its semantic
+    arm's model rather than taking the default. An index that holds lessons
+    already names its model, and keeps it (build_index.index_model).
+    """
+    logged = _last_logged_settings(root)
+    if logged is None:
+        return None
+    if (parse_eligibility_label(logged[0])[1] == FUSION_NONE
+            and not _is_semantic_only(parse_rerank_label(logged[0])[0])):
+        return None
+    tag = parse_embedder(logged[0])
+    return next((name for name, t in EMBEDDER_TAGS.items() if t == tag), None)
 
 
 def _unchosen_fusion(root: str) -> str:

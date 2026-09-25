@@ -2,13 +2,15 @@
 """Build attention index for /commontrace memory lessons (v2.3).
 
 Encode each ACTIVE lesson (description + domain + tags + applies_when +
-do_not_apply_when + rule) using multi-qa-mpnet-base-dot-v1 (local execution
-after first download — no runtime API calls, no telemetry).
+do_not_apply_when + rule) with a trusted sentence-embedding model (local
+execution after first download — no runtime API calls, no telemetry): the
+model the existing index was built with, else DEFAULT_MODEL_NAME, unless
+--model names another.
 
 Output: memory/attention/index.npz with fields:
     - slugs (np.ndarray[str])      : lesson identifiers, ordered
     - embeddings (np.ndarray[N,D]) : L2-normalized embeddings (cosine == dot)
-    - model_name (str)             : "multi-qa-mpnet-base-dot-v1"
+    - model_name (str)             : one of TRUSTED_MODELS
     - encoded_field (str)          : human-readable schema of what was encoded
     - timestamp (str)              : ISO-8601 build time
     - n_lessons (int)              : number of active lessons indexed
@@ -16,6 +18,8 @@ Output: memory/attention/index.npz with fields:
 Usage:
     python build_index.py            # rebuild if outdated (or if missing)
     python build_index.py --force    # rebuild always
+    python build_index.py --force --model multi-qa-mpnet-base-dot-v1
+                                     # rebuild with another trusted model
 
 Trigger:
     - Auto: end of Phase 11 if Lambda created/updated/revised any lesson
@@ -71,9 +75,18 @@ _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 # pipe corrupts every line built from it, not just its own.
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-_TRUSTED_MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
-MODEL_NAME = _TRUSTED_MODEL_NAME
-# multi-qa-mpnet-base-dot-v1's fixed sentence-embedding output width. Needed
+# Every model this script builds with. query.py holds the same allow-list, with
+# the query prefix each model needs, and loads only a model named in it: see its
+# comment for why an index file's own model_name is not trusted input, and for
+# each model's measured recall.
+TRUSTED_MODELS = ("multi-qa-mpnet-base-dot-v1", "Snowflake/snowflake-arctic-embed-m-v1.5")
+#: What a NEW index is built with. An existing index keeps its model
+#: (`index_model`), because the model decides which lessons the semantic arm
+#: surfaces: changing it under a running experiment would change its treatment.
+DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
+_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+MODEL_NAME = DEFAULT_MODEL_NAME
+# Every trusted model's fixed sentence-embedding output width. Needed
 # to write a correctly-shaped 0-row embeddings array when there are no
 # active lessons to encode (see main()'s `not slugs` branch below), without
 # having to load the model just to ask it -- the whole point of that branch
@@ -265,6 +278,7 @@ def _write_index(
     hashes: "list[str]" = None,
     importances: "list[int]" = None,
     statuses: "list[str]" = None,
+    model_name: str = MODEL_NAME,
 ) -> None:
     """Atomically write index.npz: build to a unique per-process tmp file
     under the same directory, then os.replace() over the final path.
@@ -288,7 +302,7 @@ def _write_index(
             hashes=np.array(hashes if hashes is not None else [""] * len(slugs)),
             importances=np.array(importances if importances is not None else [3] * len(slugs), dtype=np.int16),
             statuses=np.array(statuses if statuses is not None else ["active"] * len(slugs)),
-            model_name=np.array(MODEL_NAME),
+            model_name=np.array(model_name),
             encoded_field=np.array(ENCODED_FIELD),
             # UTC, not a naive local timestamp: PROTOCOL.md specifies
             # ISO-8601 UTC everywhere, and a naive local time cannot be
@@ -307,10 +321,26 @@ def _write_index(
         raise
 
 
+def index_model(index_path: str, fallback: "str | None" = None) -> str:
+    """The model to (re)build `index_path` with when none is named: the one it
+    was built with, if that is trusted and the index holds any lesson, else
+    `fallback` (a trusted name: the model a store's experiment log says it
+    ranked with), else DEFAULT_MODEL_NAME. An empty index (what `commontrace
+    init` writes) pins nothing: no lesson was ever ranked with it."""
+    try:
+        with np.load(index_path, allow_pickle=False) as data:
+            name = str(data["model_name"])
+            if name in TRUSTED_MODELS and int(data["embeddings"].shape[0]) > 0:
+                return name
+    except Exception:
+        pass
+    return fallback if fallback in TRUSTED_MODELS else DEFAULT_MODEL_NAME
+
+
 def build_or_update_index(
     lessons_dir: str,
     output_path: str,
-    model_name: str = _TRUSTED_MODEL_NAME,
+    model_name: "str | None" = None,
     force_rebuild: bool = False,
     model: Any = None,
     log: Any = print,
@@ -319,13 +349,20 @@ def build_or_update_index(
     hashes from output_path. Encodes only new/modified lessons.
     Saves embeddings, slugs, hashes, importances, and statuses into output_path (.npz).
 
-    `model` is an already-loaded instance of `model_name`, for a long-lived process
+    `model_name` defaults to `index_model(output_path)`; a name outside
+    TRUSTED_MODELS is refused. `model` is an already-loaded instance of
+    `model_name`, for a long-lived process
     that holds one (commontrace/semantic_arm.py); `log` receives the progress lines,
     which such a process must keep off stdout -- the MCP server's stdout is its
     protocol channel.
     """
     if np is None:
         raise ImportError("numpy is required to build or update the attention index.")
+    if model_name is None:
+        model_name = index_model(output_path)
+    if model_name not in TRUSTED_MODELS:
+        raise ValueError(
+            f"{model_name!r} is not a trusted embedding model; expected one of {list(TRUSTED_MODELS)}")
 
     active_items = list(iter_active_lessons(lessons_dir))
     slugs = [item[0] for item in active_items]
@@ -345,6 +382,7 @@ def build_or_update_index(
             hashes=hashes,
             importances=importances,
             statuses=statuses,
+            model_name=model_name,
         )
         return {
             "output_path": output_path,
@@ -416,6 +454,7 @@ def build_or_update_index(
         hashes=hashes,
         importances=importances,
         statuses=statuses,
+        model_name=model_name,
     )
     return {
         "output_path": output_path,
@@ -435,7 +474,25 @@ def main() -> int:
         dest="force",
         help="Rebuild even if index.npz already exists, bypassing vector cache",
     )
+    parser.add_argument(
+        "--model",
+        choices=TRUSTED_MODELS,
+        default=None,
+        help="Embedding model to build with (default: the one the existing index "
+             f"was built with, else {DEFAULT_MODEL_NAME}). A different model is a "
+             "different semantic ranking: a store mid-experiment records it as a new "
+             "treatment.",
+    )
+    parser.add_argument(
+        "--fallback-model",
+        choices=TRUSTED_MODELS,
+        default=None,
+        help="Model to build with when the existing index pins none (it is missing "
+             "or empty) and --model is not given: the one a store's experiment "
+             "ranked with (`commontrace index` passes it).",
+    )
     args = parser.parse_args()
+    model_name = args.model or index_model(INDEX_PATH, args.fallback_model)
 
     # Staleness check: if not args.force, check if the index is already fully up-to-date
     if os.path.exists(INDEX_PATH) and not args.force:
@@ -448,7 +505,7 @@ def main() -> int:
             with np.load(INDEX_PATH, allow_pickle=False) as data:
                 indexed_slugs = {str(s) for s in data["slugs"]}
                 model_matches = (
-                    str(data["model_name"]) == MODEL_NAME
+                    str(data["model_name"]) == model_name
                     and str(data["encoded_field"]) == ENCODED_FIELD
                     and data["embeddings"].ndim == 2
                     and data["embeddings"].shape[1] == EMBEDDING_DIM
@@ -463,7 +520,7 @@ def main() -> int:
             print(f"Index up-to-date at {INDEX_PATH} (use --force or --rebuild to rebuild anyway)")
             return 0
 
-    res = build_or_update_index(LESSONS_DIR, INDEX_PATH, model_name=MODEL_NAME, force_rebuild=args.force)
+    res = build_or_update_index(LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force)
     print(
         f"Index built: {res['n_lessons']} lessons ({res['encoded_count']} encoded, "
         f"{res['reused_count']} reused from cache), "

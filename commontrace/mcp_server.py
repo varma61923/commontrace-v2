@@ -646,6 +646,8 @@ def build_server(root: str, *, allow_approval: bool = True):
         # arm's output, the same RRF constant. A surface that fused
         # differently would be a second treatment in the same experiment.
         fused: list[tuple[str, float]] | None = None
+        # The semantic arm's embedding model, as its label tag, once it ran.
+        embedder = ""
         fusion_skipped = ""
         if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated:
             fusion_skipped = (
@@ -672,6 +674,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 if rc != 0:
                     fusion_skipped = "the semantic arm failed: " + "; ".join(_warnings)
                 else:
+                    embedder = retrieval_io.embedder_tag(semantic_arm.index_model(root))
                     semantic, withdrawn_semantic = harm.split(
                         semantic, harmful, core_slugs, depth, slug_of=lambda s: s,
                     )
@@ -714,7 +717,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                     ),
                     want, withdrawn=withdrawn_order, mode=retrieval_config.rerank,
                     admit=(
-                        rerank_arm.admit_gated(floor_cleared, retrieval_config.rerank)
+                        rerank_arm.admit_gated(floor_cleared, retrieval_config.rerank, embedder)
                         if gated and fused is not None else None
                     ),
                 )
@@ -744,7 +747,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # The label every assignment records, and the relevance beside it:
         # what actually ranked this retrieval.
         eligibility_label = retrieval_io.rerank_label(
-            retrieval_config.eligibility_label_for(fused=fused is not None),
+            retrieval_config.eligibility_label_for(fused=fused is not None, embedder=embedder),
             retrieval_config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
         )
         if reranked is not None or fused is not None:

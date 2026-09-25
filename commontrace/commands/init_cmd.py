@@ -84,7 +84,9 @@ def run(args: argparse.Namespace) -> int:
                     index_file,
                     slugs=np.array([], dtype=str),
                     embeddings=np.zeros((0, 768), dtype=np.float32),
-                    model_name="multi-qa-mpnet-base-dot-v1",
+                    # An empty index pins no model: the first build uses
+                    # the default (build_index.index_model).
+                    model_name="Snowflake/snowflake-arctic-embed-m-v1.5",
                     encoded_field="description+domain+tags+applies_when+do_not_apply_when+rule",
                     timestamp="",
                     n_lessons=0,

@@ -50,8 +50,31 @@ except ImportError:
 # would let a tampered index file point at an arbitrary Hugging Face Hub repo ID,
 # which (per known transformers/sentence-transformers CVEs around
 # trust_remote_code/torch.load) can execute attacker-supplied code on load. Only ever
-# load this fixed, known-safe model name -- warn, don't trust, if the file disagrees.
-_TRUSTED_MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
+# load a model named in this fixed allow-list -- warn, don't trust, if the file
+# names anything else.
+#
+# Each trusted model maps to the text a QUERY is prefixed with before encoding:
+# snowflake-arctic-embed was trained with that instruction on queries and none on
+# documents (build_index.py encodes lessons as-is for every model). An index is
+# ranked with the model that built it, never another: a vector space is only
+# comparable with itself. A store keeps its index's model until it rebuilds with
+# another on purpose (build_index.py --model), because the model decides which
+# lessons the semantic arm surfaces and so is part of the treatment a running
+# experiment records (commontrace/retrieval_io.py labels it).
+#
+# Measured on LoCoMo's 1,531 questions (benchmark/peers/), the share of
+# answering turns a model's exact cosine search puts in its top 10:
+#   multi-qa-mpnet-base-dot-v1               0.561   (109M params; the original)
+#   Snowflake/snowflake-arctic-embed-m-v1.5  0.706   (109M params; the default)
+TRUSTED_MODELS = {
+    "multi-qa-mpnet-base-dot-v1": "",
+    "Snowflake/snowflake-arctic-embed-m-v1.5":
+        "Represent this sentence for searching relevant passages: ",
+}
+#: The model a NEW index is built with (build_index.py).
+DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
+# The name older callers import; the default model.
+_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
 
 # Delimiter must be its own line, not just the substring "---" anywhere in the file --
 # a plain content.split("---", 2) corrupts any field whose value contains "---".
@@ -410,9 +433,14 @@ def load_index(index_path):
     return (model_name, embeddings, slugs, agent_types, n_lessons, fast_importances)
 
 
-def load_model():
-    """The trusted model, or a `Ranked` failure. Never any other model: see
-    _TRUSTED_MODEL_NAME."""
+def load_model(model_name=DEFAULT_MODEL_NAME):
+    """A trusted model, or a `Ranked` failure. Never a model outside
+    TRUSTED_MODELS: see its comment."""
+    if model_name not in TRUSTED_MODELS:
+        return Ranked(1, stderr=[
+            f"[ERR] {model_name!r} is not a trusted embedding model; expected one of "
+            f"{sorted(TRUSTED_MODELS)}.",
+        ])
     try:
         # SentenceTransformer downloads the model from Hugging Face Hub on
         # first use if it isn't already in the local cache
@@ -422,10 +450,10 @@ def load_model():
         # uncaught this raised a raw OSError/traceback from deep inside
         # huggingface_hub instead of the clean, actionable error every
         # other failure path in this function already gives.
-        return SentenceTransformer(_TRUSTED_MODEL_NAME)
+        return SentenceTransformer(model_name)
     except OSError as exc:
         return Ranked(1, stderr=[
-            f"[ERR] Could not load model {_TRUSTED_MODEL_NAME!r}: {exc}\n"
+            f"[ERR] Could not load model {model_name!r}: {exc}\n"
             "If this host has no internet access, pre-download the model on a "
             "connected machine and copy ~/.cache/huggingface/ over, or set "
             "HF_HUB_OFFLINE=1 once it's cached locally.",
@@ -440,7 +468,8 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
     rank differently.
 
     `index` is load_index()'s tuple and `model` load_model()'s result; either
-    is loaded here when not given.
+    is loaded here when not given; a caller that passes `model` must pass the
+    index's own (`index[0]`, a TRUSTED_MODELS name).
     """
     index_path = INDEX_PATH if index_path is None else index_path
     lessons_dir = LESSONS_DIR if lessons_dir is None else lessons_dir
@@ -452,18 +481,20 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         return index
     model_name, embeddings, slugs, agent_types, n_lessons, fast_importances = index
 
-    if model_name != _TRUSTED_MODEL_NAME:
+    if model_name not in TRUSTED_MODELS:
         return Ranked(1, stderr=[
-            f"[WARN] {index_path} declares model_name={model_name!r}, which does not "
-            f"match the expected {_TRUSTED_MODEL_NAME!r}. Refusing to load an "
+            f"[WARN] {index_path} declares model_name={model_name!r}, which is not "
+            f"one of the trusted {sorted(TRUSTED_MODELS)}. Refusing to load an "
             "untrusted model name from an index file -- run build_index.py --force "
             "to regenerate a trustworthy index.",
         ])
     if model is None:
-        model = load_model()
+        # The index's own model: its vectors are comparable with no other.
+        model = load_model(model_name)
     if isinstance(model, Ranked):
         return model
-    q_emb = model.encode(query, normalize_embeddings=True, convert_to_numpy=True)
+    q_emb = model.encode(
+        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True)
 
     # An index built by a different (or later, wider) embedding model has a
     # different column count, and `embeddings @ q_emb` raises numpy's own

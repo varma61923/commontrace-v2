@@ -4,6 +4,7 @@ import argparse
 import glob
 import math
 import os
+import re
 import sys
 
 from commontrace import (
@@ -410,6 +411,15 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
     return seen
 
 
+_INDEX_HEADER = re.compile(r"^# Index: \d+ lessons, model=(?P<model>\S+)\s*$", re.MULTILINE)
+
+
+def _semantic_model_from_output(stdout: str) -> str | None:
+    """The embedding model the semantic arm's brief says ranked it."""
+    match = _INDEX_HEADER.search(stdout or "")
+    return match.group("model") if match else None
+
+
 def _rerank_depth(config: retrieval_io.RetrievalConfig, top_k: int) -> tuple[bool, int, str]:
     """(reranking, how deep the first stage fetches, why not reranking).
 
@@ -719,6 +729,8 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         )
         return _run_lexical(args, root)
 
+    # The semantic arm's embedding model, which the label and the gate name.
+    embedder = retrieval_io.embedder_tag(_semantic_model_from_output(stdout))
     if gated:
         # The pool, not a ranking: the reranker orders it and the gate
         # decides what may be on the page (commontrace/rerank_arm.py).
@@ -735,14 +747,14 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     if reranking:
         reranked, withdrawn, rerank_skipped = _rerank_pool(
             args.task, lessons, fused, withdrawn, args.top_k, config.rerank,
-            admit=rerank_arm.admit_gated(floor_cleared, config.rerank) if gated else None)
+            admit=rerank_arm.admit_gated(floor_cleared, config.rerank, embedder) if gated else None)
         if reranked is None and gated:
             # Unvetted candidates never reach the page: serve reranked-or-
             # plain lexical retrieval instead, labelled as that.
             return _run_lexical(args, root)
         fused = reranked if reranked is not None else fused[: args.top_k]
     label = retrieval_io.rerank_label(
-        config.eligibility_label_for(fused=True),
+        config.eligibility_label_for(fused=True, embedder=embedder),
         config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
     )
     _note_rerank_skipped(config, rerank_skipped, label)
@@ -837,6 +849,14 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     return 0
 
 
+def _fallback_model_args(root: str) -> list[str]:
+    """build_index.py's `--fallback-model` for this store: the embedding model
+    its experiment log says it ranked with, used only if the index pins none
+    (semantic_arm.ensure_fresh passes the same)."""
+    logged = retrieval_io.logged_embedding_model(root)
+    return ["--fallback-model", logged] if logged else []
+
+
 def _refresh_stale_index(root: str) -> str:
     """Bring a stale semantic index up to date; "" if usable afterwards,
     else why not.
@@ -853,7 +873,7 @@ def _refresh_stale_index(root: str) -> str:
     if not reason:
         return ""
     rc, out = run_script(
-        root, os.path.join("memory", "attention", "build_index.py"), [],
+        root, os.path.join("memory", "attention", "build_index.py"), _fallback_model_args(root),
         "The reference attention scripts ship inside the package.", capture=True,
     )
     after = _index_is_unusable(root)
@@ -1039,7 +1059,10 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    withheld = _apply_holdout(args, root, slugs, scorer=retrieval_io.SEMANTIC_ONLY)
+    withheld = _apply_holdout(
+        args, root, slugs,
+        scorer=retrieval_io.semantic_only_label(
+            retrieval_io.embedder_tag(_semantic_model_from_output(stdout))))
     for line in stdout.splitlines():
         slug = _slug_of_semantic_line(line)
         if slug is not None and slug in withheld:

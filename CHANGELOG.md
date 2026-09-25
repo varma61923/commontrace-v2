@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A stronger semantic arm: new indexes embed with
+  `Snowflake/snowflake-arctic-embed-m-v1.5`.** Same size and width as the
+  original `multi-qa-mpnet-base-dot-v1` (109M parameters, 768 dims), and it
+  finds more: on LoCoMo its exact cosine search puts an answering turn in
+  the top 10 for 70.6% of questions, against 56.1% for mpnet. The default
+  (gated fusion, fast reranker) rises from R@10 0.669 to 0.694 and the
+  accurate reranker from 0.731 to 0.762 (R@5 0.703, MRR 0.643), the
+  highest measured. An independent LoCoMo leaderboard that scores the same
+  turn-level recall@10 over the same questions (Mnemoverse bench-v1) reports
+  0.714 for plain cosine over OpenAI's `text-embedding-3-small`, 0.694 for
+  its tuned engine and 0.632 for its stock one. Seven local models were
+  measured (`benchmark/peers/README.md`).
+  - **An index keeps the model it was built with.** The model decides which
+    lessons the semantic arm surfaces, so it is part of the treatment: an
+    existing mpnet index is refreshed and ranked with mpnet, and a store
+    whose index is missing is rebuilt with the model its experiment log
+    names. `commontrace index --force --model <name>` switches on purpose.
+  - **Labels name the model.** Fused and semantic-only assignments record
+    it, `ce:tinybert2(gated(idf-v2+semantic@arctic-m))`; the original
+    model's labels are unchanged, so existing experiments read as the
+    treatment they always were.
+  - **The gate is set per model.** With the arctic arm, gated fusion admits
+    a below-floor candidate at a cross-encoder score of -8 rather than -4:
+    re-measured on the curated fixture, every field keeps recall 1.0 and its
+    collateral down to -9 (accurate) and -10 (fast). Stores on mpnet keep -4.
+  - **Still only trusted models load.** `TRUSTED_MODELS` in
+    `commontrace/reference/query.py` is a fixed allow-list; an index naming
+    anything else is refused before any model loads, as before. arctic-embed
+    queries carry the model's retrieval instruction; lessons are encoded as
+    they are.
+
 - **Gated fusion (`commontrace retrieval --fusion gated`), the new default
   where the attention extra is installed.** Both arms feed the reranker,
   but a lesson that did not clear the lexical relevance floor reaches the

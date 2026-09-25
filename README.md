@@ -886,8 +886,13 @@ Nothing rebuilds it automatically (it loads a ~420 MB model and can hit the netw
 the index is missing or stale, rather than returning nothing. Lexical reads the lesson
 files as they are and cannot go stale — it is also what the MCP server always uses.
 
-The embedding model (`multi-qa-mpnet-base-dot-v1`, ~420 MB) is downloaded once and
-cached under `~/.cache/huggingface/`.
+The embedding model is downloaded once and cached under `~/.cache/huggingface/`.
+A new index uses `Snowflake/snowflake-arctic-embed-m-v1.5` (~440 MB); an index
+built before it keeps `multi-qa-mpnet-base-dot-v1` until you rebuild it with
+another (`commontrace index --force --model <name>`), because the model decides
+which lessons the semantic arm finds, and an experiment records it as part of
+the treatment. On LoCoMo, arctic-embed's exact cosine search finds an answering
+turn in the top 10 for 70.6% of questions, against 56.1% for mpnet.
 
 ---
 
@@ -921,8 +926,10 @@ an answering turn in the top 5 for 67.0% of questions and in the top 10 for
 72.6%, against 54.3% and 62.5% for mem0 2.x. It leads on every metric and
 in every question category, and stays ahead when mem0 is given the same
 reranker. The default wherever the attention extra is installed, gated
-fusion with the fast reranker, beats mem0 on every aggregate metric (R@5
-59.8%, R@10 66.9%); lexical retrieval with the fast reranker alone beats it
+fusion with the fast reranker over the arctic-embed semantic arm, beats mem0
+on every aggregate metric (R@5 60.8%, R@10 69.4%), and with the accurate
+reranker it reaches R@10 76.2%, above every row of the one independent
+leaderboard that scores LoCoMo retrieval the same way; lexical retrieval with the fast reranker alone beats it
 on R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms). On
 all 470 LongMemEval questions, reranked lexical retrieval beats dense
 MiniLM and a BM25 + MiniLM hybrid on R@5, NDCG and MRR.
@@ -1056,8 +1063,9 @@ logs lessons the task was not about. Gated fusion (`--fusion gated`) feeds
 both arms to the reranker but lets a lesson that did not clear the relevance
 floor onto the page only when the cross-encoder vouches for it. On the
 curated fixture every field keeps exactly its recall and collateral; on
-LoCoMo it reaches R@5 59.8% and R@10 66.9%, ahead of mem0 2.x (54.3%, 62.5%)
-on every aggregate metric.
+LoCoMo, with the arctic-embed semantic arm a new index uses, it reaches R@5
+60.8% and R@10 69.4% with the fast reranker and 70.3% / 76.2% with the
+accurate one, ahead of mem0 2.x (54.3%, 62.5%) on every aggregate metric.
 
 A store that has not chosen, and has no experiment history, gets gated
 fusion with `cross-encoder-fast` wherever the attention extra is installed

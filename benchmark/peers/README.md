@@ -56,19 +56,51 @@ an LLM judge over an LLM's answer. Those numbers mix retrieval, the answering
 model and the judge's prompt, and they are not comparable with anything
 here. Retrieval is the part a memory layer owns.
 
+**Published numbers from other systems.** One independent LoCoMo
+leaderboard does score retrieval the way this harness does: Mnemoverse's
+bench-v1 (locked 2026-09-02; [page](https://mnemoverse.com/docs/technology/benchmarks/locomo),
+[manifest](https://mnemoverse.com/docs/bench-v1-manifest.json)) reports
+judge-free recall@10 over the same ten conversations, with dialogue turns as
+the unit, the adversarial category excluded, and each question's recall the
+fraction of its evidence turns found. It scores 1,536 questions where this
+harness scores 1,531 (it resolves five evidence ids this harness drops).
+
+| System | LoCoMo R@10 | Source |
+|---|---:|---|
+| **commontrace gated fusion, accurate reranker** | **0.762** | this harness |
+| plain cosine over OpenAI `text-embedding-3-small` | 0.714 | Mnemoverse bench-v1 |
+| commontrace semantic arm alone (arctic-embed-m cosine) | 0.706 | this harness |
+| **commontrace gated fusion, fast reranker** *(default)* | **0.694** | this harness |
+| Mnemoverse engine, tuned | 0.694 | Mnemoverse bench-v1 |
+| Mnemoverse engine, stock | 0.632 | Mnemoverse bench-v1 |
+| mem0 2.x hybrid | 0.625 | this harness |
+
+With the accurate reranker, CommonTrace finds more answering turns in its top
+10 than every row on that leaderboard, including cosine search over a paid
+embedding API. The default ties the tuned Mnemoverse engine and trails the
+OpenAI-embedding baseline by two points: its fast reranker orders
+arctic-embed's pool slightly worse than arctic-embed alone (0.694 vs 0.706),
+the price of reranking in tens of milliseconds. Most vendors publish only
+LLM-judged answer accuracy, which is not comparable with these numbers; see
+"End-to-end answers" below.
+
 **Every system at its shipped defaults.** CommonTrace keeps its relevance
 floor; mem0 keeps its 0.1 score threshold. A system that returns fewer than
 k results is scored on what it returned.
 
 ## Systems
 
+Semantic systems use the model a new commontrace index is built with,
+`Snowflake/snowflake-arctic-embed-m-v1.5`, unless marked mpnet (the original
+model, which indexes built before it keep; append `-mpnet` to a system name).
+
 | System | What runs |
 |---|---|
 | commontrace lexical (idf-v2) | `rank_lessons` exactly as `retrieve`/`query` run it, default scorer |
 | commontrace lexical (idf-v3) | the same, opt-in stemmed scorer |
-| commontrace semantic | the semantic arm's model (`multi-qa-mpnet-base-dot-v1`), exact cosine |
+| commontrace semantic | the semantic arm's model, exact cosine, with the model's query instruction |
 | commontrace fusion | lexical + semantic, fused by rank (RRF, k=60), as `--fusion rrf` does: each arm contributes the requested number of results |
-| commontrace gated fusion | both arms hand over 30 candidates (the lexical arm without its floor); the reranker orders them, and a candidate that did not clear the lexical floor reaches the page only if the cross-encoder scores it at least -4, as `--fusion gated` does. The default where the attention extra is installed, with the fast model |
+| commontrace gated fusion | both arms hand over 30 candidates (the lexical arm without its floor); the reranker orders them, and a candidate that did not clear the lexical floor reaches the page only if the cross-encoder scores it at least -8 with the arctic arm (-4 with mpnet), as `--fusion gated` does. The default where the attention extra is installed, with the fast model |
 | commontrace + rerank | the first stage hands its top 30 to `commontrace/rerank_arm.py`, which reorders them with a cross-encoder, as `--rerank` does: `ms-marco-MiniLM-L-6-v2` (`cross-encoder`) or `ms-marco-TinyBERT-L-2-v2` (`cross-encoder-fast`) |
 | BM25 (Okapi) | `rank_bm25`; the keyword arm of the hybrid search Graphiti/Zep, Hindsight and mem0 describe |
 | dense MiniLM | `all-MiniLM-L6-v2`, exact cosine; the default local embedding in Chroma, mem0's HF provider and LlamaIndex examples |
@@ -88,12 +120,17 @@ the two.
 
 | System | R@5 | R@10 | NDCG@10 | MRR |
 |---|---:|---:|---:|---:|
-| **commontrace fusion (idf-v3) + rerank** | **0.676** | **0.734** | **0.627** | **0.629** |
-| commontrace fusion (idf-v2) + rerank | 0.670 | 0.726 | 0.622 | 0.626 |
-| commontrace gated fusion, accurate model | 0.679 | 0.731 | 0.627 | 0.630 |
+| **commontrace gated fusion, accurate model** | **0.703** | **0.762** | **0.648** | **0.643** |
+| **commontrace gated fusion, fast model** *(default with the attention extra)* | **0.608** | **0.694** | **0.557** | **0.545** |
+| commontrace fusion (lexical + semantic) | 0.603 | 0.714 | 0.544 | 0.522 |
+| commontrace semantic | 0.614 | 0.706 | 0.548 | 0.536 |
+| *mpnet semantic arm (indexes built before arctic-embed):* | | | | |
+| commontrace fusion (idf-v3) + rerank, mpnet | 0.676 | 0.734 | 0.627 | 0.629 |
+| commontrace fusion (idf-v2) + rerank, mpnet | 0.670 | 0.726 | 0.622 | 0.626 |
+| commontrace gated fusion, accurate model, mpnet | 0.679 | 0.731 | 0.627 | 0.630 |
 | mem0 2.x + its rerank (same model) | 0.612 | 0.661 | 0.569 | 0.576 |
 | commontrace fusion (idf-v3) + fast rerank | 0.614 | 0.703 | 0.561 | 0.547 |
-| **commontrace gated fusion, fast model** *(default with the attention extra)* | **0.598** | **0.669** | **0.545** | **0.537** |
+| commontrace gated fusion, fast model, mpnet | 0.598 | 0.669 | 0.545 | 0.537 |
 | commontrace fusion (idf-v2) + fast rerank | 0.606 | 0.696 | 0.557 | 0.545 |
 | commontrace lexical (idf-v2) + rerank | 0.597 | 0.624 | 0.562 | 0.577 |
 | commontrace lexical (idf-v2) + fast rerank | 0.562 | 0.615 | 0.518 | 0.518 |
@@ -101,7 +138,7 @@ the two.
 | commontrace fusion (idf-v2 + semantic) | 0.531 | 0.645 | 0.464 | 0.440 |
 | mem0 2.x hybrid | 0.543 | 0.625 | 0.466 | 0.446 |
 | hybrid BM25 + MiniLM | 0.499 | 0.615 | 0.433 | 0.407 |
-| commontrace semantic | 0.460 | 0.561 | 0.402 | 0.383 |
+| commontrace semantic, mpnet | 0.460 | 0.561 | 0.402 | 0.383 |
 | commontrace lexical (idf-v3) | 0.492 | 0.558 | 0.430 | 0.412 |
 | commontrace lexical (idf-v2) | 0.472 | 0.540 | 0.406 | 0.387 |
 | BM25 (Okapi) | 0.466 | 0.539 | 0.408 | 0.392 |
@@ -128,6 +165,9 @@ Recall@10 by question category:
 | System | R@5 | R@10 | NDCG@10 | MRR |
 |---|---:|---:|---:|---:|
 | **commontrace fusion (idf-v3) + rerank** | **0.963** | **0.992** | **0.925** | 0.910 |
+| commontrace semantic (arctic-embed-m) | 0.954 | 0.963 | 0.906 | 0.902 |
+| commontrace gated fusion, accurate (arctic-embed-m) | 0.930 | 0.967 | 0.909 | 0.899 |
+| commontrace gated fusion, fast *(default)* (arctic-embed-m) | 0.927 | 0.947 | 0.888 | 0.875 |
 | commontrace fusion (idf-v3) + fast rerank | 0.960 | 0.983 | 0.903 | 0.881 |
 | dense MiniLM | 0.954 | 0.961 | 0.910 | 0.910 |
 | hybrid BM25 + MiniLM | 0.948 | 0.963 | 0.921 | **0.920** |
@@ -135,10 +175,10 @@ Recall@10 by question category:
 | commontrace lexical (idf-v2) + rerank | 0.930 | 0.967 | 0.908 | 0.899 |
 | commontrace fusion (idf-v2) + fast rerank | 0.927 | 0.967 | 0.896 | 0.878 |
 | commontrace lexical (idf-v3) | 0.926 | 0.940 | 0.869 | 0.874 |
-| commontrace gated fusion, fast *(default with the attention extra)*, and lexical + fast rerank | 0.923 | 0.947 | 0.894 | 0.884 |
+| commontrace gated fusion, fast, mpnet, and lexical + fast rerank | 0.923 | 0.947 | 0.894 | 0.884 |
 | commontrace fusion (idf-v2 + semantic) | 0.914 | 0.952 | 0.882 | 0.876 |
 | commontrace fusion (idf-v3 + semantic) | 0.910 | 0.988 | 0.879 | 0.851 |
-| commontrace semantic | 0.907 | 0.936 | 0.852 | 0.847 |
+| commontrace semantic, mpnet | 0.907 | 0.936 | 0.852 | 0.847 |
 | commontrace lexical (idf-v2) | 0.852 | 0.940 | 0.849 | 0.832 |
 | BM25 (Okapi) | 0.825 | 0.907 | 0.813 | 0.816 |
 
@@ -233,14 +273,17 @@ above 500 ms).
 
 ## What the numbers say
 
-- **Out of the box, CommonTrace now beats mem0 on every aggregate metric on
+- **Out of the box, CommonTrace beats mem0 on every aggregate metric on
   LoCoMo.** Where the attention extra is installed, a new store uses gated
-  fusion with the fast reranker: R@5 0.598, R@10 0.669, NDCG 0.545, MRR
-  0.537, against mem0's 0.543, 0.625, 0.466 and 0.446. It leads on
-  single-hop and temporal questions; mem0 keeps multi-hop (0.396 vs 0.393)
-  and open-domain (0.348 vs 0.332) by a small margin. With the accurate
-  reranker, gated fusion leads every category and is the most accurate
-  configuration measured (R@5 0.679, MRR 0.630).
+  fusion with the fast reranker over the arctic-embed semantic arm: R@5
+  0.608, R@10 0.694, NDCG 0.557, MRR 0.545, against mem0's 0.543, 0.625,
+  0.466 and 0.446. With the accurate reranker it is the most accurate
+  configuration measured (R@5 0.703, R@10 0.762, MRR 0.643).
+- **The embedding model was the biggest single lever.** Seven local models
+  were measured as the semantic arm on LoCoMo (exact cosine, R@10): mpnet
+  0.561, bge-small 0.596, bge-base 0.609, e5-base 0.613,
+  snowflake-arctic-embed-m-v1.5 0.706. arctic-embed is the same size as
+  mpnet and also leads it on LongMemEval (R@5 0.954 vs 0.907).
 - **Gated fusion is the one fused ranking that passes the curated-store
   gates.** Plain fusion fills every slot on the page with whatever the
   semantic arm ranked, which puts unrelated lessons into every experiment.

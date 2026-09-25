@@ -380,6 +380,30 @@ def test_both_surfaces_gate_the_same_way(store, gate_ce, monkeypatch):
             assert cli_rows[slug][field] == mcp_rows[slug][field], (slug, field)
 
 
+def test_the_gate_and_the_label_follow_the_semantic_arms_model(store, gate_ce, monkeypatch):
+    """With the arctic-embed index, the gate is -8 (rerank_arm.GATE_THRESHOLDS)
+    and the label names the model: refund-threshold, semantic-only at -5, is
+    kept off the original model's page (-4) and admitted to this one, on
+    both surfaces, logged as a treatment of its own."""
+    arctic = "Snowflake/snowflake-arctic-embed-m-v1.5"
+    _stub_both(monkeypatch)
+    monkeypatch.setattr(semantic_arm, "index_model", lambda root: arctic)
+    monkeypatch.setattr(
+        query_cmd, "_semantic_slugs",
+        lambda args, root, hint, extra=0: (
+            0, list(SEMANTIC)[: args.top_k + extra], f"# Index: 4 lessons, model={arctic}\n"),
+    )
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,
+                           rerank=retrieval_io.RERANK_CE)
+    assert query_cmd.run(_args(store, TASK, experiment=True, occasion_id="cli-a")) == 0
+    call(mcp_server.build_server(store), "retrieve", task=TASK, occasion_id="mcp-a")
+    cli_rows, mcp_rows = _logged(store, "cli-a"), _logged(store, "mcp-a")
+    assert set(cli_rows) == set(mcp_rows)
+    assert "refund-threshold" in mcp_rows
+    assert {r["scorer"] for r in list(cli_rows.values()) + list(mcp_rows.values())} == {
+        "ce:minilm6(gated(idf-v2+semantic@arctic-m))"}
+
+
 def test_gated_fusion_without_a_reranker_is_lexical_and_says_so(store, monkeypatch):
     _stub_both(monkeypatch)
     retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,

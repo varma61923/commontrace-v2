@@ -82,7 +82,7 @@ def arm(monkeypatch):
         return FakeModel()
 
     monkeypatch.setattr(semantic_arm, "_SCRIPT", None)
-    monkeypatch.setattr(semantic_arm, "_MODEL", None)
+    monkeypatch.setattr(semantic_arm, "_MODELS", {})
     monkeypatch.setattr(semantic_arm, "_INDEX", {})
     script = semantic_arm._script(os.getcwd())
     monkeypatch.setattr(script, "SentenceTransformer", fake_st)
@@ -163,7 +163,7 @@ def wide_arm(monkeypatch):
 
     monkeypatch.setattr(semantic_arm, "_SCRIPT", None)
     monkeypatch.setattr(semantic_arm, "_BUILDER", None)
-    monkeypatch.setattr(semantic_arm, "_MODEL", None)
+    monkeypatch.setattr(semantic_arm, "_MODELS", {})
     monkeypatch.setattr(semantic_arm, "_INDEX", {})
     script = semantic_arm._script(os.getcwd())
     monkeypatch.setattr(script, "SentenceTransformer", fake_st)
@@ -202,7 +202,9 @@ def test_a_stale_index_is_refreshed_before_ranking(tmp_path, wide_arm):
     assert _index_is_unusable(root) == ""
     rc, slugs, _w = semantic_arm.ranked_slugs(root, "password refund", 1)
     assert rc == 0 and slugs[0] == "refund-password-check"
-    assert wide_arm == ["multi-qa-mpnet-base-dot-v1"]  # one load, shared by build and rank
+    # An index built from nothing uses the default model: one load, shared by
+    # build and rank.
+    assert wide_arm == ["Snowflake/snowflake-arctic-embed-m-v1.5"]
 
 
 def test_the_cli_refreshes_a_stale_index_and_falls_back_only_if_that_fails(tmp_path, monkeypatch):
@@ -223,3 +225,119 @@ def test_the_cli_refreshes_a_stale_index_and_falls_back_only_if_that_fails(tmp_p
     state["stale"] = "no semantic index has been built yet"
     monkeypatch.setattr(query_cmd, "run_script", lambda *a, **k: (1, ""))
     assert query_cmd._refresh_stale_index(str(tmp_path)) == "no semantic index has been built yet"
+
+
+# --- the embedding model is the index's, from a fixed allow-list --------------
+
+ARCTIC = "Snowflake/snowflake-arctic-embed-m-v1.5"
+MPNET = "multi-qa-mpnet-base-dot-v1"
+
+
+class RecordingModel(WideFakeModel):
+    def __init__(self, seen):
+        self.seen = seen
+
+    def encode(self, text, **kw):
+        if not isinstance(text, (list, tuple)):
+            self.seen.append(str(text))
+        return super().encode(text, **kw)
+
+
+@pytest.fixture
+def recording_arm(monkeypatch):
+    loads, seen = [], []
+
+    def fake_st(name):
+        loads.append(name)
+        return RecordingModel(seen)
+
+    monkeypatch.setattr(semantic_arm, "_SCRIPT", None)
+    monkeypatch.setattr(semantic_arm, "_BUILDER", None)
+    monkeypatch.setattr(semantic_arm, "_MODELS", {})
+    monkeypatch.setattr(semantic_arm, "_INDEX", {})
+    script = semantic_arm._script(os.getcwd())
+    monkeypatch.setattr(script, "SentenceTransformer", fake_st)
+    builder = semantic_arm._builder(os.getcwd())
+    monkeypatch.setattr(builder, "SentenceTransformer",
+                        lambda name: pytest.fail("the builder must reuse the held model"))
+    return loads, seen
+
+
+def _fresh_store(tmp_path):
+    root = str(tmp_path / "store")
+    os.makedirs(paths.lessons_dir(root))
+    os.makedirs(os.path.dirname(semantic_arm.index_path(root)))
+    for slug, (desc, imp) in LESSONS.items():
+        with open(os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(f"---\nname: {slug}\ndescription: {desc}\nimportance: {imp}\n"
+                     "status: active\n---\nbody\n")
+    return root
+
+
+def test_an_index_keeps_the_model_it_was_built_with(tmp_path, recording_arm):
+    """A store whose index was built with the original model is refreshed
+    and ranked with that model, not the new default: the model decides what
+    the semantic arm surfaces, so changing it would change the treatment a
+    running experiment records."""
+    loads, seen = recording_arm
+    root = _fresh_store(tmp_path)
+    builder = semantic_arm._builder(os.getcwd())
+    model = semantic_arm._model(semantic_arm._script(os.getcwd()), MPNET)
+    builder.build_or_update_index(paths.lessons_dir(root), semantic_arm.index_path(root),
+                                  model_name=MPNET, model=model, log=lambda *a, **k: None)
+    _add_lesson(root, "refund-password-check", "password check before a refund")
+
+    assert semantic_arm.ensure_fresh(root) == ""
+    assert semantic_arm.stored_model(root) == MPNET
+    rc, slugs, _w = semantic_arm.ranked_slugs(root, "password refund", 1)
+    assert rc == 0 and slugs[0] == "refund-password-check"
+    assert semantic_arm.index_model(root) == MPNET
+    assert loads == [MPNET]
+    assert seen[-1] == "password refund"  # the original model takes no query prefix
+
+
+def test_the_default_model_is_given_its_query_instruction(tmp_path, recording_arm):
+    _loads, seen = recording_arm
+    root = _fresh_store(tmp_path)
+    assert semantic_arm.ensure_fresh(root) == ""
+    assert semantic_arm.stored_model(root) == ARCTIC
+    rc, _slugs, _w = semantic_arm.ranked_slugs(root, "password refund", 1)
+    assert rc == 0 and semantic_arm.index_model(root) == ARCTIC
+    script = semantic_arm._script(os.getcwd())
+    assert seen[-1] == script.TRUSTED_MODELS[ARCTIC] + "password refund"
+    # Lessons are encoded as they are, whatever the model.
+    assert not any(t.startswith(script.TRUSTED_MODELS[ARCTIC]) for t in seen[:-1])
+
+
+def test_an_index_naming_an_untrusted_model_loads_nothing(tmp_path, recording_arm):
+    loads, _seen = recording_arm
+    root = _store(tmp_path)
+    with np.load(semantic_arm.index_path(root)) as data:
+        arrays = {k: data[k] for k in data.files}
+    arrays["model_name"] = np.array("attacker/remote-code-model")
+    np.savez(semantic_arm.index_path(root), **arrays)
+    rc, slugs, warnings = semantic_arm.ranked_slugs(root, "retry", 2)
+    assert rc != 0 and slugs == [] and "not one of the trusted" in warnings[0]
+    assert loads == []
+
+
+def test_an_empty_index_pins_no_model_but_the_log_does(tmp_path):
+    builder = semantic_arm._builder(os.getcwd())
+    path = str(tmp_path / "index.npz")
+    np.savez(path, slugs=np.array([], dtype=str), embeddings=np.zeros((0, 768), np.float32),
+             model_name=np.array(MPNET))
+    assert builder.index_model(path) == ARCTIC
+    assert builder.index_model(path, MPNET) == MPNET
+    assert builder.index_model(str(tmp_path / "missing.npz"), MPNET) == MPNET
+    assert builder.index_model(path, "attacker/model") == ARCTIC
+    with pytest.raises(ValueError):
+        builder.build_or_update_index(str(tmp_path), path, model_name="attacker/model")
+
+
+def test_the_cli_reads_the_ranking_model_from_the_brief():
+    from commontrace.commands.query_cmd import _semantic_model_from_output
+
+    brief = "# Top-3 retrieval (+ importance>=4 override)\n# Index: 5 lessons, model=%s\n" % ARCTIC
+    assert _semantic_model_from_output(brief) == ARCTIC
+    assert _semantic_model_from_output("no header") is None
