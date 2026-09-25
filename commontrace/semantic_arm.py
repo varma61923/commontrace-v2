@@ -5,7 +5,7 @@
 on every call -- seconds each time. Fine for a person at a terminal; not for
 an MCP server answering a `retrieve` on every agent turn, which is why that
 surface stayed lexical even when a store had configured fusion, and agents
-were given the weaker ranking. Measured on LoCoMo (benchmark/peers/),
+were given the weaker ranking. Measured on LoCoMo,
 lexical alone found 54% of the answering turns in its top 10; fused with
 this arm, 64.5% (66% with the idf-v3 lexical arm).
 

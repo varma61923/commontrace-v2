@@ -89,8 +89,7 @@ LEXICAL_SCORERS = (SCORER_IDF_V3, SCORER_IDF_V2, SCORER_COUNT)
 # rise with it -- at 0.04, legal-field pollution on the six-field fixture
 # went to 2.50x, over its 2.4x ceiling. Measured together
 # (commontrace/reference/measure_retrieval.py, commons/eval/
-# retrieval_tiers.py, and the public LoCoMo dialogue benchmark in
-# benchmark/peers/):
+# retrieval_tiers.py, and the public LoCoMo dialogue benchmark):
 #
 #   scorer  floor   fixture worst   fixture   commons   commons   LoCoMo
 #                   pollution       min P@1   R@5       neg@1     R@10    MRR
@@ -682,9 +681,7 @@ def reciprocal_rank_fusion(
 # first-stage scorer: fast, dependency-free, and comparable across stores.
 # Nothing in this module ever runs a heavier second pass over the winners of
 # that first stage -- a cross-encoder, an LLM judge, or a bespoke scorer a
-# deployment already has. This was a real gap: mem0 ships a `BaseReranker`
-# interface with four concrete implementations selected by config, and this
-# module had no equivalent seam at all.
+# deployment already has. This module had no seam for one at all.
 #
 # The seam here is a plain callable, not a class hierarchy -- the same shape
 # `redundancy.find_near_duplicates`'s own `similarity` parameter already

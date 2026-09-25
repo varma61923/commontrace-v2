@@ -7,11 +7,11 @@ pair, which is why it ranks better and why it is too slow to run over a
 whole store. So it runs over a short candidate pool the first stage already
 found (`POOL`), and only reorders it.
 
-Measured on LoCoMo's 1,531 questions (benchmark/peers/), reranking the
-fused pool raised the share of questions with an answering turn in the top
-5 from 53.1% to 67.0%, and MRR from 0.440 to 0.626. Reranking the lexical
-arm alone, with no embedding model at all, reaches 59.7%. mem0 2.x reaches
-54.3%.
+Measured on the public LoCoMo dataset (1,531 questions, scored from its
+evidence labels), reranking the fused pool raised the share of questions
+with an answering turn in the top 5 from 53.1% to 67.0%, and MRR from 0.440
+to 0.626. Reranking the lexical arm alone, with no embedding model at all,
+reaches 59.7%.
 
 WHAT IT DOES NOT CHANGE. The pool is the first stage's output, after the
 relevance floor, `exclude_shown` and core-lesson handling, so the reranker
@@ -76,7 +76,7 @@ DEFAULT_MODE = "cross-encoder"
 #: score -8 to -11 against the tasks, so every field keeps its recall and
 #: collateral unchanged at any threshold down to -6 (measured, both models).
 #: On LoCoMo, at -4: R@5 0.598 and R@10 0.669 with the fast model (lexical +
-#: fast rerank: 0.562 / 0.615; mem0 2.x: 0.543 / 0.625), and 0.679 / 0.731
+#: fast rerank: 0.562 / 0.615), and 0.679 / 0.731
 #: with the accurate one.
 #:
 #: The threshold is part of the treatment, so it is set per semantic-arm

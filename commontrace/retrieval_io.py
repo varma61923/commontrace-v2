@@ -93,8 +93,8 @@ def default_fusion() -> str:
     else only when the cross-encoder vouches for it, so on the curated
     fixture every field keeps its recall and collateral unchanged. On LoCoMo
     it lifts R@5 from 0.562 to 0.598 and R@10 from 0.615 to 0.669 over
-    reranked lexical retrieval, ahead of mem0 2.x on every metric
-    (benchmark/peers/). Its cost is the semantic index: the first retrieval
+    reranked lexical retrieval (0.608 / 0.694 with the arctic-embed arm a
+    new index uses). Its cost is the semantic index: the first retrieval
     embeds the store's lessons, later ones only what changed.
     """
     override = os.environ.get(DEFAULT_FUSION_ENV, "")
@@ -117,7 +117,7 @@ def default_rerank() -> str:
     than the lexical one, so on the curated fixture it finds every relevant
     lesson with exactly the lexical default's collateral in every field --
     and puts the right one first more often. On LoCoMo it lifts R@5 from
-    0.472 to 0.562 and MRR from 0.387 to 0.518 (benchmark/peers/), for about
+    0.472 to 0.562 and MRR from 0.387 to 0.518 (LoCoMo), for about
     30 ms per retrieval. Fusion stays opt-in: it fills every slot on the
     page, which the fixture's collateral ceiling rejects
     (commontrace/rerank_arm.py).

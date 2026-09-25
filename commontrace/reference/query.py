@@ -62,7 +62,7 @@ except ImportError:
 # lessons the semantic arm surfaces and so is part of the treatment a running
 # experiment records (commontrace/retrieval_io.py labels it).
 #
-# Measured on LoCoMo's 1,531 questions (benchmark/peers/), the share of
+# Measured on LoCoMo's 1,531 questions (public dataset), the share of
 # answering turns a model's exact cosine search puts in its top 10:
 #   multi-qa-mpnet-base-dot-v1               0.561   (109M params; the original)
 #   Snowflake/snowflake-arctic-embed-m-v1.5  0.706   (109M params; the default)

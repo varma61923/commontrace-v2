@@ -446,7 +446,7 @@ Only these two names are ever loaded (`TRUSTED_MODELS` in
 
 arctic-embed replaced mpnet as the default because it finds more: on LoCoMo's
 1,531 questions its exact cosine search puts an answering turn's share of 0.706
-in the top 10, against 0.561 for mpnet (`benchmark/peers/`). Queries carry the
+in the top 10, against 0.561 for mpnet. Queries carry the
 model's retrieval instruction ("Represent this sentence for searching relevant
 passages: "); lessons are encoded as they are.
 
@@ -858,7 +858,7 @@ Note v0.1 `/dreamer` (2026-05-27): several limitations historically listed below
 - `implicit_retrieval` — strict (precision) and permissive (richness) ratios of `lessons_hit` over `lessons_retrieved_by_alpha`
 - `transfer_gap` — % of cross-project hits (see 8.4 for why it is only partially measurable)
 
-It persists every run, and supports `--diff`, `--history`, alert thresholds and `--strict` for CI. What is still open is the dedicated evaluation set the research recommended (~50 situation-failure / lesson / isomorphic-future-situation trios); retrieval quality itself is measured separately against public benchmarks in `benchmark/peers/`.
+It persists every run, and supports `--diff`, `--history`, alert thresholds and `--strict` for CI. What is still open is the dedicated evaluation set the research recommended (~50 situation-failure / lesson / isomorphic-future-situation trios); retrieval quality itself was tuned on the public LoCoMo and LongMemEval datasets, scored from their evidence labels.
 
 ### 8.2 Temporal Decay (implemented, opt-in)
 

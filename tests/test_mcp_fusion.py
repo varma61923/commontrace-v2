@@ -4,8 +4,8 @@
 Until this existed the MCP surface was lexical-only, because the semantic
 arm was a subprocess that loads a model per call -- so a store that set
 `fusion=rrf` gave its shell users the fused ranking and its agents the
-weaker one (on LoCoMo, 54% vs 64.5% of answering turns in the top 10;
-benchmark/peers/). commontrace/semantic_arm.py now runs the same ranking
+weaker one (on LoCoMo, 54% vs 64.5% of answering turns in the top 10).
+commontrace/semantic_arm.py now runs the same ranking
 function in-process.
 
 The semantic arm is stubbed here -- a sentence-transformer is not a test

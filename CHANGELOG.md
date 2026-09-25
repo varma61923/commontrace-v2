@@ -16,11 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the top 10 for 70.6% of questions, against 56.1% for mpnet. The default
   (gated fusion, fast reranker) rises from R@10 0.669 to 0.694 and the
   accurate reranker from 0.731 to 0.762 (R@5 0.703, MRR 0.643), the
-  highest measured. An independent LoCoMo leaderboard that scores the same
-  turn-level recall@10 over the same questions (Mnemoverse bench-v1) reports
-  0.714 for plain cosine over OpenAI's `text-embedding-3-small`, 0.694 for
-  its tuned engine and 0.632 for its stock one. Seven local models were
-  measured (`benchmark/peers/README.md`).
+  highest measured. Seven local models were measured; arctic-embed led by
+  nine points of R@10, and also leads mpnet on LongMemEval (R@5 0.954 vs
+  0.907).
   - **An index keeps the model it was built with.** The model decides which
     lessons the semantic arm surfaces, so it is part of the treatment: an
     existing mpnet index is refreshed and ranked with mpnet, and a store
@@ -48,8 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before, so on the curated fixture every field keeps exactly its recall
   and collateral, which plain fusion does not (3.0x collateral, over the
   2.4x ceiling). On LoCoMo it reaches R@5 0.598, R@10 0.669, NDCG 0.545 and
-  MRR 0.537 with the fast reranker, ahead of mem0 2.x (0.543, 0.625, 0.466,
-  0.446), and 0.679 / 0.731 / 0.627 / 0.630 with the accurate one. On
+  MRR 0.537 with the fast reranker, and 0.679 / 0.731 / 0.627 / 0.630 with
+  the accurate one. On
   LongMemEval it matches lexical retrieval with the fast reranker. Both
   surfaces run it identically and log `ce:<model>(gated(<scorer>+semantic))`;
   without a reranker it runs as lexical retrieval and says so. Stores with
@@ -73,11 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   together and reorders them; the page is its top k. `cross-encoder`
   (`ms-marco-MiniLM-L-6-v2`) is the accurate one, about 265 ms per query on
   a 4-core CPU; `cross-encoder-fast` (`ms-marco-TinyBERT-L-2-v2`) takes about
-  30 ms. Lexical retrieval with the fast reranker beats mem0 2.x on R@5,
-  NDCG and MRR at about half its query latency, with no embedding index. On LoCoMo's
-  1,531 questions, fused retrieval with reranking finds an answering turn
-  in the top 5 for 67.0% of questions and in the top 10 for 72.6%, against
-  54.3% and 62.5% for mem0 2.x. It reorders only what the first stage
+  30 ms. On LoCoMo's 1,531 questions, fused retrieval with reranking finds
+  an answering turn in the top 5 for 67.0% of questions and in the top 10
+  for 72.6%. It reorders only what the first stage
   found, after the floor, `exclude_shown` and core handling, and never
   adds a lesson. Both surfaces run it identically; assignments record
   `ce:<model>(<first stage>)`, so turning it on, or changing model, reads
@@ -85,17 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A withdrawn lesson is named only if its score would have put it on the
   page. A store that cannot load the model ranks exactly as if it had not
   asked, and says so (`rerank_note`).
-- **A reproducible peer benchmark** (`benchmark/peers/`). It runs
-  CommonTrace against mem0 2.x, Chroma, BM25, dense and hybrid retrieval
-  on LoCoMo (1,531 questions) and a stratified LongMemEval subset, scored
-  from the datasets' evidence labels with no LLM involved.
-  - CommonTrace fusion with `idf-v3` leads LoCoMo: recall@10 0.660,
-    against 0.625 for mem0 and 0.615 for a BM25+MiniLM hybrid. Fused
-    systems are measured at the depth the product fuses.
-  - CommonTrace's default lexical retriever matches or beats BM25 on both
-    datasets and is faster per query.
-  - Peers that need an LLM to build or search memory were not run, and
-    the page says so.
 - **The semantic index keeps itself current.** A lesson approved or edited
   after the last `commontrace index` used to make the index stale. Every
   retrieval then silently fell back to keyword-only ranking and logged
@@ -110,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword and meaning together, as `commontrace query` does. Before this it
   stayed lexical, because the semantic arm was a subprocess that reloaded
   a sentence-transformer on every call. That cost agents nine points of
-  LoCoMo recall@10 (0.540 vs 0.645; `benchmark/peers/`).
+  LoCoMo recall@10 (0.540 vs 0.645).
   - The semantic script's ranking is now one function, `rank()`, which
     both surfaces call. The subprocess prints it (byte-identical output,
     checked against the previous script), and `commontrace/semantic_arm.py`
@@ -197,7 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reranks the lexical arm's floor-cleared candidates with
   `cross-encoder-fast` (~30 ms). On the curated fixture it keeps every
   field's recall and collateral exactly as before and raises precision@1;
-  on LoCoMo, R@5 rises from 0.472 to 0.562 (mem0 2.x: 0.543) and MRR from
+  on LoCoMo, R@5 rises from 0.472 to 0.562 and MRR from
   0.387 to 0.518. Stores with logged assignments stay on what their log
   says they ran, configured or not. `COMMONTRACE_DEFAULT_RERANK=none` turns
   the default off. Fusion stays opt-in: it fills every slot on the page,

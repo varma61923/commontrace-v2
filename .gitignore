@@ -45,7 +45,3 @@ htmlcov/
 # Jupyter (if anyone runs notebooks locally)
 .ipynb_checkpoints/
 
-# Peer benchmark downloads and caches (benchmark/peers/peerbench.py --download)
-benchmark/peers/data/
-benchmark/peers/emb_cache/
-benchmark/peers/work/

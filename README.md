@@ -914,26 +914,6 @@ generation (Omega) and retrieval (Alpha) doing its job. It does **not**
 answer "did the fleet's behavior actually change," which is a different,
 business-facing question — see the next section.
 
-### Against other memory systems
-
-[`benchmark/peers/`](benchmark/peers/README.md) runs CommonTrace's retrievers
-and other memory products' retrieval stacks side by side: mem0 2.x's hybrid
-search, Chroma, BM25, dense vectors and BM25+vector hybrids. It uses LoCoMo
-and LongMemEval, the benchmarks those products publish on, and scores
-retrieval from each dataset's evidence labels, with no LLM judge. On
-LoCoMo's 1,531 questions, CommonTrace's fused retrieval with reranking puts
-an answering turn in the top 5 for 67.0% of questions and in the top 10 for
-72.6%, against 54.3% and 62.5% for mem0 2.x. It leads on every metric and
-in every question category, and stays ahead when mem0 is given the same
-reranker. The default wherever the attention extra is installed, gated
-fusion with the fast reranker over the arctic-embed semantic arm, beats mem0
-on every aggregate metric (R@5 60.8%, R@10 69.4%), and with the accurate
-reranker it reaches R@10 76.2%, above every row of the one independent
-leaderboard that scores LoCoMo retrieval the same way; lexical retrieval with the fast reranker alone beats it
-on R@5, NDCG and MRR at about half its query latency (30 ms vs 56 ms). On
-all 470 LongMemEval questions, reranked lexical retrieval beats dense
-MiniLM and a BM25 + MiniLM hybrid on R@5, NDCG and MRR.
-
 ---
 
 ## Outcome Metrics
@@ -1065,7 +1045,7 @@ floor onto the page only when the cross-encoder vouches for it. On the
 curated fixture every field keeps exactly its recall and collateral; on
 LoCoMo, with the arctic-embed semantic arm a new index uses, it reaches R@5
 60.8% and R@10 69.4% with the fast reranker and 70.3% / 76.2% with the
-accurate one, ahead of mem0 2.x (54.3%, 62.5%) on every aggregate metric.
+accurate one.
 
 A store that has not chosen, and has no experiment history, gets gated
 fusion with `cross-encoder-fast` wherever the attention extra is installed
@@ -1076,7 +1056,7 @@ ran. `COMMONTRACE_DEFAULT_FUSION=none` keeps the reranker without the
 semantic index, and `COMMONTRACE_DEFAULT_RERANK=none` turns both off.
 
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
-5 for 67.0% of questions, up from 53.1% without it; mem0 2.x reaches 54.3%.
+5 for 67.0% of questions, up from 53.1% without it.
 `cross-encoder` (`ms-marco-MiniLM-L-6-v2`, 22M parameters) reranks 30
 candidates in about 265 ms on a 4-core CPU; `cross-encoder-fast`
 (`ms-marco-TinyBERT-L-2-v2`, 4M) in about 30 ms, reaching 60.6%. Both come
