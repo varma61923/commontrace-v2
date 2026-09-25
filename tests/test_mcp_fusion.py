@@ -49,9 +49,16 @@ def store(tmp_path):
     return root
 
 
-def _stub_both(monkeypatch, slugs=SEMANTIC, rc=0):
-    """The same fixed semantic ranking behind both surfaces."""
+MPNET = "multi-qa-mpnet-base-dot-v1"
+
+
+def _stub_both(monkeypatch, slugs=SEMANTIC, rc=0, model=MPNET):
+    """The same fixed semantic ranking behind both surfaces, from an index
+    built with `model` (the original one unless a test says otherwise, so
+    labels are the unsuffixed ones)."""
     monkeypatch.setattr(semantic_arm, "available", lambda: True)
+    monkeypatch.setattr(semantic_arm, "stored_model", lambda root: model)
+    monkeypatch.setattr(semantic_arm, "index_model", lambda root: model)
     monkeypatch.setattr(semantic_arm, "ensure_fresh", lambda root: "")
     monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
     monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
@@ -61,7 +68,8 @@ def _stub_both(monkeypatch, slugs=SEMANTIC, rc=0):
     )
     monkeypatch.setattr(
         query_cmd, "_semantic_slugs",
-        lambda args, root, hint, extra=0: (rc, list(slugs)[: args.top_k + extra], ""),
+        lambda args, root, hint, extra=0: (
+            rc, list(slugs)[: args.top_k + extra], f"# Index: 4 lessons, model={model}\n"),
     )
 
 

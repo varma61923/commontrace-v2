@@ -111,8 +111,15 @@ def default_rerank() -> str:
     """The reranker a store gets when it has not chosen one and has no
     experiment history to stay consistent with.
 
-    The fast cross-encoder when the attention extra is installed, else none.
-    It passes every gate the default ranking is held to: it reorders only
+    The accurate cross-encoder when the attention extra is installed, else
+    none. It used to be the fast one, for latency; with the arctic-embed
+    semantic arm and its shallower pool (rerank_arm.POOL_DEPTHS) the accurate
+    model reads 18 candidates instead of 53, and on LoCoMo gated fusion with
+    it reaches R@10 0.739 and MRR 0.630, against 0.707 and 0.543 with the
+    fast one, for about 360 ms per retrieval on lesson-length text.
+
+    Over the lexical arm alone it passes every gate the default ranking is
+    held to: it reorders only
     lessons that already cleared the relevance floor, onto a page no longer
     than the lexical one, so on the curated fixture it finds every relevant
     lesson with exactly the lexical default's collateral in every field --
@@ -127,7 +134,7 @@ def default_rerank() -> str:
         return override
     from commontrace import rerank_arm
 
-    return RERANK_CE_FAST if rerank_arm.available() else RERANK_NONE
+    return RERANK_CE if rerank_arm.available() else RERANK_NONE
 
 # WHY THE RECORDED SCORER CARRIES THE ARM COMPOSITION
 # ---------------------------------------------------

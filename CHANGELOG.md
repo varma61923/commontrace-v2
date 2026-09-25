@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The accurate reranker is the default, over a shallower pool.** With the
+  arctic-embed semantic arm, the answer is almost always near the top of
+  one arm or the other, so gated fusion now hands the reranker each arm's
+  top 10 (accurate model) or top 15 (fast model) instead of 30
+  (`rerank_arm.POOL_DEPTHS`). That halves the accurate model's work, and a
+  new store now gets it by default: on LoCoMo, R@10 0.739, R@5 0.685 and MRR
+  0.630, against 0.694 / 0.608 / 0.541 for the previous default (the fast
+  model over 30), in about 360 ms on lesson-length text. The fast model over
+  15 reaches 0.707 / 0.613 / 0.543 in about 45 ms. The depth is part of the
+  treatment, like the gate: stores on the original model, and reranked
+  lexical retrieval, keep 30, and stores whose log names the fast model keep
+  it. The curated fixture is unchanged at either depth.
+
 - **A stronger semantic arm: new indexes embed with
   `Snowflake/snowflake-arctic-embed-m-v1.5`.** Same size and width as the
   original `multi-qa-mpnet-base-dot-v1` (109M parameters, 768 dims), and it

@@ -104,3 +104,17 @@ def test_the_reference_scripts_trust_the_same_models():
     query, build = load("query"), load("build_index")
     assert set(query.TRUSTED_MODELS) == set(build.TRUSTED_MODELS) == set(retrieval_io.EMBEDDER_TAGS)
     assert query.DEFAULT_MODEL_NAME == build.DEFAULT_MODEL_NAME == ARCTIC
+
+
+def test_pool_depth_is_per_embedder():
+    assert rerank_arm.pool_size(5) == 30
+    assert rerank_arm.pool_size(5, "cross-encoder") == 30  # lexical arm alone, or mpnet
+    assert rerank_arm.pool_size(5, "cross-encoder", "arctic-m") == 10
+    assert rerank_arm.pool_size(5, "cross-encoder-fast", "arctic-m") == 15
+    assert rerank_arm.pool_size(40, "cross-encoder", "arctic-m") == 40  # never below the page
+
+
+def test_new_stores_default_to_the_accurate_reranker(monkeypatch):
+    monkeypatch.delenv(retrieval_io.DEFAULT_RERANK_ENV, raising=False)
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    assert retrieval_io.default_rerank() == retrieval_io.RERANK_CE

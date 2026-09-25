@@ -1029,12 +1029,12 @@ reported as a compromised run rather than absorbed silently.
 
 **Reranking.** Both arms score the task and a lesson separately. A
 cross-encoder reads them together, which ranks far better and is far too
-slow to run over a whole store, so it runs over the first stage's top 30
-and only reorders them:
+slow to run over a whole store, so it runs over a short pool of each arm's
+best candidates and only reorders them:
 
 ```bash
-commontrace retrieval --fusion rrf --rerank cross-encoder        # most accurate
-commontrace retrieval --fusion rrf --rerank cross-encoder-fast   # ~10x faster
+commontrace retrieval --rerank cross-encoder        # most accurate (the default)
+commontrace retrieval --rerank cross-encoder-fast   # ~8x faster
 ```
 
 **Gated fusion, on by default.** Plain fusion fills every slot on the page
@@ -1042,24 +1042,25 @@ with whatever the semantic arm ranked, so a curated store under experiment
 logs lessons the task was not about. Gated fusion (`--fusion gated`) feeds
 both arms to the reranker but lets a lesson that did not clear the relevance
 floor onto the page only when the cross-encoder vouches for it. On the
-curated fixture every field keeps exactly its recall and collateral; on
-LoCoMo, with the arctic-embed semantic arm a new index uses, it reaches R@5
-60.8% and R@10 69.4% with the fast reranker and 70.3% / 76.2% with the
-accurate one.
+curated fixture every field keeps exactly its recall and collateral. On
+LoCoMo, with the arctic-embed semantic arm a new index uses, the default
+(the accurate reranker over each arm's top 10) puts an answering turn in
+the top 10 for 73.9% of questions, in the top 5 for 68.5%, with MRR 0.630;
+the fast reranker over each arm's top 15 reaches 70.7%, 61.3% and 0.543.
 
 A store that has not chosen, and has no experiment history, gets gated
-fusion with `cross-encoder-fast` wherever the attention extra is installed
-(lexical retrieval with the fast reranker if the semantic arm is turned
-off). The first retrieval embeds the store's lessons; later ones re-embed
+fusion with `cross-encoder` wherever the attention extra is installed
+(lexical retrieval with the reranker if the semantic arm is turned off).
+On lesson-length text the reranker reads its pool of about 18 lessons in
+about 360 ms on a 4-core CPU; `cross-encoder-fast` reads 27 in about 45 ms. The first retrieval embeds the store's lessons; later ones re-embed
 only what changed. A store mid-experiment stays on what its log says it
 ran. `COMMONTRACE_DEFAULT_FUSION=none` keeps the reranker without the
 semantic index, and `COMMONTRACE_DEFAULT_RERANK=none` turns both off.
 
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 5 for 67.0% of questions, up from 53.1% without it.
-`cross-encoder` (`ms-marco-MiniLM-L-6-v2`, 22M parameters) reranks 30
-candidates in about 265 ms on a 4-core CPU; `cross-encoder-fast`
-(`ms-marco-TinyBERT-L-2-v2`, 4M) in about 30 ms, reaching 60.6%. Both come
+`cross-encoder` is `ms-marco-MiniLM-L-6-v2` (22M parameters) and
+`cross-encoder-fast` is `ms-marco-TinyBERT-L-2-v2` (4M). Both come
 with the attention extra and download on first use. Like fusion, it
 decides which lessons make the page, so assignments record it
 (`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new

@@ -285,7 +285,7 @@ def run(args: argparse.Namespace) -> int:
                 "retrieval fusion",
                 "off -- the attention extra is installed, so keyword + meaning ranking "
                 "is available: `commontrace retrieval --fusion gated --rerank "
-                "cross-encoder-fast` (starts a new randomization if an experiment is running)",
+                "cross-encoder` (starts a new randomization if an experiment is running)",
             )
         if config.rerank == retrieval_io.RERANK_NONE:
             _info(

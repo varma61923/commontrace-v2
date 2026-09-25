@@ -257,7 +257,7 @@ def no_override(monkeypatch):
 def test_a_new_store_reranks_by_default_when_the_model_is_installed(tmp_path, no_override, monkeypatch):
     monkeypatch.setattr(rerank_arm, "available", lambda: True)
     assert main(["init", "--dest", str(tmp_path)]) == 0
-    assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_CE_FAST
+    assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_CE
     monkeypatch.setattr(rerank_arm, "available", lambda: False)
     assert retrieval_io.load_config(str(tmp_path)).rerank == retrieval_io.RERANK_NONE
 
@@ -386,13 +386,13 @@ def test_the_gate_and_the_label_follow_the_semantic_arms_model(store, gate_ce, m
     kept off the original model's page (-4) and admitted to this one, on
     both surfaces, logged as a treatment of its own."""
     arctic = "Snowflake/snowflake-arctic-embed-m-v1.5"
-    _stub_both(monkeypatch)
-    monkeypatch.setattr(semantic_arm, "index_model", lambda root: arctic)
-    monkeypatch.setattr(
-        query_cmd, "_semantic_slugs",
-        lambda args, root, hint, extra=0: (
-            0, list(SEMANTIC)[: args.top_k + extra], f"# Index: 4 lessons, model={arctic}\n"),
-    )
+    _stub_both(monkeypatch, model=arctic)
+    fetched = []
+    stub_mcp, stub_cli = semantic_arm.ranked_slugs, query_cmd._semantic_slugs
+    monkeypatch.setattr(semantic_arm, "ranked_slugs", lambda root, q, top_k, agent_type=None: (
+        fetched.append(("mcp", top_k)) or stub_mcp(root, q, top_k, agent_type)))
+    monkeypatch.setattr(query_cmd, "_semantic_slugs", lambda args, root, hint, extra=0: (
+        fetched.append(("cli", args.top_k + extra)) or stub_cli(args, root, hint, extra)))
     retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED,
                            rerank=retrieval_io.RERANK_CE)
     assert query_cmd.run(_args(store, TASK, experiment=True, occasion_id="cli-a")) == 0
@@ -402,6 +402,9 @@ def test_the_gate_and_the_label_follow_the_semantic_arms_model(store, gate_ce, m
     assert "refund-threshold" in mcp_rows
     assert {r["scorer"] for r in list(cli_rows.values()) + list(mcp_rows.values())} == {
         "ce:minilm6(gated(idf-v2+semantic@arctic-m))"}
+    # Both surfaces fetch the arctic rule's pool depth from the semantic arm.
+    assert {depth for _surface, depth in fetched} == {10}
+    assert {surface for surface, _depth in fetched} == {"cli", "mcp"}
 
 
 def test_gated_fusion_without_a_reranker_is_lexical_and_says_so(store, monkeypatch):
@@ -426,8 +429,8 @@ def test_a_new_store_fuses_gated_by_default_where_both_models_are_installed(
     root = str(tmp_path)
     assert main(["init", "--dest", root]) == 0
     config = retrieval_io.load_config(root)
-    assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE_FAST)
-    assert config.eligibility == "ce:tinybert2(gated(idf-v2+semantic))"
+    assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE)
+    assert config.eligibility == "ce:minilm6(gated(idf-v2+semantic))"
     monkeypatch.setenv(retrieval_io.DEFAULT_FUSION_ENV, "none")
     assert retrieval_io.load_config(root).fusion == retrieval_io.FUSION_NONE
 

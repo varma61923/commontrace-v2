@@ -611,7 +611,21 @@ def build_server(root: str, *, allow_approval: bool = True):
                 with _quiet():
                     rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
             reranking = retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped
-            depth = rerank_arm.pool_size(want) if reranking else want
+            depth = rerank_arm.pool_size(want, retrieval_config.rerank) if reranking else want
+            # A fused pool's depth is set per semantic-arm model
+            # (rerank_arm.POOL_DEPTHS), read from the index before ranking;
+            # the lexical ranking keeps `depth`, which every fallback below
+            # (reranked lexical retrieval) is ranked at.
+            fused_depth = depth
+            if reranking and retrieval_config.fusion != retrieval_io.FUSION_NONE:
+                from commontrace import semantic_arm
+
+                if semantic_arm.available():
+                    with _quiet():
+                        semantic_arm.ensure_fresh(root)
+                    fused_depth = rerank_arm.pool_size(
+                        want, retrieval_config.rerank,
+                        retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
             # Gated fusion ranks below the floor too: such a lesson can still
             # reach the page if the reranker vouches for it (`floor_cleared`
             # below keeps the ones that need no vouching).
@@ -631,6 +645,9 @@ def build_server(root: str, *, allow_approval: bool = True):
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
         core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
+        # The fused pool's lexical half, split at the pool's own depth (as
+        # `commontrace query` splits it), before `ranked` is cut to `depth`.
+        pool_lexical, withdrawn_pool = harm.split(ranked, harmful, core_slugs, fused_depth)
         ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, depth)
         withdrawn_order = [r.slug for r in withdrawn_ranked]
         floor_cleared = {
@@ -669,14 +686,15 @@ def build_server(root: str, *, allow_approval: bool = True):
                     fusion_skipped = semantic_arm.ensure_fresh(root)
             if not fusion_skipped:
                 rc, semantic, _warnings = semantic_arm.ranked_slugs(
-                    root, task, depth + len(harmful), agent_type or None,
+                    root, task, fused_depth + len(harmful), agent_type or None,
                 )
                 if rc != 0:
                     fusion_skipped = "the semantic arm failed: " + "; ".join(_warnings)
                 else:
-                    embedder = retrieval_io.embedder_tag(semantic_arm.index_model(root))
+                    embedder = retrieval_io.embedder_tag(
+                        semantic_arm.index_model(root) or semantic_arm.stored_model(root))
                     semantic, withdrawn_semantic = harm.split(
-                        semantic, harmful, core_slugs, depth, slug_of=lambda s: s,
+                        semantic, harmful, core_slugs, fused_depth, slug_of=lambda s: s,
                     )
                     if already_shown:
                         semantic = [
@@ -687,14 +705,15 @@ def build_server(root: str, *, allow_approval: bool = True):
                         # the gate decides what may be on the page.
                         fused = [
                             (slug, 0.0)
-                            for slug in dict.fromkeys([r.slug for r in ranked] + semantic)
+                            for slug in dict.fromkeys([r.slug for r in pool_lexical] + semantic)
                         ]
                     else:
                         fused = retrieval.reciprocal_rank_fusion(
-                            {"lexical": [r.slug for r in ranked], "semantic": semantic},
-                            k=retrieval_config.rrf_k, top_k=depth,
+                            {"lexical": [r.slug for r in pool_lexical], "semantic": semantic},
+                            k=retrieval_config.rrf_k, top_k=fused_depth,
                         )
-                    withdrawn_order = list(dict.fromkeys(withdrawn_order + withdrawn_semantic))
+                    withdrawn_order = list(dict.fromkeys(
+                        [r.slug for r in withdrawn_pool] + list(withdrawn_semantic)))
         if gated and fused is None:
             # The semantic arm did not run, so this is plain reranked lexical
             # retrieval and is labelled as such: the floor applies, as there.

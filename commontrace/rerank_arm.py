@@ -94,8 +94,27 @@ GATE_THRESHOLDS = {
     ("cross-encoder", "arctic-m"): -8.0,
     ("cross-encoder-fast", "arctic-m"): -8.0,
 }
-#: How many first-stage candidates the reranker reorders.
+#: How many candidates each first-stage arm hands the reranker, unless
+#: POOL_DEPTHS sets it for the mode and semantic-arm embedder.
 POOL = 30
+#: Like the gate, the depth is part of the treatment, so it is set per
+#: (mode, embedder tag) and the original rules keep POOL. With the arctic
+#: arm the answer is almost always near the top of one arm or the other, so
+#: a shallower pool costs little and halves the reranker's work. On LoCoMo,
+#: R@10 / R@5 / MRR, pool of about 1.8x the depth once the arms overlap:
+#:
+#:   depth   accurate               fast
+#:   30      0.762 / 0.703 / 0.643  0.694 / 0.608 / 0.541
+#:   15      0.758 / 0.696 / 0.637  0.707 / 0.613 / 0.543   <- fast
+#:   10      0.739 / 0.685 / 0.630  0.701 / 0.620 / 0.545   <- accurate
+#:
+#: The accurate model reads 18 lesson-length pairs in about 360 ms on a
+#: 4-core CPU, where 53 took about 1.1 s; the fast one 27 in about 45 ms. The
+#: curated fixture is unchanged at either depth.
+POOL_DEPTHS = {
+    ("cross-encoder", "arctic-m"): 10,
+    ("cross-encoder-fast", "arctic-m"): 15,
+}
 #: Characters of lesson text the model reads. Its input is capped at 512
 #: tokens, shared with the task.
 MAX_CHARS = 1200
@@ -170,10 +189,11 @@ def lesson_text(frontmatter: Mapping, body: str) -> str:
     return " ".join(p.strip() for p in parts if p and p.strip())[:MAX_CHARS]
 
 
-def pool_size(want: int) -> int:
-    """How many candidates the first stage should hand over for a page of
-    `want`."""
-    return max(want, POOL)
+def pool_size(want: int, mode: str | None = None, embedder: str = "") -> int:
+    """How many candidates each first-stage arm should hand over for a page
+    of `want`, reranked by `mode` with a semantic arm whose embedder tag is
+    `embedder` ("" for the lexical arm alone, or the original model)."""
+    return max(want, POOL_DEPTHS.get((mode, embedder), POOL))
 
 
 def gate_threshold(mode: str, embedder: str = "") -> float:

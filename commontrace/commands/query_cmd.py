@@ -420,8 +420,11 @@ def _semantic_model_from_output(stdout: str) -> str | None:
     return match.group("model") if match else None
 
 
-def _rerank_depth(config: retrieval_io.RetrievalConfig, top_k: int) -> tuple[bool, int, str]:
-    """(reranking, how deep the first stage fetches, why not reranking).
+def _rerank_depth(
+    config: retrieval_io.RetrievalConfig, top_k: int, embedder: str = "",
+) -> tuple[bool, int, str]:
+    """(reranking, how deep each first-stage arm fetches, why not reranking).
+    `embedder` is the semantic arm's tag when it will feed the pool.
 
     Same gate as MCP's `retrieve`: a store that configured the reranker but
     cannot load it ranks for the page, exactly as if it had not asked
@@ -432,7 +435,7 @@ def _rerank_depth(config: retrieval_io.RetrievalConfig, top_k: int) -> tuple[boo
     skipped = rerank_arm.ready(config.rerank)
     if skipped:
         return False, top_k, skipped
-    return True, rerank_arm.pool_size(top_k), ""
+    return True, rerank_arm.pool_size(top_k, config.rerank, embedder), ""
 
 
 def _rerank_pool(
@@ -678,7 +681,13 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
     harmful = evidence.withdrawn(root, config.harm_policy)
     core = _core_slugs(lessons)
-    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k)
+    from commontrace import semantic_arm
+
+    # The index's model, read before ranking because it sets the pool's depth
+    # (rerank_arm.POOL_DEPTHS); the index was refreshed before this runs. A
+    # failure below falls back to `_run_lexical`, which uses its own depth.
+    reranking, depth, rerank_skipped = _rerank_depth(
+        config, args.top_k, retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
     if config.fusion == retrieval_io.FUSION_GATED and not reranking:
         # Gated fusion admits semantic candidates only on the reranker's
         # word; without one it is reranked-or-plain lexical retrieval, and is
