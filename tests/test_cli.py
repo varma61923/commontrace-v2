@@ -810,3 +810,21 @@ def test_a_command_imports_only_what_it_uses():
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ""
+
+
+def test_a_mistyped_command_suggests_the_one_meant(capsys):
+    from commontrace import cli
+
+    assert cli.main(["captur"]) == 2
+    err = capsys.readouterr().err
+    assert "unknown command 'captur'" in err and "Did you mean: capture?" in err
+    assert cli.main(["xyzzy"]) == 2
+    assert "Did you mean" not in capsys.readouterr().err
+
+
+def test_no_command_at_all_prints_the_command_list(capsys):
+    from commontrace import cli
+
+    assert cli.main([]) == 2
+    err = capsys.readouterr().err
+    assert "usage:" in err and "capture" in err and "doctor" in err

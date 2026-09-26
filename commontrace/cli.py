@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import importlib
 import sys
 
@@ -74,6 +75,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if argv is None:
         argv = sys.argv[1:]
+    if not argv:
+        # Nothing asked: the full command list is more use than argparse's
+        # one-line "the following arguments are required".
+        build_parser().print_help(sys.stderr)
+        return 2
+    if not argv[0].startswith("-") and argv[0] not in _COMMANDS:
+        close = difflib.get_close_matches(argv[0], _COMMANDS, n=3, cutoff=0.6)
+        hint = f" Did you mean: {', '.join(close)}?" if close else ""
+        print(
+            f"commontrace: unknown command {argv[0]!r}.{hint} "
+            "Run `commontrace --help` for the list.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         parser = build_parser(argv[0] if argv else None)
     except ModuleNotFoundError as exc:

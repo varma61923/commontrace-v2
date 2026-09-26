@@ -160,6 +160,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace` suggests the command you meant** (`unknown command
+  'captur'. Did you mean: capture?`) instead of listing all 27, and with no
+  command at all prints the full help rather than a one-line error. Exit
+  codes are unchanged.
 - **A Copy button beside every shown-once secret in the Hub** -- a new API
   key (signup and console), a webhook signing secret, a share link. It
   confirms through a status message a screen reader announces, falls back
