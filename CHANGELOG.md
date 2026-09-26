@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the shared page script; `hub/tests/test_page_security.py` holds each
   page's policy to exactly the scripts it renders.
 
+- **The TypeScript SDK sent the API key to any URL**, including plaintext
+  `http://` to a remote host and cloud-metadata addresses. `connect()` now
+  applies the Python client's rules before connecting and throws
+  `HubConfigurationError`; `checkHubUrl()` exposes them. It also gains
+  `close()`, without which the connection stayed open and a Node process
+  could hang on exit.
+
 ### Accessibility
 
 - The console nav marks the current page (`aria-current`), pages have a
