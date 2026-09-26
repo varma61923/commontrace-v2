@@ -65,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `close()`, without which the connection stayed open and a Node process
   could hang on exit.
 
+- The Hub image's code is now owned by root and only readable by the
+  `hub` user that serves the network, so that process cannot rewrite its
+  own code even where the filesystem is not mounted read-only.
+
 ### Accessibility
 
 - The console nav marks the current page (`aria-current`), pages have a

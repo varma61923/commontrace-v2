@@ -48,8 +48,11 @@ WORKDIR /app
 # validate call (single source of truth -- the schema is never copied into
 # Python). Omitting them would make the container start and then fail on the
 # first contribute_trace.
-COPY --chown=hub:hub hub/ /app/hub/
-COPY --chown=hub:hub protocol/ /app/protocol/
+# Owned by root and only readable by `hub`: the process that serves the
+# network cannot rewrite its own code, whether or not the runtime mounts
+# the filesystem read-only (deploy/k8s does; plain docker/compose do not).
+COPY hub/ /app/hub/
+COPY protocol/ /app/protocol/
 # hub/ imports two client modules, and both are deliberate shared
 # dependencies rather than layering slips: overlap.py (MinHash, in
 # hub/commons.py) because signatures are only comparable if client and
@@ -66,7 +69,7 @@ COPY --chown=hub:hub protocol/ /app/protocol/
 # commontrace module hub/ imports, and that each one is import-safe against
 # hub/requirements.txt alone -- an allowlist that falls behind the imports
 # does not fail the build, it fails container START.
-COPY --chown=hub:hub commontrace/ /app/commontrace/
+COPY commontrace/ /app/commontrace/
 
 USER hub
 EXPOSE 8420
