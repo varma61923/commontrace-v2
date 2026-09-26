@@ -778,3 +778,34 @@ class TestCaptureRefusesInvalidTraces:
                      "--tokens-used", "10", "--resolved", "--dest", str(store)]) == 0
         capsys.readouterr()
         assert main(["trace", "validate", "--dest", str(store)]) == 0
+
+
+def test_every_subcommand_module_registers_exactly_its_own_name():
+    """main() imports only `commands/<name>_cmd.py` for `commontrace <name>`,
+    so a module whose command is named anything else would be unreachable."""
+    import argparse
+    import pathlib
+
+    from commontrace import cli
+
+    on_disk = sorted(p.stem[:-4] for p in pathlib.Path(cli.__file__).parent.joinpath("commands").glob("*_cmd.py"))
+    assert sorted(cli._COMMANDS) == on_disk
+    for name in cli._COMMANDS:
+        sub = argparse.ArgumentParser().add_subparsers()
+        (module,) = cli._command_modules(name)
+        module.add_parser(sub)
+        assert list(sub.choices) == [name]
+
+
+def test_a_command_imports_only_what_it_uses():
+    """Every command used to import every other command's dependencies --
+    numpy, asyncio, ssl -- about 140ms on each `capture` an agent runs."""
+    script = (
+        "import sys\n"
+        "from commontrace import cli\n"
+        "cli.build_parser('capture')\n"
+        "print(','.join(m for m in ('numpy', 'asyncio', 'ssl', 'commontrace.commands.commons_cmd') if m in sys.modules))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""

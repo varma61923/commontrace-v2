@@ -2,91 +2,47 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import sys
 
 from commontrace import PROTOCOL_VERSION, __version__
 
-# Every subcommand module transitively imports commontrace.frontmatter, which
-# does a hard `import yaml` -- PyYAML is a required (not optional) dependency
-# per pyproject.toml, so this only fails on a broken/incomplete install (a
-# checkout run without `pip install -e .`, a container image that dropped a
-# dependency). But because these are top-level imports, that failure happened
-# here, at module-import time, before main() below is ever reached -- so a
-# try/except inside main() could not catch it, and commontrace doctor (whose
-# own job is diagnosing exactly this) crashed with a raw ModuleNotFoundError
-# instead of ever running. Caught here instead, so main() can report a clear,
-# actionable error and every subcommand's --help / doctor / --version still
-# degrade to "commontrace isn't installed correctly" rather than a traceback
-# pointing at an unrelated subcommand's transitive import.
+# Every subcommand module imports commontrace.frontmatter, which does a hard
+# `import yaml` -- PyYAML is a required dependency, so this fails only on a
+# broken install (a checkout run without `pip install -e .`, an image that
+# dropped a dependency). Caught here and in main() rather than left to raise,
+# so that `doctor` -- whose job is diagnosing exactly this -- and every other
+# command report "commontrace isn't installed correctly" instead of a
+# traceback through an unrelated module's imports.
 try:
-    from commontrace.commands import (
-        account_cmd,
-        bench_cmd,
-        capture_cmd,
-        commons_cmd,
-        consolidate_cmd,
-        distill_cmd,
-        doctor_cmd,
-        experiment_cmd,
-        export_cmd,
-        impact_cmd,
-        import_cmd,
-        index_cmd,
-        init_cmd,
-        install_cmd,
-        lesson_cmd,
-        overlap_cmd,
-        pilot_cmd,
-        prove_cmd,
-        query_cmd,
-        redact_cmd,
-        release_cmd,
-        reliability_cmd,
-        retrieval_cmd,
-        serve_cmd,
-        sync_cmd,
-        taxonomy_cmd,
-        trace_cmd,
-    )
     from commontrace.frontmatter import FrontmatterError
 except ModuleNotFoundError as _import_exc:
     _MISSING_DEPENDENCY: ModuleNotFoundError | None = _import_exc
     FrontmatterError = None  # type: ignore[assignment,misc]
-    _SUBCOMMANDS: list = []
 else:
     _MISSING_DEPENDENCY = None
-    _SUBCOMMANDS = [
-        init_cmd,
-        install_cmd,
-        capture_cmd,
-        import_cmd,
-        trace_cmd,
-        distill_cmd,
-        lesson_cmd,
-        release_cmd,
-        overlap_cmd,
-        commons_cmd,
-        account_cmd,
-        query_cmd,
-        serve_cmd,
-        index_cmd,
-        bench_cmd,
-        reliability_cmd,
-        consolidate_cmd,
-        retrieval_cmd,
-        experiment_cmd,
-        export_cmd,
-        prove_cmd,
-        taxonomy_cmd,
-        impact_cmd,
-        pilot_cmd,
-        sync_cmd,
-        redact_cmd,
-        doctor_cmd,
-    ]
+
+# Each subcommand lives in commontrace/commands/<name>_cmd.py, in the order
+# `commontrace --help` lists them. Only the module for the command being run
+# is imported: importing all of them cost ~140ms on every invocation (numpy
+# for `commons`, asyncio and ssl for the Hub commands), paid by every
+# `capture` an agent hook runs after every task. Help, a bad command name,
+# or none at all still loads every module, so those read exactly as before.
+_COMMANDS = (
+    "init", "install", "capture", "import", "trace", "distill", "lesson", "release",
+    "overlap", "commons", "account", "query", "serve", "index", "bench", "reliability",
+    "consolidate", "retrieval", "experiment", "export", "prove", "taxonomy", "impact",
+    "pilot", "sync", "redact", "doctor",
+)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _command_modules(only: str | None = None) -> list:
+    names = (only,) if only in _COMMANDS else _COMMANDS
+    return [importlib.import_module(f"commontrace.commands.{name}_cmd") for name in names]
+
+
+def build_parser(only: str | None = None) -> argparse.ArgumentParser:
+    """The CLI's parser: every subcommand, or just `only` when it names one."""
     parser = argparse.ArgumentParser(
         prog="commontrace",
         description="CommonTrace Protocol client - capture experience, curate lessons, "
@@ -102,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     # "the following arguments are required: command" -- main() below reports
     # the real cause instead before parse_args() is ever reached in that case.
     subparsers = parser.add_subparsers(dest="command", required=_MISSING_DEPENDENCY is None)
-    for module in _SUBCOMMANDS:
+    for module in _command_modules(only):
         module.add_parser(subparsers)
     return parser
 
@@ -116,7 +72,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    parser = build_parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    try:
+        parser = build_parser(argv[0] if argv else None)
+    except ModuleNotFoundError as exc:
+        print(
+            f"[commontrace] error: missing required dependency {exc.name!r} -- "
+            "commontrace was not installed correctly. Try: pip install -e . "
+            "(or pip install commontrace)",
+            file=sys.stderr,
+        )
+        return 1
     args = parser.parse_args(argv)
     try:
         res = args.func(args)
