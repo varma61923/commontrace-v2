@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Any site could sign a user out of the console** with an `<img>` tag
+  pointing at `/app/signout`, which acted on a GET. Sign out is now a form
+  post (the nav's button looks as it did); a GET asks first.
 - **A page on a sibling subdomain could post console forms as the signed-in
   user.** The session cookie is `SameSite=Strict`, but a sibling subdomain
   is the same site, so the browser still attached it. Every console and

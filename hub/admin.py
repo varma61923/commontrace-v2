@@ -157,6 +157,9 @@ header.bar nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:.35rem 1rem;font
   border-radius:2px;background:var(--surface);color:var(--muted);cursor:pointer}
 .live-toggle[aria-pressed=true]{color:var(--ink);border-color:var(--ink)}
 header.bar nav a[aria-current=page]{color:var(--ink);font-weight:600;text-decoration:none}
+header.bar nav form{margin:0;display:inline}
+header.bar nav .linkish{font:inherit;padding:0;border:0;background:none;color:var(--accent);
+  text-decoration:underline;cursor:pointer}
 a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px}
 .skip{position:absolute;left:-9999px;top:0}.skip:focus{left:1rem;top:.5rem;z-index:10;

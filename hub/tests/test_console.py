@@ -307,9 +307,24 @@ class TestSignIn:
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
-            await client.get(f"{console.CONSOLE_PATH}/signout")
+            await client.post(f"{console.CONSOLE_PATH}/signout")
             response = await client.get(console.CONSOLE_PATH)
             assert response.status_code == 303
+
+    async def test_a_get_does_not_sign_you_out(self, session_factory, org_and_key):
+        """Any site can fire a GET with an <img> tag; signing out takes a
+        form post, which the nav's Sign out button makes."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            page = await client.get(f"{console.CONSOLE_PATH}/signout")
+            assert page.status_code == 200 and "Sign out?" in page.text
+            assert (await client.get(console.CONSOLE_PATH)).status_code == 200
+            overview = (await client.get(console.CONSOLE_PATH)).text
+            assert f'<form method="post" action="{console.CONSOLE_PATH}/signout">' in overview
+            forged = await client.post(f"{console.CONSOLE_PATH}/signout", headers={"Sec-Fetch-Site": "cross-site"})
+            assert forged.status_code == 403
+            assert (await client.get(console.CONSOLE_PATH)).status_code == 200
 
     async def test_sign_in_is_rate_limited(self, session_factory):
         """Without this the console is an unauthenticated, unthrottled oracle

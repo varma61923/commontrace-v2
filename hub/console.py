@@ -349,6 +349,14 @@ _NAV = (
 )
 
 
+# A form, not a link: a GET that signs you out is one any other site can
+# fire with an <img> tag.
+_SIGN_OUT_FORM = (
+    f'<form method="post" action="{CONSOLE_PATH}/signout">'
+    '<button type="submit" class="linkish">Sign out</button></form>'
+)
+
+
 def _page(
     title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
 ) -> HTMLResponse:
@@ -357,7 +365,7 @@ def _page(
             f'<a href="{CONSOLE_PATH}{path}"'
             f'{" aria-current=page" if title == page_title else ""}>{label}</a>'
             for path, label, page_title in _NAV
-        ) + f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
+        ) + _SIGN_OUT_FORM + "</nav>"
         if signed_in else ""
     )
     badge = live_badge(auto_refresh_seconds)
@@ -1767,6 +1775,15 @@ def add_console_routes(
         return response
 
     async def signout(request: Request) -> Response:
+        if request.method != "POST":
+            # An old bookmark or link: ask, rather than act on a GET.
+            if await _claims(request) is None:
+                return _redirect_to_signin()
+            return _page("Sign out", (
+                "<h1>Sign out?</h1>"
+                f'<form method="post" action="{CONSOLE_PATH}/signout">'
+                '<button type="submit" class="btn">Sign out</button></form>'
+            ))
         response = RedirectResponse(f"{CONSOLE_PATH}/signin", status_code=303)
         response.delete_cookie(SESSION_COOKIE, path=CONSOLE_PATH)
         return response
