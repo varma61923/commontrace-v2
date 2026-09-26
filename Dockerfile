@@ -8,7 +8,7 @@
 # against). The `commontrace` CLI is a separate, pip-installable client and
 # deliberately does not ship in this image.
 
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -28,7 +28,7 @@ COPY hub/requirements.txt hub/requirements-lock.txt ./hub/
 RUN pip install --prefix=/install -r hub/requirements.txt -c hub/requirements-lock.txt
 
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

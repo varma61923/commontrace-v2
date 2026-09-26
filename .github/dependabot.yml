@@ -40,7 +40,16 @@ updates:
     # automatically, and hub/tests/test_requirements_lock.py fails the
     # build if a merged bump leaves the two out of sync.
 
+  # Base images are pinned by digest (tag@sha256:...), so a re-pushed tag
+  # cannot change what gets built; these two keep the digests current.
   - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "docker"]
+
+  - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
       interval: "weekly"

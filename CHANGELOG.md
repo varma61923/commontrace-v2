@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Hub image and compose stack are built from base images pinned by
+  digest** (`python:3.12-slim@sha256:…`, `postgres:16@sha256:…`), so a
+  re-pushed tag cannot change what is built. Dependabot's docker and
+  docker-compose ecosystems propose new digests as PRs, and a test fails if
+  an unpinned image is added.
 - **Hub HTML pages now send `Cross-Origin-Opener-Policy: same-origin`,
   `Cross-Origin-Resource-Policy: same-origin` and a Permissions-Policy that
   turns off camera, microphone, location, USB and payment APIs.** A window

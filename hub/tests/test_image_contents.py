@@ -207,3 +207,18 @@ class TestImportedModulesAreStdlibOnly:
                         f"{name!r}, which is neither stdlib nor in hub/requirements.txt. "
                         "The container would start and then fail on this import."
                     )
+
+
+def test_every_base_image_is_pinned_by_digest():
+    """A tag can be re-pushed; a digest cannot. Pinned, what gets built and
+    run is exactly what was tested, and Dependabot (docker and
+    docker-compose ecosystems) proposes each new digest as a reviewed PR."""
+    import re
+
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    images = re.findall(r"^FROM\s+(\S+)", dockerfile, flags=re.M)
+    images += re.findall(r"^\s+image:\s*(\S+)", compose, flags=re.M)
+    assert images
+    unpinned = [i for i in images if not re.search(r"@sha256:[0-9a-f]{64}$", i)]
+    assert not unpinned, f"pin by digest (image:tag@sha256:...): {unpinned}"
