@@ -360,7 +360,7 @@ def add_rest_routes(
             return JSONResponse(
                 {"error": "rate_limited", "detail": str(exc)},
                 status_code=429,
-                headers={"Retry-After": str(max(1, math.ceil(exc.retry_after)))},
+                headers={"Retry-After": str(max(1, math.ceil(exc.retry_after or 1)))},
             )
         return JSONResponse(result, status_code=201)
 
