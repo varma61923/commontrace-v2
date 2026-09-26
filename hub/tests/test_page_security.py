@@ -106,3 +106,10 @@ def test_a_live_page_can_be_paused(render):
     assert "ct-live-paused" in live
     still = render(0).body.decode()
     assert "data-live-toggle" not in still and "ct-live-paused" not in still
+
+
+def test_a_hidden_tab_does_not_reload():
+    """A console left open in a background tab re-ran its queries every
+    few seconds for as long as it stayed open."""
+    script = admin.auto_refresh_script(30)
+    assert "document.hidden" in script and "visibilitychange" in script

@@ -262,7 +262,13 @@ def auto_refresh_script(seconds: int) -> str:
         "btn.setAttribute('aria-pressed',p?'true':'false');}"
         "function isEditing(){var el=document.activeElement;"
         "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
-        "function tick(){if(paused())return;if(isEditing()){timer=setTimeout(tick,3000);return;}"
+        # A tab nobody is looking at does not reload: it waits until it is
+        # shown again, instead of re-running the page's queries (up to 1.4s
+        # of statistics on the console overview) every few seconds forever.
+        "function tick(){if(paused())return;"
+        "if(document.hidden){document.addEventListener('visibilitychange',function v(){"
+        "if(!document.hidden){document.removeEventListener('visibilitychange',v);tick();}});return;}"
+        "if(isEditing()){timer=setTimeout(tick,3000);return;}"
         "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
         f"function schedule(){{clearTimeout(timer);if(!paused())timer=setTimeout(tick,{int(seconds)}*1000);}}"
         "if(btn)btn.addEventListener('click',function(){"

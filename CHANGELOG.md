@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   container or an ingress**, because the Hub only sees `https` from a proxy
   on 127.0.0.1. A declared proxy (`HUB_TRUSTED_PROXY_HOPS` > 0) now always
   gets a `Secure` cookie.
+- **A console left open in a background tab kept reloading** every
+  15-45 seconds, re-running its queries (up to 1.4s of statistics on the
+  overview) for as long as it stayed open. A hidden tab now waits and
+  reloads once it is shown again.
 - The CLI's HTML reports (`taxonomy`, `impact`, `pilot`, `bench --html`) had
   no viewport tag, so phones rendered them zoomed out; they now fit the
   screen, scroll wide tables, and follow the system dark mode.
