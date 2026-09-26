@@ -388,3 +388,44 @@ class TestMetricsToken:
         monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
         monkeypatch.setenv("HUB_METRICS_TOKEN", "from-env")
         assert HubConfig.from_env().metrics_token == "from-env"
+
+
+class TestNoSecretsInRequestLogs:
+    """A share link's token is the credential for a live report, and query
+    strings carry customer search text; neither belongs in a log line."""
+
+    @pytest.mark.asyncio
+    async def test_a_share_token_in_the_path_is_redacted(self, caplog):
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        async def _ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/app/proof/shared/{token}", _ok), Route("/app/memory", _ok)])
+        app.add_middleware(observability.RequestContextMiddleware)
+        caplog.set_level(logging.INFO, logger="commontrace.hub.request")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+            await c.get("/app/proof/shared/SECRET-TOKEN-abc")
+            await c.get("/app/memory?q=customer+search+text")
+        hub_records = [r for r in caplog.records if r.name == "commontrace.hub.request"]
+        assert [r.http_path for r in hub_records] == ["/app/proof/shared/[redacted]", "/app/memory"]
+        logged = " ".join(str(vars(r)) for r in hub_records)
+        assert "SECRET-TOKEN" not in logged and "customer" not in logged
+
+    def test_uvicorn_writes_no_access_log_of_its_own(self, monkeypatch):
+        """uvicorn's access line carries the query string, and propagates to
+        the same JSON handler; the middleware's line is the one kept."""
+        import uvicorn
+
+        from hub import main
+        from hub.config import HubConfig
+
+        seen = {}
+        config = HubConfig(database_url="postgresql+asyncpg://x/y")
+        monkeypatch.setattr(main, "build_server_app", lambda: (config, object()))
+        monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+        main.main()
+        assert seen["access_log"] is False

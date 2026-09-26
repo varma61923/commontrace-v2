@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Hub's logs held share-link tokens and customer search text.** The
+  request log recorded `/app/proof/shared/<token>` verbatim -- the token is
+  the credential for that org's live report for 14 days -- and uvicorn's own
+  access log, which reached the same JSON handler, added every query string
+  (`/app/memory?q=…`, `?share_url=…`). The token is now logged as
+  `[redacted]`, and uvicorn's duplicate access line is off; the middleware's
+  own line (method, path, status, duration, request id) remains.
 - **An unauthenticated request with a huge body could exhaust the Hub's
   memory.** `HUB_MAX_REQUEST_BODY_BYTES` (1 MiB) was enforced only by the MCP
   transport; the signup and sign-in forms, the REST API, SCIM and the Stripe

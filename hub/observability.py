@@ -163,12 +163,24 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 "request",
                 extra={
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    "http_path": loggable_path(request.url.path),
                     "http_status": status,
                     "duration_ms": duration_ms,
                 },
             )
             current_request_id.reset(token)
+
+
+# A share link's token IS the credential for that report (anyone holding
+# the URL sees the org's live data for its lifetime), so it never reaches a
+# log line: log shippers and aggregators are read far more widely than the
+# console is.
+_SECRET_PATH_SEGMENT = re.compile(r"(/proof/shared/)[^/]+")
+
+
+def loggable_path(path: str) -> str:
+    """`path` with any secret-bearing segment replaced by `[redacted]`."""
+    return _SECRET_PATH_SEGMENT.sub(r"\1[redacted]", path)
 
 
 class Metrics:
