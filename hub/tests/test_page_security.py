@@ -91,3 +91,18 @@ def test_the_nav_marks_the_current_page():
 def test_the_page_offers_a_skip_link_to_its_content():
     page = console._page("Proof", "<p>x</p>").body.decode()
     assert '<a class="skip" href="#main">' in page and '<main id="main">' in page
+
+
+@pytest.mark.parametrize("render", [
+    lambda s: console._page("Your fleet", "", auto_refresh_seconds=s),
+    lambda s: admin._page("Overview", "", auto_refresh_seconds=s),
+])
+def test_a_live_page_can_be_paused(render):
+    """WCAG 2.2.1: a page that reloads itself must let the reader stop it.
+    The control starts hidden, so it never shows without the script that
+    makes it work."""
+    live = render(30).body.decode()
+    assert '<button type="button" class="live-toggle" data-live-toggle hidden>' in live
+    assert "ct-live-paused" in live
+    still = render(0).body.decode()
+    assert "data-live-toggle" not in still and "ct-live-paused" not in still

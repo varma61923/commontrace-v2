@@ -76,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Accessibility
 
+- **Live pages can be paused.** The console overview and the operator
+  pages reload themselves every 15-45 seconds; a "Pause live updates"
+  button in the header now stops that (WCAG 2.2.1), and the choice is
+  kept across pages in that browser.
 - The console nav marks the current page (`aria-current`), pages have a
   skip-to-content link, every focusable control shows a focus ring, and
   table columns of row buttons have a header a screen reader can announce.

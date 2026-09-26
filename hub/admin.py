@@ -152,6 +152,9 @@ header.bar .ro{font-family:ui-monospace,monospace;font-size:.66rem;letter-spacin
   text-transform:uppercase;color:var(--muted);border:1px solid var(--rule);
   padding:.15rem .45rem;border-radius:2px}
 header.bar nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:.9rem}
+.live-toggle{font:inherit;font-size:.72rem;padding:.1rem .45rem;border:1px solid var(--rule);
+  border-radius:2px;background:var(--surface);color:var(--muted);cursor:pointer}
+.live-toggle[aria-pressed=true]{color:var(--ink);border-color:var(--ink)}
 header.bar nav a[aria-current=page]{color:var(--ink);font-weight:600;text-decoration:none}
 a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px}
@@ -233,7 +236,7 @@ form.stack input:focus-visible,form.stack textarea:focus-visible{
 """
 
 
-def _auto_refresh_script(seconds: int) -> str:
+def auto_refresh_script(seconds: int) -> str:
     """A dependency-free "this page is live" mechanism: reloads on a
     timer, so an operator watching for a queue to grow or a rate to
     climb (this console's whole reason to exist -- see the module
@@ -249,15 +252,39 @@ def _auto_refresh_script(seconds: int) -> str:
     """
     return (
         "<script>(function(){"
-        f"var KEY='ct-scroll-'+location.pathname+location.search;"
+        "var KEY='ct-scroll-'+location.pathname+location.search,PAUSE='ct-live-paused',timer=null;"
         "var y=sessionStorage.getItem(KEY);"
         "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
+        "function paused(){try{return localStorage.getItem(PAUSE)==='1';}catch(e){return false;}}"
+        "var btn=document.querySelector('[data-live-toggle]');"
+        "function label(){if(!btn)return;var p=paused();btn.hidden=false;"
+        "btn.textContent=p?'Resume live updates':'Pause live updates';"
+        "btn.setAttribute('aria-pressed',p?'true':'false');}"
         "function isEditing(){var el=document.activeElement;"
         "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
-        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
+        "function tick(){if(paused())return;if(isEditing()){timer=setTimeout(tick,3000);return;}"
         "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
-        f"setTimeout(tick,{int(seconds)}*1000);"
+        f"function schedule(){{clearTimeout(timer);if(!paused())timer=setTimeout(tick,{int(seconds)}*1000);}}"
+        "if(btn)btn.addEventListener('click',function(){"
+        "try{localStorage.setItem(PAUSE,paused()?'0':'1');}catch(e){}label();schedule();});"
+        "label();schedule();"
         "})();</script>"
+    )
+
+
+def live_badge(seconds: int) -> str:
+    """The header's "live" marker for an auto-refreshing page, and the
+    control that pauses it. WCAG 2.2.1 asks that a time limit -- here, a
+    reload every few seconds -- can be turned off: someone reading slowly,
+    or with a screen reader, loses their place on every reload. The button
+    stays hidden unless the refresh script runs, and the choice is kept for
+    every page in this browser."""
+    if not seconds:
+        return ""
+    return (
+        f'<span class="ro" title="Refreshes automatically every {int(seconds)}s '
+        'unless you are typing in a field or have paused it">live</span>'
+        '<button type="button" class="live-toggle" data-live-toggle hidden>Pause live updates</button>'
     )
 
 
@@ -338,19 +365,15 @@ def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]
 
 
 def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
-    live_badge = (
-        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
-        'unless you are typing in a field">live</span>'
-        if auto_refresh_seconds else ""
-    )
-    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
+    badge = live_badge(auto_refresh_seconds)
+    refresh_script = auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>{h(title)} · CommonTrace Hub</title><style>{_CSS}</style></head><body>"
         "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
         "<span class=\"ro\">operator console</span>"
-        f"{live_badge}"
+        f"{badge}"
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
