@@ -1623,6 +1623,19 @@ _SIGNIN = """
 """
 
 
+# What the Knowledge Base page says after each action redirects back to it.
+_KB_FLASH = {
+    "proposed": "Proposal sent for operator review.",
+    "auto_on": "Automatic contribution is on. New traces will also be proposed.",
+    "auto_off": "Automatic contribution is off.",
+    "voted": "Thanks — your vote was recorded.",
+    "voted_uncounted": (
+        "Your vote was recorded, but does not count toward this entry's standing yet "
+        "— see the note below the catalogue."
+    ),
+}
+
+
 def add_console_routes(
     app,
     session_factory,
@@ -2130,7 +2143,9 @@ def add_console_routes(
             org_id, claims,
             tag=request.query_params.get("tag", "")[:64],
             offset=max(0, offset),
-            flash=request.query_params.get("done", "")[:200],
+            # A code, not text: a message read from the URL would let any
+            # link make the console say whatever its author wanted.
+            flash=_KB_FLASH.get(request.query_params.get("done", ""), ""),
         )
 
     async def kb_submit(request: Request) -> Response:
@@ -2185,7 +2200,7 @@ def add_console_routes(
                 error="Too many proposals just now. Try again shortly.",
             )
         return RedirectResponse(
-            f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
+            f"{CONSOLE_PATH}/kb?done=proposed", status_code=303,
         )
 
     async def kb_auto_contribute(request: Request) -> Response:
@@ -2224,11 +2239,7 @@ def add_console_routes(
                 org_id=org_id, target_type="org", target_id=org_id,
                 summary=f"enabled={enabled}",
             )
-        done = (
-            "Automatic+contribution+is+on.+New+traces+will+also+be+proposed."
-            if enabled else
-            "Automatic+contribution+is+off."
-        )
+        done = "auto_on" if enabled else "auto_off"
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def kb_vote(request: Request) -> Response:
@@ -2277,12 +2288,7 @@ def add_console_routes(
             )
         # Two different true things, and saying only the first one to an
         # org whose vote did not count would be a quiet lie by omission.
-        done = (
-            "Thanks+—+your+vote+was+recorded."
-            if voted.get("vote_counted", True) else
-            "Your+vote+was+recorded,+but+does+not+count+toward+this+entry%27s"
-            "+standing+yet+—+see+the+note+below+the+catalogue."
-        )
+        done = "voted" if voted.get("vote_counted", True) else "voted_uncounted"
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:

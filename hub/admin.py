@@ -507,6 +507,11 @@ def _cmd(what: str, command: str) -> str:
 # under the admin secret -- unforgeable without that secret, and scoped so a
 # token minted for "reject submission X" cannot be replayed as "approve
 # submission Y".
+def _flash_sig(admin_token: str, message: str) -> str:
+    return hmac.new(
+        admin_token.encode(), b"flash\0" + message.encode(), "sha256").hexdigest()[:32]
+
+
 def _csrf_token(admin_token: str, action: str, target: str) -> str:
     import hashlib
     return hmac.new(
@@ -1565,7 +1570,7 @@ def add_admin_routes(
         denied = await _guard(request)
         if denied is not None:
             return denied
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         return await _overview_view(flash=flash)
 
     async def generate_encryption_key_route(request: Request) -> Response:
@@ -1604,7 +1609,7 @@ def add_admin_routes(
             return _page("Not found", '<section><h1>No such organization</h1>'
                                       f'<p class="sub">Nothing on this Hub has that id. '
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         subject_id = request.query_params.get("subject_id", "")[:200]
         if subject_id:
             async with session_scope(session_factory) as session:
@@ -1633,7 +1638,7 @@ def add_admin_routes(
             return denied
         if not commons_enabled:
             return _page("Knowledge Base", _COMMONS_OFF)
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         async with session_scope(session_factory) as session:
             data = await _kb_data(session)
         return _page(
@@ -1678,8 +1683,21 @@ def add_admin_routes(
     def _back(path: str, message: str) -> Response:
         # POST-then-redirect: without it a reload re-submits the decision,
         # and a moderation decision is not something to repeat by accident.
+        # The message rides in the URL, so it is signed: see _flash.
         from urllib.parse import quote
-        return Response(status_code=303, headers={"Location": f"{path}?done={quote(message)}"})
+        return Response(status_code=303, headers={
+            "Location": f"{path}?done={quote(message)}&sig={_flash_sig(admin_token, message)}"})
+
+    def _flash(request: Request) -> str:
+        """The `done=` message, only if this console wrote it. Unsigned, any
+        link could make the operator console announce whatever its author
+        liked ("Key revoked.", "Call support on ...") to an operator whose
+        browser already holds the console's credentials."""
+        message = request.query_params.get("done", "")[:500]
+        signature = request.query_params.get("sig", "")
+        if message and hmac.compare_digest(_flash_sig(admin_token, message), signature):
+            return message
+        return ""
 
     async def kb_review(request: Request) -> Response:
         form, submission_id, denied = await _moderate(

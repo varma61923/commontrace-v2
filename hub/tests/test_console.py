@@ -924,6 +924,19 @@ class TestProofSharing:
         assert response.status_code == 303
         assert response.headers["location"].endswith("/signin")
 
+    async def test_the_knowledge_base_page_says_only_what_the_console_wrote(
+        self, session_factory, org_and_key
+    ):
+        """?done= used to be rendered as the page's confirmation banner,
+        whatever it said."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            spoofed = await client.get(f"{console.CONSOLE_PATH}/kb", params={"done": "Call +1-555-0100"})
+            real = await client.get(f"{console.CONSOLE_PATH}/kb", params={"done": "voted"})
+        assert "555-0100" not in spoofed.text
+        assert "your vote was recorded" in real.text
+
     async def test_a_link_in_the_url_is_never_presented_as_the_one_generated(
         self, session_factory, org_and_key
     ):

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A link could make either console announce any message.** After an
+  action, both consoles showed the `?done=` text from the URL as their
+  confirmation banner, so `/admin/kb?done=Call+…` or `/app/kb?done=…` put
+  arbitrary words in the console's voice (escaped, but trusted-looking). The
+  customer console now accepts only a fixed code (`?done=voted`), and the
+  operator console only a message it signed itself.
 - **A freshly minted share link went into browser history, and the console
   would present any link as its own.** Generating a link redirected to
   `/app/proof?share_url=<link>`, so the live credential landed in history and
