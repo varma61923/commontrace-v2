@@ -58,6 +58,7 @@ import hmac
 import html
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -368,6 +369,48 @@ def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]
         "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
         "Content-Security-Policy": content_security_policy(*scripts),
     }
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def cross_origin_refused(request: Request) -> bool:
+    """Whether a state-changing request came from another origin's page.
+
+    The console's session cookie is `SameSite=Strict`, which keeps it off
+    requests from other *sites* -- but a page on a sibling subdomain (a
+    user-content host, a staging app, anything under the same registrable
+    domain) is the same site, gets the cookie attached, and could post a
+    console form in a signed-in user's name. The browser says where a
+    request came from: `Sec-Fetch-Site` on every current browser, and
+    `Origin` on older ones, which is compared with the Host it was sent to
+    (the same two-step check as Go's net/http CrossOriginProtection). A
+    request carrying neither is not a browser's cross-origin form post and
+    goes through: the session cookie still has to be valid.
+    """
+    if request.method in _SAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
+
+
+def refuse_cross_origin(handler):
+    """`handler`, answering 403 to a cross-origin state-changing request
+    (see `cross_origin_refused`) instead of acting on it."""
+
+    async def guarded(request: Request) -> Response:
+        if cross_origin_refused(request):
+            return Response("cross-origin request refused", status_code=403)
+        return await handler(request)
+
+    guarded.__name__ = getattr(handler, "__name__", "guarded")
+    guarded.__doc__ = handler.__doc__
+    return guarded
 
 
 def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:

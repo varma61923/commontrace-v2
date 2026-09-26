@@ -38,7 +38,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit
 from hub.abuse import RateLimiter, resolve_client_key
-from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers
+from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin
 from hub.auth import issue_api_key
 from hub.db import session_scope
 from hub.models import Organization
@@ -168,4 +168,4 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
         ))
 
     app.add_route(SIGNUP_PATH, signup_page, methods=["GET"])
-    app.add_route(SIGNUP_PATH, signup, methods=["POST"])
+    app.add_route(SIGNUP_PATH, refuse_cross_origin(signup), methods=["POST"])

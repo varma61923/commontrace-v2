@@ -255,7 +255,11 @@ Operationally, four things to know:
   writes to `Organization`, `Trace`, or any other row directly, which is why
   it carries no CSRF token — its session cookie is `SameSite=Strict`, so a
   forged cross-site request arrives with no session and is turned back at
-  sign-in. Everything a customer can change in their own trace store still
+  sign-in. A page on a sibling subdomain is the same *site* and would get
+  the cookie, so every console and signup form post also refuses a request
+  the browser marks as coming from another origin (`Sec-Fetch-Site`, or
+  `Origin` against `Host` on older browsers): a proxy in front of the Hub
+  must pass the original `Host` header through. Everything a customer can change in their own trace store still
   goes through MCP or the CLI, where it is authenticated and audited. The
   one exception carries its own trust boundary rather than weakening this
   one: with Stripe configured (below), an "Upgrade" click sends the browser

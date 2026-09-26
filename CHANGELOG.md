@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page on a sibling subdomain could post console forms as the signed-in
+  user.** The session cookie is `SameSite=Strict`, but a sibling subdomain
+  is the same site, so the browser still attached it. Every console and
+  signup form post now refuses a request the browser marks as coming from
+  another origin (`Sec-Fetch-Site`, or `Origin` against `Host` on older
+  browsers), with a test that fails if a new POST route is registered
+  without the guard.
 - **Hub console and admin pages were unreadable in dark mode.** Every primary
   button drew white text on a near-white background (contrast 1.2:1), and
   the red/amber/green verdict boxes and pills kept light-mode colours under

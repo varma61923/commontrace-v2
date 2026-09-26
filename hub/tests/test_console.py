@@ -274,6 +274,35 @@ class TestSignIn:
             response = await _signed_in(client, raw_key)
         assert "Secure" not in response.headers["set-cookie"]  # plain http, no proxy: local development
 
+    async def test_a_sibling_subdomain_cannot_post_as_the_signed_in_user(self, session_factory, org_and_key):
+        """SameSite=Strict still sends the cookie to a same-site page on
+        another subdomain; the browser's Sec-Fetch-Site says where it came
+        from, and a console form is only ever posted by the console itself."""
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            forged = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Sec-Fetch-Site": "same-site"},
+            )
+            assert forged.status_code == 403
+            old_browser = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Origin": "https://evil.example"},
+            )
+            assert old_browser.status_code == 403
+            async with session_scope(session_factory) as session:
+                keys = (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))).scalars().all()
+            assert len(keys) == 1
+            own = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Sec-Fetch-Site": "same-origin", "Origin": "http://test"},
+            )
+            assert "shown once" in own.text
+
     async def test_sign_out_clears_the_session(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:

@@ -16,6 +16,7 @@ import pathlib
 import re
 
 import pytest
+from starlette.requests import Request
 
 from hub import admin, console, signup
 
@@ -113,3 +114,38 @@ def test_a_hidden_tab_does_not_reload():
     few seconds for as long as it stayed open."""
     script = admin.auto_refresh_script(30)
     assert "document.hidden" in script and "visibilitychange" in script
+
+
+def _request(method: str, **headers: str) -> Request:
+    return Request({
+        "type": "http", "method": method, "path": "/app/keys/issue", "query_string": b"",
+        "headers": [(k.lower().replace("_", "-").encode(), v.encode()) for k, v in headers.items()],
+    })
+
+
+@pytest.mark.parametrize(("method", "headers", "refused"), [
+    ("POST", {"sec_fetch_site": "same-origin"}, False),
+    ("POST", {"sec_fetch_site": "none"}, False),  # typed or bookmarked by the user
+    ("POST", {"sec_fetch_site": "same-site"}, True),  # a sibling subdomain: gets the cookie
+    ("POST", {"sec_fetch_site": "cross-site"}, True),
+    ("POST", {"sec_fetch_site": "same-origin", "origin": "https://evil.example"}, False),  # the browser's word wins
+    ("POST", {"origin": "https://hub.example.com", "host": "hub.example.com"}, False),  # older browser, own page
+    ("POST", {"origin": "https://HUB.example.com", "host": "hub.example.com"}, False),
+    ("POST", {"origin": "https://evil.example", "host": "hub.example.com"}, True),
+    ("POST", {"origin": "null", "host": "hub.example.com"}, True),  # a sandboxed frame or data: page
+    ("POST", {"host": "hub.example.com"}, False),  # not a browser: the session cookie decides
+    ("GET", {"sec_fetch_site": "cross-site"}, False),  # a link from elsewhere is fine
+])
+def test_a_state_changing_request_from_another_origin_is_refused(method, headers, refused):
+    assert admin.cross_origin_refused(_request(method, **headers)) is refused
+
+
+@pytest.mark.parametrize("module", [console, signup])
+def test_every_form_post_route_is_guarded(module):
+    """A POST route registered without the guard would be the one a forged
+    form targets."""
+    source = pathlib.Path(module.__file__).read_text()
+    routes = source.split("app.add_route(")[1:]
+    posts = [r.split("\n\n", 1)[0] for r in routes if '"POST"' in r.split("methods=", 1)[1].split("]", 1)[0]]
+    assert posts
+    assert all("refuse_cross_origin(" in route for route in posts)
