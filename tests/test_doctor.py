@@ -187,3 +187,34 @@ class TestAProbeCannotTakeDownTheReport:
         # Conservative, because every caller's absent branch is INFO plus an
         # install hint -- never a failure someone has to chase.
         assert doctor_cmd._installed("definitely_not_imported_anywhere") is False
+
+
+def test_doctor_says_whether_the_models_a_store_uses_are_cached(fresh_store, capsys, monkeypatch):
+    """An uncached model means the first query downloads it -- and never
+    works on a host without internet. The operator should hear that from
+    `doctor`, not from a failed query."""
+    from commontrace import retrieval_io
+    from commontrace.commands import doctor_cmd
+
+    monkeypatch.setattr(doctor_cmd, "has_attention_deps", lambda: True, raising=False)
+    retrieval_io.configure(str(fresh_store), fusion=retrieval_io.FUSION_GATED, rerank=retrieval_io.RERANK_CE)
+    monkeypatch.setattr(doctor_cmd, "_model_cached", lambda name: "cross-encoder" in name)
+    main(["doctor", "--dest", str(fresh_store)])
+    out = capsys.readouterr().out
+    if "attention extra (numpy + sentence-transformers) - installed" not in out:
+        pytest.skip("the attention extra is not installed here")
+    assert "[OK  ] reranker model cached - cross-encoder/ms-marco-MiniLM-L-6-v2" in out
+    assert "[INFO] embedding model - Snowflake/snowflake-arctic-embed-m-v1.5 is not in the local model cache" in out
+
+
+def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monkeypatch):
+    import huggingface_hub
+
+    from commontrace.commands import doctor_cmd
+
+    seen = []
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache",
+                        lambda repo, filename: seen.append(repo) or None)
+    assert doctor_cmd._model_cached("multi-qa-mpnet-base-dot-v1") is False
+    assert seen == ["multi-qa-mpnet-base-dot-v1", "sentence-transformers/multi-qa-mpnet-base-dot-v1"]
+    assert doctor_cmd._model_cached("") is False

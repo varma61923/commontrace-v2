@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace doctor` says whether the store's models are cached.** For
+  each model the store's retrieval loads (the index's embedder when fusion
+  is on, the reranker when reranking is on) it reports `[OK]` when the
+  local cache holds it, or explains that the first query will download it
+  and how to prepare a host without internet. Checked from the cache
+  alone, with no network request.
 - **The accurate reranker is the default, over a shallower pool.** With the
   arctic-embed semantic arm, the answer is almost always near the top of
   one arm or the other, so gated fusion now hands the reranker each arm's
