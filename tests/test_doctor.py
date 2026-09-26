@@ -208,13 +208,15 @@ def test_doctor_says_whether_the_models_a_store_uses_are_cached(fresh_store, cap
 
 
 def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monkeypatch):
-    import huggingface_hub
+    """A stand-in module, so this runs where huggingface_hub is not installed."""
+    import sys
+    import types
 
     from commontrace.commands import doctor_cmd
 
     seen = []
-    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache",
-                        lambda repo, filename: seen.append(repo) or None)
+    fake = types.SimpleNamespace(try_to_load_from_cache=lambda repo, filename: seen.append(repo) or None)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
     assert doctor_cmd._model_cached("multi-qa-mpnet-base-dot-v1") is False
     assert seen == ["multi-qa-mpnet-base-dot-v1", "sentence-transformers/multi-qa-mpnet-base-dot-v1"]
     assert doctor_cmd._model_cached("") is False
