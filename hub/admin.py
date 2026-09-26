@@ -371,6 +371,13 @@ def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]
         "Cache-Control": "no-store, private", "Referrer-Policy": referrer,
         "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
         "Content-Security-Policy": content_security_policy(*scripts),
+        # A window another site opened (or that opened this one) gets no
+        # handle to it, and no other origin can load it as a subresource.
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        # Nothing here uses these; a script injected despite the CSP gets
+        # none of them either.
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), payment=()",
     }
 
 

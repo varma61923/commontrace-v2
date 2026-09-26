@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hub HTML pages now send `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Resource-Policy: same-origin` and a Permissions-Policy that
+  turns off camera, microphone, location, USB and payment APIs.** A window
+  another site opened no longer keeps a handle to the console, no other
+  origin can load a console page as a subresource, and a script that got
+  past the CSP gets none of those device APIs.
 - **Rate limits keyed on a client's address did nothing against an IPv6
   client.** One host is typically assigned a whole /64 and can send from any
   address in it, so each request could land in a fresh bucket: the console's

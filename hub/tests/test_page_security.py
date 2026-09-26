@@ -61,6 +61,9 @@ def test_the_policy_allows_exactly_the_scripts_the_page_renders(name):
     assert _directive(csp, "frame-ancestors") == "'none'"
     assert _directive(csp, "base-uri") == "'none'"
     assert "no-store" in response.headers["cache-control"]
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    assert "camera=()" in response.headers["permissions-policy"]
 
 
 def test_the_shared_report_runs_no_script_and_sends_no_referrer():
