@@ -179,6 +179,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace lesson list --json`** prints one JSON array (name,
+  agent_type, importance, status, description, domain, path) for scripts,
+  instead of the aligned table; `--status` and `--agent-type` filter it the
+  same way.
 - **`commontrace` suggests the command you meant** (`unknown command
   'captur'. Did you mean: capture?`) instead of listing all 27, and with no
   command at all prints the full help rather than a one-line error. Exit

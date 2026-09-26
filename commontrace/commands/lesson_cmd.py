@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import glob
+import json
 import os
 import sys
 
@@ -69,6 +70,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     ls = sub.add_parser("list", help="List lessons in the store.")
     ls.add_argument("--agent-type", default=None)
     ls.add_argument("--status", default=None)
+    ls.add_argument(
+        "--json", action="store_true",
+        help="Print one JSON array of lessons (name, agent_type, importance, status, "
+             "description, domain, path) for scripts, instead of the aligned table.",
+    )
     ls.add_argument("--dest", default=None)
     ls.set_defaults(func=run_list)
 
@@ -671,6 +677,8 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
 
 def run_list(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    as_json = getattr(args, "json", False)
+    rows = []
     for path in _iter_lesson_paths(root, None):
         result = read_or_warn(frontmatter.read, path)
         if result is None:
@@ -685,6 +693,14 @@ def run_list(args: argparse.Namespace) -> int:
         # __format__ for ":8s" -- so a half-finished edit (`status:`) crashed
         # the browsing command with a traceback while `lesson validate`
         # diagnosed the same file cleanly. Coerce before formatting.
+        if as_json:
+            rows.append({
+                "name": fm.get("name"), "agent_type": fm.get("agent_type"),
+                "importance": fm.get("importance"), "status": fm.get("status"),
+                "description": fm.get("description") or "", "domain": fm.get("domain"),
+                "path": path,
+            })
+            continue
         print(
             f"{cell(fm.get('name')):45s} "
             f"[{cell(fm.get('agent_type')):9s}] "
@@ -692,6 +708,9 @@ def run_list(args: argparse.Namespace) -> int:
             f"status={cell(fm.get('status')):8s} "
             f"{fm.get('description') or ''}"
         )
+    if as_json:
+        # default=str: YAML reads an unquoted date as a date object.
+        print(json.dumps(rows, ensure_ascii=False, default=str))
     return 0
 
 

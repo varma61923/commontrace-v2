@@ -719,6 +719,25 @@ class TestListingCommands:
         assert main(["lesson", "list", "--dest", str(store)]) == 0
         assert "lesson_broken" in capsys.readouterr().out
 
+    def test_json_output_is_one_parseable_array(self, store, capsys):
+        """For scripts: no scraping the aligned table. An unquoted YAML date
+        and an empty field must not break the encoding."""
+        import datetime
+        import json
+
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        self._lesson(store, "lesson_alpha", status="active", last_reviewed=datetime.date(2026, 1, 2))
+        self._lesson(store, "lesson_broken", status=None, description=None)
+        capsys.readouterr()
+        assert main(["lesson", "list", "--json", "--dest", str(store)]) == 0
+        rows = json.loads(capsys.readouterr().out)
+        by_name = {r["name"]: r for r in rows}
+        assert set(by_name) == {"lesson_alpha", "lesson_broken"}
+        assert by_name["lesson_alpha"]["status"] == "active"
+        assert by_name["lesson_broken"]["description"] == ""
+        assert main(["lesson", "list", "--json", "--status", "nope", "--dest", str(store)]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+
     def test_status_filter_selects(self, store, capsys):
         main(["init", "--agent-type", "support", "--dest", str(store)])
         self._lesson(store, "lesson_active", status="active")
