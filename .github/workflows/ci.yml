@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
 
+# A newer commit on the same branch or PR supersedes the run in progress:
+# cancel it rather than queueing both (each run is 14 jobs, and a burst of
+# pushes otherwise leaves the latest commit waiting behind all of them).
+# Never on main, where every commit's result is kept. Push and PR events
+# get separate groups, so one does not cancel the other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # No job below needs to write anything back to the repo, open PRs, or touch
 # packages/deployments -- read-only is the least the default GITHUB_TOKEN can
 # be scoped to, rather than inheriting whatever broad default the
