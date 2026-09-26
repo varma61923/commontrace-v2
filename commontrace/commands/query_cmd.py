@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import argparse
 import glob
+import math
 import os
+import re
 import sys
 
 from commontrace import (
     dosage,
+    evidence,
     evidence_io,
     frontmatter,
+    harm,
     holdout_io,
     lesson_cache,
     paths,
     recency,
     redundancy,
+    rerank_arm,
     retrieval,
     retrieval_io,
     revision,
@@ -24,10 +29,29 @@ from commontrace.commands._shellout import has_attention_deps, run_script
 
 
 def _relevance_floor(raw: str) -> float:
-    value = float(raw)
-    if not 0.0 <= value <= 1.0:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--relevance-floor must be a number, got {raw!r}"
+        ) from None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise argparse.ArgumentTypeError(
             f"--relevance-floor must be in [0.0, 1.0], got {value}"
+        )
+    return value
+
+
+def _holdout_rate(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--holdout-rate must be a number, got {raw!r}"
+        ) from None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"--holdout-rate must be in [0.0, 1.0], got {value}"
         )
     return value
 
@@ -86,7 +110,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     # any operator who set one and not the other pooled two randomizations
     # into one comparison. Passing either flag explicitly still overrides,
     # which is what a one-off experiment needs.
-    p.add_argument("--holdout-rate", type=float, default=None)
+    p.add_argument("--holdout-rate", type=_holdout_rate, default=None)
     p.add_argument("--experiment-salt", default=None)
     p.add_argument(
         "--include-importance-floor",
@@ -177,6 +201,58 @@ def _ranking_adjustments(
         recency.recency_lookup(lessons) if config.recency_weight > 0 else None
     )
     return reliability_lookup, recency_lu
+
+
+def _core_slugs(lessons: list[tuple[str, dict]]) -> set[str]:
+    return {str(fm.get("name", "")) for _path, fm in lessons if dosage.is_core(fm)}
+
+
+def _print_withdrawn(slugs: list[str], harmful: dict[str, dict]) -> None:
+    """Name what the store's harm policy kept out, with the numbers.
+
+    Never silent, for the reason `not injected` is printed: a lesson that
+    matched and was not handed over is a fact about this retrieval, and one
+    that was kept out because it was measured to make outcomes WORSE is the
+    one an operator most needs to be able to find.
+    """
+    if not slugs:
+        return
+    parts = []
+    for slug in slugs:
+        ev = harmful.get(slug, {})
+        effect = ev.get("effect")
+        lo, hi = (ev.get("ci_95") or [None, None])[:2]
+        figure = f"effect {effect:+.1%}" if isinstance(effect, (int, float)) else "HURTS"
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            figure += f", 95% CI {lo:+.1%} to {hi:+.1%}"
+        parts.append(f"{slug} ({figure})")
+    print("\n[commontrace] withdrawn -- measured to make outcomes worse, so not "
+          "injected (commontrace retrieval --on-harm): " + ", ".join(parts))
+
+
+def _withdraw_from_semantic(
+    stdout: str, harmful: dict[str, dict], core: set[str], top_k: int,
+) -> tuple[str, list[str]]:
+    """The semantic arm's output with withdrawn lessons removed.
+
+    The arm is a separate script with no notion of a harm policy, so it is
+    asked for `top_k + len(harmful)` hits and the withdrawn ones are taken
+    out of its output here -- the same over-fetch-then-remove the lexical
+    ranking does (commontrace/harm.py:split), so the slot a withdrawn lesson
+    vacates goes to the next hit rather than to nothing.
+    """
+    if not harmful:
+        return stdout, []
+    kept_slugs, removed_slugs = harm.split(
+        _slugs_from_semantic_output(stdout), harmful, core, top_k, slug_of=lambda s: s,
+    )
+    keep = set(kept_slugs)
+    lines = []
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        if slug is None or slug in keep:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
 
 
 def _apply_dosage(
@@ -335,6 +411,72 @@ def _slugs_from_semantic_output(stdout: str) -> list[str]:
     return seen
 
 
+_INDEX_HEADER = re.compile(r"^# Index: \d+ lessons, model=(?P<model>\S+)\s*$", re.MULTILINE)
+
+
+def _semantic_model_from_output(stdout: str) -> str | None:
+    """The embedding model the semantic arm's brief says ranked it."""
+    match = _INDEX_HEADER.search(stdout or "")
+    return match.group("model") if match else None
+
+
+def _rerank_depth(
+    config: retrieval_io.RetrievalConfig, top_k: int, embedder: str = "", *, candidates: int = 1,
+) -> tuple[bool, int, str]:
+    """(reranking, how deep each first-stage arm fetches, why not reranking).
+    `embedder` is the semantic arm's tag when it will feed the pool.
+    `candidates` is how many active lessons there are to rank: with none,
+    there is nothing to reorder and no reason to load a model for seconds.
+
+    Same gate as MCP's `retrieve`: a store that configured the reranker but
+    cannot load it ranks for the page, exactly as if it had not asked
+    (commontrace/rerank_arm.py).
+    """
+    if config.rerank == retrieval_io.RERANK_NONE or candidates <= 0:
+        return False, top_k, ""
+    skipped = rerank_arm.ready(config.rerank)
+    if skipped:
+        return False, top_k, skipped
+    return True, rerank_arm.pool_size(top_k, config.rerank, embedder), ""
+
+
+def _rerank_pool(
+    task: str,
+    lessons: list[tuple[str, dict]],
+    first_stage: list[tuple[str, float]],
+    withdrawn: list[str],
+    top_k: int,
+    mode: str,
+    admit=None,
+) -> tuple[list[tuple[str, float]] | None, list[str], str]:
+    """The reranked page, the withdrawn lessons that would have been on it,
+    and why not if reranking failed (then the page is None). MCP's
+    `retrieve` runs the same step on the same inputs."""
+    path_by_slug = {str(fm.get("name", "")): path for path, fm in lessons}
+    try:
+        page, on_page = rerank_arm.rerank(
+            task, [slug for slug, _ in first_stage],
+            rerank_arm.texts(
+                [slug for slug, _ in first_stage] + list(withdrawn),
+                path_by_slug, frontmatter.read,
+            ),
+            top_k, withdrawn=withdrawn, mode=mode, admit=admit,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
+        return None, withdrawn, f"the reranker failed: {type(exc).__name__}: {exc}"
+    return page, on_page, ""
+
+
+def _note_rerank_skipped(config: retrieval_io.RetrievalConfig, why: str, label: str) -> None:
+    if config.rerank != retrieval_io.RERANK_NONE and why:
+        print(
+            f"[commontrace] this store configures rerank={config.rerank!r}, but this query "
+            f"kept the first stage's order: {why}. The holdout assignment records "
+            f"{label!r} accordingly.",
+            file=sys.stderr,
+        )
+
+
 def _run_lexical(args: argparse.Namespace, root: str) -> int:
     lessons, term_cache = lesson_cache.load_active_with_terms(
         root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p),
@@ -343,12 +485,31 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     config = retrieval_io.load_config(root)
     floor = config.floor if args.relevance_floor is None else args.relevance_floor
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
+    # Ranked with any withdrawn lesson still present and removed afterwards,
+    # exactly as MCP's `retrieve()` does (commontrace/harm.py).
+    harmful = evidence.withdrawn(root, config.harm_policy)
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k, candidates=len(lessons))
     ranked = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        args.task, lessons, top_k=depth + len(harmful), floor=floor,
+        scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
+    ranked, withdrawn_ranked = harm.split(ranked, harmful, _core_slugs(lessons), depth)
+    withdrawn = [r.slug for r in withdrawn_ranked]
+    page = [(r.slug, r.relevance) for r in ranked]
+    reranked = None
+    if reranking:
+        reranked, withdrawn, rerank_skipped = _rerank_pool(
+            args.task, lessons, page, withdrawn, args.top_k, config.rerank)
+        # A failed rerank serves the pool's head (MCP's `retrieve` does the same).
+        page = reranked if reranked is not None else page[: args.top_k]
+    label = retrieval_io.rerank_label(
+        config.scorer,
+        config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
+    )
+    _note_rerank_skipped(config, rerank_skipped, label)
     # Only when the pin is an actual DOWNGRADE. A store already running the
     # current scorer is also "pinned" (to what its own log says it uses), and
     # saying so on every query would be noise nobody can act on -- and noise
@@ -373,6 +534,9 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         # command that moves the caller forward -- see commontrace/store_state.py.
         # The old message said "try lesson list" unconditionally, which shows
         # an empty list in exactly the cases where the user is most lost.
+        if withdrawn:
+            _print_withdrawn(withdrawn, harmful)
+            return 0
         print(store_state.why_no_results(root, searched="query"))
         return 0
 
@@ -384,9 +548,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     # lessons from this command than from its own agents retrieving over
     # MCP, which is two treatments under one experiment.
     ranked_by_slug = {r.slug: r for r in ranked}
-    considered, dose = _apply_dosage(
-        lessons, [(r.slug, r.relevance) for r in ranked], config,
-    )
+    considered, dose = _apply_dosage(lessons, page, config)
     if not dose.admitted:
         print(
             f"[commontrace] {len(ranked)} lesson(s) matched, but this store's injection "
@@ -394,6 +556,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             "--max-lessons`/`--max-chars`. Dropped: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+        _print_withdrawn(withdrawn, harmful)
         return 0
 
     # BEFORE the arms are assigned, and in the same order MCP's own
@@ -419,7 +582,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
         withheld = _apply_holdout(
             args, root, eligible,
             relevance={c.slug: c.relevance for c in dose.admitted},
-            scorer=config.scorer,
+            scorer=label,
             floor=floor,
         )
 
@@ -431,7 +594,8 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             continue
         r = ranked_by_slug.get(c.slug)
         if r is not None:
-            print(f"{c.slug:45s} rel={r.relevance:4.2f}  {r.description}")
+            ce = f" ce={c.relevance:+5.2f}" if reranked is not None else ""
+            print(f"{c.slug:45s} rel={r.relevance:4.2f}{ce}  {r.description}")
             print(f"  matched: {', '.join(r.matched_terms)}  ({r.path})")
         else:
             # A core lesson admitted alongside the ranked set rather than
@@ -448,6 +612,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
             "\n[commontrace] not injected: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+    _print_withdrawn(withdrawn, harmful)
     print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
@@ -461,14 +626,21 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
 
 
 
-def _semantic_slugs(args, root: str, missing_hint: str) -> tuple[int, list[str], str]:
-    """Run the semantic arm and return (rc, ranked slugs, raw stdout)."""
-    script_args = [args.task, "--top-k", str(args.top_k)]
+def _semantic_slugs(
+    args, root: str, missing_hint: str, extra: int = 0,
+) -> tuple[int, list[str], str]:
+    """Run the semantic arm and return (rc, ranked slugs, raw stdout).
+
+    `extra` over-fetches for lessons the caller will remove afterwards
+    (commontrace/harm.py).
+    """
+    script_args = ["--top-k", str(args.top_k + extra)]
     if args.include_importance_floor is not None:
         script_args.extend(
             ["--include-importance-floor", str(args.include_importance_floor)])
     if args.agent_type:
         script_args.extend(["--agent-type", args.agent_type])
+    script_args.extend(["--", args.task])
     rc, stdout = run_script(
         root, os.path.join("memory", "attention", "query.py"),
         script_args, missing_hint, capture=True,
@@ -509,14 +681,56 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     already_shown = _already_shown(args, root)
     lessons = _exclude_shown(lessons, already_shown)
     reliability_lookup, recency_lu = _ranking_adjustments(root, lessons, config)
+    harmful = evidence.withdrawn(root, config.harm_policy)
+    core = _core_slugs(lessons)
+    from commontrace import semantic_arm
+
+    # The index's model, read before ranking because it sets the pool's depth
+    # (rerank_arm.POOL_DEPTHS); the index was refreshed before this runs. A
+    # failure below falls back to `_run_lexical`, which uses its own depth.
+    embedder = retrieval_io.embedder_tag(semantic_arm.stored_model(root))
+    # The reranker loads (seconds) while the semantic arm's subprocess runs
+    # (seconds), not after it. The subprocess is asked for the depth a
+    # reranking query needs; if the model then fails to load, the arm is
+    # simply run again at the depth a plain query uses, so the result is
+    # exactly what running them one after the other would have given.
+    early, early_depth = None, 0
+    if config.rerank != retrieval_io.RERANK_NONE and rerank_arm.available():
+        import threading
+
+        loader = threading.Thread(target=rerank_arm.ready, args=(config.rerank,), daemon=True)
+        loader.start()
+        early_depth = rerank_arm.pool_size(args.top_k, config.rerank, embedder)
+        early = _semantic_slugs(args, root, missing_hint, extra=len(harmful) + early_depth - args.top_k)
+        loader.join()
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k, embedder)
+    if config.fusion == retrieval_io.FUSION_GATED and not reranking:
+        # Gated fusion admits semantic candidates only on the reranker's
+        # word; without one it is reranked-or-plain lexical retrieval, and is
+        # run and labelled as that (MCP's `retrieve` does the same).
+        print(
+            "[commontrace] gated fusion needs the reranker, which did not run "
+            f"({rerank_skipped or 'rerank is off'}); this query used lexical retrieval.",
+            file=sys.stderr,
+        )
+        return _run_lexical(args, root)
+    gated = config.fusion == retrieval_io.FUSION_GATED
     lexical = retrieval.rank_lessons(
-        args.task, lessons, top_k=args.top_k, floor=floor, scorer=config.scorer,
+        args.task, lessons, top_k=depth + len(harmful), floor=0.0 if gated else floor,
+        scorer=config.scorer,
         term_cache=term_cache,
         reliability_lookup=reliability_lookup, reliability_weight=config.reliability_weight,
         recency_lookup=recency_lu, recency_weight=config.recency_weight,
     )
+    lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
+    floor_cleared = {r.slug for r in lexical + withdrawn_lexical if r.relevance >= floor}
 
-    rc, semantic, stdout = _semantic_slugs(args, root, missing_hint)
+    rc, semantic, stdout = (
+        early if early is not None and early_depth == depth
+        else _semantic_slugs(args, root, missing_hint, extra=len(harmful) + depth - args.top_k)
+    )
+    semantic, withdrawn_semantic = harm.split(
+        semantic, harmful, core, depth, slug_of=lambda s: s)
     if already_shown and rc == 0:
         # The semantic arm runs as a separate subprocess
         # (memory/attention/query.py) with no knowledge of --exclude-shown,
@@ -542,11 +756,39 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         )
         return _run_lexical(args, root)
 
-    fused = retrieval.reciprocal_rank_fusion(
-        {"lexical": [r.slug for r in lexical], "semantic": semantic},
-        k=config.rrf_k, top_k=args.top_k,
+    # The semantic arm's embedding model, which the label and the gate name.
+    embedder = retrieval_io.embedder_tag(_semantic_model_from_output(stdout))
+    if gated:
+        # The pool, not a ranking: the reranker orders it and the gate
+        # decides what may be on the page (commontrace/rerank_arm.py).
+        fused = [(slug, 0.0) for slug in dict.fromkeys([r.slug for r in lexical] + semantic)]
+    else:
+        fused = retrieval.reciprocal_rank_fusion(
+            {"lexical": [r.slug for r in lexical], "semantic": semantic},
+            k=config.rrf_k, top_k=depth,
+        )
+    # Named once each, in the order the arms found them.
+    withdrawn = list(dict.fromkeys(
+        [r.slug for r in withdrawn_lexical] + list(withdrawn_semantic)))
+    reranked = None
+    if reranking:
+        reranked, withdrawn, rerank_skipped = _rerank_pool(
+            args.task, lessons, fused, withdrawn, args.top_k, config.rerank,
+            admit=rerank_arm.admit_gated(floor_cleared, config.rerank, embedder) if gated else None)
+        if reranked is None and gated:
+            # Unvetted candidates never reach the page: serve reranked-or-
+            # plain lexical retrieval instead, labelled as that.
+            return _run_lexical(args, root)
+        fused = reranked if reranked is not None else fused[: args.top_k]
+    label = retrieval_io.rerank_label(
+        config.eligibility_label_for(fused=True, embedder=embedder),
+        config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
     )
+    _note_rerank_skipped(config, rerank_skipped, label)
     if not fused:
+        if withdrawn:
+            _print_withdrawn(withdrawn, harmful)
+            return 0
         print(store_state.why_no_results(root, searched="query"))
         return 0
 
@@ -569,6 +811,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             "--max-lessons`/`--max-chars`. Dropped: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+        _print_withdrawn(withdrawn, harmful)
         return 0
 
     eligible = [c.slug for c in dose.admitted if not c.core]
@@ -588,7 +831,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             # recording the lexical relevance would describe a ranking this
             # query did not perform.
             relevance={c.slug: c.relevance for c in dose.admitted},
-            scorer=config.eligibility,
+            scorer=label,
             floor=floor,
         )
 
@@ -605,7 +848,9 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
         if slug in semantic:
             arms.append("semantic")
         score_label = (
-            f"rrf={fused_score_by_slug[slug]:5.3f}" if slug in fused_score_by_slug
+            (f"ce={fused_score_by_slug[slug]:+5.2f}" if reranked is not None
+             else f"rrf={fused_score_by_slug[slug]:5.3f}")
+            if slug in fused_score_by_slug
             # A core lesson admitted alongside the fused set rather than
             # because either arm ranked it -- see commontrace/dosage.py.
             else "[core]     "
@@ -618,6 +863,7 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             "\n[commontrace] not injected: "
             + ", ".join(f"{d.slug} ({d.reason})" for d in dose.dropped)
         )
+    _print_withdrawn(withdrawn, harmful)
     print(f"[commontrace] budget: {dose.gauge()}")
 
     if args.experiment:
@@ -628,6 +874,42 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
             "`commontrace experiment`."
         )
     return 0
+
+
+def _fallback_model_args(root: str) -> list[str]:
+    """build_index.py's `--fallback-model` for this store: the embedding model
+    its experiment log says it ranked with, used only if the index pins none
+    (semantic_arm.ensure_fresh passes the same)."""
+    logged = retrieval_io.logged_embedding_model(root)
+    return ["--fallback-model", logged] if logged else []
+
+
+def _refresh_stale_index(root: str) -> str:
+    """Bring a stale semantic index up to date; "" if usable afterwards,
+    else why not.
+
+    A stale index used to send `query` to lexical retrieval until someone
+    remembered `commontrace index` -- quietly degrading a store that opted
+    into semantic or fused retrieval, and logging those occasions under a
+    different eligibility label than the rest of its experiment. The builder
+    re-embeds only lessons whose text changed, and the MCP server refreshes
+    the same way in-process (commontrace/semantic_arm.py), so both surfaces
+    rank against the same index.
+    """
+    reason = _index_is_unusable(root)
+    if not reason:
+        return ""
+    rc, out = run_script(
+        root, os.path.join("memory", "attention", "build_index.py"), _fallback_model_args(root),
+        "The reference attention scripts ship inside the package.", capture=True,
+    )
+    after = _index_is_unusable(root)
+    if rc == 0 and not after:
+        print(f"[commontrace] semantic index was stale ({reason}); refreshed it. "
+              f"{out.strip().splitlines()[-1] if out.strip() else ''}".rstrip(),
+              file=sys.stderr)
+        return ""
+    return after or reason
 
 
 def _index_is_unusable(root: str) -> str:
@@ -678,11 +960,40 @@ def _index_is_unusable(root: str) -> str:
     return ""
 
 
+def _has_candidates(args: argparse.Namespace, root: str) -> bool:
+    """Whether any active lesson for this agent type is left to rank once the
+    occasion's already-shown lessons are set aside. The semantic index covers
+    the same lessons, so with none here every arm would return nothing."""
+    lessons, _terms = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p))
+    return bool(_exclude_shown(lessons, _already_shown(args, root)))
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
 
+    # A store that reranks without fusion reranks the LEXICAL arm, as MCP's
+    # `retrieve` does: the reranker's pool is the floor-cleared lexical
+    # candidates (commontrace/rerank_arm.py), and both surfaces must run the
+    # same treatment under one label. Without this, the same store logged
+    # `semantic` from here and `ce:...(idf-v2)` from its agents -- two
+    # rankings in one experiment. A store whose log says it ran semantic
+    # retrieval is pinned to no reranker (retrieval_io), so it stays here.
+    config = retrieval_io.load_config(root)
+    # Nothing to rank: every retriever returns the same empty page, and the
+    # lexical one gets there without refreshing an index or loading a model
+    # (which took ~15s on a fresh store). Same decision as MCP's `retrieve`.
+    if not _has_candidates(args, root):
+        return _run_lexical(args, root)
+    if (
+        not args.lexical
+        and config.fusion == retrieval_io.FUSION_NONE
+        and config.rerank != retrieval_io.RERANK_NONE
+    ):
+        return _run_lexical(args, root)
+
     if not args.lexical and has_attention_deps():
-        reason = _index_is_unusable(root)
+        reason = _refresh_stale_index(root)
         if reason:
             # Fall back to the retriever that is correct right now rather than
             # to silence. Lexical reads the lesson files themselves, so it
@@ -717,10 +1028,15 @@ def run(args: argparse.Namespace) -> int:
     # on changes which lessons are eligible, which is the denominator of any
     # running experiment, so it is a decision the store records rather than
     # something a new release switches on underneath a pilot.
-    if retrieval_io.load_config(root).fusion == retrieval_io.FUSION_RRF:
+    if retrieval_io.load_config(root).fusion in (retrieval_io.FUSION_RRF, retrieval_io.FUSION_GATED):
         return _run_hybrid(args, root, missing_hint)
 
-    script_args = [args.task, "--top-k", str(args.top_k)]
+    # The script knows nothing of the harm policy, so it is over-asked by the
+    # number of withdrawn lessons and they are removed from what it returns
+    # (`_withdraw_from_semantic`) -- which means its output has to be
+    # captured, not streamed, whenever there is anything to withdraw.
+    harmful = evidence.withdrawn(root, retrieval_io.load_config(root).harm_policy)
+    script_args = ["--top-k", str(args.top_k + len(harmful))]
     if args.include_importance_floor is not None:
         script_args.extend(["--include-importance-floor", str(args.include_importance_floor)])
     if args.agent_type:
@@ -730,10 +1046,24 @@ def run(args: argparse.Namespace) -> int:
         # fleet and not semantic retrieval -- two retrievers answering
         # different questions from the same store.
         script_args.extend(["--agent-type", args.agent_type])
+    script_args.extend(["--", args.task])
     script_path = os.path.join("memory", "attention", "query.py")
 
+    core: set[str] = set()
+    if harmful:
+        core = _core_slugs(_iter_active_lessons(root, args.agent_type))
+
     if not args.experiment:
-        return run_script(root, script_path, script_args, missing_hint)
+        if not harmful:
+            return run_script(root, script_path, script_args, missing_hint)
+        rc, stdout = run_script(root, script_path, script_args, missing_hint, capture=True)
+        if rc != 0:
+            sys.stdout.write(stdout)
+            return rc
+        stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
+        sys.stdout.write(stdout)
+        _print_withdrawn(withdrawn, harmful)
+        return 0
 
     if not args.occasion_id:
         print(
@@ -756,10 +1086,13 @@ def run(args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stdout.write(stdout)
         return rc
+    # Before the arms are assigned: a withdrawn lesson is never eligible.
+    stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
 
     slugs = _slugs_from_semantic_output(stdout)
     if not slugs:
         sys.stdout.write(stdout)
+        _print_withdrawn(withdrawn, harmful)
         print(
             "[commontrace] --experiment: the semantic retriever returned no lessons, "
             "so no holdout arms were recorded for this occasion.",
@@ -767,13 +1100,17 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    withheld = _apply_holdout(args, root, slugs)
+    withheld = _apply_holdout(
+        args, root, slugs,
+        scorer=retrieval_io.semantic_only_label(
+            retrieval_io.embedder_tag(_semantic_model_from_output(stdout))))
     for line in stdout.splitlines():
         slug = _slug_of_semantic_line(line)
         if slug is not None and slug in withheld:
             print(f"{slug} | [WITHHELD - holdout]")
         else:
             print(line)
+    _print_withdrawn(withdrawn, harmful)
     print(
         f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
         f"{len(withheld)} withheld at {_effective_holdout(args, root)[0]:.0%} for occasion "

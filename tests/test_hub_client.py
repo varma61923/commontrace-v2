@@ -146,6 +146,14 @@ class TestHubUrlSchemeGuard:
         "https://169.254.170.2/v2/credentials/",  # ECS task metadata, same /16
         "https://[fd00:ec2::254]/latest/meta-data/",  # AWS IPv6 metadata (a ULA, not link-local)
         "https://[fe80::1]/",
+        # The resolver reads each of these as 169.254.169.254:
+        "https://2852039166/",
+        "https://0xa9fea9fe/",
+        "https://0251.0376.0251.0376/",
+        "https://169.254.43518/",
+        "https://169.254.169.254./",
+        "https://[::ffff:169.254.169.254]/",
+        "https://[::ffff:a9fe:a9fe]/",
     ])
     def test_link_local_and_cloud_metadata_addresses_are_rejected(self, metadata_url):
         """169.254.0.0/16 (IPv4 link-local) is where AWS/GCP/Azure's
@@ -167,6 +175,8 @@ class TestHubUrlSchemeGuard:
         "https://10.0.0.5/mcp",
         "https://192.168.1.50/mcp",
         "https://172.16.0.1/mcp",
+        "https://hub.example.com./mcp",
+        "https://abc/mcp",  # a name, not hex: inet_aton refuses it
     ])
     def test_ordinary_private_network_addresses_still_pass(self, private_url):
         """Must not overreach into blocking RFC1918 space generally -- a

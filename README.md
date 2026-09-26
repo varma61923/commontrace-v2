@@ -529,6 +529,13 @@ CI [12%, 56%], p = 0.002)"**.
   Benjamini-Hochberg-corrected across all tested lessons, because at
   α = 0.05 over 100 lessons ~5 look significant by chance and those are
   exactly the ones that get quoted.
+- Every look is treated as a look at a **running** experiment. A verdict
+  must clear a confidence interval that holds at every sample size, because
+  a fixed 5% threshold checked on every CI build, or every time someone
+  opens the report, is eventually crossed by luck. `commontrace
+  experiment`, `--strict`, `pilot`, the MCP tools and the Hub all read it
+  this way, so they give the same verdict. `--fixed-horizon` is the
+  one-shot reading, for a finished run that nobody acted on midway.
 - "No measurable effect" is always reported alongside the **minimum
   detectable effect** for that sample, so it reads as a statement about the
   experiment's power rather than about the lesson.
@@ -541,6 +548,79 @@ Add `--resolved`/`--not-resolved`, `--escalated`/`--not-escalated`,
 `--tokens-used N`, `--llm-calls N`, and `--baseline` to `capture` to record the
 outcome data behind the outcome metrics (§ [Outcome Metrics](#outcome-metrics)
 below) — all optional, all additive to the base capture.
+
+#### Already have a memory store? Measure it without migrating
+
+The same experiment runs on memories held by any other system — a vector
+database, a memory SDK, a LangGraph store, your own table. Wrap the
+retrieval call you already make; nothing is copied into CommonTrace and
+nothing is written back to your store.
+
+```python
+from commontrace.measure import CausalMemory
+
+memory = CausalMemory(my_store.search)   # any callable returning ranked items
+
+items = memory.recall(task.query, occasion_id=task.id)   # extra kwargs pass through
+# ...run the task with `items`...
+memory.record_outcome(task.id, succeeded=task.passed)
+```
+
+Then `commontrace experiment` in the same store reports a verdict per
+memory, with the same validity checks as above.
+
+- **Ids.** Each item needs a stable id — an `id` or `key` field or
+  attribute, or pass `key=`. There is deliberately no fallback to
+  `str(item)`: that usually embeds a memory address that changes between
+  processes, which would scramble the arms without raising anything.
+- **Edited memories.** Stores that update a memory in place keep its id
+  while its text changes. The item's text (`memory`, `text`, `content` or
+  `value`, or pass `text=`) is fingerprinted so the two versions are not
+  measured as one.
+- **Pinned memories.** Pass `pinned=[...]` for ids that must always be
+  delivered; they are never withheld and never enter the experiment.
+- **Outcomes.** Reporting the same outcome twice is harmless; reporting a
+  different one for an occasion already on record raises rather than
+  silently changing the result.
+
+#### When a lesson is proven to hurt: stop handing it out
+
+A HURTS verdict is only useful if something happens next. Opt in, and
+retrieval stops injecting a lesson the experiment has shown makes outcomes
+worse:
+
+```bash
+commontrace retrieval --on-harm withdraw     # default: inform
+```
+
+The lesson is not hidden. Every retrieval it would have appeared in names it
+under `withdrawn` (MCP `retrieve`) or a `withdrawn --` line (`commontrace
+query`), with its effect and interval, and the retrieval receipt records why.
+Its slot goes to the next-ranked lesson.
+
+This doesn't bias the experiment that produced the verdict:
+
+- It acts only on the **anytime-valid** verdict (a confidence sequence that
+  holds at every sample size). Stopping when a boundary is crossed is the
+  one look a fixed 5% threshold can't survive. A modest harm that a fixed
+  test would already call HURTS stays in service until the sequential
+  bound agrees.
+- It is decided **before arms are assigned**, so a withdrawn lesson is never
+  logged as treated or withheld on an occasion it was absent from.
+- Ranking runs with the lesson still present, and the lesson is removed
+  afterwards, so every other lesson's relevance, and therefore its
+  eligibility, is unchanged.
+- Nothing happens while the experiment's audit is COMPROMISED. A new
+  randomization (`commontrace experiment --configure`) starts every lesson
+  with no verdict, which is how a rewritten lesson gets a second trial.
+- `core: true` lessons are exempt: they are never randomized, and core
+  means "present every time".
+
+On the Hub, `python -m hub.manage harm-policy <org_id> withdraw` does the
+same for `search_traces`. The trace's near-duplicates are withdrawn with it,
+because the holdout randomizes a duplicate cluster as one unit, so the
+verdict belongs to the whole cluster. Amendments are not: an amendment has
+its own id, is usually the fix, and gets its own trial.
 
 ### 10 — Run the pilot as one command: map, measure, and a yes/no
 
@@ -626,6 +706,13 @@ still reading `TODO:` teaches the fleet nothing and displaces a real one),
 refuses one carrying a secret or a prompt-injection payload
 (`commontrace/memory_guard.py`), and records **who** approved it, so an
 agent-approved lesson stays distinguishable from a human-approved one.
+
+**Credentials never reach a stored trace.** A key that leaks into an
+agent's log (AWS, GitHub, Slack, Stripe, Google or Anthropic keys, PEM
+private keys, JWTs) is replaced with `[REDACTED <kind>]` when the trace is
+captured or imported, and `capture` says how many it removed. For a store
+that predates this, `commontrace doctor` counts the traces that still hold
+one and `commontrace redact` (`--dry-run` to preview) removes them.
 
 Those all check *what* is being activated. For *who*, write
 `memory/approval-policy.yaml`:
@@ -806,8 +893,13 @@ Nothing rebuilds it automatically (it loads a ~420 MB model and can hit the netw
 the index is missing or stale, rather than returning nothing. Lexical reads the lesson
 files as they are and cannot go stale — it is also what the MCP server always uses.
 
-The embedding model (`multi-qa-mpnet-base-dot-v1`, ~420 MB) is downloaded once and
-cached under `~/.cache/huggingface/`.
+The embedding model is downloaded once and cached under `~/.cache/huggingface/`.
+A new index uses `Snowflake/snowflake-arctic-embed-m-v1.5` (~440 MB); an index
+built before it keeps `multi-qa-mpnet-base-dot-v1` until you rebuild it with
+another (`commontrace index --force --model <name>`), because the model decides
+which lessons the semantic arm finds, and an experiment records it as part of
+the treatment. On LoCoMo, arctic-embed's exact cosine search finds an answering
+turn in the top 10 for 70.6% of questions, against 56.1% for mpnet.
 
 ---
 
@@ -923,11 +1015,75 @@ Fusion is by **rank, not score**: the lexical arm returns an IDF relevance in
 conversion between them. A lesson only one arm surfaced is not penalised for
 the other's silence.
 
+Agents get it too. The MCP `retrieve` tool runs the same semantic ranking
+in-process (`commontrace/semantic_arm.py`), with the model and index held in
+memory rather than reloaded on every call. It uses the same freshness gate
+and fallback as `query`, so an agent and a person at a terminal get the same
+fused ranking and log the same eligibility label.
+
+The semantic index keeps itself current. When a lesson has been added or
+edited since the last build, both surfaces refresh the index before ranking,
+re-embedding only the lessons whose text changed. Before, the store fell back
+to keyword-only retrieval until someone ran `commontrace index`. The first
+fused retrieval on a store with no index embeds every lesson once, which costs
+the same as running `commontrace index`.
+
 It is opt-in for a reason. Fusion changes which lessons are *eligible*, and
 eligibility is the denominator of every causal number this product reports —
 so the arm composition is recorded inside the label each holdout assignment
 carries (`rrf(idf-v2+semantic)`), and turning it on mid-experiment is
 reported as a compromised run rather than absorbed silently.
+
+**Reranking.** Both arms score the task and a lesson separately. A
+cross-encoder reads them together, which ranks far better and is far too
+slow to run over a whole store, so it runs over a short pool of each arm's
+best candidates and only reorders them:
+
+```bash
+commontrace retrieval --rerank cross-encoder        # most accurate (the default)
+commontrace retrieval --rerank cross-encoder-fast   # ~8x faster
+```
+
+**Gated fusion, on by default.** Plain fusion fills every slot on the page
+with whatever the semantic arm ranked, so a curated store under experiment
+logs lessons the task was not about. Gated fusion (`--fusion gated`) feeds
+both arms to the reranker but lets a lesson that did not clear the relevance
+floor onto the page only when the cross-encoder vouches for it. On the
+curated fixture every field keeps exactly its recall and collateral. On
+LoCoMo, with the arctic-embed semantic arm a new index uses, the default
+(the accurate reranker over each arm's top 10) puts an answering turn in
+the top 10 for 73.9% of questions, in the top 5 for 68.5%, with MRR 0.630;
+the fast reranker over each arm's top 15 reaches 70.7%, 61.3% and 0.543.
+
+A store that has not chosen, and has no experiment history, gets gated
+fusion with `cross-encoder` wherever the attention extra is installed
+(lexical retrieval with the reranker if the semantic arm is turned off).
+On lesson-length text the reranker reads its pool of about 18 lessons in
+about 360 ms on a 4-core CPU; `cross-encoder-fast` reads 27 in about 45 ms. The first retrieval embeds the store's lessons; later ones re-embed
+only what changed. A store mid-experiment stays on what its log says it
+ran. `COMMONTRACE_DEFAULT_FUSION=none` keeps the reranker without the
+semantic index, and `COMMONTRACE_DEFAULT_RERANK=none` turns both off.
+`commontrace serve` loads the models a store will use in the background as it
+starts, so an agent's first `retrieve` does not wait for them (8.7s down to
+0.3s); `COMMONTRACE_MCP_WARM=0` turns that off.
+
+On LoCoMo, fused retrieval with reranking puts an answering turn in the top
+5 for 67.0% of questions, up from 53.1% without it.
+`cross-encoder` is `ms-marco-MiniLM-L-6-v2` (22M parameters) and
+`cross-encoder-fast` is `ms-marco-TinyBERT-L-2-v2` (4M). Both come
+with the attention extra and download on first use. Like fusion, it
+decides which lessons make the page, so assignments record it
+(`ce:minilm6(rrf(idf-v2+semantic))`) and turning it on starts a new
+treatment. A store that cannot load the model ranks exactly as if it had
+not asked, and says so.
+
+**Stemming.** `commontrace retrieval --scorer idf-v3` makes "retrying" match
+"retry" and "uploads" match "upload". It lifts recall on free-text and
+conversational memory (LongMemEval session recall@5 0.852 → 0.926). It is
+not the default, because in one curated field of the fixture (clinical) it
+retrieves more collateral than `idf-v2`. It has its own floor, which the
+store takes automatically when switching, and like any eligibility change
+it starts a new randomization.
 
 **How much.** `top_k` bounds the count and says nothing about the size — ten
 terse lessons and ten pages of prose are the same `top_k=10`, and the second

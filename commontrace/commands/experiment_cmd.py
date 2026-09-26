@@ -76,6 +76,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="With --plan: the rate you intend to run at.",
     )
     p.add_argument("--alpha", type=float, default=0.05, help="False discovery rate.")
+    p.add_argument(
+        "--fixed-horizon", action="store_true",
+        help="Analyse this as ONE look at a finished run, against a fixed threshold. "
+             "Only honest if nobody has acted on an earlier look -- no lesson retired, "
+             "no CI gate checked, no report read and the run stopped because of it. "
+             "By default every analysis is treated as one look at a running experiment "
+             "and judged against a boundary valid at every sample size, the same one "
+             "the MCP tools and the Hub use, so every surface gives the same verdict.",
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument(
         "--strict", action="store_true",
@@ -99,7 +108,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _outcomes_by_occasion(root: str) -> dict[str, bool]:
     """occasion_id -> did the underlying task succeed."""
-    out: dict[str, bool] = {}
+    # Outcomes reported by occasion id alone (holdout_io.record_outcome),
+    # which is how an application measuring memory held by another system
+    # reports them -- it has no episode or trace to carry the verdict. Read
+    # FIRST so that where this store does hold its own record of an
+    # occasion, that richer record is the one that stands.
+    out: dict[str, bool] = dict(holdout_io.read_outcomes(root))
 
     for path in sorted(glob.glob(os.path.join(paths.episodes_dir(root), "*.md"))):
         if "template" in os.path.basename(path):
@@ -253,7 +267,8 @@ def _relevance_sensitivity(rows: list[integrity.Assignment], args) -> dict[str, 
         return {}
 
     restricted = experiment.analyze(
-        strong, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect)
+        strong, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
+        sequential=not getattr(args, "fixed_horizon", False))
     return {e.lesson_slug: {
         "verdict": e.verdict, "effect": e.effect,
         "n_injected": e.n_injected, "n_withheld": e.n_withheld,
@@ -498,8 +513,17 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    # A look at a RUNNING experiment unless the caller says otherwise. This
+    # command is exactly what gets looked at repeatedly: `--strict` runs on
+    # every CI build, and a fixed 5% threshold tested on every build is
+    # crossed by luck (experiment.analyze's docstring measures it). It also
+    # has to agree with `retrieve` and `experiment_status`, which already
+    # read the experiment this way (commontrace/evidence.py) -- a store
+    # whose CI gate says HURTS while its agents are told UNDERPOWERED is
+    # telling two stories about one lesson.
     effects = experiment.analyze(
-        obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect)
+        obs, min_arm=args.min_arm, alpha=args.alpha, detectable=args.detect,
+        sequential=not args.fixed_horizon)
     sensitivity = _relevance_sensitivity(rows, args)
     summary = experiment.ExperimentSummary(
         n_observations=len(obs),

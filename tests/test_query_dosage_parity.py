@@ -216,7 +216,7 @@ class TestHybridBudgetParity:
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
         monkeypatch.setattr(
             query_cmd, "_semantic_slugs",
-            lambda args, root, hint: (rc, list(slugs), ""),
+            lambda args, root, hint, extra=0: (rc, list(slugs), ""),
         )
 
     def test_a_tight_budget_limits_the_fused_output(self, store, monkeypatch, capsys):

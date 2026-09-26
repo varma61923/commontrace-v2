@@ -76,6 +76,7 @@ import contextlib
 import datetime
 import glob
 import io
+import logging
 import os
 from typing import Any
 
@@ -84,8 +85,8 @@ from commontrace import (
     cache_gate,
     dosage,
     evidence_io,
-    experiment,
     frontmatter,
+    harm,
     holdout_io,
     lesson_cache,
     lesson_io,
@@ -95,6 +96,7 @@ from commontrace import (
     receipts,
     recency,
     redundancy,
+    rerank_arm,
     retrieval,
     retrieval_io,
     revision,
@@ -104,9 +106,12 @@ from commontrace import (
     trace_io,
     validate,
 )
+from commontrace import evidence as evidence_mod
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+
+logger = logging.getLogger(__name__)
 
 # The lesson fields an agent may set. Anything outside this set is ignored
 # rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
@@ -331,7 +336,8 @@ def _apply_dosage(matched, active, config):
     return admitted, kept_core, dose
 
 
-def _record_receipt(root, occasion_id, task, active, injected, held, dose, config):
+def _record_receipt(root, occasion_id, task, active, injected, held, dose, config,
+                    withdrawn=(), scorer=None):
     """One receipt for this retrieval. See commontrace/receipts.py."""
     from commontrace import release as release_mod
 
@@ -365,6 +371,7 @@ def _record_receipt(root, occasion_id, task, active, injected, held, dose, confi
     withheld = tuple(
         [(item.get("slug", ""), "control arm (holdout)") for item in held]
         + [(d.slug, d.reason) for d in dose.dropped]
+        + [(slug, "measured harm (withdrawn)") for slug in sorted(withdrawn)]
     )
     receipts.record(root, receipts.Receipt(
         occasion_id=occasion_id,
@@ -373,7 +380,7 @@ def _record_receipt(root, occasion_id, task, active, injected, held, dose, confi
         admitted=admitted,
         withheld=withheld,
         query=task,
-        scorer=config.scorer,
+        scorer=scorer or config.scorer,
         floor=config.floor,
         chars_used=dose.chars_used,
         max_chars=dose.budget.max_chars,
@@ -498,6 +505,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         does not fail loudly, it silently biases the measured effect toward
         zero. Report the result afterwards with `capture(occasion_id=...)`.
 
+        Once the store has holdout data, each lesson also carries `evidence`:
+        its measured `verdict` (HELPS / HURTS / NO_MEASURABLE_EFFECT /
+        UNDERPOWERED / NOT_MEASURED) with `effect` and `ci_95`. Prefer HELPS,
+        and treat HURTS as a lesson that made outcomes worse. No numbers are
+        shown while the experiment is compromised.
+
         `exclude_shown`, if given an occasion id, skips any (non-core)
         lesson already logged as injected for that occasion in a prior
         `--experiment`-mode call -- for a long multi-turn task that calls
@@ -507,6 +520,12 @@ def build_server(root: str, *, allow_approval: bool = True):
 
         Only `status: active` lessons are retrievable. A lesson still being
         drafted is invisible here by design.
+
+        When the store has set `commontrace retrieval --fusion rrf` and its
+        semantic index is current, lessons are ranked by keyword AND meaning
+        together (the same fused ranking `commontrace query` gives); each
+        lesson's `score` is then its fused rank score. Otherwise ranking is
+        by keyword, and `fusion_note` says why if fusion was configured.
 
         A turn whose entire content is an acknowledgement -- "ok", "thanks",
         "go ahead" -- is answered immediately with `skipped: true` and no
@@ -532,18 +551,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             # (path, frontmatter) shape -- not a parallel implementation. If
             # the two surfaces ranked differently, a fleet's shell-capable and
             # shell-less agents would be reading different memory.
-            # Lexical, deliberately, even when the attention extra is
-            # installed. This is a long-running server answering one
-            # retrieval per agent turn, and the semantic path is a subprocess
-            # that loads a sentence-transformer model and reads an index that
-            # nothing rebuilds automatically -- so it would be both slow per
-            # call and stale by default here. Since scoring became
-            # IDF-weighted and length-normalized (commontrace/retrieval.py),
-            # lexical reads the lesson files as they are right now and cannot
-            # go stale, which is the better trade for this surface. The CLI
-            # falls back to exactly this retriever whenever its index is
-            # stale, so the two surfaces agree in the common case rather
-            # than only in name.
+            # Lexical always runs; the semantic arm is fused in below only
+            # when the store configured fusion AND its index is fresh -- the
+            # same rule `commontrace query` applies, via the same function
+            # (commontrace/semantic_arm.py). Lexical reads the lesson files
+            # as they are right now and cannot go stale, which is why it is
+            # the fallback on both surfaces.
             # `load_active_with_terms`, not `query_cmd._iter_active_lessons`
             # directly, so this long-lived server benefits from the same
             # incremental cache the CLI does -- re-tokenizing only the lesson
@@ -559,6 +572,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             # Never drops a `core: true` lesson (see
             # commontrace/dosage.py's module docstring) -- core is the
             # fleet's unconditional position, present every call by design.
+            already_shown: set[str] = set()
             if exclude_shown:
                 already_shown = holdout_io.injected_slugs_for_occasion(root, exclude_shown)
                 if already_shown:
@@ -585,10 +599,49 @@ def build_server(root: str, *, allow_approval: bool = True):
                 recency.recency_lookup(active)
                 if retrieval_config.recency_weight > 0 else None
             )
+            # Lessons this store's experiment measured making outcomes worse,
+            # if it withdraws them (commontrace/harm.py). Ranked WITH the rest
+            # and removed afterwards, over-fetching by their number, so every
+            # other lesson's relevance and the slot a withdrawn one vacates
+            # are exactly what they would be if it did not exist.
+            harmful = evidence_mod.withdrawn(root, retrieval_config.harm_policy)
+            want = max(1, min(int(top_k), 50))
+            # A reranking store hands the reranker a deeper pool than the
+            # page (commontrace/rerank_arm.py), and only if it can actually
+            # rerank: otherwise it ranks for the page, as if it had not asked.
+            rerank_skipped = ""
+            # With no active lesson there is nothing to reorder: loading a
+            # model for seconds would change no page (`commontrace query`
+            # decides the same way).
+            if retrieval_config.rerank != retrieval_io.RERANK_NONE and active:
+                with _quiet():
+                    rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
+            reranking = (
+                retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped and bool(active)
+            )
+            depth = rerank_arm.pool_size(want, retrieval_config.rerank) if reranking else want
+            # A fused pool's depth is set per semantic-arm model
+            # (rerank_arm.POOL_DEPTHS), read from the index before ranking;
+            # the lexical ranking keeps `depth`, which every fallback below
+            # (reranked lexical retrieval) is ranked at.
+            fused_depth = depth
+            if reranking and retrieval_config.fusion != retrieval_io.FUSION_NONE:
+                from commontrace import semantic_arm
+
+                if semantic_arm.available():
+                    with _quiet():
+                        semantic_arm.ensure_fresh(root)
+                    fused_depth = rerank_arm.pool_size(
+                        want, retrieval_config.rerank,
+                        retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
+            # Gated fusion ranks below the floor too: such a lesson can still
+            # reach the page if the reranker vouches for it (`floor_cleared`
+            # below keeps the ones that need no vouching).
+            gated = retrieval_config.fusion == retrieval_io.FUSION_GATED and reranking
             ranked = retrieval.rank_lessons(
                 task, active,
-                top_k=max(1, min(int(top_k), 50)),
-                floor=retrieval_config.floor,
+                top_k=depth + len(harmful),
+                floor=0.0 if gated else retrieval_config.floor,
                 scorer=retrieval_config.scorer,
                 term_cache=term_cache,
                 reliability_lookup=reliability_lookup,
@@ -599,20 +652,162 @@ def build_server(root: str, *, allow_approval: bool = True):
         except Exception as exc:  # noqa: BLE001 - a malformed store is an answer, not a crash
             return _err(f"could not read the lesson store: {type(exc).__name__}: {exc}")
 
+        core_slugs = {str(fm.get("name", "")) for _, fm in active if dosage.is_core(fm)}
+        # The fused pool's lexical half, split at the pool's own depth (as
+        # `commontrace query` splits it), before `ranked` is cut to `depth`.
+        pool_lexical, withdrawn_pool = harm.split(ranked, harmful, core_slugs, fused_depth)
+        ranked, withdrawn_ranked = harm.split(ranked, harmful, core_slugs, depth)
+        withdrawn_order = [r.slug for r in withdrawn_ranked]
+        floor_cleared = {
+            r.slug for r in ranked + withdrawn_ranked if r.relevance >= retrieval_config.floor
+        }
+
+        # The semantic arm, fused with the lexical one by rank, when the store
+        # configured fusion -- the same function `commontrace query` runs in
+        # a subprocess, held in memory here (commontrace/semantic_arm.py), and
+        # the same steps as its `_run_hybrid`: the same index-freshness gate
+        # (a stale or empty index falls back to lexical, as there), the same
+        # over-fetch and harm split, the same exclude_shown filter on this
+        # arm's output, the same RRF constant. A surface that fused
+        # differently would be a second treatment in the same experiment.
+        fused: list[tuple[str, float]] | None = None
+        # The semantic arm's embedding model, as its label tag, once it ran.
+        embedder = ""
+        fusion_skipped = ""
+        if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated and active:
+            fusion_skipped = (
+                "gated fusion admits semantic candidates only on the reranker's word, "
+                f"and the reranker did not run: {rerank_skipped or 'rerank is off'}"
+            )
+        if (retrieval_config.fusion == retrieval_io.FUSION_RRF or gated) and active:
+            from commontrace import semantic_arm
+
+            if not semantic_arm.available():
+                fusion_skipped = (
+                    "the semantic arm needs the attention extra "
+                    "(`pip install commontrace[attention]`)"
+                )
+            else:
+                # Refreshed first if stale (commontrace/semantic_arm.py): a
+                # stale index used to send the store back to lexical here.
+                with _quiet():
+                    fusion_skipped = semantic_arm.ensure_fresh(root)
+            if not fusion_skipped:
+                rc, semantic, _warnings = semantic_arm.ranked_slugs(
+                    root, task, fused_depth + len(harmful), agent_type or None,
+                )
+                if rc != 0:
+                    fusion_skipped = "the semantic arm failed: " + "; ".join(_warnings)
+                else:
+                    embedder = retrieval_io.embedder_tag(
+                        semantic_arm.index_model(root) or semantic_arm.stored_model(root))
+                    semantic, withdrawn_semantic = harm.split(
+                        semantic, harmful, core_slugs, fused_depth, slug_of=lambda s: s,
+                    )
+                    if already_shown:
+                        semantic = [
+                            s for s in semantic if s in core_slugs or s not in already_shown
+                        ]
+                    if gated:
+                        # The pool, not a ranking: the reranker orders it and
+                        # the gate decides what may be on the page.
+                        fused = [
+                            (slug, 0.0)
+                            for slug in dict.fromkeys([r.slug for r in pool_lexical] + semantic)
+                        ]
+                    else:
+                        fused = retrieval.reciprocal_rank_fusion(
+                            {"lexical": [r.slug for r in pool_lexical], "semantic": semantic},
+                            k=retrieval_config.rrf_k, top_k=fused_depth,
+                        )
+                    withdrawn_order = list(dict.fromkeys(
+                        [r.slug for r in withdrawn_pool] + list(withdrawn_semantic)))
+        if gated and fused is None:
+            # The semantic arm did not run, so this is plain reranked lexical
+            # retrieval and is labelled as such: the floor applies, as there.
+            ranked = [r for r in ranked if r.slug in floor_cleared]
+            withdrawn_order = [s for s in withdrawn_order if s in floor_cleared]
+
+        # Second stage: the reranker reorders the pool and keeps the page
+        # (commontrace/rerank_arm.py). Same step, same order, as
+        # `commontrace query`'s _rerank_pool.
+        path_by_slug = {str(fm.get("name", "")): path for path, fm in active}
+        first_stage = fused if fused is not None else [(r.slug, r.relevance) for r in ranked]
+        reranked: list[tuple[str, float]] | None = None
+        if reranking:
+            try:
+                reranked, withdrawn_order = rerank_arm.rerank(
+                    task, [slug for slug, _ in first_stage],
+                    rerank_arm.texts(
+                        [slug for slug, _ in first_stage] + withdrawn_order,
+                        path_by_slug, frontmatter.read,
+                    ),
+                    want, withdrawn=withdrawn_order, mode=retrieval_config.rerank,
+                    admit=(
+                        rerank_arm.admit_gated(floor_cleared, retrieval_config.rerank, embedder)
+                        if gated and fused is not None else None
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed rerank serves the first stage
+                rerank_skipped = f"the reranker failed: {type(exc).__name__}: {exc}"
+        if reranking and reranked is None:
+            # The model loaded (rerank_arm.ready) and then failed to score --
+            # out of memory, in practice. Serve the pool's head rather than
+            # nothing. Withdrawn lessons found anywhere in the pool stay
+            # named: over-naming a lesson measured to hurt is the safe side.
+            if gated:
+                # Unvetted semantic and below-floor candidates never reach
+                # the page: serve the floor-cleared lexical head, labelled so.
+                ranked = [r for r in ranked if r.slug in floor_cleared]
+                fused = None
+            ranked = ranked[:want]
+            if fused is not None:
+                fused = fused[:want]
+
+        description_of = {str(fm.get("name", "")): str(fm.get("description", "")) for _, fm in active}
+        withdrawn_slugs = set(withdrawn_order)
+        withdrawn_items = [
+            {"slug": slug, "description": description_of.get(slug, ""), "reason": harm.REASON}
+            for slug in withdrawn_order
+        ]
+
+        # The label every assignment records, and the relevance beside it:
+        # what actually ranked this retrieval.
+        eligibility_label = retrieval_io.rerank_label(
+            retrieval_config.eligibility_label_for(fused=fused is not None, embedder=embedder),
+            retrieval_config.rerank if reranked is not None else retrieval_io.RERANK_NONE,
+        )
+        if reranked is not None or fused is not None:
+            page = reranked if reranked is not None else fused
+            lexical_by_slug = {r.slug: r for r in ranked}
+            relevance_by_slug = dict(page)
+            to_read = [
+                (slug, path_by_slug[slug], score) for slug, score in page if slug in path_by_slug
+            ]
+        else:
+            lexical_by_slug = {r.slug: r for r in ranked}
+            relevance_by_slug = {r.slug: r.relevance for r in ranked}
+            to_read = [(r.slug, r.path, r.relevance) for r in ranked]
+
         matched_items = []
-        for r in ranked:
+        for slug, path, relevance in to_read:
             # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
             # only, and the body is where the rule actually is -- returning a
             # lesson without it would hand the agent a title and no
             # instruction. Only the top-k are re-read, not the whole store.
             try:
-                fm, body = frontmatter.read(r.path)
+                fm, body = frontmatter.read(path)
             except Exception:  # noqa: BLE001
                 continue
             item = _lesson_wire(fm, body, include_body=True)
-            item["score"] = round(r.score, 3)
-            item["matched"] = list(r.matched_terms or [])
-            item["_relevance"] = r.relevance
+            lexical_hit = lexical_by_slug.get(slug)
+            if fused is None and reranked is None:
+                item["score"] = round(lexical_hit.score, 3)
+            else:
+                # The fused or reranked score: what decided this position.
+                item["score"] = round(relevance, 4)
+            item["matched"] = list(lexical_hit.matched_terms or []) if lexical_hit else []
+            item["_relevance"] = relevance
             matched_items.append(item)
 
         # ALWAYS-ON lessons, and the budget everything is admitted against
@@ -660,8 +855,8 @@ def build_server(root: str, *, allow_approval: bool = True):
                     # Same evidence `commontrace query` records. Omitting it
                     # here would make an agent-driven fleet's log unauditable
                     # by exactly the checks a shell-driven one gets.
-                    relevance={r.slug: r.relevance for r in ranked},
-                    scorer=retrieval_config.scorer,
+                    relevance=relevance_by_slug,
+                    scorer=eligibility_label,
                     floor=retrieval_config.floor,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -706,23 +901,24 @@ def build_server(root: str, *, allow_approval: bool = True):
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
         }
-        if retrieval_config.fusion != retrieval_io.FUSION_NONE:
-            # This surface is lexical by design (see the comment above the
-            # ranking call: the semantic arm is a subprocess that loads a
-            # sentence-transformer and reads an index nothing rebuilds
-            # automatically). Said out loud rather than ignored, because the
-            # store configured a DIFFERENT eligibility rule and the two
-            # surfaces must not silently disagree about which lessons are
-            # eligible -- that is two treatments pooled into one experiment.
-            # The assignment below records the lexical label, which is what
-            # actually ran, so integrity.check_scorer_drift sees the mix.
+        if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None and active:
+            # Configured but not run -- said out loud, because the store asked
+            # for a DIFFERENT eligibility rule. The assignment records the
+            # lexical label, which is what actually ran, so integrity.
+            # check_scorer_drift sees the mix; `commontrace query` falls back
+            # the same way, for the same reasons.
             result["fusion_note"] = (
-                f"this store configures fusion={retrieval_config.fusion!r}, which "
-                "this surface does not run: the semantic arm needs a model load "
-                "per call and an index nothing rebuilds automatically. Lessons "
-                "here were ranked lexically, and the holdout assignment records "
-                f"{retrieval_config.scorer!r} accordingly. Run an experiment on "
-                "one surface at a time, or set fusion=none."
+                f"this store configures fusion={retrieval_config.fusion!r}, but this "
+                f"retrieval was lexical: {fusion_skipped or 'fusion did not run'}. "
+                f"The holdout assignment records {eligibility_label!r} "
+                "accordingly."
+            )
+        if retrieval_config.rerank != retrieval_io.RERANK_NONE and reranked is None and active:
+            # Same posture as fusion_note: asked for, not run, said so.
+            result["rerank_note"] = (
+                f"this store configures rerank={retrieval_config.rerank!r}, but this "
+                f"retrieval kept the first stage's order: {rerank_skipped or 'the reranker did not run'}. "
+                f"The holdout assignment records {eligibility_label!r} accordingly."
             )
         if core_items:
             result["core"] = [item["slug"] for item in core_items if item.get("slug")]
@@ -742,6 +938,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             result["core_redundancy"] = [
                 {"slug": d.slug, "reason": d.reason} for d in dose.noted
             ]
+        if withdrawn_items:
+            # Named, never silent -- the same rule as `not_injected`. No body:
+            # like a withheld lesson, it is here to say what was not handed
+            # over and why, not to be used.
+            result["withdrawn"] = withdrawn_items
+            result["withdrawn_note"] = harm.note(len(withdrawn_items))
         if occasion_id:
             result["withheld"] = held
             result["holdout_rate"] = config.rate if config.running else 0.0
@@ -753,7 +955,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "nothing causal can be measured. An operator starts one with "
                 "`commontrace experiment --configure --rate <r>`."
             )
-        if not injected and not held:
+        if not injected and not held and not withdrawn_items:
             result["note"] = (
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."
@@ -773,11 +975,21 @@ def build_server(root: str, *, allow_approval: bool = True):
         # one corrupts the experiment silently), a receipt only records what
         # already happened. Losing one costs an audit trail entry; refusing
         # to serve a lesson over it costs the fleet its memory.
+        # Each returned lesson's measured causal verdict, as the Hub's search
+        # carries it (commontrace/evidence.py). Failure must not fail the
+        # retrieval, for the same reason as the receipt below: it describes
+        # what was retrieved rather than changing it.
+        try:
+            with _quiet():
+                evidence_mod.attach(root, result, "lessons", "withheld", "withdrawn")
+        except Exception as exc:  # noqa: BLE001
+            result["evidence_error"] = f"{type(exc).__name__}: {exc}"
+
         if occasion_id:
             try:
                 _record_receipt(
                     root, occasion_id, task, active, injected, held, dose,
-                    retrieval_config,
+                    retrieval_config, withdrawn=withdrawn_slugs, scorer=eligibility_label,
                 )
             except Exception as exc:  # noqa: BLE001
                 result["receipt_error"] = (
@@ -1253,14 +1465,15 @@ def build_server(root: str, *, allow_approval: bool = True):
         """
         import dataclasses
 
-        from commontrace import integrity
-        from commontrace.commands import experiment_cmd
-
+        # commontrace/evidence.py:analyse is the one place the local
+        # experiment is computed, so this report and the evidence `retrieve`
+        # attaches to each lesson can never disagree.
         try:
             with _quiet():
-                all_rows, rate, corrupt = experiment_cmd._load(root)
+                analysis = evidence_mod.analyse(root)
         except Exception as exc:  # noqa: BLE001
             return _err(f"could not read the experiment: {type(exc).__name__}: {exc}")
+        all_rows, corrupt = analysis.all_rows, analysis.corrupt
 
         if not all_rows:
             return _ok(
@@ -1277,7 +1490,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # flags as COMPROMISED even when the currently-running experiment is
         # perfectly clean -- and the CLI and this tool would then disagree
         # about the same store.
-        rows, wanted_salt, n_other_salt = experiment_cmd.scope_to_current_salt(root, all_rows)
+        rows, wanted_salt, n_other_salt = analysis.rows, analysis.wanted_salt, analysis.n_other_salt
         if not rows:
             return _ok(
                 running=False, integrity=None, effects=[], projections=[],
@@ -1288,9 +1501,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                      "`experiment --configure`.",
             )
 
-        report = integrity.audit(rows)
-        observations = experiment_cmd._observations(rows)
-        effects = experiment.analyze(observations)
+        report, effects = analysis.report, analysis.effects
         return _ok(
             running=True,
             # NOT `rate` from `_load()` above -- that is an average over
@@ -1382,10 +1593,50 @@ def _replace_section(body: str, name: str, text: str) -> str:
     return body.rstrip() + f"\n\n{replacement}"
 
 
+WARM_ENV = "COMMONTRACE_MCP_WARM"
+
+
+def _warm_models(root: str, delay: float = 2.0) -> None:
+    """Load, ahead of the first `retrieve`, the models it would otherwise
+    wait for (seconds each): the cross-encoder and the semantic arm's
+    embedder, and refresh a stale index -- but only what this store's
+    configuration will use, and only if it has a lesson to rank.
+
+    Runs on a daemon thread. It waits briefly first so the stdio transport
+    has claimed the real stdout (the MCP SDK then points fd 1 at stderr, so
+    nothing a library prints can reach the wire), and it never swaps
+    `sys.stdout` itself, which the transport reads when it starts. Both
+    model caches are lock-protected, so a `retrieve` that arrives mid-warm
+    simply waits for the load it would have done anyway. Any failure is
+    left for `retrieve` to meet and report as it always has.
+    """
+    import time
+
+    time.sleep(delay)
+    try:
+        active, _terms = lesson_cache.load_active_with_terms(root, None, reader=frontmatter.read)
+        if not active:
+            return
+        config = retrieval_io.load_config(root)
+        if config.fusion != retrieval_io.FUSION_NONE:
+            from commontrace import semantic_arm
+
+            if semantic_arm.available() and not semantic_arm.ensure_fresh(root):
+                semantic_arm.ranked_slugs(root, "warm up", 1)
+        if config.rerank != retrieval_io.RERANK_NONE and rerank_arm.available():
+            rerank_arm.ready(config.rerank)
+    except Exception:  # noqa: BLE001 - warming is an optimisation, never a failure
+        logger.debug("model warm-up failed", exc_info=True)
+
+
 def serve(root: str, *, allow_approval: bool = True) -> int:
     """Run the server on stdio until the client disconnects."""
+    import threading
+
     import anyio
 
     mcp = build_server(root, allow_approval=allow_approval)
+    if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
+        threading.Thread(target=_warm_models, args=(root,), name="commontrace-warm", daemon=True).start()
     anyio.run(mcp.run_stdio_async)
     return 0

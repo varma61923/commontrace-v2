@@ -140,7 +140,7 @@ def compute(fixtures_dir=DEFAULT_FIXTURES, top_k=3, floor=None,
     return {
         "schema_version": SCHEMA_VERSION,
         "scorer": scorer,
-        "floor": retrieval.DEFAULT_FLOOR if floor is None else floor,
+        "floor": retrieval.default_floor(scorer) if floor is None else floor,
         "top_k": top_k,
         "fields": fields,
         # The gate. A mean would let a change that helps one field and hurts
@@ -196,7 +196,7 @@ def main():
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--floor", type=float, default=None)
     parser.add_argument("--scorer", default=retrieval.SCORER_IDF,
-                        choices=[retrieval.SCORER_IDF, retrieval.SCORER_COUNT])
+                        choices=list(retrieval.LEXICAL_SCORERS))
     parser.add_argument(
         "--max-spread", type=float, default=None,
         help="Exit non-zero if the worst field's pollution ratio exceeds the best "

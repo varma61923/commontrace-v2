@@ -91,8 +91,19 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, resolve_client_key
-from hub.admin import _CSS, _limit, _num, h
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, rate_limit_key
+from hub.admin import (
+    _CSS,
+    _FORM_GUARD_SCRIPT,
+    _limit,
+    _num,
+    auto_refresh_script,
+    h,
+    html_headers,
+    live_badge,
+    refuse_cross_origin,
+    secret_field,
+)
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.config import HubConfig
 from hub.db import session_scope
@@ -248,23 +259,23 @@ fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
   letter-spacing:.04em;padding:0;margin:0 0 .3rem}
 .verdict{border-radius:10px;padding:1rem 1.15rem;margin:0 0 1.25rem;
   border:1px solid var(--rule);background:var(--surface)}
-.verdict.bad{border-color:#C0392B;background:#FDF3F2}
-.verdict.warn{border-color:#B7791F;background:#FDF8EE}
-.verdict.good{border-color:#1E7A4B;background:#F1F9F4}
+.verdict.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,var(--surface))}
+.verdict.warn{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface))}
+.verdict.good{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--surface))}
 .verdict h2{border:0;margin:0 0 .35rem;font-size:1.05rem}
 .verdict p{margin:.3rem 0;font-size:.93rem;max-width:78ch}
 .check{display:flex;gap:.6rem;align-items:flex-start;margin:.45rem 0;font-size:.9rem}
 .pill{font-size:.7rem;letter-spacing:.04em;padding:.12rem .45rem;border-radius:999px;
   border:1px solid var(--rule);white-space:nowrap;margin-top:.1rem}
-.pill.ok{color:#1E7A4B;border-color:#9FD4B5}
-.pill.warn{color:#B7791F;border-color:#E3C99A}
-.pill.bad{color:#C0392B;border-color:#E8B0A8}
+.pill.ok{color:var(--ok);border-color:currentColor}
+.pill.warn{color:var(--warn);border-color:currentColor}
+.pill.bad{color:var(--bad);border-color:currentColor}
 .signin{max-width:34rem;margin:3rem auto}
 .signin input{width:100%;padding:.6rem .7rem;font:inherit;border:1px solid var(--rule);
   border-radius:8px;margin:.5rem 0 .8rem}
 .signin button{padding:.55rem 1.1rem;font:inherit;border-radius:8px;border:1px solid var(--ink);
-  background:var(--ink);color:#fff;cursor:pointer}
-.err{color:#C0392B;font-size:.9rem;margin:.4rem 0}
+  background:var(--ink);color:var(--paper);cursor:pointer}
+.err{color:var(--bad);font-size:.9rem;margin:.4rem 0}
 .muted{color:var(--muted)}
 .rev{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem;color:var(--muted)}
 .shared-banner{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
@@ -275,13 +286,13 @@ fieldset legend{font-size:.8rem;color:var(--muted);text-transform:uppercase;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--rule);
   border-radius:8px;margin:.4rem 0;background:var(--paper)}
 .share-box button{padding:.4rem .9rem;font:inherit;font-size:.85rem;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer}
 form.act{display:flex;gap:.4rem;align-items:center;margin:.6rem 0 1rem}
 form.act input[type=text]{font:inherit;font-size:.9rem;padding:.4rem .55rem;
   border:1px solid var(--rule);border-radius:8px;background:var(--paper);color:var(--ink);
   min-width:14rem}
 form.act button{padding:.4rem .9rem;font:inherit;font-size:.9rem;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer}
+  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer}
 form.stack{display:flex;flex-direction:column;gap:.7rem;margin:.6rem 0 1rem;max-width:42rem}
 form.stack label{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;
   color:var(--muted);display:block;margin-bottom:.2rem}
@@ -290,13 +301,13 @@ form.stack input[type=text],form.stack textarea{font:inherit;font-size:.92rem;
   background:var(--paper);color:var(--ink);width:100%}
 form.stack textarea{min-height:5.5rem;resize:vertical;font-family:inherit}
 form.stack button{padding:.5rem 1rem;font:inherit;border-radius:8px;
-  border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;align-self:start}
+  border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;align-self:start}
 form.vote{display:flex;gap:.25rem;align-items:center;margin:0}
 form.vote button.v{font:inherit;font-size:.8rem;line-height:1;padding:.25rem .45rem;
   border:1px solid var(--rule);border-radius:6px;background:var(--paper);
   color:var(--muted);cursor:pointer}
 form.vote button.v:hover{border-color:var(--ink);color:var(--ink)}
-form.vote button.v.voted{border-color:var(--ink);background:var(--ink);color:#fff}
+form.vote button.v.voted{border-color:var(--ink);background:var(--ink);color:var(--paper)}
 button.busy{opacity:.6}
 form.vote select{font:inherit;font-size:.72rem;padding:.2rem;border:1px solid var(--rule);
   border-radius:6px;background:var(--paper);color:var(--ink);max-width:9rem}
@@ -321,42 +332,29 @@ _FAVICON_LINK = (
 )
 
 
-def _auto_refresh_script(seconds: int) -> str:
-    """A dependency-free "this page is live" mechanism -- see
-    hub/admin.py's own copy of this helper for the full reasoning
-    (reload on a timer; skip and retry shortly while a form control is
-    focused, so a half-typed search or reason is never silently wiped;
-    round-trip scroll position through sessionStorage so a reload does
-    not snap back to the top of the page).
-    """
-    return (
-        "<script>(function(){"
-        f"var KEY='ct-scroll-'+location.pathname+location.search;"
-        "var y=sessionStorage.getItem(KEY);"
-        "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
-        "function isEditing(){var el=document.activeElement;"
-        "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
-        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
-        "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
-        f"setTimeout(tick,{int(seconds)}*1000);"
-        "})();</script>"
-    )
+# A column of row buttons still needs a header a screen reader can announce.
+_ACTIONS_TH = "<th><span class='sr-only'>Actions</span></th>"
+
+# (path, nav label, the _page title that page renders with) -- the title is
+# what marks the current page for screen readers and sighted users alike.
+_NAV = (
+    ("", "Overview", "Your fleet"),
+    ("/proof", "Proof", "Proof"),
+    ("/memory", "Memory", "Memory"),
+    ("/kb", "Knowledge Base", "Knowledge Base"),
+    ("/users", "Users", "Users & roles"),
+    ("/keys", "API Keys", "API keys"),
+    ("/alerts", "Alerts", "Alerts"),
+    ("/webhooks", "Webhooks", "Webhooks"),
+    ("/audit", "Audit log", "Audit log"),
+)
 
 
-# See hub/admin.py's identical copy of this guard for the full reasoning,
-# including why it marks the form in-flight rather than DISABLING the
-# clicked button: a disabled control is barred from submission, so
-# disabling the submitter drops its own name/value -- which is exactly
-# where a multi-button form (the Knowledge Base vote buttons below) keeps
-# its action.
-_FORM_GUARD_SCRIPT = (
-    "<script>document.addEventListener('submit',function(ev){"
-    "var f=ev.target;"
-    "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
-    "if(ev.defaultPrevented)return;"
-    "f.dataset.ctSubmitting='1';"
-    "if(ev.submitter){ev.submitter.classList.add('busy');}"
-    "},true);</script>"
+# A form, not a link: a GET that signs you out is one any other site can
+# fire with an <img> tag.
+_SIGN_OUT_FORM = (
+    f'<form method="post" action="{CONSOLE_PATH}/signout">'
+    '<button type="submit" class="linkish">Sign out</button></form>'
 )
 
 
@@ -364,38 +362,29 @@ def _page(
     title: str, body: str, *, signed_in: bool = True, auto_refresh_seconds: int = 0,
 ) -> HTMLResponse:
     nav = (
-        f'<nav><a href="{CONSOLE_PATH}">Overview</a>'
-        f'<a href="{CONSOLE_PATH}/proof">Proof</a>'
-        f'<a href="{CONSOLE_PATH}/memory">Memory</a>'
-        f'<a href="{CONSOLE_PATH}/kb">Knowledge Base</a>'
-        f'<a href="{CONSOLE_PATH}/users">Users</a>'
-        f'<a href="{CONSOLE_PATH}/keys">API Keys</a>'
-        f'<a href="{CONSOLE_PATH}/alerts">Alerts</a>'
-        f'<a href="{CONSOLE_PATH}/webhooks">Webhooks</a>'
-        f'<a href="{CONSOLE_PATH}/audit">Audit log</a>'
-        f'<a href="{CONSOLE_PATH}/signout">Sign out</a></nav>'
+        '<nav aria-label="Console">' + "".join(
+            f'<a href="{CONSOLE_PATH}{path}"'
+            f'{" aria-current=page" if title == page_title else ""}>{label}</a>'
+            for path, label, page_title in _NAV
+        ) + _SIGN_OUT_FORM + "</nav>"
         if signed_in else ""
     )
-    live_badge = (
-        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
-        'unless you are typing in a field">live</span>'
-        if auto_refresh_seconds else ""
-    )
-    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
+    badge = live_badge(auto_refresh_seconds)
+    refresh_script = auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{h(title)} · CommonTrace</title>{_FAVICON_LINK}"
         f"<style>{_CSS}{_EXTRA_CSS}</style></head><body>"
+        '<a class="skip" href="#main">Skip to content</a>'
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">your fleet</span>'
-        f"{live_badge}"
-        f"{nav}</div></header><main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
+        f"{badge}"
+        f"{nav}</div></header><main id=\"main\">{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
         # A customer console renders that org's own operational data. A cached
         # copy in a shared or kiosk browser is one more place it sits at rest,
         # and it outlives the session cookie that was supposed to gate it.
-        headers={"Cache-Control": "no-store, private", "Referrer-Policy": "same-origin",
-                 "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"},
+        headers=html_headers(refresh_script, _FORM_GUARD_SCRIPT),
     )
 
 
@@ -420,16 +409,11 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
         '<header class="bar"><div class="in"><b>CommonTrace</b>'
         '<span class="ro">shared report</span></div></header>'
         f"<main>{banner}{body}</main></body></html>",
-        headers={
-            # Distinct from _page's headers in one deliberate way: this
-            # response carries no session cookie and no mutating capability
-            # at all, so there is nothing here for a cache to leak beyond
-            # the same numbers the org itself chose to put in the link --
-            # but it is still that org's un-published business data, so it
-            # stays no-store rather than becoming cacheable-by-default.
-            "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer",
-            "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
-        },
+        # Distinct from _page's headers in one deliberate way: no referrer at
+        # all, since the link itself is the credential. It is still that
+        # org's un-published business data, so it stays no-store, and it
+        # runs no script at all.
+        headers=html_headers(referrer="no-referrer"),
     )
 
 
@@ -501,8 +485,8 @@ def _projection_block(report: dict) -> str:
         "<h2>When will this be answerable?</h2>"
         '<p class="sub">Underpowered on the last day of a pilot is a spent pilot. '
         "The same fact now is a holdout rate you can still change.</p>"
-        "<table><thead><tr><th>Memory</th><th>injected / withheld</th>"
-        f"<th>Needs</th><th>At the current rate</th></tr></thead><tbody>{rows}</tbody></table>"
+        "<div class='scroll'><table><thead><tr><th>Memory</th><th>injected / withheld</th>"
+        f"<th>Needs</th><th>At the current rate</th></tr></thead><tbody>{rows}</tbody></table></div>"
         f'<p class="muted">{h(advice)}</p>'
     )
 
@@ -614,9 +598,9 @@ def _render_overview(data: dict, causal: dict, billing: dict | None = None) -> s
             f"<td>{h(str(t.get('created_at'))[:16])}</td></tr>"
             for t in rows
         )
-        body.append("<h2>Most recent</h2><table><thead><tr><th>Trace</th><th>Agent type</th>"
+        body.append("<h2>Most recent</h2><div class='scroll'><table><thead><tr><th>Trace</th><th>Agent type</th>"
                     f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{cells}</tbody>"
-                    "</table>")
+                    "</table></div>")
     else:
         body.append('<h2>Most recent</h2><p class="sub">No traces yet. Your agents capture '
                     "them with <code>contribute_trace</code>.</p>")
@@ -742,8 +726,7 @@ def _render_share_form(share_url: str | None) -> str:
             '<div class="share-box"><b id="share-url-label">Shareable link generated.</b><br>'
             f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
             "anyone who has the link -- treat it like the report data it is."
-            f'<input type="text" readonly aria-labelledby="share-url-label" '
-            f'value="{h(share_url)}" onclick="this.select()"></div>'
+            f'{secret_field(share_url, "share-url-label")}</div>'
         )
     return (
         f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
@@ -767,14 +750,14 @@ def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = ""
         return ""
     body = ['<div class="share-box">']
     if error:
-        body.append(f'<p class="err">{h(error)}</p>')
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if causal.get("experiment_running"):
         body.append(
             "<b>Experiment control</b><br>"
             '<span class="muted">Stopping keeps every observation recorded so far -- it '
             "only stops withholding memory on new occasions.</span><br>"
             f'<form method="post" action="{CONSOLE_PATH}/proof/experiment/stop" '
-            "onsubmit=\"return confirm('Stop the running experiment?')\">"
+            'data-confirm="Stop the running experiment?">'
             '<button type="submit">Stop experiment</button></form>'
         )
     else:
@@ -839,9 +822,9 @@ def _render_proof(
                 f"<td>{_significance(e)}</td></tr>"
                 for e in effects
             )
-            body.append("<table><thead><tr><th>Memory</th><th>Verdict</th><th>With</th>"
-                        "<th>Without</th><th>Effect</th><th>95% CI</th><th></th></tr></thead>"
-                        f"<tbody>{rows}</tbody></table>")
+            body.append("<div class='scroll'><table><thead><tr><th>Memory</th><th>Verdict</th><th>With</th>"
+                        "<th>Without</th><th>Effect</th><th>95% CI</th><th>Significance</th></tr></thead>"
+                        f"<tbody>{rows}</tbody></table></div>")
             notes = [e for e in effects if e.get("note")]
             if notes:
                 body.append('<ul class="muted">' + "".join(
@@ -870,8 +853,8 @@ def _render_proof(
             f"<td>{h(str(r.get('verdict', '')).replace('_', ' '))}</td></tr>"
             for r in rows
         )
-        body.append("<table><thead><tr><th>Metric</th><th>Baseline</th><th>Now</th>"
-                    f"<th>Change</th><th></th></tr></thead><tbody>{cells}</tbody></table>")
+        body.append("<div class='scroll'><table><thead><tr><th>Metric</th><th>Baseline</th><th>Now</th>"
+                    f"<th>Change</th><th>Verdict</th></tr></thead><tbody>{cells}</tbody></table></div>")
         # Every inconclusive row carries WHY, including the minimum effect the
         # sample could have detected. Dropping that is how "we could not tell"
         # gets read as "no effect".
@@ -934,10 +917,10 @@ def _render_memory(result: dict, tags: list[str]) -> str:
         '<label for="memory-q" class="sr-only">Search your memory</label>'
         f'<input type="search" id="memory-q" name="q" '
         f'placeholder="Describe a task in your own words…" '
-        f'value="{h(result.get("query", ""))}" style="width:26rem;padding:.5rem .6rem;'
+        f'value="{h(result.get("query", ""))}" style="width:26rem;max-width:100%;padding:.5rem .6rem;'
         'font:inherit;border:1px solid var(--rule);border-radius:8px">'
         ' <button type="submit" style="padding:.5rem 1rem;font:inherit;border-radius:8px;'
-        'border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer">'
+        'border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer">'
         "Search</button></form>"
     )
     terms = result.get("terms") or []
@@ -953,8 +936,8 @@ def _render_memory(result: dict, tags: list[str]) -> str:
             f"<td>{h(str(t.get('created_at'))[:16])}</td></tr>"
             for t in traces
         )
-        body.append("<table><thead><tr><th>Trace</th><th>Tags</th><th>Agent type</th>"
-                    f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{rows}</tbody></table>")
+        body.append("<div class='scroll'><table><thead><tr><th>Trace</th><th>Tags</th><th>Agent type</th>"
+                    f"<th>Retrieved</th><th>Captured</th></tr></thead><tbody>{rows}</tbody></table></div>")
         # search_traces caps at `limit` and signals whether more rows exist
         # via `has_more` (fetched as one extra row, not a second COUNT) --
         # this used to be dropped on the floor here, so a corpus with more
@@ -1157,7 +1140,7 @@ def _render_kb(
     if flash:
         body.append(f'<div class="share-box">{h(flash)}</div>')
     if error:
-        body.append(f'<p class="err">{h(error)}</p>')
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     queries = ent.get("commons_queries") or {}
     body.append(_tiles([
         ("Consultations used", f'{_num(queries.get("used", 0))} <span class="muted">of '
@@ -1188,9 +1171,9 @@ def _render_kb(
         if entries:
             rows = "".join(_render_kb_entry(e, can_vote) for e in entries)
             body.append(
-                "<table><thead><tr><th>Entry</th><th>Standing</th><th>Votes</th>"
+                "<div class='scroll'><table><thead><tr><th>Entry</th><th>Standing</th><th>Votes</th>"
                 f"<th>Times used</th><th>Your vote</th><th>Id</th></tr></thead>"
-                f"<tbody>{rows}</tbody></table>"
+                f"<tbody>{rows}</tbody></table></div>"
             )
             body.append(
                 '<p class="sub">Your vote is what moves an entry between '
@@ -1293,8 +1276,8 @@ def _render_kb(
             f"<td>{h(s.get('rejection_reason') or '—')}</td></tr>"
             for s in submissions
         )
-        body.append("<h2>Your proposals</h2><table><thead><tr><th>Title</th><th>Status</th>"
-                    f"<th>Sent</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>")
+        body.append("<h2>Your proposals</h2><div class='scroll'><table><thead><tr><th>Title</th><th>Status</th>"
+                    f"<th>Sent</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table></div>")
     else:
         body.append('<h2>Your proposals</h2><p class="sub">None yet. An accepted proposal is '
                     "published under the operator's name, not yours, and earns you bonus "
@@ -1309,7 +1292,7 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
             "by creating a row here; that is always a separate, explicit step "
             "(<code>hub.manage link-sso</code>).</p>"]
     if error:
-        body.append(f'<p class="err">{h(error)}</p>')
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if users:
         rows = []
         for u in users:
@@ -1343,8 +1326,8 @@ def _render_users(users: list[User], is_admin: bool, error: str = "") -> str:
                 f"<td>{h(linked)}</td><td>{actions}</td></tr>"
             )
         body.append(
-            "<table><thead><tr><th>Email</th><th>Role</th><th>State</th>"
-            f"<th>SSO</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            "<div class='scroll'><table><thead><tr><th>Email</th><th>Role</th><th>State</th>"
+            f"<th>SSO</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
         body.append('<p class="sub">No users yet.</p>')
@@ -1376,8 +1359,8 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
             "<code>read,write</code>; a dashboard wants <code>read</code>.</p>"]
     if fresh:
         body.append(
-            '<div class="verdict warn"><h2>New key — shown once</h2>'
-            f'<p class="rev">{h(fresh["raw_key"])}</p>'
+            '<div class="verdict warn"><h2 id="new-key-label">New key — shown once</h2>'
+            f'{secret_field(fresh["raw_key"], "new-key-label")}'
             "<p>Store this now. It will not be shown again, and this Hub keeps only its "
             "hash.</p></div>"
         )
@@ -1391,8 +1374,12 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
             if is_admin and k.revoked_at is None:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/rotate" '
+                    f'data-confirm="Rotate key {h(k.key_prefix)}? It stops working now; agents using '
+                    f'it need the new key." '
                     f'style="display:inline"><button type="submit">Rotate</button></form> '
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/revoke" '
+                    f'data-confirm="Revoke key {h(k.key_prefix)}? Agents using it stop working, and '
+                    f'this cannot be undone." '
                     f'style="display:inline"><button type="submit">Revoke</button></form>'
                 )
             rows.append(
@@ -1400,8 +1387,8 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
                 f"<td>{h(expires)}</td><td>{h(state)}</td><td>{actions}</td></tr>"
             )
         body.append(
-            "<table><thead><tr><th>Prefix</th><th>Scopes</th><th>Expires</th>"
-            f"<th>State</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            "<div class='scroll'><table><thead><tr><th>Prefix</th><th>Scopes</th><th>Expires</th>"
+            f"<th>State</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
         body.append('<p class="sub">No keys yet.</p>')
@@ -1433,7 +1420,7 @@ def _render_alerts(
             "webhook endpoint(s) when a metric crosses a threshold you set — no polling "
             "needed. A closed, named set of metrics, never a free-form query.</p>"]
     if error:
-        body.append(f'<p class="err">{h(error)}</p>')
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if report:
         body.append(
             '<div class="verdict good"><h2>Report queued</h2>'
@@ -1453,6 +1440,7 @@ def _render_alerts(
             if is_admin:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/alerts/{h(r.id)}/delete" '
+                    'data-confirm="Delete this alert rule?" '
                     f'style="display:inline"><button type="submit">Delete</button></form>'
                 )
             rows.append(
@@ -1461,9 +1449,9 @@ def _render_alerts(
                 f"<td>{actions}</td></tr>"
             )
         body.append(
-            "<table><thead><tr><th>Metric</th><th>Comparator</th><th>Threshold</th>"
-            "<th>Cooldown</th><th>State</th><th>Last fired</th><th></th></tr></thead>"
-            f"<tbody>{''.join(rows)}</tbody></table>"
+            "<div class='scroll'><table><thead><tr><th>Metric</th><th>Comparator</th><th>Threshold</th>"
+            f"<th>Cooldown</th><th>State</th><th>Last fired</th>{_ACTIONS_TH}</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
         body.append('<p class="sub">No alert rules yet.</p>')
@@ -1512,15 +1500,14 @@ def _render_webhooks(
             "only ids, counts and verdicts; a webhook is egress to a third party, and this "
             "product's memory content never is.</p>"]
     if error:
-        body.append(f'<p class="err">{h(error)}</p>')
+        body.append(f'<p class="err" role="alert">{h(error)}</p>')
     if fresh and fresh.get("secret"):
         body.append(
             '<div class="share-box"><b id="webhook-secret-label">Signing secret '
             "(shown once)</b><br>"
             '<span class="muted">Verify the delivery signature with this. It cannot be shown '
             "again — rotate the endpoint to get a new one.</span>"
-            f'<input type="text" readonly aria-labelledby="webhook-secret-label" '
-            f'value="{h(fresh["secret"])}" onclick="this.select()"></div>'
+            f'{secret_field(fresh["secret"], "webhook-secret-label")}</div>'
         )
     body.append(_tiles([
         ("Endpoints", _num(len(endpoints))),
@@ -1535,9 +1522,12 @@ def _render_webhooks(
             if is_admin and e["enabled"]:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/rotate" '
+                    'data-confirm="Rotate the signing secret? Deliveries are signed with the new '
+                    'one immediately." '
                     f'style="display:inline"><button type="submit">Rotate secret</button>'
                     "</form> "
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/disable" '
+                    'data-confirm="Disable this endpoint? It stops receiving events." '
                     f'style="display:inline"><button type="submit">Disable</button></form>'
                 )
             rows.append(
@@ -1545,8 +1535,8 @@ def _render_webhooks(
                 f"<td>v{h(e['key_version'])}</td><td>{actions}</td></tr>"
             )
         body.append(
-            "<table><thead><tr><th>URL</th><th>State</th><th>Subscribed to</th>"
-            f"<th>Key</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            "<div class='scroll'><table><thead><tr><th>URL</th><th>State</th><th>Subscribed to</th>"
+            f"<th>Key</th>{_ACTIONS_TH}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         )
     else:
         body.append('<p class="sub">No webhook endpoints configured.</p>')
@@ -1560,8 +1550,8 @@ def _render_webhooks(
             "<h2>Gave up on delivering</h2>"
             '<p class="sub">Retried and failed enough times that this stopped retrying — a '
             "misconfigured endpoint, not a transient blip.</p>"
-            "<table><thead><tr><th>When</th><th>Event</th><th>Last error</th></tr></thead>"
-            f"<tbody>{frows}</tbody></table>"
+            "<div class='scroll'><table><thead><tr><th>When</th><th>Event</th><th>Last error</th></tr></thead>"
+            f"<tbody>{frows}</tbody></table></div>"
         )
     if is_admin:
         event_boxes = "".join(
@@ -1600,8 +1590,8 @@ def _render_audit_log(entries: list[AuditLogEntry], offset: int, limit: int, has
         for e in entries
     )
     body.append(
-        "<table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th>"
-        f"<th>Detail</th></tr></thead><tbody>{rows}</tbody></table>"
+        "<div class='scroll'><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th>"
+        f"<th>Detail</th></tr></thead><tbody>{rows}</tbody></table></div>"
     )
     nav = []
     if offset > 0:
@@ -1631,6 +1621,19 @@ _SIGNIN = """
   here directly; every change is still authenticated and audited the same way.</p>
 </div>
 """
+
+
+# What the Knowledge Base page says after each action redirects back to it.
+_KB_FLASH = {
+    "proposed": "Proposal sent for operator review.",
+    "auto_on": "Automatic contribution is on. New traces will also be proposed.",
+    "auto_off": "Automatic contribution is off.",
+    "voted": "Thanks — your vote was recorded.",
+    "voted_uncounted": (
+        "Your vote was recorded, but does not count toward this entry's standing yet "
+        "— see the note below the catalogue."
+    ),
+}
 
 
 def add_console_routes(
@@ -1744,14 +1747,14 @@ def add_console_routes(
 
     async def signin(request: Request) -> Response:
         allowed, retry_after = await signin_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return _page(
                 "Sign in",
                 _SIGNIN.format(
                     path=CONSOLE_PATH,
-                    error='<p class="err">Too many attempts. Try again shortly.</p>',
+                    error='<p class="err" role="alert">Too many attempts. Try again shortly.</p>',
                 ),
                 signed_in=False,
             )
@@ -1768,13 +1771,13 @@ def add_console_routes(
                 "Sign in",
                 _SIGNIN.format(
                     path=CONSOLE_PATH,
-                    error='<p class="err">That key was not accepted.</p>',
+                    error='<p class="err" role="alert">That key was not accepted.</p>',
                 ),
                 signed_in=False,
             )
         # The auth limiter charges failures only, so a legitimate sign-in does
         # not consume the budget a brute-force attempt is meant to exhaust.
-        signin_limiter.refund(resolve_client_key(request, trusted_proxy_hops))
+        signin_limiter.refund(rate_limit_key(request, trusted_proxy_hops))
         response = RedirectResponse(CONSOLE_PATH, status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
@@ -1782,12 +1785,25 @@ def add_console_routes(
             max_age=SESSION_TTL_SECONDS,
             httponly=True,      # not readable by script, so XSS cannot lift the session
             samesite="strict",  # not sent cross-site, which is why no CSRF token is needed
-            secure=request.url.scheme == "https",
+            # Behind a TLS-terminating proxy the Hub itself sees plain http
+            # unless uvicorn trusts the proxy's X-Forwarded-Proto -- which it
+            # does only for a proxy on 127.0.0.1, not one in the next
+            # container or an ingress. A declared proxy means TLS ends there.
+            secure=request.url.scheme == "https" or trusted_proxy_hops > 0,
             path=CONSOLE_PATH,  # never sent to /mcp, /admin or /metrics
         )
         return response
 
     async def signout(request: Request) -> Response:
+        if request.method != "POST":
+            # An old bookmark or link: ask, rather than act on a GET.
+            if await _claims(request) is None:
+                return _redirect_to_signin()
+            return _page("Sign out", (
+                "<h1>Sign out?</h1>"
+                f'<form method="post" action="{CONSOLE_PATH}/signout">'
+                '<button type="submit" class="btn">Sign out</button></form>'
+            ))
         response = RedirectResponse(f"{CONSOLE_PATH}/signin", status_code=303)
         response.delete_cookie(SESSION_COOKIE, path=CONSOLE_PATH)
         return response
@@ -1896,6 +1912,7 @@ def add_console_routes(
 
     async def _proof_view(
         request: Request, org_id: str, is_admin: bool, *, experiment_error: str = "",
+        share_url: str | None = None,
     ) -> Response:
         # An optional rate the reader supplies in the URL. Never stored: this
         # product ships the quantity and takes the price from whoever is
@@ -1909,11 +1926,12 @@ def add_console_routes(
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
-        # Set immediately after proof_share's redirect (below) -- rendered
-        # once, not persisted, so refreshing the page without the query
-        # param drops back to the plain "generate a link" form rather than
-        # re-displaying a link that may since have been superseded.
-        share_url = request.query_params.get("share_url")
+        # Only ever the link proof_share just minted, passed in directly --
+        # never read from the URL. It used to arrive as ?share_url=, which put
+        # the link (a live credential for this org's data) into browser
+        # history and let anyone send a signed-in user a /proof?share_url=
+        # link to a page of their own that the console then presented as
+        # "Shareable link generated".
         share_box = _render_share_form(share_url)
         return _page("Proof", share_box + _render_proof(
             outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
@@ -1926,8 +1944,8 @@ def add_console_routes(
         return await _proof_view(request, str(claims["org"]), _is_admin(claims))
 
     async def proof_share(request: Request) -> Response:
-        """Mints a new share link for the signed-in org and redirects back
-        to the Proof page with it. POST, not GET: this creates a new
+        """Mints a new share link for the signed-in org and shows the Proof
+        page with it, in this response. POST, not GET: this creates a new
         capability (a live, un-guessable link to the org's own data) and
         must not be triggerable by a prefetch, a browser extension
         crawling links, or a `<img>` tag someone points at it."""
@@ -1937,9 +1955,7 @@ def add_console_routes(
         org_id = str(claims["org"])
         token = issue_share_token(_secret(), org_id)
         url = str(request.url.replace(path=f"{CONSOLE_PATH}/proof/shared/{token}", query=""))
-        return RedirectResponse(
-            f"{CONSOLE_PATH}/proof?share_url={_url_quote(url, safe='')}", status_code=303
-        )
+        return await _proof_view(request, org_id, _is_admin(claims), share_url=url)
 
     async def proof_shared(request: Request) -> Response:
         """The public, unauthenticated view a share link resolves to. No
@@ -2127,7 +2143,9 @@ def add_console_routes(
             org_id, claims,
             tag=request.query_params.get("tag", "")[:64],
             offset=max(0, offset),
-            flash=request.query_params.get("done", "")[:200],
+            # A code, not text: a message read from the URL would let any
+            # link make the console say whatever its author wanted.
+            flash=_KB_FLASH.get(request.query_params.get("done", ""), ""),
         )
 
     async def kb_submit(request: Request) -> Response:
@@ -2182,7 +2200,7 @@ def add_console_routes(
                 error="Too many proposals just now. Try again shortly.",
             )
         return RedirectResponse(
-            f"{CONSOLE_PATH}/kb?done=Proposal+sent+for+operator+review.", status_code=303,
+            f"{CONSOLE_PATH}/kb?done=proposed", status_code=303,
         )
 
     async def kb_auto_contribute(request: Request) -> Response:
@@ -2221,11 +2239,7 @@ def add_console_routes(
                 org_id=org_id, target_type="org", target_id=org_id,
                 summary=f"enabled={enabled}",
             )
-        done = (
-            "Automatic+contribution+is+on.+New+traces+will+also+be+proposed."
-            if enabled else
-            "Automatic+contribution+is+off."
-        )
+        done = "auto_on" if enabled else "auto_off"
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def kb_vote(request: Request) -> Response:
@@ -2274,12 +2288,7 @@ def add_console_routes(
             )
         # Two different true things, and saying only the first one to an
         # org whose vote did not count would be a quiet lie by omission.
-        done = (
-            "Thanks+—+your+vote+was+recorded."
-            if voted.get("vote_counted", True) else
-            "Your+vote+was+recorded,+but+does+not+count+toward+this+entry%27s"
-            "+standing+yet+—+see+the+note+below+the+catalogue."
-        )
+        done = "voted" if voted.get("vote_counted", True) else "voted_uncounted"
         return RedirectResponse(f"{CONSOLE_PATH}/kb?done={done}", status_code=303)
 
     async def _list_users(org_id: str) -> list[User]:
@@ -2708,40 +2717,43 @@ def add_console_routes(
         )
 
     app.add_route(f"{CONSOLE_PATH}/signin", signin_page, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/signin", signin, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/signout", signout, methods=["GET", "POST"])
+    app.add_route(f"{CONSOLE_PATH}/signin", refuse_cross_origin(signin), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/signout", refuse_cross_origin(signout), methods=["GET", "POST"])
     app.add_route(CONSOLE_PATH, overview, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/proof/share", proof_share, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/share", refuse_cross_origin(proof_share), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/assignments.csv", assignments_csv, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/proof/experiment/start", experiment_start, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/proof/experiment/stop", experiment_stop, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/billing/checkout", billing_checkout, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/billing/portal", billing_portal, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/start", refuse_cross_origin(experiment_start), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/proof/experiment/stop", refuse_cross_origin(experiment_stop), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/billing/checkout", refuse_cross_origin(billing_checkout), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/billing/portal", refuse_cross_origin(billing_portal), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/memory", memory, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/kb", knowledge_base, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/kb/submit", kb_submit, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/kb/vote", kb_vote, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/kb/submit", refuse_cross_origin(kb_submit), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/kb/vote", refuse_cross_origin(kb_vote), methods=["POST"])
     app.add_route(
-        f"{CONSOLE_PATH}/kb/auto-contribute", kb_auto_contribute, methods=["POST"])
+        f"{CONSOLE_PATH}/kb/auto-contribute", refuse_cross_origin(kb_auto_contribute), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/users", users_page, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/users/create", users_create, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", users_set_role, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/disable", users_disable, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/enable", users_enable, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/create", refuse_cross_origin(users_create), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/role", refuse_cross_origin(users_set_role), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/disable", refuse_cross_origin(users_disable), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/users/{{user_id}}/enable", refuse_cross_origin(users_enable), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/keys", keys_page, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/keys/issue", keys_issue, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/rotate", keys_rotate, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/revoke", keys_revoke, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys/issue", refuse_cross_origin(keys_issue), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/rotate", refuse_cross_origin(keys_rotate), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/keys/{{key_id}}/revoke", refuse_cross_origin(keys_revoke), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/alerts", alerts_page, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/alerts/create", alerts_create, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", alerts_delete, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/alerts/generate-report", alerts_generate_report, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/alerts/create", refuse_cross_origin(alerts_create), methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", refuse_cross_origin(alerts_delete), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/alerts/generate-report", refuse_cross_origin(alerts_generate_report), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/webhooks", webhooks_page, methods=["GET"])
-    app.add_route(f"{CONSOLE_PATH}/webhooks/create", webhooks_create, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/rotate", webhooks_rotate, methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", webhooks_disable, methods=["POST"])
+    app.add_route(f"{CONSOLE_PATH}/webhooks/create", refuse_cross_origin(webhooks_create), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/rotate", refuse_cross_origin(webhooks_rotate), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", refuse_cross_origin(webhooks_disable), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/audit", audit_page, methods=["GET"])
 
 

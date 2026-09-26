@@ -106,7 +106,11 @@ def load_model():
     except ImportError as exc:
         raise SemanticUnavailable(_INSTALL_HINT) from exc
     try:
-        _model = SentenceTransformer(MODEL_NAME)
+        try:
+            # Cache first: a cached model otherwise still costs a Hub round trip.
+            _model = SentenceTransformer(MODEL_NAME, local_files_only=True)
+        except Exception:  # noqa: BLE001 - not cached, or an older library: fetch it
+            _model = SentenceTransformer(MODEL_NAME)
     except Exception as exc:  # noqa: BLE001 - network, disk, corrupt cache
         raise SemanticUnavailable(
             f"could not load {MODEL_NAME}: {exc}\n"

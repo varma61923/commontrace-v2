@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from commontrace import holdout_io, paths, retrieval, retrieval_io
+from commontrace import harm, holdout_io, paths, retrieval, retrieval_io
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -18,11 +18,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "which lessons are logged as eligible.",
     )
     p.add_argument(
-        "--scorer", default=None, choices=[retrieval.SCORER_IDF, retrieval.SCORER_COUNT],
-        help=f"{retrieval.SCORER_IDF}: IDF-weighted and length-normalized, comparable "
-             f"across fields (default). {retrieval.SCORER_COUNT}: the historical raw "
-             "word-overlap sum, kept so a store mid-experiment can stay on what its "
-             "existing assignments were made under.",
+        "--scorer", default=None, choices=list(retrieval.LEXICAL_SCORERS),
+        help=f"{retrieval.SCORER_IDF_V3}: IDF-weighted, length-normalized and "
+             "Porter-stemmed, comparable across fields (default). "
+             f"{retrieval.SCORER_IDF_V2}: the same without stemming. "
+             f"{retrieval.SCORER_COUNT}: the historical raw word-overlap sum. The "
+             "older two are kept so a store mid-experiment can stay on what its "
+             "existing assignments were made under; switching scorer takes that "
+             "scorer's default floor unless --floor is given.",
     )
     p.add_argument(
         "--fusion", default=None, choices=list(retrieval_io.FUSIONS),
@@ -33,7 +36,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "rank (Reciprocal Rank Fusion), so a lesson either arm surfaces is "
             "retrievable. The arms fail on different queries, which is exactly when "
             "fusing beats picking -- but it also changes which lessons are ELIGIBLE, "
-            "so a store mid-experiment starts a new randomization by switching."
+            "so a store mid-experiment starts a new randomization by switching. "
+            f"{retrieval_io.FUSION_GATED}: both arms feed the reranker, but a lesson "
+            "that did not clear the relevance floor reaches the page only if the "
+            "cross-encoder vouches for it, so the page is never filled with lessons "
+            "the task is not about (the default for a new store where the attention "
+            "extra is installed; needs --rerank)."
         ),
     )
     p.add_argument(
@@ -70,6 +78,26 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "its rank among lessons that already cleared --floor. 0 (the default) "
              "disables this. Same non-eligibility-changing scope as --reliability-weight.",
     )
+    p.add_argument(
+        "--on-harm", dest="harm_policy", default=None, choices=list(harm.POLICIES),
+        help=f"{harm.POLICY_INFORM}: a lesson the experiment measured making outcomes "
+             "WORSE is still injected, with its verdict attached (default). "
+             f"{harm.POLICY_WITHDRAW}: it is no longer injected, and is named with its "
+             "evidence wherever it matched instead (commontrace/harm.py). Acts only on "
+             "the anytime-valid verdict of a readable experiment, before arms are "
+             "assigned, so it does not start a new randomization.",
+    )
+    p.add_argument(
+        "--rerank", default=None, choices=list(retrieval_io.RERANKS),
+        help=f"{retrieval_io.RERANK_NONE}: keep the first stage's order (default). "
+             f"{retrieval_io.RERANK_CE}: a cross-encoder reads the task and each of the "
+             "first stage's top candidates together and reorders them "
+             f"(commontrace/rerank_arm.py). {retrieval_io.RERANK_CE_FAST}: the same with "
+             "a model about ten times faster and less accurate. It never adds a lesson "
+             "the first stage did "
+             "not find, but it decides which make the top k, so like --fusion it starts "
+             "a new randomization. Needs the attention extra.",
+    )
     p.add_argument("--note", default="", help="Why these settings, recorded alongside them.")
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
@@ -81,6 +109,7 @@ def run(args: argparse.Namespace) -> int:
     setting = (
         args.floor, args.scorer, args.fusion, args.max_lessons, args.max_chars,
         args.redundancy_threshold, args.reliability_weight, args.recency_weight,
+        args.harm_policy, args.rerank,
     )
     if all(value is None for value in setting):
         config = retrieval_io.load_config(root)
@@ -90,6 +119,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"  fusion : {config.fusion}"
               + (f"  (k={config.rrf_k})" if config.fusion == retrieval_io.FUSION_RRF
                  else ""))
+        print(f"  rerank : {config.rerank}")
         print(f"  budget : {config.max_lessons} lessons, {config.max_chars:,} chars")
         print(
             "  redundancy: "
@@ -106,7 +136,22 @@ def run(args: argparse.Namespace) -> int:
             "  recency weight    : "
             + ("off" if config.recency_weight <= 0 else f"{config.recency_weight:.2f}")
         )
-        print(f"  logged as: {config.eligibility}")
+        print(
+            "  on harm           : "
+            + ("withdraw (a lesson measured HURTS is not injected)"
+               if config.harm_policy == harm.POLICY_WITHDRAW
+               else "inform (a lesson measured HURTS is injected, with its verdict)")
+        )
+        logged_as = config.eligibility
+        if config.fusion != retrieval_io.FUSION_NONE:
+            from commontrace import semantic_arm
+
+            # A fused label names the semantic arm's model, which is the
+            # index's (commontrace/reference/query.py TRUSTED_MODELS).
+            logged_as = retrieval_io.eligibility_label(
+                config.scorer, config.fusion, config.rerank,
+                embedder=retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
+        print(f"  logged as: {logged_as}")
         if config.note:
             print(f"  note   : {config.note}")
         if config.pinned_for_running_experiment:
@@ -126,6 +171,8 @@ def run(args: argparse.Namespace) -> int:
             redundancy_threshold=args.redundancy_threshold,
             reliability_weight=args.reliability_weight,
             recency_weight=args.recency_weight,
+            harm_policy=args.harm_policy,
+            rerank=args.rerank,
             note=args.note,
         )
     except ValueError as exc:
@@ -134,10 +181,11 @@ def run(args: argparse.Namespace) -> int:
 
     print(
         f"[commontrace] retrieval: scorer={config.scorer} floor={config.floor:.2f} "
-        f"fusion={config.fusion} budget={config.max_lessons}/{config.max_chars:,} "
+        f"fusion={config.fusion} rerank={config.rerank} budget={config.max_lessons}/{config.max_chars:,} "
         f"redundancy={config.redundancy_threshold:.2f} "
         f"reliability_weight={config.reliability_weight:.2f} "
-        f"recency_weight={config.recency_weight:.2f}"
+        f"recency_weight={config.recency_weight:.2f} "
+        f"on_harm={config.harm_policy}"
     )
 
     # The consequence, stated at the moment it is caused -- the same posture
@@ -147,7 +195,7 @@ def run(args: argparse.Namespace) -> int:
     # an unconfigured store's config defaults to DEFAULT_HOLDOUT_RATE, so
     # `running` is True for a store that has never run an experiment at all,
     # and warning there would teach people to ignore the warning.
-    # Fusion belongs here for the same reason scorer and floor do: it decides
+    # Fusion and reranking belong here for the same reason scorer and floor do: it decides
     # which lessons are eligible on an occasion. The budget deliberately does
     # NOT -- it changes how many of the eligible set are injected, which the
     # holdout already records per lesson, not which lessons have an arm.
@@ -155,6 +203,7 @@ def run(args: argparse.Namespace) -> int:
         config.scorer != before.scorer
         or abs(config.floor - before.floor) > 1e-9
         or config.fusion != before.fusion
+        or config.rerank != before.rerank
     )
     has_history = retrieval_io.has_recorded_assignments(root)
     if changed_eligibility and has_history and holdout_io.load_config(root).running:

@@ -108,9 +108,14 @@ after:
 Four verdicts, and the distinctions between them are deliberate:
 
 - **HELPS** / **HURTS** — a statistically significant effect after
-  Benjamini-Hochberg correction across every lesson tested. The correction
-  matters: at α=0.05 over 100 lessons about 5 look significant by chance,
-  and those are exactly the ones that get quoted.
+  Benjamini-Hochberg correction across every lesson tested, whose interval
+  also excludes zero on a boundary that holds at every sample size. The
+  correction matters: at α=0.05 over 100 lessons about 5 look significant
+  by chance, and those are exactly the ones that get quoted. The boundary
+  matters because a pilot is looked at as it runs, and a fixed threshold
+  checked repeatedly is crossed by luck. A significant-looking early result
+  reads UNDERPOWERED until it clears it (`--fixed-horizon` gives the
+  one-shot reading of a run nobody acted on midway).
 - **NO_MEASURABLE_EFFECT** — tested, nothing found, and always reported
   alongside the minimum detectable effect for that sample. It is a
   statement about the experiment's power, not proof the lesson is useless.

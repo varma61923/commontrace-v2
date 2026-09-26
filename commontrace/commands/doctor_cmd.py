@@ -150,6 +150,58 @@ def _declared_agent_type(root: str) -> str | None:
     return value.strip() or None
 
 
+def _traces_with_credentials(root: str) -> int:
+    """How many trace files contain a high-confidence credential. A plain
+    text scan, no YAML parse: `commontrace redact` does the rewriting."""
+    from commontrace import memory_guard
+    from commontrace.commands.redact_cmd import trace_paths
+
+    count = 0
+    for path in trace_paths(root):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if memory_guard.redact_secrets(fh.read())[1]:
+                    count += 1
+        except OSError:
+            continue
+    return count
+
+
+def _models_in_use(root: str, config) -> list[tuple[str, str]]:
+    """(role, model name) for each model this store's retrieval will load."""
+    from commontrace import rerank_arm, retrieval_io, semantic_arm
+
+    models = []
+    if config.fusion != retrieval_io.FUSION_NONE:
+        models.append(("embedding", semantic_arm.stored_model(root) or _default_embedder()))
+    if config.rerank != retrieval_io.RERANK_NONE and config.rerank in rerank_arm.MODELS:
+        models.append(("reranker", rerank_arm.MODELS[config.rerank][0]))
+    return models
+
+
+def _default_embedder() -> str:
+    from commontrace.semantic_arm import _load_reference
+
+    builder = _load_reference("", os.path.join("memory", "attention", "build_index.py"),
+                              "commontrace_reference_build_index_doctor")
+    return getattr(builder, "DEFAULT_MODEL_NAME", "") if builder else ""
+
+
+def _model_cached(name: str) -> bool:
+    """Whether the Hugging Face cache holds `name`, without any network."""
+    if not name:
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 - cannot tell: say nothing reassuring
+        return False
+    # sentence-transformers resolves a bare name under its own organisation.
+    for repo in (name,) if "/" in name else (name, f"sentence-transformers/{name}"):
+        if isinstance(try_to_load_from_cache(repo, "config.json"), str):
+            return True
+    return False
+
+
 def run(args: argparse.Namespace) -> int:
     _FAILURES.clear()
     root = paths.resolve_root(args.dest)
@@ -239,6 +291,17 @@ def run(args: argparse.Namespace) -> int:
         else:
             _check("trace filename collisions", True, "none detected")
 
+        leaked = _traces_with_credentials(root)
+        if leaked:
+            _check(
+                "credentials in stored traces", False,
+                f"{leaked} trace file(s) hold an API key, token or private key captured before "
+                "traces were redacted on write. `commontrace redact` removes them "
+                "(`--dry-run` to preview); then rotate those keys.",
+            )
+        else:
+            _check("credentials in stored traces", True, "none found")
+
         declared = _declared_agent_type(root)
         effective = paths.store_agent_type(root)
         if declared is None:
@@ -274,6 +337,36 @@ def run(args: argparse.Namespace) -> int:
     # spend someone's attention.
     if attention_extra:
         _check("attention extra (numpy + sentence-transformers)", True, "installed")
+        # Installed but not fused: this store's `query` ranks by meaning
+        # alone and its agents by keyword alone -- measured on LoCoMo, both
+        # find ~10 points less than the two fused.
+        from commontrace import retrieval_io
+
+        config = retrieval_io.load_config(root)
+        if config.fusion == retrieval_io.FUSION_NONE:
+            _info(
+                "retrieval fusion",
+                "off -- the attention extra is installed, so keyword + meaning ranking "
+                "is available: `commontrace retrieval --fusion gated --rerank "
+                "cross-encoder` (starts a new randomization if an experiment is running)",
+            )
+        if config.rerank == retrieval_io.RERANK_NONE:
+            _info(
+                "retrieval reranking",
+                "off -- the attention extra is installed, so a cross-encoder can "
+                "reorder the top candidates: `commontrace retrieval --rerank "
+                "cross-encoder` (starts a new randomization if an experiment is running)",
+            )
+        for role, name in _models_in_use(root, config):
+            if _model_cached(name):
+                _check(f"{role} model cached", True, name)
+            else:
+                _info(
+                    f"{role} model",
+                    f"{name} is not in the local model cache: the first query downloads it "
+                    "(needs internet, a few hundred MB). On a host without internet, copy "
+                    "~/.cache/huggingface/ from a machine that has run a query.",
+                )
     else:
         _info(
             "attention extra (numpy + sentence-transformers)",

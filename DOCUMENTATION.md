@@ -66,7 +66,7 @@ The `/commontrace` v2 mechanism is an **experimentation ground for the CommonTra
 
 The `/commontrace` v2.3 pipeline involves 6 agents. An orchestrator (main agent) coordinates; 5 sub-agents (Alpha, A, B, Omega, Lambda) are each a fresh sub-agent spawned asynchronously. Each has an autonomous brief and a strict scope — the briefs are copied verbatim from `SKILL.md`, not reformulated by the orchestrator (preserves fidelity to the canonical design).
 
-Added in v2.3 is a **semantic attention layer** (infrastructure, NOT a 7th agent) under `memory/attention/`: a numpy index of local embeddings (model `multi-qa-mpnet-base-dot-v1`) queried by Alpha via `query.py` as a Phase 0 pre-filter. This layer has no mandate of its own, no brief, no autonomy — it is an index called synchronously by Alpha to scale retrieval to 100+ lessons. Technical details in §4.6.
+Added in v2.3 is a **semantic attention layer** (infrastructure, NOT a 7th agent) under `memory/attention/`: a numpy index of local embeddings (model `Snowflake/snowflake-arctic-embed-m-v1.5` for a new index; `multi-qa-mpnet-base-dot-v1` for one built before it) queried by Alpha via `query.py` as a Phase 0 pre-filter. This layer has no mandate of its own, no brief, no autonomy — it is an index called synchronously by Alpha to scale retrieval to 100+ lessons. Technical details in §4.6.
 
 Added in parallel is a **companion skill `/dreamer` v0.1** (2026-05-27) under `$COMMONTRACE_ROOT/../dreamer/`: an autonomous agent that consumes the memory base and attention layer of `/commontrace` (without modifying `/commontrace` itself — Dreamer is a separate skill invocable via `/dreamer <project>`). The Dreamer sub-agent is spawned in Phase 1 of a session for an exhaustive autonomous reading (specs + code + docs + memory + state of the art if relevant), then the orchestrator dialogues with the user in open chat (not via a structured prompt) on the proposals section by section. For memory base modifications, Dreamer goes through Lambda Phase 11 `/commontrace` (existing mechanism, not reinvented). For code/doc modifications, Dreamer applies under tracked Git commits `[Dreamer] <summary>` after user validation. Full details in §6.4.
 
@@ -339,6 +339,7 @@ Strict frontmatter, parsable by `yaml.safe_load`:
 | `lessons_hit` | list[string] | yes | Slugs of lessons that actually helped (according to A/B reports + orchestrator retro). **NOT bounded by `retrieved`**: may include background-active lessons (counter-examples, implicit methodological rules, exceptions). The benchmark calculates two complementary ratios: **strict** (hit ∩ retrieved / retrieved = Alpha retrieval precision) and **permissive** (hit / retrieved = application richness, can be > 100%). |
 | `lessons_proposed_by_omega` | list[string] | yes | Slugs of new lessons proposed by Omega (before Lambda validation) |
 | `lessons_validated_by_lambda` | list[string] | yes | Slugs effectively validated by Lambda in Phase 11 and applied by the orchestrator — filled AFTER the fact. Renamed in v2.2 from `lessons_validated_by_user`. |
+| `lambda_decisions` | map[string, string] | no | Lambda's verdict on every Omega proposal: `ACCEPTED`, `REJECTED` or `NEEDS_REFINEMENT`. `commontrace bench` reports acceptance, rejection and refinement rates from it; episodes written before the field existed are skipped. |
 
 Body sections: `## What happened` (5-10 factual lines), `## What surprised me` (verbatim retro Phase 9), `## What worked well` (0-N items), `## What worked less well` (0-N items).
 
@@ -434,7 +435,22 @@ memory/attention/
 
 #### Embedding Model
 
-`multi-qa-mpnet-base-dot-v1` (sentence-transformers, ~420 MB, 768 dim). Chosen for:
+A new index is built with `Snowflake/snowflake-arctic-embed-m-v1.5`
+(sentence-transformers, 109M parameters, ~440 MB, 768 dim). An index built
+before it keeps `multi-qa-mpnet-base-dot-v1`, the original model (same size and
+width), until it is rebuilt with `--model`: the model decides which lessons the
+semantic arm surfaces, so it is part of the treatment an experiment records
+(fused and semantic-only labels name it: `gated(idf-v2+semantic@arctic-m)`).
+Only these two names are ever loaded (`TRUSTED_MODELS` in
+`commontrace/reference/query.py`), whatever an index file claims.
+
+arctic-embed replaced mpnet as the default because it finds more: on LoCoMo's
+1,531 questions its exact cosine search puts an answering turn's share of 0.706
+in the top 10, against 0.561 for mpnet. Queries carry the
+model's retrieval instruction ("Represent this sentence for searching relevant
+passages: "); lessons are encoded as they are.
+
+Both models are:
 - Optimized for Q&A retrieval (matching incoming task ↔ lesson description)
 - **Strictly local** execution after initial download (cache under `~/.cache/huggingface/`) — no runtime API call, no telemetry
 - L2-normalized embeddings (cosine == dot product = 1 scalar mat-mul for the query)
@@ -456,7 +472,7 @@ Stable contract (reused by Dreamer v2.4 hooks — cf. §6.4):
 |-----------------|-------------------|-------------------------------------------------|
 | `slugs`         | `np.ndarray[str]` | Lesson identifiers, ordered                     |
 | `embeddings`    | `np.ndarray[N,D]` | L2-normalized embeddings (cosine = dot)         |
-| `model_name`    | `str`             | `"multi-qa-mpnet-base-dot-v1"`                  |
+| `model_name`    | `str`             | one of `TRUSTED_MODELS` (the model that built it) |
 | `encoded_field` | `str`             | Human-readable schema of encoded fields         |
 | `timestamp`     | `str`             | ISO-8601 build time                             |
 | `n_lessons`     | `int`             | Number of active lessons indexed                |
@@ -835,18 +851,18 @@ Note v2.3: the scalability of Alpha retrieval to 100+ lessons (contextual limit,
 
 Note v0.1 `/dreamer` (2026-05-27): several limitations historically listed below (periodic memory base consolidation not implemented, cross-lesson audit absent, strategic course correction vs specifications missing) are now **addressed by the companion skill `/dreamer`** (cf. §6.4) — Dreamer proposes fusions/archives/reformulations of lessons to Lambda Phase 11, and raises strategic questions to the human. The `/commontrace`-internal limitations (temporal decay §8.2, auto bump uses→importance §8.3) remain relevant: Dreamer can detect and **propose** these updates, but does not implement an automatic importance evolution mechanism — it proposes, Lambda audits, the orchestrator applies.
 
-### 8.1 Benchmark Not Yet Implemented
+### 8.1 Benchmark (implemented)
 
-No benchmark script currently measures the target metrics:
-- `lesson_quality` — % of Omega proposals marked ACCEPTED by Lambda (signal of proposal quality + Omega/Lambda alignment)
-- `implicit_retrieval` — % of lessons retrieved by Alpha that actually helped according to `lessons_hit` (signal of retrieval precision)
-- `transfer_gap` — % of cross-project hits (lesson seeded on project X that helps on project Y), measure of generalization capacity
+`commontrace bench` (`commontrace/reference/measure_performance.py`) computes the three target metrics from episode frontmatter:
+- `lesson_quality` — % of Omega proposals validated by Lambda, plus Lambda's acceptance, rejection and refinement rates from `lambda_decisions`
+- `implicit_retrieval` — strict (precision) and permissive (richness) ratios of `lessons_hit` over `lessons_retrieved_by_alpha`
+- `transfer_gap` — % of cross-project hits (see 8.4 for why it is only partially measurable)
 
-Recommendation from the research: build a dedicated benchmark (~50 trios situation-failure / lesson / isomorphic-future-situation) reusing the Evo-Memory streaming format + AgentErrorBench error taxonomy. ~3-5 days of annotation. To do as a separate step.
+It persists every run, and supports `--diff`, `--history`, alert thresholds and `--strict` for CI. What is still open is the dedicated evaluation set the research recommended (~50 situation-failure / lesson / isomorphic-future-situation trios); retrieval quality itself was tuned on the public LoCoMo and LongMemEval datasets, scored from their evidence labels.
 
-### 8.2 Temporal Decay Not Implemented
+### 8.2 Temporal Decay (implemented, opt-in)
 
-An active lesson remains retrievable indefinitely, even if it has never helped. The `decay = importance × exp(-(today - last_hit) / tau)` mechanism would surface recently useful lessons and relegate old ones — but would risk forgetting rare but critical lessons (importance 5 on a showstopper that only occurs every 6 months). Likely need for coupling with a separate `recency` factor. To discuss when we have more empirical data on Alpha retrieval.
+`commontrace retrieval --recency-weight <0-1>` (`commontrace/recency.py`) lets a lesson's `last_hit` freshness move its rank among lessons that already cleared the relevance floor. It is off by default and never changes which lessons are eligible, only their order, so a rare but critical lesson is not forgotten: it still matches when its situation recurs.
 
 ### 8.3 Automatic Bump uses → importance Not Implemented
 

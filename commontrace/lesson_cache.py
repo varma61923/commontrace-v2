@@ -170,6 +170,34 @@ def _lesson_paths(root: str) -> list[str]:
     ]
 
 
+# The last cache this process read or wrote, per cache file:
+#   path -> (identity of the file it came from, its entries, paths whose
+#            `terms` have already been validated)
+#
+# A long-lived MCP server answers every `retrieve` from the same store, and
+# until this existed each call re-parsed the whole JSON cache and
+# re-validated every entry's token lists -- measured at 6,400 lessons, ~45ms
+# of JSON decoding and ~70ms of validation per call, for a file that had not
+# changed. The file's identity is (inode, mtime_ns, size): `_write_cache`
+# replaces the file by rename, so any rewrite -- ours or another process's --
+# is a new inode and misses this memo. Per-lesson staleness is still decided
+# by stat on every call, exactly as before; this only skips re-reading the
+# cache file itself when it is byte-for-byte the one already in memory.
+#
+# The entry dicts handed out are therefore shared between calls: callers
+# must treat returned frontmatter as read-only (none mutates it; the code
+# that edits a lesson re-reads the file with frontmatter.read).
+_MEMO: dict[str, tuple[tuple, dict, frozenset]] = {}
+
+
+def _file_identity(path: str) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
 def _read_cache(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -184,7 +212,7 @@ def _read_cache(path: str) -> dict:
     return entries
 
 
-def _write_cache(path: str, entries: dict) -> None:
+def _write_cache(path: str, entries: dict) -> tuple | None:
     """Atomic, and best-effort: a store on read-only media still retrieves.
 
     Unique tmp name per call, then `os.replace` -- the same pattern
@@ -199,7 +227,13 @@ def _write_cache(path: str, entries: dict) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 json.dump({"format_version": FORMAT_VERSION, "entries": entries}, fh)
+                fh.flush()
+                # The identity of THIS file, taken before the rename: a
+                # stat of `path` afterwards could see another process's
+                # write that landed in between.
+                st = os.fstat(fh.fileno())
             os.replace(tmp, path)
+            return (st.st_ino, st.st_mtime_ns, st.st_size)
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -208,6 +242,7 @@ def _write_cache(path: str, entries: dict) -> None:
             raise
     except (OSError, ValueError, TypeError):
         pass  # a cache that cannot be written is not an error, only slower
+    return None
 
 
 def _valid_terms(terms: object) -> bool:
@@ -236,6 +271,8 @@ def _stamps_differ(cached: dict, entries: dict) -> bool:
         return True
     for path, entry in entries.items():
         prior = cached.get(path)
+        if prior is entry:
+            continue  # the same object: taken from the cache unchanged
         if not isinstance(prior, dict):
             return True
         if (prior.get("mtime_ns"), prior.get("size")) != (entry.get("mtime_ns"), entry.get("size")):
@@ -282,7 +319,12 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
         return {}, []
 
     cpath = cache_path(root)
-    cached = _read_cache(cpath)
+    identity = _file_identity(cpath)
+    memo = _MEMO.get(cpath)
+    if memo is not None and identity is not None and memo[0] == identity:
+        cached, validated = memo[1], memo[2]
+    else:
+        cached, validated = _read_cache(cpath), frozenset()
 
     entries: dict = {}
     repaired = False
@@ -297,7 +339,7 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
             and prior.get("size") == stamp[1]
             and isinstance(prior.get("fm"), dict)
         )
-        if stamp_and_fm_match and _valid_terms(prior.get("terms")):
+        if stamp_and_fm_match and (path in validated or _valid_terms(prior.get("terms"))):
             entries[path] = prior
             continue
         if stamp_and_fm_match:
@@ -327,7 +369,15 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
     # Write only when the cache would actually change, so a steady-state query
     # is pure reads -- no tmpfile, no rename, no write amplification per query.
     if repaired or _stamps_differ(cached, entries):
-        _write_cache(cpath, entries)
+        written = _write_cache(cpath, entries)
+        if written is not None:
+            _MEMO[cpath] = (written, entries, frozenset(entries))
+        else:
+            _MEMO.pop(cpath, None)
+    elif identity is not None:
+        # Unchanged: the file on disk is `cached`, and every entry kept from
+        # it has had its terms validated.
+        _MEMO[cpath] = (identity, cached, validated | frozenset(entries))
     return entries, [p for p in lesson_paths if p in entries]
 
 
@@ -357,6 +407,30 @@ def load_active(root: str, agent_type: str | None = None,
     return out
 
 
+class TermCache(dict):
+    """path -> tokenized fields, plus each lesson file's (mtime_ns, size).
+
+    The stamps are what let `retrieval.rank_lessons` keep its per-store index
+    between calls: the index is valid for exactly the lessons, at exactly the
+    file versions, it was built from (retrieval._corpus_index).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stamps: dict[str, tuple[int, int]] = {}
+        # The lesson list returned alongside, and a key covering every
+        # (path, stamp) in it, in order -- set by load_active_with_terms.
+        self.lessons: list | None = None
+        self.fingerprint: tuple | None = None
+        self.fingerprint_hash: int = 0
+
+
+# The last (lessons, term_cache) handed out per (root, agent_type), returned
+# again -- the same objects -- while the snapshot is unchanged, so its
+# fingerprint (and rank_lessons' index for it) is not rebuilt per call.
+_SNAPSHOTS: dict[tuple, tuple[tuple, list, TermCache]] = {}
+
+
 def load_active_with_terms(
     root: str, agent_type: str | None = None, reader=None,
 ) -> tuple[list[tuple[str, dict]], dict[str, list[list[str]]]]:
@@ -364,8 +438,17 @@ def load_active_with_terms(
     pass the second value straight through as `rank_lessons(..., term_cache=)`
     to skip re-tokenizing text that has not changed since the last query."""
     entries, ordered = _load_entries(root, reader=reader)
+    # What the returned snapshot is a function of: which files, at which
+    # versions, in which order. Same key -> the same objects as last time.
+    snap_key = tuple(
+        (p, entries[p]["mtime_ns"], entries[p]["size"]) for p in ordered
+    )
+    memo_key = (os.path.abspath(root), agent_type)
+    prior = _SNAPSHOTS.get(memo_key)
+    if prior is not None and prior[0] == snap_key:
+        return prior[1], prior[2]
     lessons: list[tuple[str, dict]] = []
-    term_cache: dict[str, list[list[str]]] = {}
+    term_cache = TermCache()
     for path in ordered:
         entry = entries.get(path)
         if entry is None:
@@ -377,6 +460,11 @@ def load_active_with_terms(
             continue
         lessons.append((path, fm))
         term_cache[path] = entry["terms"]
+        term_cache.stamps[path] = (entry["mtime_ns"], entry["size"])
+    term_cache.lessons = lessons
+    term_cache.fingerprint = tuple((p, term_cache.stamps[p]) for p, _fm in lessons)
+    term_cache.fingerprint_hash = hash(term_cache.fingerprint)
+    _SNAPSHOTS[memo_key] = (snap_key, lessons, term_cache)
     return lessons, term_cache
 
 

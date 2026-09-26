@@ -166,6 +166,29 @@ def holdout_log_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "holdout_log.jsonl")
 
 
+def _append_lines(path: str, lines: list[str]) -> None:
+    """Append complete lines to a JSONL file, durably. Caller holds the lock.
+
+    If a previous writer died mid-line, the file ends without a newline, and
+    a plain append would glue this write's first line onto that fragment --
+    so one torn record would take the next good one with it, and the reader
+    would drop both. Terminating the fragment first confines the damage to
+    the line that was actually torn.
+    """
+    needs_newline = False
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
+        with open(path, "rb") as fh:
+            fh.seek(-1, os.SEEK_END)
+            needs_newline = fh.read(1) != b"\n"
+    with open(path, "a", encoding="utf-8") as fh:
+        if needs_newline:
+            fh.write("\n")
+        for line in lines:
+            fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
 def assign_and_log(
     root: str,
     slugs: list[str],
@@ -176,6 +199,7 @@ def assign_and_log(
     relevance: dict[str, float] | None = None,
     scorer: str = "",
     floor: float | None = None,
+    revisions: dict[str, str | None] | None = None,
 ) -> set[str]:
     """Decide which of `slugs` to withhold on this occasion, and record it.
 
@@ -199,6 +223,16 @@ def assign_and_log(
     check_assignment_concentration read these fields; without them they
     cannot be computed retroactively, because the corpus that produced the
     scores has moved on.
+
+    `revisions` supplies the revision for ids that are NOT lessons in this
+    store -- a memory held by another system, measured through
+    commontrace/measure.py. Looking such an id up on disk finds nothing and
+    records None, and None is the one value the revision check cannot use
+    (commontrace/integrity.py reports it as unchecked). That matters more
+    for external memories than for lessons, not less: a store that updates
+    a memory in place keeps its id while changing its text, so without a
+    revision one id silently pools occasions treated with different content.
+    An id present here is taken as given, including an explicit None.
     """
     withheld = {s for s in slugs if experiment.is_held_out(s, occasion_id, rate, salt)}
     # Written on every line from now on. Without it the log says how far an
@@ -218,42 +252,124 @@ def assign_and_log(
     # and A DROPPED OBSERVATION IS NOT NEUTRAL. It removes one arm's data
     # point from a randomized comparison, biasing the result. Cheap to
     # prevent, near-impossible to detect after the fact.
+    lines: list[str] = []
     with frontmatter.locked(path):
-        with open(path, "a", encoding="utf-8") as fh:
-            for rank, slug in enumerate(slugs, start=1):
-                row = {
-                    "occasion_id": occasion_id,
-                    "lesson": slug,
-                    "injected": slug not in withheld,
-                    "rate": rate,
-                    "salt": salt,
-                    "at": now,
-                    # Where this lesson placed among the eligible set, and how
-                    # strongly it matched. See this function's docstring.
-                    "rank": rank,
-                    # WHICH TEXT was eligible on this occasion, not just which
-                    # lesson name. A lesson is a file and every surface can
-                    # rewrite it -- so a slug alone identifies a mutable
-                    # thing, and an experiment keyed on one pools occasions
-                    # treated with different instructions into a single arm
-                    # and reports an effect for a treatment that no longer
-                    # exists (commontrace/revision.py).
-                    #
-                    # Resolved here, at decision time, rather than passed in:
-                    # every caller would otherwise have to remember to, and
-                    # the one that forgot would silently log the old shape.
-                    "revision": lesson_io.revision_for_slug(root, slug),
-                }
-                if relevance is not None and slug in relevance:
-                    row["relevance"] = round(float(relevance[slug]), 6)
-                if scorer:
-                    row["scorer"] = scorer
-                if floor is not None:
-                    row["floor"] = float(floor)
-                fh.write(json.dumps(row) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        for rank, slug in enumerate(slugs, start=1):
+            row = {
+                "occasion_id": occasion_id,
+                "lesson": slug,
+                "injected": slug not in withheld,
+                "rate": rate,
+                "salt": salt,
+                "at": now,
+                # Where this lesson placed among the eligible set, and how
+                # strongly it matched. See this function's docstring.
+                "rank": rank,
+                # WHICH TEXT was eligible on this occasion, not just which
+                # lesson name. A lesson is a file and every surface can
+                # rewrite it -- so a slug alone identifies a mutable
+                # thing, and an experiment keyed on one pools occasions
+                # treated with different instructions into a single arm
+                # and reports an effect for a treatment that no longer
+                # exists (commontrace/revision.py).
+                #
+                # Resolved here, at decision time, rather than passed in:
+                # every caller would otherwise have to remember to, and
+                # the one that forgot would silently log the old shape.
+                "revision": (
+                    revisions[slug]
+                    if revisions is not None and slug in revisions
+                    else lesson_io.revision_for_slug(root, slug)
+                ),
+            }
+            if relevance is not None and slug in relevance:
+                row["relevance"] = round(float(relevance[slug]), 6)
+            if scorer:
+                row["scorer"] = scorer
+            if floor is not None:
+                row["floor"] = float(floor)
+            lines.append(json.dumps(row))
+        _append_lines(path, lines)
     return withheld
+
+
+def outcomes_log_path(root: str) -> str:
+    """Append-only record of task outcomes reported by occasion id.
+
+    The experiment joins assignments to outcomes by occasion. For this
+    store's own runs those outcomes already exist -- an episode's verdict, a
+    trace's `outcome.resolved` -- but an application measuring memory held
+    by ANOTHER system (commontrace/measure.py) has neither. It has an
+    occasion id and a yes or no. Asking it to fabricate an episode or a
+    trace file to say that would put invented records into the corpus, so
+    it gets a plain log instead.
+    """
+    return os.path.join(paths.memory_dir(root), "occasion_outcomes.jsonl")
+
+
+class ConflictingOutcome(ValueError):
+    """An occasion's outcome was reported twice with different answers."""
+
+
+def read_outcomes(root: str) -> dict[str, bool]:
+    """occasion_id -> succeeded, from `outcomes_log_path`. Malformed lines
+    are skipped: a torn write must not take every other outcome with it."""
+    path = outcomes_log_path(root)
+    out: dict[str, bool] = {}
+    if not os.path.isfile(path):
+        return out
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            occasion, succeeded = row.get("occasion_id"), row.get("succeeded")
+            if isinstance(occasion, str) and occasion and isinstance(succeeded, bool):
+                out[occasion] = succeeded
+    return out
+
+
+def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
+    """Record whether the task on `occasion_id` succeeded.
+
+    Returns True if a line was written, False if the same answer was
+    already on record -- a retry of the same report is expected and
+    harmless, so it does not raise and does not write a duplicate.
+
+    A DIFFERENT answer for an occasion already on record raises
+    ConflictingOutcome instead of overwriting. Occasions are the unit the
+    two arms are compared on; quietly letting the last report win would let
+    one late or mistaken call move an occasion from success to failure
+    after the fact, which is a change to the result, not to the data.
+    Checked and written inside one lock so two concurrent reporters cannot
+    both see "no record" and both write.
+    """
+    if not isinstance(occasion_id, str) or not occasion_id.strip():
+        raise ValueError("occasion_id must be a non-empty string")
+    if not isinstance(succeeded, bool):
+        # bool only: 1/0 or "yes" would be accepted by a truthiness check
+        # and then silently fail read_outcomes' isinstance filter, losing
+        # the outcome on read rather than rejecting it on write.
+        raise TypeError(f"succeeded must be a bool, got {type(succeeded).__name__}")
+    path = outcomes_log_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with frontmatter.locked(path):
+        existing = read_outcomes(root).get(occasion_id)
+        if existing is not None:
+            if existing == succeeded:
+                return False
+            raise ConflictingOutcome(
+                f"occasion {occasion_id!r} is already recorded as "
+                f"{'succeeded' if existing else 'failed'}; refusing to change it"
+            )
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        _append_lines(
+            path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})]
+        )
+    return True
 
 
 @dataclass(frozen=True)

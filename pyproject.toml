@@ -167,3 +167,6 @@ extend-exclude = [".claude", ".agents", "scratch"]
 # deliberately-chosen policy, not silently start failing because a ruff
 # upgrade added a new default category.
 select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501", "F841"]

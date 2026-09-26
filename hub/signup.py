@@ -37,8 +37,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit
-from hub.abuse import RateLimiter, resolve_client_key
-from hub.admin import _CSS, h
+from hub.abuse import RateLimiter, rate_limit_key
+from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin, secret_field
 from hub.auth import issue_api_key
 from hub.db import session_scope
 from hub.models import Organization
@@ -56,8 +56,8 @@ _EXTRA_CSS = """
 .signin input{width:100%;padding:.6rem .7rem;font:inherit;border:1px solid var(--rule);
   border-radius:8px;margin:.5rem 0 .8rem}
 .signin button{padding:.55rem 1.1rem;font:inherit;border-radius:8px;border:1px solid var(--ink);
-  background:var(--ink);color:#fff;cursor:pointer}
-.err{color:#C0392B;font-size:.9rem;margin:.4rem 0}
+  background:var(--ink);color:var(--paper);cursor:pointer}
+.err{color:var(--bad);font-size:.9rem;margin:.4rem 0}
 .share-box{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
   padding:.9rem 1.1rem;margin:0 0 1.25rem}
 .share-box input{width:100%;padding:.5rem .6rem;font:inherit;font-size:.85rem;
@@ -88,8 +88,8 @@ _ISSUED = """
 <h1>Account created</h1>
 <p class="sub">Store this key now -- it is never shown again, and anyone holding it has full
 access to this organization's memory.</p>
-<div class="share-box"><b>Your API key</b>
-<input type="text" readonly value="{key}" onclick="this.select()"></div>
+<div class="share-box"><b id="api-key-label">Your API key</b>
+{key_field}</div>
 <p class="sub">Organization id: <span class="rev">{org_id}</span></p>
 <p><a href="{console_path}/signin">Sign in to the console →</a>, or use this key directly with
 the <code>commontrace</code> CLI / an MCP client.</p>
@@ -103,9 +103,8 @@ def _page(title: str, body: str) -> HTMLResponse:
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{h(title)} · CommonTrace</title><style>{_CSS}{_EXTRA_CSS}</style></head><body>"
         '<header class="bar"><div class="in"><b>CommonTrace</b></div></header>'
-        f"<main>{body}</main></body></html>",
-        headers={"Cache-Control": "no-store, private", "Referrer-Policy": "same-origin",
-                 "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"},
+        f"<main>{body}</main>{_FORM_GUARD_SCRIPT}</body></html>",
+        headers=html_headers(_FORM_GUARD_SCRIPT),
     )
 
 
@@ -127,12 +126,12 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
 
     async def signup(request: Request) -> Response:
         allowed, _retry_after = await signup_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,
-                error='<p class="err">Too many signups from this address. Try again shortly.</p>',
+                error='<p class="err" role="alert">Too many signups from this address. Try again shortly.</p>',
             ))
         form = await request.form()
         if str(form.get("website") or "").strip():
@@ -144,13 +143,13 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
             logger.info("signup rejected: honeypot field filled")
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,
-                error='<p class="err">Something went wrong. Please try again.</p>',
+                error='<p class="err" role="alert">Something went wrong. Please try again.</p>',
             ))
         org_name = str(form.get("org_name") or "").strip()
         if not (MIN_NAME_CHARS <= len(org_name) <= MAX_NAME_CHARS):
             return _page("Create account", _FORM.format(
                 path=SIGNUP_PATH,
-                error=f'<p class="err">Organization name must be {MIN_NAME_CHARS}-'
+                error=f'<p class="err" role="alert">Organization name must be {MIN_NAME_CHARS}-'
                       f'{MAX_NAME_CHARS} characters.</p>',
             ))
         async with session_scope(session_factory) as session:
@@ -165,8 +164,9 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
             )
             org_id = org.id
         return _page("Account created", _ISSUED.format(
-            key=h(issued.raw_key), org_id=h(org_id), console_path=console_path,
+            key_field=secret_field(issued.raw_key, "api-key-label"), org_id=h(org_id),
+            console_path=console_path,
         ))
 
     app.add_route(SIGNUP_PATH, signup_page, methods=["GET"])
-    app.add_route(SIGNUP_PATH, signup, methods=["POST"])
+    app.add_route(SIGNUP_PATH, refuse_cross_origin(signup), methods=["POST"])

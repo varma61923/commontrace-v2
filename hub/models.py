@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -33,9 +34,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
@@ -163,6 +166,16 @@ class Organization(Base):
     # the credibility of the last one's. `start_experiment` writes both
     # together for exactly that reason.
     holdout_prereg: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # What search does with a trace this org's experiment measured making
+    # outcomes WORSE (commontrace/harm.py): "inform" (the default) returns it
+    # with its HURTS verdict attached; "withdraw" stops returning it and
+    # names it instead. Default-off because switching it on changes what a
+    # running fleet is given, which is a decision rather than an upgrade
+    # side effect.
+    harm_policy: Mapped[str] = mapped_column(
+        String(16), default="inform", server_default="inform", nullable=False
+    )
 
     # --- Self-service account deletion (hub/crud.py:request_org_deletion) --
     #
@@ -668,6 +681,127 @@ class KnowledgeBaseSubmission(Base):
         UniqueConstraint("org_id", "idempotency_key", name="uq_kb_submissions_org_idempotency_key"),
     )
 
+
+class CommonsCorpusState(Base):
+    """One row: a version number for the Knowledge Base's matchable corpus.
+
+    hub/commons_cache.py keeps each process's copy of the corpus -- ids,
+    owners, agent types and the MinHash signature matrix -- in memory, and
+    reloads it only when this number moves. Measured at 20,000 entries,
+    loading and decoding that corpus was ~1.4s of a ~1.5s query while the
+    comparison itself took ~3ms, so the reload IS the query cost; skipping
+    it when nothing changed is the whole optimization.
+
+    The number is moved by database triggers on `traces`
+    (COMMONS_CORPUS_TRIGGER_DDL below), not by application code, and that
+    is the load-bearing decision. Visibility changes happen on many paths
+    -- seeding, accepting a submission, retraction, restore, quarantine,
+    amendment, deletion, purge, account deletion -- and an inventory of
+    them kept by hand is exactly the kind of list this codebase has watched
+    drift before (hub/tests/test_commons_toggle.py). A trigger fires on
+    every path, including raw SQL and restores, by construction.
+
+    `changed_at` rides along with `version` so the pair identifies a state
+    uniquely: a database restored to an earlier point can reach the same
+    counter value again, but not at the same instant.
+    """
+
+    __tablename__ = "commons_corpus_state"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# The columns whose change can alter what the Knowledge Base matcher sees:
+# the five visibility conditions (hub/crud.py:commons_visible), the
+# signature itself, and the three per-query filters and orderings applied
+# to it (owner, agent type, created_at). Deliberately NOT trust,
+# commons_votes, commons_hits or any text column: those change on every
+# vote and every matched query, are never cached, and are read fresh for
+# each matched row -- firing on them would turn the cache into a reload on
+# every request, and make one row of this table a write hot spot.
+COMMONS_CORPUS_COLUMNS = (
+    "shared_with_commons",
+    "commons_source",
+    "quarantined",
+    "commons_retracted_at",
+    "superseded_at",
+    "commons_signature",
+    "org_id",
+    "agent_type",
+    "created_at",
+)
+
+# A row that is not, and was not, a Knowledge Base candidate never fires:
+# ordinary customer traces are the overwhelming majority of writes, and
+# every one of them bumping a single shared row would serialize them.
+_WAS_OR_IS_COMMONS = (
+    "(OLD.shared_with_commons OR OLD.commons_source = 'seed' "
+    "OR NEW.shared_with_commons OR NEW.commons_source = 'seed')"
+)
+
+COMMONS_CORPUS_TRIGGER_DDL = (
+    """
+    CREATE OR REPLACE FUNCTION commons_corpus_bump() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+    BEGIN
+        INSERT INTO commons_corpus_state (id, version, changed_at)
+        VALUES (1, 1, clock_timestamp())
+        ON CONFLICT (id) DO UPDATE
+        SET version = commons_corpus_state.version + 1,
+            changed_at = clock_timestamp();
+        RETURN NULL;
+    END
+    $$
+    """,
+    """
+    CREATE OR REPLACE FUNCTION commons_corpus_key(OUT version bigint, OUT changed_at timestamptz)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+        SELECT version, changed_at FROM commons_corpus_state WHERE id = 1
+    $$
+    """,
+    """
+    CREATE TRIGGER commons_corpus_bump_insert
+    AFTER INSERT ON traces FOR EACH ROW
+    WHEN (NEW.shared_with_commons OR NEW.commons_source = 'seed')
+    EXECUTE FUNCTION commons_corpus_bump()
+    """,
+    """
+    CREATE TRIGGER commons_corpus_bump_delete
+    AFTER DELETE ON traces FOR EACH ROW
+    WHEN (OLD.shared_with_commons OR OLD.commons_source = 'seed')
+    EXECUTE FUNCTION commons_corpus_bump()
+    """,
+    f"""
+    CREATE TRIGGER commons_corpus_bump_update
+    AFTER UPDATE OF {", ".join(COMMONS_CORPUS_COLUMNS)} ON traces FOR EACH ROW
+    WHEN ({_WAS_OR_IS_COMMONS} AND
+          ({", ".join("OLD." + c for c in COMMONS_CORPUS_COLUMNS)})
+          IS DISTINCT FROM
+          ({", ".join("NEW." + c for c in COMMONS_CORPUS_COLUMNS)}))
+    EXECUTE FUNCTION commons_corpus_bump()
+    """,
+)
+
+# Both functions are SECURITY DEFINER with a pinned search_path. The Hub's
+# runtime role is meant to hold DML grants and nothing more
+# (hub/DEPLOYMENT.md), and a deployment that grants per table would give it
+# none on commons_corpus_state -- at which point every Knowledge Base write
+# fails inside the trigger with "permission denied", and every query fails
+# reading the version. hub/tests/test_row_level_security.py caught exactly
+# that, connecting as such a role. Running as the owner instead means the
+# counter needs no grant at all; neither function takes input, and the
+# pinned search_path is what stops a caller's own schema from supplying a
+# lookalike table to a function running with the owner's rights.
+#
+# create_all builds the test schema (hub/tests/conftest.py) and has no
+# notion of triggers, so they are attached to the table's creation here;
+# deployed databases get the identical statements from the migration, and
+# hub/tests/test_commons_cache.py pins the two copies together. One DDL per
+# statement: asyncpg prepares each statement and refuses several at once.
+for _statement in COMMONS_CORPUS_TRIGGER_DDL:
+    event.listen(Trace.__table__, "after_create", DDL(_statement))
 
 # Allowed feedback_tag values, as both the source of truth for the DB CHECK
 # constraint below AND for hub/crud.py's application-level validation

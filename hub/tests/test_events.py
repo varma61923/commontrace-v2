@@ -347,6 +347,8 @@ class TestSsrfProtection:
         "0.0.0.0",           # unspecified
         "::1",               # IPv6 loopback
         "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback -- not a bypass
+        "100.100.100.200",   # carrier-grade NAT: Alibaba Cloud's metadata service
+        "100.64.0.1",        # carrier-grade NAT: neither private nor public
     ])
     async def test_a_private_or_internal_target_is_rejected(self, ip):
         with pytest.raises(events.EventError, match="private"):
@@ -358,6 +360,7 @@ class TestSsrfProtection:
         # is_private by ipaddress -- this actually exercises the allowed
         # path rather than accidentally rejecting for the wrong reason.
         await events._reject_private_target(URL, resolve=_fake_resolve_to("8.8.8.8"))
+        await events._reject_private_target(URL, resolve=_fake_resolve_to("2606:4700::1111"))
 
     async def test_an_unresolvable_host_is_refused_not_silently_allowed(self):
         async def resolve(hostname):

@@ -8,7 +8,7 @@
 # against). The `commontrace` CLI is a separate, pip-installable client and
 # deliberately does not ship in this image.
 
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -28,7 +28,7 @@ COPY hub/requirements.txt hub/requirements-lock.txt ./hub/
 RUN pip install --prefix=/install -r hub/requirements.txt -c hub/requirements-lock.txt
 
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -48,8 +48,11 @@ WORKDIR /app
 # validate call (single source of truth -- the schema is never copied into
 # Python). Omitting them would make the container start and then fail on the
 # first contribute_trace.
-COPY --chown=hub:hub hub/ /app/hub/
-COPY --chown=hub:hub protocol/ /app/protocol/
+# Owned by root and only readable by `hub`: the process that serves the
+# network cannot rewrite its own code, whether or not the runtime mounts
+# the filesystem read-only (deploy/k8s does; plain docker/compose do not).
+COPY hub/ /app/hub/
+COPY protocol/ /app/protocol/
 # hub/ imports two client modules, and both are deliberate shared
 # dependencies rather than layering slips: overlap.py (MinHash, in
 # hub/commons.py) because signatures are only comparable if client and
@@ -66,7 +69,7 @@ COPY --chown=hub:hub protocol/ /app/protocol/
 # commontrace module hub/ imports, and that each one is import-safe against
 # hub/requirements.txt alone -- an allowlist that falls behind the imports
 # does not fail the build, it fails container START.
-COPY --chown=hub:hub commontrace/ /app/commontrace/
+COPY commontrace/ /app/commontrace/
 
 USER hub
 EXPOSE 8420

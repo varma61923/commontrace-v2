@@ -80,6 +80,9 @@ commontrace/**
 !commontrace/decay.py
 !commontrace/retrieval.py
 !commontrace/_lexical.py
+# retrieval.py's own import: the Porter stemmer behind the opt-in idf-v3
+# scorer. Pure stdlib (functools).
+!commontrace/_stem.py
 # Secret/PII/prompt-injection screening (OWASP ASI06), imported at module
 # level by hub/abuse.py:suspicion_reason so the same content-safety scan
 # a customer's own `commontrace lesson approve` runs also gates
@@ -110,6 +113,12 @@ commontrace/**
 !commontrace/distill.py
 # distill.py's own import (STARTER_DOMAINS) -- pure stdlib (os, re, sys).
 !commontrace/paths.py
+# The harm policy's constants and `split` (hub/crud.py:search_traces and
+# hub/manage.py:harm_policy), shared with the local tier so both decide the
+# same way. Imported at module level, so without it the container starts
+# and dies. Pure: imports only experiment.py. Reading the LOCAL store's
+# evidence lives in commontrace/evidence.py, which the Hub never imports.
+!commontrace/harm.py
 
 # Secrets must come from the platform's secret store, never be baked in
 .env

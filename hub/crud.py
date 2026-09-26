@@ -25,11 +25,26 @@ import json
 import logging
 import math
 import secrets
+import time
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, Float, and_, case, delete, distinct, func, literal, or_, select, union, update
+from sqlalchemy import (
+    Boolean,
+    Float,
+    Select,
+    and_,
+    case,
+    delete,
+    distinct,
+    func,
+    literal,
+    or_,
+    select,
+    union,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,13 +54,14 @@ from commontrace import (
     decay,
     distill,
     experiment,
+    harm,
     integrity,
     prereg,
     raw_export,
     revision,
     value,
 )
-from hub import audit, commons, outcomes, plans
+from hub import audit, commons, commons_cache, outcomes, plans
 from hub import search as hub_search
 from hub.abuse import (
     RateLimited,
@@ -394,6 +410,81 @@ def commons_visible() -> list:
         Trace.commons_retracted_at.is_(None),
         Trace.superseded_at.is_(None),
     ]
+
+
+@dataclasses.dataclass
+class _CommonsCorpus:
+    """What commons_overlap/commons_search scan: `ids` and `signatures` in
+    scan order, and `total`, the count before the scan cap. `rows` carries
+    the already-loaded full rows on the direct path and is None on the
+    cached one, where only matched rows are ever loaded."""
+
+    total: int
+    ids: list[str]
+    signatures: object
+    rows: dict[str, Trace] | None
+
+
+async def _commons_corpus(session: AsyncSession, org_id: str, agent_type: str) -> _CommonsCorpus:
+    """The Knowledge Base corpus one caller's query scans.
+
+    With numpy, from this process's cached snapshot (hub/commons_cache.py),
+    which is rebuilt only when the corpus changed. Without it, loaded the
+    way it always was. Both apply the same visibility rule, the same
+    exclusion of the caller's own rows, the same agent_type filter, the
+    same created_at DESC, id DESC order and the same scan cap, so a match
+    and a tie resolve identically either way.
+    """
+    cap = commons.max_corpus_scan()
+    if commons_cache.available():
+        snap = await commons_cache.snapshot(session, commons_visible())
+        total, ids, signatures = commons_cache.select_for(snap, org_id, agent_type, cap)
+        return _CommonsCorpus(total=total, ids=ids, signatures=signatures, rows=None)
+
+    where = [
+        *commons_visible(),
+        Trace.commons_signature.isnot(None),
+        Trace.org_id != org_id,
+    ]
+    if agent_type:
+        where.append(Trace.agent_type == agent_type)
+    total = (
+        await session.execute(select(func.count()).select_from(Trace).where(*where))
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(Trace)
+            .where(*where)
+            .order_by(Trace.created_at.desc(), Trace.id.desc())
+            .limit(cap)
+        )
+    ).scalars().all()
+    return _CommonsCorpus(
+        total=total,
+        ids=[r.id for r in rows],
+        signatures=[r.commons_signature or [] for r in rows],
+        rows={r.id: r for r in rows},
+    )
+
+
+async def _commons_rows(
+    session: AsyncSession, corpus: _CommonsCorpus, ids: list[str]
+) -> dict[str, Trace]:
+    """Full rows for the entries that matched, keyed by id.
+
+    On the cached path these are read now, with commons_visible() applied
+    again: the snapshot may be a moment old, and an entry retracted in that
+    moment must drop out of the answer rather than be served. Its caller
+    treats a missing id as no match.
+    """
+    if corpus.rows is not None:
+        return {i: corpus.rows[i] for i in ids if i in corpus.rows}
+    if not ids:
+        return {}
+    got = (
+        await session.execute(select(Trace).where(Trace.id.in_(set(ids)), *commons_visible()))
+    ).scalars().all()
+    return {r.id: r for r in got}
 
 
 def standing_of(trace: Trace, now: datetime | None = None) -> str:
@@ -952,6 +1043,7 @@ async def search_traces(
     if tags:
         stmt = stmt.where(Trace.tags.overlap(tags))
 
+    harmful: dict[str, dict] = {}
     if query and not chosen.used:
         # A query was asked and nothing survived to match on -- either it
         # reduced to no lexemes at all (stopwords), or every lexeme was too
@@ -968,11 +1060,22 @@ async def search_traces(
         rows: list[Trace] = []
         has_more = False
     else:
+        # Traces this org's experiment measured making outcomes worse, if
+        # the org withdraws them (commontrace/harm.py). Filtered in the
+        # query, so paging and `has_more` stay exact and the slot goes to
+        # the next-ranked trace; ts_rank scores each row on its own, so no
+        # other trace's rank moves.
+        harmful = await _withdrawn_traces(session, org_id)
+        page_stmt = stmt.where(Trace.id.notin_(list(harmful))) if harmful else stmt
         # Fetch one more than asked so has_more is exact without a COUNT(*).
-        stmt = stmt.offset(offset).limit(limit + 1)
-        rows = list((await session.execute(stmt)).scalars().all())
+        rows = list((await session.execute(page_stmt.offset(offset).limit(limit + 1))).scalars().all())
         has_more = len(rows) > limit
     traces = list(rows[:limit])
+    withdrawn: list[dict] = []
+    if harmful:
+        traces, withdrawn = await _withdraw_from_page(
+            session, org_id, stmt, traces, harmful, offset=offset, limit=limit,
+        )
 
     if query:
         # Recorded on the FIRST page only. Paging through a result set is
@@ -988,7 +1091,7 @@ async def search_traces(
             .where(Trace.org_id == org_id, Trace.id.in_([t.id for t in traces]))
             .values(retrievals=Trace.retrievals + 1)
         )
-    return {
+    result = {
         "traces": await _hydrate(session, traces, brief=brief),
         "limit": limit,
         "offset": offset,
@@ -996,6 +1099,108 @@ async def search_traces(
         "terms": list(chosen.all_terms),
         "terms_ignored": list(chosen.ignored),
     }
+    if withdrawn:
+        # Named, never silent, and without their text: they are here to say
+        # what was not handed over and why, not to be used.
+        result["withdrawn"] = withdrawn
+        result["withdrawn_note"] = harm.note(len(withdrawn))
+    await _attach_evidence(session, org_id, result)
+    return result
+
+
+async def _withdrawn_traces(session: AsyncSession, org_id: str) -> dict[str, dict]:
+    """trace id -> evidence, for every trace this org's harm policy withdraws.
+
+    Empty unless the org has chosen `withdraw` AND its experiment's evidence
+    is readable -- the same evidence, cached the same way, that search
+    attaches (causal_evidence), so the verdict acted on is always the one
+    shown, and it is the anytime-valid one (causal_effects analyses with
+    sequential=True).
+    """
+    # session.get, not a column select: _evidence_key loads the same row, so
+    # the identity map makes this one fetch per search rather than two.
+    org = await session.get(Organization, org_id)
+    if org is None or org.harm_policy != harm.POLICY_WITHDRAW:
+        return {}
+    evidence = await causal_evidence(session, org_id)
+    if not evidence["available"]:
+        return {}
+    return harm.hurts(evidence["by_trace"])
+
+
+async def _withdraw_from_page(
+    session: AsyncSession,
+    org_id: str,
+    unfiltered: Select,
+    traces: list[Trace],
+    harmful: dict[str, dict],
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[Trace], list[dict]]:
+    """(traces to return, withdrawn entries) for one page of a search.
+
+    Two things beyond the SQL filter.
+
+    NAMED WHERE IT WOULD HAVE BEEN. A withdrawn trace is reported on the
+    page it would have appeared on without the policy, found by running the
+    same ranking unfiltered for ids only. One ranked off this page would not
+    have been handed over anyway, and naming it would say this search kept
+    out something it was never going to give.
+
+    ITS NEAR-DUPLICATES GO WITH IT. The holdout randomizes a near-duplicate
+    cluster as one unit under its oldest member (_cluster_representatives),
+    so the verdict on that member IS the verdict on the cluster: occasions
+    where a re-telling was what the agent saw were counted under the
+    original's id. Withdrawing the original alone would hand the same
+    content back through a re-telling, and randomize it under a new id.
+    """
+    would_have_shown = (
+        await session.execute(
+            unfiltered.with_only_columns(Trace.id).offset(offset).limit(limit)
+        )
+    ).scalars().all()
+    withdrawn = [
+        {"id": trace_id, "reason": harm.REASON, "evidence": harmful[trace_id]}
+        for trace_id in would_have_shown if trace_id in harmful
+    ]
+
+    if traces:
+        # Live originals only. An amendment is a near-duplicate of the trace
+        # it superseded by construction, and it is usually the FIX -- so
+        # clustering against a superseded original would withdraw the
+        # correction on the strength of the text it replaced. The amendment
+        # has its own id and gets its own trial.
+        originals = list((await session.execute(
+            select(Trace).where(
+                Trace.org_id == org_id, Trace.id.in_(list(harmful)),
+                Trace.quarantined.is_(False), Trace.superseded_at.is_(None),
+            )
+        )).scalars().all())
+        page = await _hydrate(session, traces)
+        representative_of = _cluster_representatives(page + await _hydrate(session, originals))
+        harmful_units = {representative_of.get(t.id, t.id): t.id for t in originals}
+        kept: list[Trace] = []
+        for trace in traces:
+            unit = representative_of.get(trace.id, trace.id)
+            if unit in harmful_units:
+                withdrawn.append({
+                    "id": trace.id,
+                    "reason": "near_duplicate_of_withdrawn",
+                    "duplicate_of": harmful_units[unit],
+                    "evidence": harmful[harmful_units[unit]],
+                })
+            else:
+                kept.append(trace)
+        traces = kept
+
+    titles = dict((await session.execute(
+        select(Trace.id, Trace.title).where(
+            Trace.org_id == org_id, Trace.id.in_([w["id"] for w in withdrawn]))
+    )).all()) if withdrawn else {}
+    for entry in withdrawn:
+        entry["title"] = titles.get(entry["id"], "")
+    return traces, withdrawn
 
 
 async def _record_search(session: AsyncSession, org_id: str, *, terms: list[str], results: int) -> None:
@@ -3203,6 +3408,153 @@ def _integrity_wire(report: integrity.IntegrityReport) -> dict:
     }
 
 
+# --- Causal evidence on retrieval -------------------------------------
+#
+# search_traces used to return every lesson the same way, whatever the
+# holdout had established about it: one proven to help, one never measured,
+# and one measured to make outcomes WORSE were indistinguishable to the
+# agent choosing among them. The measurement existed (causal_effects) and
+# reached only the working_set, which by construction shows the winners.
+#
+# Other memory systems have started returning "why to trust this" with a
+# memory -- provenance of what it was derived from, or the agent's own
+# report of which memory it used, which their own changelogs record agents
+# skipping. What this attaches is the randomized comparison: of the
+# occasions where this lesson was eligible, how the ones it was injected
+# into turned out against the ones it was withheld from.
+#
+# Computed by causal_effects, unchanged, so a verdict here is always the
+# same verdict every other surface reports -- including the Benjamini-
+# Hochberg correction across all of the org's traces, which is why this
+# cannot be computed for just the traces a search returned. That analysis
+# is too expensive to repeat on every search, so it is cached per org and
+# recomputed only when the org's current experiment changes (recorded
+# outcomes, deletions of resolved rows, or a new salt, rate or
+# preregistration -- see _evidence_key for why not new assignments), and in
+# any case at least every _EVIDENCE_TTL_SECONDS: the validity audit judges
+# pending occasions by their age, so its answer can move with the clock
+# alone.
+#
+# A COMPROMISED experiment yields no numbers, for the reason working_set
+# gives: effects a named mechanism is biasing must not steer a choice.
+
+_EVIDENCE_TTL_SECONDS = 300.0
+_EVIDENCE_CACHE_MAX_ORGS = 1024
+_evidence_cache: dict[str, tuple[tuple, float, dict]] = {}
+
+
+async def _evidence_key(session: AsyncSession, org_id: str) -> tuple:
+    """What the evidence depends on, cheaply: the experiment's settings, and
+    its RESOLVED occasions.
+
+    Deliberately not new assignments. Searching with an occasion_id writes
+    one, so a key that counted them changed on every search of an org
+    running an experiment -- recomputing the whole analysis on exactly the
+    traffic the cache exists to absorb. Effects are estimated from resolved
+    occasions only, so a new pending assignment cannot move one; what it
+    can move, slowly, is the audit's attrition check, and _EVIDENCE_TTL_
+    SECONDS already bounds how long that goes unseen.
+    """
+    org = await session.get(Organization, org_id)
+    salt = org.holdout_salt if org else ""
+    observed, resolved, last_resolved = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count(HoldoutObservation.succeeded),
+                func.max(HoldoutObservation.resolved_at),
+            ).where(HoldoutObservation.org_id == org_id, HoldoutObservation.salt == salt)
+        )
+    ).one()
+    prereg = json.dumps(org.holdout_prereg, sort_keys=True, default=str) if org and org.holdout_prereg else ""
+    # `observed > 0` rather than the count itself: it only has to tell
+    # "never measured anything" apart from "has data", which decides whether
+    # evidence is shown at all, without changing on every assignment.
+    return (salt, org.holdout_rate if org else 0.0, prereg, observed > 0, resolved, last_resolved)
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 3)
+
+
+async def causal_evidence(session: AsyncSession, org_id: str) -> dict:
+    """Per-trace causal evidence for this org, cached as described above.
+
+    Returns {"available", "reason", "measured_at", "by_trace"}. `available`
+    is False with a reason when there is nothing honest to show, and
+    `by_trace` is then empty. An org with no experiment data at all is
+    answered without running the analysis.
+    """
+    key = await _evidence_key(session, org_id)
+    cached = _evidence_cache.get(org_id)
+    now = time.monotonic()
+    if cached is not None and cached[0] == key and now - cached[1] < _EVIDENCE_TTL_SECONDS:
+        return cached[2]
+
+    measured_at = datetime.now(timezone.utc).isoformat()
+    if not key[3]:
+        evidence = {"available": False, "reason": "no experiment data", "measured_at": measured_at, "by_trace": {}}
+    else:
+        causal = await causal_effects(session, org_id)
+        if not (causal.get("integrity") or {}).get("effects_readable", True):
+            evidence = {
+                "available": False,
+                "reason": (
+                    "The experiment is COMPROMISED, so no effects are shown. Read "
+                    "`fleet_outcomes.causal.integrity` for what to fix."
+                ),
+                "measured_at": measured_at,
+                "by_trace": {},
+            }
+        else:
+            evidence = {
+                "available": True,
+                "reason": "",
+                "measured_at": measured_at,
+                "by_trace": {
+                    e["trace_id"]: {
+                        "verdict": e["verdict"],
+                        "effect": _round(e.get("effect")),
+                        "ci_95": [_round(v) for v in (e.get("ci_95") or [])],
+                        "n_injected": e.get("n_injected"),
+                        "n_withheld": e.get("n_withheld"),
+                        "last_measured_at": e.get("last_measured_at") or "",
+                    }
+                    for e in causal.get("effects", [])
+                },
+            }
+
+    if org_id not in _evidence_cache and len(_evidence_cache) >= _EVIDENCE_CACHE_MAX_ORGS:
+        # Oldest computation first; a busy Hub serves more orgs than it can
+        # hold, and the evicted ones simply recompute on their next search.
+        _evidence_cache.pop(min(_evidence_cache, key=lambda k: _evidence_cache[k][1]))
+    _evidence_cache[org_id] = (key, now, evidence)
+    return evidence
+
+
+async def _attach_evidence(session: AsyncSession, org_id: str, result: dict) -> None:
+    """Add each returned trace's causal evidence to a search result.
+
+    Nothing is added for an org that has never run an experiment: every
+    field on a search result costs the calling agent tokens on every call,
+    and "not measured" repeated on every row says nothing a missing field
+    does not. Once there is experiment data, every row says where it stands
+    -- including NOT_MEASURED, because then its absence is informative.
+    """
+    evidence = await causal_evidence(session, org_id)
+    if not evidence["available"] and evidence["reason"] == "no experiment data":
+        return
+    result["evidence"] = {
+        "available": evidence["available"],
+        "reason": evidence["reason"],
+        "measured_at": evidence["measured_at"],
+    }
+    if not evidence["available"]:
+        return
+    for trace in result.get("traces", []):
+        trace["evidence"] = evidence["by_trace"].get(trace.get("id"), {"verdict": "NOT_MEASURED"})
+
+
 async def holdout_assignments(session: AsyncSession, org_id: str) -> list:
     """Every arm decision in this org's CURRENT experiment, as
     `integrity.Assignment` rows -- including the ones with no outcome yet.
@@ -4971,37 +5323,22 @@ async def commons_overlap(
     # commons_seed and review_kb_submission write. Retracted entries are
     # excluded there too. hub/tests/test_commons_search.py and
     # test_commons.py both assert a non-seed shared row is invisible to
-    # this scan.
-    where = [
-        *commons_visible(),
-        Trace.commons_signature.isnot(None),
-        Trace.org_id != org_id,
-    ]
-    # Optional semantic narrowing. Not an approximation: a support fleet's
-    # failures genuinely should not be scored against CUDA substrate. It is
-    # also the cheapest way to keep the scan small as the corpus grows,
-    # because it runs in Postgres instead of Python.
+    # this scan. _commons_corpus applies it on both of its paths, and
+    # _commons_rows applies it again to every matched row.
+    #
+    # agent_type is optional semantic narrowing, not an approximation: a
+    # support fleet's failures genuinely should not be scored against CUDA
+    # substrate.
     if agent_type:
         reject_unstorable_text(agent_type, "agent_type")
-        where.append(Trace.agent_type == agent_type)
 
-    total_corpus = (
-        await session.execute(select(func.count()).select_from(Trace).where(*where))
-    ).scalar_one()
-
-    # Bounded scan. See commons.MAX_COMMONS_CORPUS for why this exists and
-    # what the real fix past it is. Ordered by recency so a truncated scan
-    # is at least a *defined* subset rather than whatever the planner
-    # returned first.
-    rows = (
-        await session.execute(
-            select(Trace)
-            .where(*where)
-            .order_by(Trace.created_at.desc(), Trace.id.desc())
-            .limit(commons.max_corpus_scan())
-        )
-    ).scalars().all()
-    corpus_truncated = total_corpus > len(rows)
+    # Bounded scan: see commons.MAX_COMMONS_CORPUS for the ceiling, and
+    # hub/commons_cache.py for why the corpus is no longer re-read from the
+    # database on every call. Ordered by recency so a truncated scan is a
+    # *defined* subset rather than whatever the planner returned first.
+    corpus = await _commons_corpus(session, org_id, agent_type)
+    total_corpus = corpus.total
+    corpus_truncated = total_corpus > len(corpus.ids)
 
     # Up to MAX_SUBMITTED_FAILURES (500) signatures against up to
     # max_corpus_scan() (20,000, or 2,000 without numpy) corpus rows is a
@@ -5012,8 +5349,11 @@ async def commons_overlap(
     # runs; the GIL still serializes the actual comparisons, but that's a
     # throughput cost to this one call, not an availability cost to
     # everyone else's requests.
-    best = await asyncio.to_thread(
-        commons.best_matches, submitted, [r.commons_signature or [] for r in rows]
+    best = await asyncio.to_thread(commons.best_matches, submitted, corpus.signatures)
+
+    # Only the rows that matched are ever loaded in full.
+    matched_rows = await _commons_rows(
+        session, corpus, [corpus.ids[idx] for idx, sim in best if idx >= 0 and sim >= threshold]
     )
 
     matches: list[dict] = []
@@ -5026,7 +5366,11 @@ async def commons_overlap(
     for (label, _sig), (idx, sim) in zip(submitted, best):
         if idx < 0 or sim < threshold:
             continue
-        hit = rows[idx]
+        hit = matched_rows.get(corpus.ids[idx])
+        if hit is None:
+            # Left the Knowledge Base after the snapshot was taken (see
+            # _commons_rows). Not served, and not counted.
+            continue
         # Counted as matched regardless of standing: commons_hits answers
         # "how often was this entry served", which is what makes
         # `kb-review` able to rank a bad entry by how much traffic it is
@@ -5143,7 +5487,7 @@ async def commons_overlap(
     n_failures = len(submitted)
     return {
         "n_failures": n_failures,
-        "n_commons_traces": len(rows),
+        "n_commons_traces": len(corpus.ids),
         "n_commons_traces_total": total_corpus,
         "corpus_truncated": corpus_truncated,
         "n_covered": n_covered,
@@ -5158,7 +5502,7 @@ async def commons_overlap(
         "by_agent_type": dict(sorted(by_domain.items(), key=lambda kv: -kv[1])),
         "matches": matches,
         "disputed_matches": disputed_matches,
-        "note": _commons_note(n_failures, len(rows), corpus_truncated, total_corpus),
+        "note": _commons_note(n_failures, len(corpus.ids), corpus_truncated, total_corpus),
     }
 
 
@@ -5257,45 +5601,32 @@ async def commons_search(
 
     # See commons_overlap's identical filter: commons_visible() is what
     # guarantees the corpus can never contain another customer's trace, not
-    # just a policy that happens to hold today.
-    where = [
-        *commons_visible(),
-        Trace.commons_signature.isnot(None),
-        Trace.org_id != org_id,
-    ]
+    # just a policy that happens to hold today. _commons_corpus and
+    # _commons_rows apply it here exactly as they do there.
     if agent_type:
         reject_unstorable_text(agent_type, "agent_type")
-        where.append(Trace.agent_type == agent_type)
 
-    total_corpus = (
-        await session.execute(select(func.count()).select_from(Trace).where(*where))
-    ).scalar_one()
-
-    rows = (
-        await session.execute(
-            select(Trace)
-            .where(*where)
-            .order_by(Trace.created_at.desc(), Trace.id.desc())
-            .limit(commons.max_corpus_scan())
-        )
-    ).scalars().all()
+    corpus = await _commons_corpus(session, org_id, agent_type)
+    total_corpus = corpus.total
 
     # Offloaded for the same reason commons_overlap offloads: a CPU-bound
     # scan on the event loop starves every other request this process is
     # serving, not just this one.
-    ranked = await asyncio.to_thread(
-        commons.rank_candidates, sig, [r.commons_signature or [] for r in rows], limit
-    )
+    ranked = await asyncio.to_thread(commons.rank_candidates, sig, corpus.signatures, limit)
+    ranked_rows = await _commons_rows(session, corpus, [corpus.ids[idx] for idx, _sim in ranked])
 
     now = datetime.now(timezone.utc)
     candidates = [
         {
             "rank": 0,
             "similarity": round(sim, 4),
-            "commons_hits": rows[idx].commons_hits,
-            "trace": _to_commons_wire(rows[idx], now),
+            "commons_hits": ranked_rows[corpus.ids[idx]].commons_hits,
+            "trace": _to_commons_wire(ranked_rows[corpus.ids[idx]], now),
         }
         for idx, sim in ranked
+        # An entry that left the Knowledge Base after the snapshot was taken
+        # is not served (see _commons_rows).
+        if corpus.ids[idx] in ranked_rows
     ]
     # Disputed entries sort behind everything else, however similar. Within
     # each group similarity decides the order, and trust only breaks ties --
@@ -5362,9 +5693,9 @@ async def commons_search(
         "n_disputed": sum(
             1 for c in candidates if not commons.counts_as_coverage(c["trace"]["standing"])
         ),
-        "n_commons_traces": len(rows),
+        "n_commons_traces": len(corpus.ids),
         "n_commons_traces_total": total_corpus,
-        "corpus_truncated": total_corpus > len(rows),
+        "corpus_truncated": total_corpus > len(corpus.ids),
         "candidates": candidates,
         "note": _SEARCH_NOTE,
     }
@@ -5525,6 +5856,18 @@ async def browse_commons(
     rather than being filtered out, for the identical reason given there --
     "it did not work for the fleets who tried it" is information, and
     hiding it would answer a browse with a rosier corpus than exists.
+    Below that, `trust` decides, and nothing a caller can write with its own
+    traffic appears in the order at all.
+
+    That promise is enforced in the SQL, not only in the Python sort after
+    it, because this query pages. An ORDER BY that disagrees with the final
+    sort does not merely look untidy -- it picks which entries reach the
+    page the reader sees, and a later re-sort can only rearrange what it was
+    handed. Ordering by `commons_hits` here did exactly that: it put the
+    most-queried entries on page 1 regardless of standing, so a disputed
+    entry with traffic outranked a corroborated one without it, and the
+    "sorts to the back" property held only within whichever page the reader
+    happened to be on.
     """
     limit = _clamp_int(limit, 1, MAX_BROWSE_COMMONS_LIMIT, BROWSE_COMMONS_LIMIT)
     offset = _clamp_int(offset, 0, 100_000, 0)
@@ -5547,13 +5890,50 @@ async def browse_commons(
     total = await session.scalar(
         select(func.count()).select_from(Trace).where(*conditions)
     )
+    # `disputed` is the ONLY standing that changes an entry's position, and
+    # it is exactly two columns against two module constants -- so it is
+    # expressed here rather than mirrored from `entry_standing`'s full
+    # ladder, which also depends on `now` and would be a second
+    # implementation to keep in step. Built from the constants themselves,
+    # so a policy change moves both at once.
+    is_disputed = case(
+        (
+            and_(
+                Trace.commons_votes >= commons.MIN_VOTES_FOR_STANDING,
+                Trace.trust < commons.DISPUTED_TRUST_CEILING,
+            ),
+            1,
+        ),
+        else_=0,
+    )
     rows = (
         await session.execute(
             select(Trace)
             .where(*conditions)
+            # Ordered in SQL by the SAME keys the Python sort below applies,
+            # and that agreement is the correctness property, not a tidiness
+            # one: this query PAGINATES. Whatever it orders by decides which
+            # entries are on page 1 at all, so a Python re-sort on different
+            # keys can only reorder within a page it did not choose -- the
+            # "disputed sorts to the back" promise in this docstring was
+            # holding per page while a disputed entry with enough traffic sat
+            # on page 1 and a better one waited on page 2.
+            #
+            # None of these keys is caller-writable. `commons_hits` used to
+            # lead here, which made the catalogue's front page purchasable
+            # with query volume -- see STRATEGY.md §26.6; it is the same
+            # defect as the commons_search tie-break, on a surface that fix
+            # missed. `trust` is one org, one vote, gated by
+            # _established_voters_only; created_at and id are stable and make
+            # the order total, so paging cannot skip or repeat an entry.
+            .order_by(
+                is_disputed.asc(),
+                Trace.trust.desc(),
+                Trace.created_at.desc(),
+                Trace.id.desc(),
+            )
             # One extra row, the same trick search_traces uses, so `has_more`
             # costs no second COUNT round trip.
-            .order_by(Trace.commons_hits.desc(), Trace.created_at.desc())
             .limit(limit + 1)
             .offset(offset)
         )
@@ -5618,7 +5998,21 @@ async def browse_commons(
             "revisions": trace.depth or 0,
             "created_at": _iso(trace.created_at),
         })
-    entries.sort(key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["hits"]))
+    # The same leading keys as the SQL ORDER BY above, so the page's
+    # contents and its order are decided by one rule rather than two.
+    # `standing` is used here because it is already computed per entry, and
+    # it agrees with the SQL `is_disputed` by construction:
+    # `counts_as_coverage` is false for exactly the `disputed` label, which
+    # is exactly that predicate.
+    #
+    # created_at and id are deliberately NOT repeated: this sort is stable,
+    # so entries equal on these two keep the order the query returned them
+    # in, which is already created_at DESC then id DESC. Restating them
+    # would mean inverting strings to sort descending, and a second copy of
+    # a tie-break is a second thing that can disagree with the first.
+    entries.sort(
+        key=lambda e: (not commons.counts_as_coverage(e["standing"]), -e["trust"])
+    )
 
     return {
         "entries": entries,

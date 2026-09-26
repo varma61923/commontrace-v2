@@ -543,6 +543,7 @@ lessons_retrieved_by_alpha: [list of lesson slugs returned by Alpha]
 lessons_hit: [list of lesson slugs actually useful based on the run + retro]
 lessons_proposed_by_omega: [list of proposed new lesson slugs below]
 lessons_validated_by_lambda: []  # to be filled by orchestrator in Phase 11 (post-Lambda)
+lambda_decisions: {}  # slug -> ACCEPTED | REJECTED | NEEDS_REFINEMENT, every proposal, filled in Phase 11
 ---
 
 ## What happened
@@ -733,12 +734,12 @@ GO.
    - Changes `status: active → review` in the frontmatter
    - Appends a comment (## Revision note) in the body with the Lambda justification
 4. Updates `memory/INDEX.md`: adds new lessons in their respective domain sections; reflects updates (uses, last_hit) and revisions (status).
-5. Updates the current episode frontmatter: fills `lessons_validated_by_lambda` with the effective list of validated slugs (field renamed in v2.2 from `lessons_validated_by_user`).
+5. Updates the current episode frontmatter: fills `lessons_validated_by_lambda` with the effective list of validated slugs (field renamed in v2.2 from `lessons_validated_by_user`), and `lambda_decisions` with Lambda's verdict on EVERY proposal, rejected and sent-back ones included (`{lesson_x: ACCEPTED, lesson_y: REJECTED, lesson_z: NEEDS_REFINEMENT}`). `commontrace bench` reports acceptance, rejection and refinement rates from it.
 6. **Trigger attention layer rebuild (v2.3)**: if at least one creation / update (that modifies the body or encoded fields) / revision was applied in steps 1-3, the orchestrator automatically runs:
    ```
    commontrace index
    ```
-   Expected output: `Index built: N lessons, model=multi-qa-mpnet-base-dot-v1, dim=768`. If it fails (sentence-transformers unavailable, no network for the model download, etc.), the orchestrator notes it in the final report but does not block the run — `commontrace query` detects the stale index and falls back to lexical retrieval, so retrieval keeps working until the next successful rebuild. Manual rebuild: `commontrace index --force`.
+   Expected output: `Index built: N lessons, model=Snowflake/snowflake-arctic-embed-m-v1.5, dim=768` (an index built before that model keeps `multi-qa-mpnet-base-dot-v1`). If it fails (sentence-transformers unavailable, no network for the model download, etc.), the orchestrator notes it in the final report but does not block the run — `commontrace query` detects the stale index and falls back to lexical retrieval, so retrieval keeps working until the next successful rebuild. Manual rebuild: `commontrace index --force`.
 7. Includes in the final user report:
    - List of ACCEPTED proposals applied
    - List of REJECTED proposals with Lambda reason (traceability)

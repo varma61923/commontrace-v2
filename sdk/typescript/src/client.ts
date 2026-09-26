@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import { HubConnectionError, HubToolError } from "./errors.js";
+import { HubConfigurationError, HubConnectionError, HubToolError } from "./errors.js";
 import type {
   AccountUsage,
   AmendTraceArgs,
@@ -17,8 +17,58 @@ import type {
  * by name and return its JSON body. `HubClient.connect` builds a real
  * one over the official MCP SDK; `HubClient.withCaller` accepts any
  * other implementation, no network or live server required. */
+/**
+ * The Hub URL, parsed, if this client will send an API key to it; else a
+ * `HubConfigurationError`. The key goes out as a Bearer token on every
+ * call, and a Hub URL is usually set once in configuration and trusted
+ * from then on, so the same rules as the Python client apply
+ * (commontrace/hub_client.py): http or https only; plaintext http only to
+ * loopback, where traffic never leaves the host; and never a link-local
+ * or cloud-metadata address (169.254.169.254, fe80::/10, fd00:ec2::254),
+ * which would hand the key to the host's own credential service.
+ */
+export function checkHubUrl(url: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new HubConfigurationError(`refusing to use Hub URL ${JSON.stringify(url)}: not a valid URL`);
+  }
+  const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+  if (scheme !== "http" && scheme !== "https") {
+    throw new HubConfigurationError(
+      `refusing to use Hub URL ${JSON.stringify(url)}: scheme must be http or https, got ${JSON.stringify(scheme)}`,
+    );
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (scheme === "http" && !["localhost", "127.0.0.1", "::1"].includes(host)) {
+    throw new HubConfigurationError(
+      `refusing to use plaintext http:// for remote Hub URL ${JSON.stringify(url)}: the API key is sent ` +
+        "as a Bearer token on every call. Use https://, or localhost/127.0.0.1 for local development.",
+    );
+  }
+  // The URL parser has already turned every numeric IPv4 form ("2852039166",
+  // "0xa9fea9fe") into dotted decimal, but an IPv4-mapped IPv6 address comes
+  // out in hex ("::ffff:a9fe:a9fe" for 169.254.169.254): unmap it first.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  const v4 = mapped
+    ? [parseInt(mapped[1], 16) >> 8, parseInt(mapped[1], 16) & 255, parseInt(mapped[2], 16) >> 8, parseInt(mapped[2], 16) & 255].join(".")
+    : host;
+  const linkLocalV4 = /^169\.254\.\d{1,3}\.\d{1,3}$/.test(v4);
+  const linkLocalV6 = /^fe[89ab][0-9a-f]:/.test(host);
+  if (linkLocalV4 || linkLocalV6 || host === "fd00:ec2::254") {
+    throw new HubConfigurationError(
+      `refusing to use Hub URL ${JSON.stringify(url)}: ${host} is a link-local or cloud-metadata ` +
+        "address -- refusing to send the Hub API key there.",
+    );
+  }
+  return parsed;
+}
+
 export interface ToolCaller {
   callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Release the connection, if the caller holds one. */
+  close?(): Promise<void>;
 }
 
 export interface HubClientOptions {
@@ -109,6 +159,7 @@ export function clampRetryAfter(retryAfter?: unknown): number {
 export class HubClient {
   private readonly caller: ToolCaller;
   private readonly maxAttempts: number;
+  private closed = false;
 
   private constructor(caller: ToolCaller, maxAttempts: number) {
     this.caller = caller;
@@ -121,8 +172,9 @@ export class HubClient {
    * API key from `python -m hub.manage issue-key`.
    */
   static async connect(url: string, apiKey: string, options: HubClientOptions = {}): Promise<HubClient> {
+    const hubUrl = checkHubUrl(url);
     const mcpClient = new Client({ name: "commontrace-hub-client-ts", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(url), {
+    const transport = new StreamableHTTPClientTransport(hubUrl, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
       fetch: options.fetch,
     });
@@ -141,6 +193,7 @@ export class HubClient {
         }
         return parseToolResult(name, result);
       },
+      close: () => mcpClient.close(),
     };
     return new HubClient(caller, options.maxAttempts ?? 3);
   }
@@ -182,6 +235,15 @@ export class HubClient {
       }
       return body as T;
     }
+  }
+
+  /** Close the connection to the Hub. Without it the transport stays open
+   * and a Node process that is otherwise done may not exit. Safe to call
+   * more than once. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.caller.close?.();
   }
 
   // --- Typed convenience wrappers for the surface most integrations reach for first ---

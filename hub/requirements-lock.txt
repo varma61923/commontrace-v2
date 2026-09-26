@@ -16,7 +16,7 @@
 # packages from the same original authors, not a typosquat) and
 # `starlette>=0.27`. Neither is pinned anywhere in hub/requirements.txt, so
 # an unconstrained install resolves whatever `mcp` currently allows -- on
-# the day this file was generated, `httpx2==2.12.0` and `starlette==1.6.0`,
+# the day this file was generated, `httpx2==2.13.0` and `starlette==1.6.0`,
 # neither of which existed when this Hub was first built against `mcp`'s
 # streamable-HTTP transport. A future, wider-ranging `mcp` release could
 # just as easily resolve something that quietly changes behavior this
@@ -63,13 +63,13 @@ certifi==2026.7.22
 cffi==2.1.1
 click==8.5.0
 cryptography==50.0.1
-greenlet==3.5.5
+greenlet==3.5.6
 h11==0.16.0
 httpcore==1.0.9
-httpcore2==2.12.0
+httpcore2==2.13.0
 httpx==0.28.1
-httpx2==2.12.0
-idna==3.19
+httpx2==2.13.0
+idna==3.20
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 Mako==1.4.1
@@ -85,10 +85,10 @@ PyJWT==2.14.0
 python-multipart==0.0.32
 referencing==0.37.0
 rpds-py==2026.6.3
-SQLAlchemy==2.0.52
+SQLAlchemy==2.0.54
 sse-starlette==3.4.11
 starlette==1.6.0
 truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-uvicorn==0.52.4
+uvicorn==0.53.0

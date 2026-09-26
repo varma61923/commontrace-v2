@@ -261,13 +261,85 @@ class TestSignIn:
         assert "samesite=strict" in header.lower()
         assert "Path=/app" in header
 
+    async def test_the_cookie_is_secure_behind_a_declared_proxy(self, session_factory, org_and_key):
+        """The proxy terminates TLS, so the Hub sees http: the cookie must
+        still never be sent over a plain connection."""
+        _org_id, raw_key = org_and_key
+        app = Starlette()
+        console.add_console_routes(app, session_factory, console_secret=SECRET, trusted_proxy_hops=1)
+        async with _client(app) as client:
+            response = await _signed_in(client, raw_key)
+        assert "Secure" in response.headers["set-cookie"]
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await _signed_in(client, raw_key)
+        assert "Secure" not in response.headers["set-cookie"]  # plain http, no proxy: local development
+
+    async def test_a_sibling_subdomain_cannot_post_as_the_signed_in_user(self, session_factory, org_and_key):
+        """SameSite=Strict still sends the cookie to a same-site page on
+        another subdomain; the browser's Sec-Fetch-Site says where it came
+        from, and a console form is only ever posted by the console itself."""
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            forged = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Sec-Fetch-Site": "same-site"},
+            )
+            assert forged.status_code == 403
+            old_browser = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Origin": "https://evil.example"},
+            )
+            assert old_browser.status_code == 403
+            async with session_scope(session_factory) as session:
+                keys = (await session.execute(select(ApiKey).where(ApiKey.org_id == org_id))).scalars().all()
+            assert len(keys) == 1
+            own = await client.post(
+                f"{console.CONSOLE_PATH}/keys/issue",
+                data={"scopes": ["read"], "expires_days": "30"},
+                headers={"Sec-Fetch-Site": "same-origin", "Origin": "http://test"},
+            )
+            assert "shown once" in own.text
+
     async def test_sign_out_clears_the_session(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
-            await client.get(f"{console.CONSOLE_PATH}/signout")
+            await client.post(f"{console.CONSOLE_PATH}/signout")
             response = await client.get(console.CONSOLE_PATH)
             assert response.status_code == 303
+
+    async def test_a_get_does_not_sign_you_out(self, session_factory, org_and_key):
+        """Any site can fire a GET with an <img> tag; signing out takes a
+        form post, which the nav's Sign out button makes."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            page = await client.get(f"{console.CONSOLE_PATH}/signout")
+            assert page.status_code == 200 and "Sign out?" in page.text
+            assert (await client.get(console.CONSOLE_PATH)).status_code == 200
+            overview = (await client.get(console.CONSOLE_PATH)).text
+            assert f'<form method="post" action="{console.CONSOLE_PATH}/signout">' in overview
+            forged = await client.post(f"{console.CONSOLE_PATH}/signout", headers={"Sec-Fetch-Site": "cross-site"})
+            assert forged.status_code == 403
+            assert (await client.get(console.CONSOLE_PATH)).status_code == 200
+
+    async def test_sign_in_attempts_from_one_ipv6_slash_64_share_a_limit(self, session_factory):
+        """Rotating through the /64 a single host is given must not buy a
+        fresh set of attempts per address."""
+        app = Starlette()
+        console.add_console_routes(app, session_factory, console_secret=SECRET, trusted_proxy_hops=1)
+        async with _client(app) as client:
+            texts = [
+                (await client.post(
+                    f"{console.CONSOLE_PATH}/signin", data={"api_key": "ct_live_nope"},
+                    headers={"X-Forwarded-For": f"2001:db8:1:2::{i:x}"},
+                )).text
+                for i in range(1, 21)
+            ]
+        assert any("Too many attempts" in t for t in texts)
 
     async def test_sign_in_is_rate_limited(self, session_factory):
         """Without this the console is an unauthenticated, unthrottled oracle
@@ -852,19 +924,46 @@ class TestProofSharing:
         assert response.status_code == 303
         assert response.headers["location"].endswith("/signin")
 
+    async def test_the_knowledge_base_page_says_only_what_the_console_wrote(
+        self, session_factory, org_and_key
+    ):
+        """?done= used to be rendered as the page's confirmation banner,
+        whatever it said."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            spoofed = await client.get(f"{console.CONSOLE_PATH}/kb", params={"done": "Call +1-555-0100"})
+            real = await client.get(f"{console.CONSOLE_PATH}/kb", params={"done": "voted"})
+        assert "555-0100" not in spoofed.text
+        assert "your vote was recorded" in real.text
+
+    async def test_a_link_in_the_url_is_never_presented_as_the_one_generated(
+        self, session_factory, org_and_key
+    ):
+        """/proof?share_url=<anything> used to render <anything> under
+        "Shareable link generated." -- a way to put an attacker's page in
+        the console's own voice."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/proof", params={"share_url": "https://evil.example/x"})
+        assert response.status_code == 200
+        assert "evil.example" not in response.text
+        assert "Shareable link generated." not in response.text
+
     async def test_a_signed_in_org_can_mint_and_then_view_its_own_link(
         self, session_factory, org_and_key
     ):
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
-            share_response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
-            assert share_response.status_code == 303
-            location = share_response.headers["location"]
-            assert location.startswith(f"{console.CONSOLE_PATH}/proof?share_url=")
-
-            proof_response = await client.get(location)
+            proof_response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
+            # Shown in this response, never through a URL: a ?share_url=
+            # redirect put the live link into browser history.
+            assert proof_response.status_code == 200
             assert "Shareable link generated." in proof_response.text
+            assert "location" not in proof_response.headers
 
         # The minted URL resolves with NO cookies at all -- a fresh, bare
         # client, exactly like an outsider who was only handed the link.

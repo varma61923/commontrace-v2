@@ -238,6 +238,28 @@ def _redact(text: str, start: int, end: int) -> str:
     return f"{prefix}{body}{suffix}".replace("\n", " ")
 
 
+def redact_secrets(text: str) -> tuple[str, list[str]]:
+    """`text` with every HIGH-confidence credential replaced by a marker
+    naming its kind, and the kinds found (in order, one per match).
+
+    For raw experience (a captured or imported trace), where refusing the
+    whole text would lose the rest of what happened: the credential is the
+    one part nobody needs to keep, and keeping it makes the memory store a
+    second place it now lives -- readable by every later agent, and pushed
+    to the Hub by `sync`. Only the high-confidence shapes are redacted
+    (AWS/GitHub/Slack/Stripe/Google/Anthropic keys, PEM blocks, JWTs), so a
+    false positive costs a few characters, never the trace."""
+    found: list[str] = []
+    if not text:
+        return text, found
+    for label, pattern in _SECRET_PATTERNS_HIGH:
+        def _mark(match, label=label):
+            found.append(label)
+            return f"[REDACTED {label}]"
+        text = pattern.sub(_mark, text)
+    return text, found
+
+
 def scan_text(text: str, field: str = "") -> list[Finding]:
     """Every finding in one string. Overlap between patterns is expected
     and left in -- a JWT-shaped string inside a "token=..." assignment is

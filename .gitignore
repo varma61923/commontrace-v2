@@ -1,5 +1,7 @@
 # Embeddings index is regenerated locally by memory/attention/build_index.py
 memory/attention/index.npz
+memory/.cache/
+memory/*.jsonl
 
 # Benchmark HTML / JSON reports (generated, not source)
 memory/benchmark_reports/
@@ -42,3 +44,4 @@ htmlcov/
 
 # Jupyter (if anyone runs notebooks locally)
 .ipynb_checkpoints/
+

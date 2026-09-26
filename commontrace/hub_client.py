@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, TypeVar
@@ -271,7 +272,8 @@ def _validate_hub_url(hub_url: str) -> None:
         raise HubConfigurationError(
             f"refusing to use Hub URL {hub_url!r}: scheme must be http or https, got {scheme or '(none)'!r}"
         )
-    hostname = (parsed.hostname or "").lower()
+    # A trailing dot is the same host to the resolver ("169.254.169.254.").
+    hostname = (parsed.hostname or "").lower().rstrip(".")
     if scheme == "http" and hostname not in ("localhost", "127.0.0.1", "::1"):
         raise HubConfigurationError(
             f"refusing to use plaintext http:// for remote Hub URL {hub_url!r}: "
@@ -297,7 +299,17 @@ def _validate_hub_url(hub_url: str) -> None:
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
-        ip = None
+        # The resolver also reads the legacy numeric forms as an address --
+        # "2852039166", "0xa9fea9fe", "0251.0376.0251.0376" and
+        # "169.254.43518" all reach 169.254.169.254 -- so parse them the
+        # way it will rather than letting them through as names.
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(hostname)) if hostname else None
+        except (OSError, ValueError):
+            ip = None
+    # "::ffff:169.254.169.254" is the IPv4 address, reached over IPv6.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     # AWS's IPv6 metadata address is a Unique Local Address (fd00::/8), not
     # link-local (fe80::/10) -- checked by literal value rather than
     # widening the range check, since blocking ULA/RFC1918 space generally
