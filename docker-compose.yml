@@ -69,6 +69,16 @@ services:
   # so N replicas can never race the same migration during a deploy.
   migrate:
     build: .
+    # Same container hardening as deploy/k8s/deployment.yaml: the image's
+    # filesystem is read-only, no process can gain privileges, and no Linux
+    # capability is kept. The Hub writes only to the database (and /tmp).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     command: ["python", "-m", "alembic", "-c", "hub/alembic.ini", "upgrade", "head"]
     environment:
       HUB_DATABASE_URL: postgresql+asyncpg://commontrace:${POSTGRES_PASSWORD:-change-me-not-for-production}@db:5432/commontrace_hub
@@ -79,6 +89,16 @@ services:
 
   hub:
     build: .
+    # Same container hardening as deploy/k8s/deployment.yaml: the image's
+    # filesystem is read-only, no process can gain privileges, and no Linux
+    # capability is kept. The Hub writes only to the database (and /tmp).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       # commontrace_app, NOT commontrace: the runtime role owns nothing and
       # cannot bypass row-level security, so migration d5c8b3a91e77's tenant
