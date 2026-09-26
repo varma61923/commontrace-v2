@@ -1825,11 +1825,12 @@ def render_html(md_content, timestamp, alerts=None):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>/commontrace Memory Benchmark — {timestamp}</title>
 <style>
 body {{
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px;
-  margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d;
+  margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d; background: #fff;
 }}
 h1, h2, h3 {{ color: #1a1a1a; }}
 h1 {{ border-bottom: 2px solid #444; padding-bottom: 0.3em; }}
@@ -1850,6 +1851,17 @@ hr {{ border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }}
 .alerts {{ background: #fff8e1; border: 1px solid #f0c000; border-radius: 6px; padding: 1em 1.5em; margin: 1em 0; }}
 .alerts h2 {{ color: #b07000; border-bottom: none; }}
 .alerts li {{ color: #7a5000; }}
+td {{ overflow-wrap: anywhere; }}
+@media (max-width: 640px) {{ table {{ display: block; overflow-x: auto; }} body {{ padding: 0 1em; }} }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #0f141a; color: #e2e8f0; }}
+  h1, h2, h3 {{ color: #f1f5f9; }}
+  h1 {{ border-color: #9aa8b8; }} h2, hr {{ border-color: #2a3440; }}
+  code, th {{ background: #18202a; }} th, td {{ border-color: #2a3440; }}
+  strong {{ color: #7cb8ff; }} em {{ color: #9aa8b8; }}
+  .alerts {{ background: #2a2414; border-color: #5a4a22; }}
+  .alerts h2, .alerts li {{ color: #e3c16b; }}
+}}
 </style>
 </head>
 <body>

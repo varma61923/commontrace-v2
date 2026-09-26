@@ -1,0 +1,93 @@
+"""Every HTML page the Hub serves carries a Content-Security-Policy that
+allows exactly its own inline scripts, and nothing else.
+
+The policy is only useful if it matches: a script whose hash is missing
+silently stops running (the double-submit guard, the auto-refresh, the
+confirm prompt), and one that needs `'unsafe-inline'` to run makes the
+policy decorative. So these tests hash every `<script>` a page actually
+renders and hold the header to exactly that set.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import pathlib
+import re
+
+import pytest
+
+from hub import admin, console, signup
+
+HUB = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _script_hashes(page: str) -> set[str]:
+    return {
+        "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+        for body in re.findall(r"<script>(.*?)</script>", page, flags=re.S)
+    }
+
+
+def _directive(csp: str, name: str) -> str:
+    for part in csp.split(";"):
+        part = part.strip()
+        if part.startswith(name + " "):
+            return part[len(name) + 1:]
+    raise AssertionError(f"{name} missing from {csp!r}")
+
+
+PAGES = {
+    "console": lambda: console._page("Proof", "<p>x</p>"),
+    "console, live": lambda: console._page("Your fleet", "<p>x</p>", auto_refresh_seconds=45),
+    "console, signed out": lambda: console._page("Sign in", "<p>x</p>", signed_in=False),
+    "shared report": lambda: console._shared_page("<p>x</p>", expires_at=2_000_000_000),
+    "operator console": lambda: admin._page("Overview", "<p>x</p>", auto_refresh_seconds=30),
+    "signup": lambda: signup._page("Create account", "<p>x</p>"),
+}
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_the_policy_allows_exactly_the_scripts_the_page_renders(name):
+    response = PAGES[name]()
+    page = response.body.decode()
+    csp = response.headers["content-security-policy"]
+    allowed = set(_directive(csp, "script-src").split())
+    rendered = _script_hashes(page)
+    assert allowed == (rendered or {"'none'"})
+    assert "'unsafe-inline'" not in _directive(csp, "script-src")
+    assert _directive(csp, "default-src") == "'none'"
+    assert _directive(csp, "frame-ancestors") == "'none'"
+    assert _directive(csp, "base-uri") == "'none'"
+    assert "no-store" in response.headers["cache-control"]
+
+
+def test_the_shared_report_runs_no_script_and_sends_no_referrer():
+    response = console._shared_page("<p>x</p>", expires_at=2_000_000_000)
+    assert "<script" not in response.body.decode()
+    assert _directive(response.headers["content-security-policy"], "script-src") == "'none'"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_forms_may_post_only_here_or_to_stripe():
+    csp = console._page("Proof", "").headers["content-security-policy"]
+    assert _directive(csp, "form-action").split() == ["'self'", "https://*.stripe.com"]
+
+
+@pytest.mark.parametrize("path", sorted(p.name for p in HUB.glob("*.py")))
+def test_no_page_uses_an_inline_event_handler(path):
+    """The policy forbids them, so one would silently do nothing."""
+    source = (HUB / path).read_text()
+    assert not re.search(r"""\son(click|submit|change|input|load|focus|blur)\s*=\s*['"\\]""", source), path
+
+
+def test_the_nav_marks_the_current_page():
+    page = console._page("Users & roles", "").body.decode()
+    assert re.search(r'<a href="[^"]*/users" aria-current=page>Users</a>', page)
+    assert page.count(" aria-current=page>") == 1
+    assert " aria-current=page>" not in console._page("Something else", "").body.decode()
+
+
+def test_the_page_offers_a_skip_link_to_its_content():
+    page = console._page("Proof", "<p>x</p>").body.decode()
+    assert '<a class="skip" href="#main">' in page and '<main id="main">' in page

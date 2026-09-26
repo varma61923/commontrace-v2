@@ -607,10 +607,15 @@ def build_server(root: str, *, allow_approval: bool = True):
             # page (commontrace/rerank_arm.py), and only if it can actually
             # rerank: otherwise it ranks for the page, as if it had not asked.
             rerank_skipped = ""
-            if retrieval_config.rerank != retrieval_io.RERANK_NONE:
+            # With no active lesson there is nothing to reorder: loading a
+            # model for seconds would change no page (`commontrace query`
+            # decides the same way).
+            if retrieval_config.rerank != retrieval_io.RERANK_NONE and active:
                 with _quiet():
                     rerank_skipped = rerank_arm.ready(retrieval_config.rerank)
-            reranking = retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped
+            reranking = (
+                retrieval_config.rerank != retrieval_io.RERANK_NONE and not rerank_skipped and bool(active)
+            )
             depth = rerank_arm.pool_size(want, retrieval_config.rerank) if reranking else want
             # A fused pool's depth is set per semantic-arm model
             # (rerank_arm.POOL_DEPTHS), read from the index before ranking;
@@ -666,12 +671,12 @@ def build_server(root: str, *, allow_approval: bool = True):
         # The semantic arm's embedding model, as its label tag, once it ran.
         embedder = ""
         fusion_skipped = ""
-        if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated:
+        if retrieval_config.fusion == retrieval_io.FUSION_GATED and not gated and active:
             fusion_skipped = (
                 "gated fusion admits semantic candidates only on the reranker's word, "
                 f"and the reranker did not run: {rerank_skipped or 'rerank is off'}"
             )
-        if retrieval_config.fusion == retrieval_io.FUSION_RRF or gated:
+        if (retrieval_config.fusion == retrieval_io.FUSION_RRF or gated) and active:
             from commontrace import semantic_arm
 
             if not semantic_arm.available():
@@ -893,7 +898,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
         }
-        if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None:
+        if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None and active:
             # Configured but not run -- said out loud, because the store asked
             # for a DIFFERENT eligibility rule. The assignment records the
             # lexical label, which is what actually ran, so integrity.
@@ -905,7 +910,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 f"The holdout assignment records {eligibility_label!r} "
                 "accordingly."
             )
-        if retrieval_config.rerank != retrieval_io.RERANK_NONE and reranked is None:
+        if retrieval_config.rerank != retrieval_io.RERANK_NONE and reranked is None and active:
             # Same posture as fusion_note: asked for, not run, said so.
             result["rerank_note"] = (
                 f"this store configures rerank={retrieval_config.rerank!r}, but this "

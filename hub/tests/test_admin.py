@@ -279,7 +279,8 @@ class TestRendering:
         one more place tenant data sits at rest."""
         async with _client(_app(session_factory=session_factory)) as c:
             r = await c.get("/admin", headers=_basic("op", "s3cret"))
-        assert r.headers["cache-control"] == "no-store"
+        assert "no-store" in r.headers["cache-control"].split(", ")
+        assert "script-src" in r.headers["content-security-policy"]
 
     async def test_the_console_states_which_actions_it_will_and_will_not_take(
         self, session_factory

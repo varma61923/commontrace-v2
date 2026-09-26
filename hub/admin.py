@@ -151,7 +151,13 @@ header.bar b{font-size:.95rem;letter-spacing:.01em}
 header.bar .ro{font-family:ui-monospace,monospace;font-size:.66rem;letter-spacing:.12em;
   text-transform:uppercase;color:var(--muted);border:1px solid var(--rule);
   padding:.15rem .45rem;border-radius:2px}
-header.bar nav{margin-left:auto;display:flex;gap:1rem;font-size:.9rem}
+header.bar nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:.9rem}
+header.bar nav a[aria-current=page]{color:var(--ink);font-weight:600;text-decoration:none}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+.skip{position:absolute;left:-9999px;top:0}.skip:focus{left:1rem;top:.5rem;z-index:10;
+  background:var(--surface);color:var(--ink);padding:.4rem .7rem;border:1px solid var(--rule)}
+@media (max-width:640px){header.bar nav{margin-left:0;width:100%}}
 main{max-width:1100px;margin:0 auto;padding:2rem 1.25rem 4rem;
   display:flex;flex-direction:column;gap:2.25rem}
 h1{font-size:1.5rem;margin:0 0 .2rem;letter-spacing:-.01em}
@@ -222,7 +228,8 @@ form.stack textarea{min-height:5rem;resize:vertical;font-family:inherit}
 form.stack input:focus-visible,form.stack textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:1px}
 @media (max-width:640px){.cmd{grid-template-columns:1fr}
-  form.act{flex-wrap:wrap}form.act input[type=text]{min-width:0;flex:1}}
+  form.act{flex-wrap:wrap}form.act input:not([type=hidden]):not([type=checkbox]),
+  form.act select{min-width:0;flex:1 1 9rem}}
 """
 
 
@@ -272,15 +279,62 @@ def _auto_refresh_script(seconds: int) -> str:
 # test here posts with httpx, which runs no JavaScript and so could not
 # have seen it. The class is cosmetic precisely so that nothing about
 # what gets submitted depends on this script running.
+#
+# It also carries the pages' two other behaviours, so that no page needs an
+# inline event handler (which the Content-Security-Policy below forbids):
+# a form with `data-confirm` asks first, and a read-only input with
+# `data-autoselect` selects itself on click, for copying a key or link.
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
     "var f=ev.target;"
     "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
     "if(ev.defaultPrevented)return;"
+    "if(f.dataset.confirm&&!window.confirm(f.dataset.confirm)){ev.preventDefault();return;}"
     "f.dataset.ctSubmitting='1';"
     "if(ev.submitter){ev.submitter.classList.add('busy');}"
-    "},true);</script>"
+    "},true);"
+    "document.addEventListener('click',function(ev){"
+    "var t=ev.target;if(t&&t.matches&&t.matches('input[data-autoselect]')){t.select();}"
+    "});</script>"
 )
+
+
+def content_security_policy(*scripts: str) -> str:
+    """A Content-Security-Policy that lets exactly these inline scripts run.
+
+    Every page here is server-rendered with its scripts inline, so the
+    policy allows each by its SHA-256 and nothing else: text that escaped
+    `h()` by some future mistake still could not run. Styles stay inline
+    (style attributes cannot be hashed), and forms may post only to this
+    origin or to Stripe, where the billing buttons redirect.
+    """
+    import base64
+    import hashlib
+    import re
+
+    hashes = []
+    for script in scripts:
+        for body in re.findall(r"<script>(.*?)</script>", script, flags=re.S):
+            digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+            hashes.append(f"'sha256-{digest}'")
+    return (
+        "default-src 'none'; "
+        f"script-src {' '.join(hashes) if hashes else chr(39) + 'none' + chr(39)}; "
+        "style-src 'unsafe-inline'; img-src data:; "
+        "form-action 'self' https://*.stripe.com; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
+
+
+# Headers every HTML page here sends: the policy above, and no caching --
+# this is live tenant data, and a cached copy in a shared browser is one
+# more place it sits at rest.
+def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store, private", "Referrer-Policy": referrer,
+        "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        "Content-Security-Policy": content_security_policy(*scripts),
+    }
 
 
 def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
@@ -301,9 +355,7 @@ def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLRespon
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
         f"<main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
-        # No caching: this is live operational state, and a cached copy in a
-        # shared browser is one more place tenant data sits at rest.
-        headers={"Cache-Control": "no-store"},
+        headers=html_headers(refresh_script, _FORM_GUARD_SCRIPT),
     )
 
 

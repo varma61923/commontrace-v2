@@ -421,16 +421,18 @@ def _semantic_model_from_output(stdout: str) -> str | None:
 
 
 def _rerank_depth(
-    config: retrieval_io.RetrievalConfig, top_k: int, embedder: str = "",
+    config: retrieval_io.RetrievalConfig, top_k: int, embedder: str = "", *, candidates: int = 1,
 ) -> tuple[bool, int, str]:
     """(reranking, how deep each first-stage arm fetches, why not reranking).
     `embedder` is the semantic arm's tag when it will feed the pool.
+    `candidates` is how many active lessons there are to rank: with none,
+    there is nothing to reorder and no reason to load a model for seconds.
 
     Same gate as MCP's `retrieve`: a store that configured the reranker but
     cannot load it ranks for the page, exactly as if it had not asked
     (commontrace/rerank_arm.py).
     """
-    if config.rerank == retrieval_io.RERANK_NONE:
+    if config.rerank == retrieval_io.RERANK_NONE or candidates <= 0:
         return False, top_k, ""
     skipped = rerank_arm.ready(config.rerank)
     if skipped:
@@ -486,7 +488,7 @@ def _run_lexical(args: argparse.Namespace, root: str) -> int:
     # Ranked with any withdrawn lesson still present and removed afterwards,
     # exactly as MCP's `retrieve()` does (commontrace/harm.py).
     harmful = evidence.withdrawn(root, config.harm_policy)
-    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k)
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k, candidates=len(lessons))
     ranked = retrieval.rank_lessons(
         args.task, lessons, top_k=depth + len(harmful), floor=floor,
         scorer=config.scorer,
@@ -942,6 +944,15 @@ def _index_is_unusable(root: str) -> str:
     return ""
 
 
+def _has_candidates(args: argparse.Namespace, root: str) -> bool:
+    """Whether any active lesson for this agent type is left to rank once the
+    occasion's already-shown lessons are set aside. The semantic index covers
+    the same lessons, so with none here every arm would return nothing."""
+    lessons, _terms = lesson_cache.load_active_with_terms(
+        root, args.agent_type, reader=lambda p: read_or_warn(frontmatter.read, p))
+    return bool(_exclude_shown(lessons, _already_shown(args, root)))
+
+
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
 
@@ -953,6 +964,11 @@ def run(args: argparse.Namespace) -> int:
     # rankings in one experiment. A store whose log says it ran semantic
     # retrieval is pinned to no reranker (retrieval_io), so it stays here.
     config = retrieval_io.load_config(root)
+    # Nothing to rank: every retriever returns the same empty page, and the
+    # lexical one gets there without refreshing an index or loading a model
+    # (which took ~15s on a fresh store). Same decision as MCP's `retrieve`.
+    if not _has_candidates(args, root):
+        return _run_lexical(args, root)
     if (
         not args.lexical
         and config.fusion == retrieval_io.FUSION_NONE

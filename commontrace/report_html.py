@@ -20,37 +20,51 @@ from __future__ import annotations
 import html
 
 PAGE_CSS = """
+:root {
+  color-scheme: light dark;
+  --ink: #1a2233; --head: #0d1b2a; --muted: #5b6b82; --paper: #fff; --rule: #d8dee6; --soft: #f4f6f9;
+  --ok: #1f7a3d; --ok-bg: #e4f6e8; --ok-rule: #bfe6c8; --bad: #a3312a; --bad-bg: #fdecec; --bad-rule: #f3c9c6;
+  --warn: #8a6d1d; --warn-bg: #fdf6e3; --warn-rule: #f0e2ad; --card-bg: #f3faf4; --card-rule: #d7ecd9;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --ink: #e2e8f0; --head: #f1f5f9; --muted: #9aa8b8; --paper: #0f141a; --rule: #2a3440; --soft: #18202a;
+  --ok: #6fcf8f; --ok-bg: #12261a; --ok-rule: #245436; --bad: #f08a80; --bad-bg: #2a1614; --bad-rule: #5a2a25;
+  --warn: #e3c16b; --warn-bg: #2a2414; --warn-rule: #5a4a22; --card-bg: #121c16; --card-rule: #22382a;
+} }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  max-width: 1080px; margin: 2em auto; padding: 0 1.5em; line-height: 1.6;
-  color: #1a2233; background: #fff;
+  max-width: 1080px; margin: 2em auto; padding: 0 1em; line-height: 1.6;
+  color: var(--ink); background: var(--paper);
 }
-h1, h2, h3 { color: #0d1b2a; }
-h1 { border-bottom: 2px solid #1a2233; padding-bottom: 0.3em; }
-h2 { border-bottom: 1px solid #d8dee6; padding-bottom: 0.2em; margin-top: 2em; }
-.subtitle { color: #5b6b82; margin-top: -0.5em; }
-.meta { color: #5b6b82; font-size: 0.9em; }
+h1, h2, h3 { color: var(--head); }
+h1 { border-bottom: 2px solid var(--ink); padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid var(--rule); padding-bottom: 0.2em; margin-top: 2em; }
+.subtitle { color: var(--muted); margin-top: -0.5em; }
+.meta { color: var(--muted); font-size: 0.9em; }
 .cards { display: flex; flex-wrap: wrap; gap: 1em; margin: 1.5em 0; }
 .card {
-  flex: 1 1 220px; border: 1px solid #d7ecd9; background: #f3faf4;
+  flex: 1 1 220px; border: 1px solid var(--card-rule); background: var(--card-bg);
   border-radius: 10px; padding: 1em 1.2em;
 }
 .card .label { text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.04em;
-  color: #2f8f4e; font-weight: 600; }
-.card .value { font-size: 2.2em; font-weight: 700; color: #0d1b2a; margin: 0.1em 0; }
-.card .note { color: #5b6b82; font-size: 0.85em; }
+  color: var(--ok); font-weight: 600; }
+.card .value { font-size: 2.2em; font-weight: 700; color: var(--head); margin: 0.1em 0; overflow-wrap: anywhere; }
+.card .note { color: var(--muted); font-size: 0.85em; }
 table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-th, td { border: 1px solid #d8dee6; padding: 0.5em 0.7em; text-align: left; font-size: 0.92em; }
-th { background: #f4f6f9; }
+th, td { border: 1px solid var(--rule); padding: 0.5em 0.7em; text-align: left; font-size: 0.92em; }
+th { background: var(--soft); }
+td { overflow-wrap: anywhere; }
+@media (max-width: 640px) { table { display: block; overflow-x: auto; } }
 .badge { display: inline-block; border-radius: 6px; padding: 0.15em 0.6em; font-size: 0.8em; font-weight: 600; }
-.badge-covered { background: #e4f6e8; color: #1f7a3d; }
-.badge-gap { background: #fdecec; color: #a3312a; }
+.badge-covered { background: var(--ok-bg); color: var(--ok); }
+.badge-gap { background: var(--bad-bg); color: var(--bad); }
 .result-banner { border-radius: 10px; padding: 1.2em 1.4em; margin: 1.5em 0; font-size: 1.05em; }
-.result-yes { background: #e4f6e8; border: 1px solid #bfe6c8; color: #1f7a3d; }
-.result-no { background: #fdecec; border: 1px solid #f3c9c6; color: #a3312a; }
-.result-unknown { background: #fdf6e3; border: 1px solid #f0e2ad; color: #8a6d1d; }
-.caveat { color: #5b6b82; font-size: 0.88em; border-left: 3px solid #d8dee6; padding-left: 0.8em; margin: 1em 0; }
-code { background: #f4f6f9; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+.result-yes { background: var(--ok-bg); border: 1px solid var(--ok-rule); color: var(--ok); }
+.result-no { background: var(--bad-bg); border: 1px solid var(--bad-rule); color: var(--bad); }
+.result-unknown { background: var(--warn-bg); border: 1px solid var(--warn-rule); color: var(--warn); }
+.caveat { color: var(--muted); font-size: 0.88em; border-left: 3px solid var(--rule);
+  padding-left: 0.8em; margin: 1em 0; }
+code { background: var(--soft); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
 """
 
 
@@ -64,6 +78,7 @@ def wrap_page(title: str, body_html: str, timestamp: str) -> str:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)} — {html.escape(timestamp)}</title>
 <style>{PAGE_CSS}</style>
 </head>

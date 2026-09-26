@@ -135,11 +135,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             status = response.status_code
             response.headers[REQUEST_ID_HEADER] = request_id
             # Cheap, always-safe defense-in-depth headers on every response.
-            # This is a JSON API with no browser-rendered surface, so a full
-            # Content-Security-Policy has nothing to scope (no inline
-            # scripts/styles of its own to allow), but these cost nothing and
-            # remove a browser's default assumptions that don't hold for a
-            # JSON API: don't guess the content type from the body
+            # The HTML pages (console, admin, signup) send their own
+            # Content-Security-Policy, hashed to their own inline scripts
+            # (hub/admin.py:html_headers); these cost nothing and remove a
+            # browser's default assumptions that don't hold for a JSON API
+            # either: don't guess the content type from the body
             # (nosniff), never render a response in a frame, don't leak the
             # request URL to a Referer header on outbound links from any
             # tool that happens to render this JSON. HSTS is a no-op unless

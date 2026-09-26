@@ -261,6 +261,19 @@ class TestSignIn:
         assert "samesite=strict" in header.lower()
         assert "Path=/app" in header
 
+    async def test_the_cookie_is_secure_behind_a_declared_proxy(self, session_factory, org_and_key):
+        """The proxy terminates TLS, so the Hub sees http: the cookie must
+        still never be sent over a plain connection."""
+        _org_id, raw_key = org_and_key
+        app = Starlette()
+        console.add_console_routes(app, session_factory, console_secret=SECRET, trusted_proxy_hops=1)
+        async with _client(app) as client:
+            response = await _signed_in(client, raw_key)
+        assert "Secure" in response.headers["set-cookie"]
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await _signed_in(client, raw_key)
+        assert "Secure" not in response.headers["set-cookie"]  # plain http, no proxy: local development
+
     async def test_sign_out_clears_the_session(self, session_factory, org_and_key):
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:

@@ -445,3 +445,25 @@ def test_a_gated_store_is_pinned_to_gated_by_its_log(tmp_path, no_override, monk
                              "floor": 0.04}) + "\n")
     config = retrieval_io.load_config(root)
     assert (config.fusion, config.rerank) == (retrieval_io.FUSION_GATED, retrieval_io.RERANK_CE_FAST)
+
+
+def test_an_empty_store_answers_without_loading_a_model_or_touching_the_index(tmp_path, monkeypatch, capsys):
+    """Nothing to rank: both surfaces return the empty page at once instead
+    of loading a cross-encoder and refreshing the semantic index (~15s on a
+    fresh store), and neither says the reranker was skipped."""
+    def _forbidden(*_a, **_k):
+        raise AssertionError("an empty store must not load a model or build an index")
+
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(rerank_arm, "_load", _forbidden)
+    monkeypatch.setattr(semantic_arm, "available", lambda: True)
+    monkeypatch.setattr(semantic_arm, "ensure_fresh", _forbidden)
+    monkeypatch.setattr(query_cmd, "_refresh_stale_index", _forbidden)
+    store = str(tmp_path / "fresh")
+    assert main(["init", "--dest", store]) == 0
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED, rerank=retrieval_io.RERANK_CE)
+
+    assert query_cmd.run(_args(store, TASK, top_k=2)) == 0
+    assert "reranker" not in capsys.readouterr().err
+    out = call(mcp_server.build_server(store), "retrieve", task=TASK, top_k=2)
+    assert out["lessons"] == [] and not out.get("rerank_note") and not out.get("fusion_note")

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hub console and admin pages were unreadable in dark mode.** Every primary
+  button drew white text on a near-white background (contrast 1.2:1), and
+  the red/amber/green verdict boxes and pills kept light-mode colours under
+  light text. Both now use the theme's colours.
+- **Every console page scrolled sideways on a phone.** The nav bar did not
+  wrap (665px of content on a 390px screen), and wide tables and the memory
+  search box overflowed. The nav wraps, tables scroll inside their own box,
+  and admin forms stack their fields instead of squeezing them to a few
+  characters wide.
+- **`commontrace query` on a store with no lessons took 12–19 seconds** to
+  return nothing: it loaded the cross-encoder and rebuilt the semantic index
+  first. It now returns in about 0.2s, and MCP's `retrieve` makes the same
+  decision without a spurious "reranker did not run" note.
+- **The console session cookie lost `Secure` behind a TLS proxy in another
+  container or an ingress**, because the Hub only sees `https` from a proxy
+  on 127.0.0.1. A declared proxy (`HUB_TRUSTED_PROXY_HOPS` > 0) now always
+  gets a `Secure` cookie.
+- The CLI's HTML reports (`taxonomy`, `impact`, `pilot`, `bench --html`) had
+  no viewport tag, so phones rendered them zoomed out; they now fit the
+  screen, scroll wide tables, and follow the system dark mode.
+
+### Security
+
+- **Every Hub HTML page sends a Content-Security-Policy** that allows only
+  its own inline scripts, by SHA-256 hash: no inline event handlers, no
+  plugins, no framing, and forms may post only to the Hub or to Stripe.
+  Markup that ever escaped `h()` still could not run script. The inline
+  `onclick`/`onsubmit` handlers it replaces are now data attributes read by
+  the shared page script; `hub/tests/test_page_security.py` holds each
+  page's policy to exactly the scripts it renders.
+
+### Accessibility
+
+- The console nav marks the current page (`aria-current`), pages have a
+  skip-to-content link, every focusable control shows a focus ring, and
+  table columns of row buttons have a header a screen reader can announce.
+
 ### Added
 
 - **The accurate reranker is the default, over a shallower pool.** With the
