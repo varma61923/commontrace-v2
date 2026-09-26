@@ -14,6 +14,7 @@ from hub.abuse import (
     PostgresRateLimiter,
     RateLimiter,
     TraceRejected,
+    rate_limit_key,
     resolve_client_key,
     suspicion_reason,
     validate_size,
@@ -198,6 +199,30 @@ class TestResolveClientKey:
     def test_no_client_and_missing_header_with_hops_configured_is_unknown(self):
         req = _FakeRequest(None, headers={})
         assert resolve_client_key(req, 1) == "unknown"
+
+
+class TestRateLimitKey:
+    """One host is handed a whole IPv6 /64, so a limiter keyed on the full
+    address gave it 2^64 fresh budgets -- no limit at all on guessing API
+    keys at the console's sign-in."""
+
+    def test_every_address_in_one_ipv6_slash_64_shares_a_bucket(self):
+        a = rate_limit_key(_FakeRequest("2001:db8:1:2::1"), 0)
+        b = rate_limit_key(_FakeRequest("2001:db8:1:2:ffff:ffff:ffff:fffe"), 0)
+        assert a == b == "2001:db8:1:2::/64"
+        assert rate_limit_key(_FakeRequest("2001:db8:1:3::1"), 0) != a
+
+    def test_the_forwarded_address_is_widened_the_same_way(self):
+        req = _FakeRequest("10.0.0.1", headers={"X-Forwarded-For": "2001:db8:1:2::abcd"})
+        assert rate_limit_key(req, 1) == "2001:db8:1:2::/64"
+
+    def test_ipv4_is_unchanged_and_a_mapped_address_is_its_ipv4_client(self):
+        assert rate_limit_key(_FakeRequest("203.0.113.9"), 0) == "203.0.113.9"
+        assert rate_limit_key(_FakeRequest("::ffff:203.0.113.9"), 0) == "203.0.113.9"
+
+    def test_what_is_not_an_address_is_its_own_key(self):
+        assert rate_limit_key(_FakeRequest(None), 0) == "unknown"
+        assert rate_limit_key(_FakeRequest("testclient"), 0) == "testclient"
 
 
 @pytest.fixture

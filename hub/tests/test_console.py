@@ -326,6 +326,21 @@ class TestSignIn:
             assert forged.status_code == 403
             assert (await client.get(console.CONSOLE_PATH)).status_code == 200
 
+    async def test_sign_in_attempts_from_one_ipv6_slash_64_share_a_limit(self, session_factory):
+        """Rotating through the /64 a single host is given must not buy a
+        fresh set of attempts per address."""
+        app = Starlette()
+        console.add_console_routes(app, session_factory, console_secret=SECRET, trusted_proxy_hops=1)
+        async with _client(app) as client:
+            texts = [
+                (await client.post(
+                    f"{console.CONSOLE_PATH}/signin", data={"api_key": "ct_live_nope"},
+                    headers={"X-Forwarded-For": f"2001:db8:1:2::{i:x}"},
+                )).text
+                for i in range(1, 21)
+            ]
+        assert any("Too many attempts" in t for t in texts)
+
     async def test_sign_in_is_rate_limited(self, session_factory):
         """Without this the console is an unauthenticated, unthrottled oracle
         for testing API keys, reachable from a browser -- a strictly easier

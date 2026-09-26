@@ -41,6 +41,7 @@ from hub.abuse import (
     make_rate_limiter,
     make_read_rate_limiter,
     make_scim_auth_rate_limiter,
+    rate_limit_key,
     resolve_client_key,
 )
 from hub.admin import add_admin_routes
@@ -153,7 +154,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if not (path == self._protected_path or path.startswith(self._protected_path + "/")):
             return await call_next(request)
 
-        client_key = resolve_client_key(request, self._trusted_proxy_hops)
+        client_key = rate_limit_key(request, self._trusted_proxy_hops)
         allowed, retry_after = await self._auth_rate_limiter.check(client_key)
         if not allowed:
             return _rate_limited_response("too many auth attempts", retry_after)

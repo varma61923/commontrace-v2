@@ -91,7 +91,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, resolve_client_key
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, rate_limit_key
 from hub.admin import (
     _CSS,
     _FORM_GUARD_SCRIPT,
@@ -1727,7 +1727,7 @@ def add_console_routes(
 
     async def signin(request: Request) -> Response:
         allowed, retry_after = await signin_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return _page(
@@ -1757,7 +1757,7 @@ def add_console_routes(
             )
         # The auth limiter charges failures only, so a legitimate sign-in does
         # not consume the budget a brute-force attempt is meant to exhaust.
-        signin_limiter.refund(resolve_client_key(request, trusted_proxy_hops))
+        signin_limiter.refund(rate_limit_key(request, trusted_proxy_hops))
         response = RedirectResponse(CONSOLE_PATH, status_code=303)
         response.set_cookie(
             SESSION_COOKIE,

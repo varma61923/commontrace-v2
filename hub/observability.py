@@ -44,7 +44,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
@@ -339,14 +339,14 @@ def add_health_routes(
     generous bucket that a real orchestrator's poll interval (typically
     every few seconds) never comes close to. `trusted_proxy_hops` is
     HubConfig.trusted_proxy_hops, passed straight through to
-    hub.abuse.resolve_client_key -- see that config field's docstring."""
+    hub.abuse.rate_limit_key -- see that config field's docstring."""
     readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
-        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
         allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             # Retry-After for the same reason hub/server.py's 429s carry it:
@@ -383,7 +383,7 @@ def add_health_routes(
         touches no database, so it is cheap even when the database is down
         -- which is exactly when you want to be able to read it.
         """
-        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
         allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             seconds = str(max(1, math.ceil(retry_after)))

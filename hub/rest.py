@@ -70,7 +70,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from hub import audit, auth, crud, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, resolve_client_key
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import Organization
@@ -201,7 +201,7 @@ def add_rest_routes(
         verification each.
         """
         allowed, retry_after = await auth_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return None, JSONResponse(
@@ -247,7 +247,7 @@ def add_rest_routes(
         sees something meaningful rather than a UUID wall.
         """
         allowed, retry_after = await signup_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return JSONResponse(

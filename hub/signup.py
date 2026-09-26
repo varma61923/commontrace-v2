@@ -37,7 +37,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin
 from hub.auth import issue_api_key
 from hub.db import session_scope
@@ -126,7 +126,7 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
 
     async def signup(request: Request) -> Response:
         allowed, _retry_after = await signup_limiter.check(
-            resolve_client_key(request, trusted_proxy_hops)
+            rate_limit_key(request, trusted_proxy_hops)
         )
         if not allowed:
             return _page("Create account", _FORM.format(

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rate limits keyed on a client's address did nothing against an IPv6
+  client.** One host is typically assigned a whole /64 and can send from any
+  address in it, so each request could land in a fresh bucket: the console's
+  five-attempt sign-in limit stopped no one from guessing API keys, and the
+  same was true of signup, MCP/REST/SCIM auth and `/readyz`. Every such
+  limiter now counts an IPv6 client by its /64 (and an IPv4-mapped address
+  as its IPv4 client). The IP allowlist still checks the exact address.
 - **A webhook could target Alibaba Cloud's instance metadata service**
   (100.100.100.200). The check refused private, loopback and link-local
   addresses, but carrier-grade NAT space (100.64.0.0/10) is none of those;

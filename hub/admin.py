@@ -68,7 +68,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import (
@@ -1500,7 +1500,7 @@ def add_admin_routes(
         # for the same reason hub/server.py limits auth attempts: the compare
         # is cheap here, but an unauthenticated endpoint that hits Postgres on
         # every request is a lever without one.
-        client_key = resolve_client_key(request, trusted_proxy_hops)
+        client_key = rate_limit_key(request, trusted_proxy_hops)
         allowed, retry_after = await limiter.check(client_key)
         if not allowed:
             import math
