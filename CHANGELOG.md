@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Credentials in captured or imported traces were stored verbatim.** A key
+  that leaked into a log line (AWS, GitHub, Slack, Stripe, Google or
+  Anthropic keys, PEM private keys, JWTs) went into the local trace file --
+  its filename too, when it was in the title -- where every later agent
+  could read it and `sync` would push it to the Hub. `capture` (and MCP's
+  `capture` tool), `import` and the OpenTelemetry exporter now replace each
+  one with `[REDACTED <kind>]` and say how many they removed; the rest of
+  the trace is kept. Lessons were already refused at approval.
 - **Every Hub HTML page sends a Content-Security-Policy** that allows only
   its own inline scripts, by SHA-256 hash: no inline event handlers, no
   plugins, no framing, and forms may post only to the Hub or to Stripe.
