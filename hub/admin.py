@@ -909,12 +909,14 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
             if k.revoked_at is None:
                 key_actions = (
                     f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/rotate" '
+                    'data-confirm="Rotate this key? It stops working now." '
                     'class="act" style="display:inline">'
                     f'<input type="hidden" name="key_id" value="{h(k.id)}">'
                     f'<input type="hidden" name="csrf" '
                     f'value="{h(_csrf_token(admin_token, "rotate_key", str(k.id)))}">'
                     '<button type="submit" class="btn">Rotate</button></form> '
                     f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/revoke" '
+                    'data-confirm="Revoke this key? This cannot be undone." '
                     'class="act" style="display:inline">'
                     f'<input type="hidden" name="key_id" value="{h(k.id)}">'
                     f'<input type="hidden" name="csrf" '
@@ -1091,6 +1093,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
         if preview["n_doomed"]:
             apply_form = (
                 f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/retention/apply" '
+                'data-confirm="Permanently delete the traces listed above?" '
                 'class="act" style="margin-top:.5rem">'
                 f'<input type="hidden" name="digest" value="{h(preview["digest"])}">'
                 f'<input type="hidden" name="csrf" '
@@ -1240,6 +1243,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
     )
     purge_subject_form = (
         f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-subject-traces" '
+        'data-confirm="Permanently delete every trace tagged with this subject?" '
         'class="act" style="margin-top:1rem">'
         f'<input type="hidden" name="org_id" value="{h(org.id)}">'
         f'<input type="hidden" name="csrf" '
@@ -1257,7 +1261,8 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
     )
 
     danger_zone = (
-        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-trace" class="act">'
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-trace" class="act" '
+        'data-confirm="Permanently delete this trace and its amendments?">'
         f'<input type="hidden" name="org_id" value="{h(org.id)}">'
         f'<input type="hidden" name="csrf" '
         f'value="{h(_csrf_token(admin_token, "purge_trace", org.id))}">'

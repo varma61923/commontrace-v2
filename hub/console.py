@@ -1374,8 +1374,12 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
             if is_admin and k.revoked_at is None:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/rotate" '
+                    f'data-confirm="Rotate key {h(k.key_prefix)}? It stops working now; agents using '
+                    f'it need the new key." '
                     f'style="display:inline"><button type="submit">Rotate</button></form> '
                     f'<form method="post" action="{CONSOLE_PATH}/keys/{h(k.id)}/revoke" '
+                    f'data-confirm="Revoke key {h(k.key_prefix)}? Agents using it stop working, and '
+                    f'this cannot be undone." '
                     f'style="display:inline"><button type="submit">Revoke</button></form>'
                 )
             rows.append(
@@ -1436,6 +1440,7 @@ def _render_alerts(
             if is_admin:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/alerts/{h(r.id)}/delete" '
+                    'data-confirm="Delete this alert rule?" '
                     f'style="display:inline"><button type="submit">Delete</button></form>'
                 )
             rows.append(
@@ -1517,9 +1522,12 @@ def _render_webhooks(
             if is_admin and e["enabled"]:
                 actions = (
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/rotate" '
+                    'data-confirm="Rotate the signing secret? Deliveries are signed with the new '
+                    'one immediately." '
                     f'style="display:inline"><button type="submit">Rotate secret</button>'
                     "</form> "
                     f'<form method="post" action="{CONSOLE_PATH}/webhooks/{h(e["id"])}/disable" '
+                    'data-confirm="Disable this endpoint? It stops receiving events." '
                     f'style="display:inline"><button type="submit">Disable</button></form>'
                 )
             rows.append(

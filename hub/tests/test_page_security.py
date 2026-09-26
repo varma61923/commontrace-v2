@@ -167,3 +167,26 @@ def test_a_shown_once_secret_is_labelled_and_copyable():
     page = signup._page("Account created", signup._ISSUED.format(
         key_field=field, org_id="o", console_path="/app")).body.decode()
     assert 'id="api-key-label"' in page and "data-copy" in page
+
+
+_IRREVERSIBLE = re.compile(
+    r"keys/[^\"]*/(?:rotate|revoke)|keys/(?:rotate|revoke)|/purge-trace|/purge-subject-traces"
+    r"|retention/apply|alerts/[^\"]*/delete|webhooks/[^\"]*/(?:rotate|disable)"
+)
+
+
+@pytest.mark.parametrize("module", [console, admin])
+def test_an_irreversible_action_asks_first(module):
+    """One misclick on Revoke broke every agent using that key, with no way
+    back. Each such form carries `data-confirm`, which the page's script
+    turns into a confirmation prompt."""
+    source = pathlib.Path(module.__file__).read_text()
+    checked = 0
+    for m in re.finditer(r'<form method="post" action="([^"]*)"', source):
+        if not _IRREVERSIBLE.search(m.group(1)):
+            continue
+        opening = source[m.start():]
+        opening = opening[:min(i for i in (opening.find("<input"), opening.find("<button"), 800) if i > 0)]
+        assert "data-confirm=" in opening, m.group(1)
+        checked += 1
+    assert checked

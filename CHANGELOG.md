@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One misclick revoked a production API key.** Revoke and rotate (keys and
+  webhook secrets), disabling a webhook, deleting an alert rule, purging
+  traces and applying retention acted on the first click, with no way back.
+  Each now asks for confirmation first (the org purge already required
+  retyping its name), and a test fails if an irreversible form ships
+  without it.
 - **Every CLI command paid for every other command's imports** -- numpy,
   asyncio and ssl among them, about 140ms. Only the invoked command's module
   is loaded now: `commontrace capture`, which agent hooks run after every
