@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asyncio and ssl among them, about 140ms. Only the invoked command's module
   is loaded now: `commontrace capture`, which agent hooks run after every
   task, went from 189ms to 66ms; `lesson list` and `query` from ~190ms to
-  120–135ms. `--help` is unchanged.
+  about 80ms, the rest of their saving from dropping an unused numpy import
+  in `commontrace/overlap.py`. `--help` is unchanged.
 - **The Hub image and compose stack are built from base images pinned by
   digest** (`python:3.12-slim@sha256:…`, `postgres:16@sha256:…`), so a
   re-pushed tag cannot change what is built. Dependabot's docker and

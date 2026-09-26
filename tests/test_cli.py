@@ -803,7 +803,8 @@ def test_a_command_imports_only_what_it_uses():
     script = (
         "import sys\n"
         "from commontrace import cli\n"
-        "cli.build_parser('capture')\n"
+        "for name in ('capture', 'query', 'lesson'):\n"
+        "    cli.build_parser(name)\n"
         "print(','.join(m for m in ('numpy', 'asyncio', 'ssl', 'commontrace.commands.commons_cmd') if m in sys.modules))\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
