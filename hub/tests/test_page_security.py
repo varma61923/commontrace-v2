@@ -152,3 +152,18 @@ def test_every_form_post_route_is_guarded(module):
     posts = [r.split("\n\n", 1)[0] for r in routes if '"POST"' in r.split("methods=", 1)[1].split("]", 1)[0]]
     assert posts
     assert all("refuse_cross_origin(" in route for route in posts)
+
+
+def test_a_shown_once_secret_is_labelled_and_copyable():
+    """The Copy button starts hidden and the page's (CSP-hashed) script
+    reveals it, so a browser without script never shows one that does
+    nothing; the field is named by its visible heading."""
+    field = admin.secret_field('ct_live_"<x>', "key-label")
+    assert 'aria-labelledby="key-label"' in field
+    assert 'value="ct_live_&quot;&lt;x&gt;"' in field
+    assert '<button type="button" class="btn" data-copy hidden>Copy</button>' in field
+    assert 'role="status"' in field
+    assert "button[data-copy]" in admin._FORM_GUARD_SCRIPT
+    page = signup._page("Account created", signup._ISSUED.format(
+        key_field=field, org_id="o", console_path="/app")).body.decode()
+    assert 'id="api-key-label"' in page and "data-copy" in page

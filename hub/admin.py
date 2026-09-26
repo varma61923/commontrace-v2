@@ -162,6 +162,10 @@ header.bar nav .linkish{font:inherit;padding:0;border:0;background:none;color:va
   text-decoration:underline;cursor:pointer}
 a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px}
+.copy-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.5rem}
+.copy-row input{flex:1 1 16rem;min-width:0;margin:0;font-family:ui-monospace,monospace}
+.copy-status{flex-basis:100%;font-size:.8rem;color:var(--muted);min-height:1em}
+.copy-status:empty{display:none}
 .skip{position:absolute;left:-9999px;top:0}.skip:focus{left:1rem;top:.5rem;z-index:10;
   background:var(--surface);color:var(--ink);padding:.4rem .7rem;border:1px solid var(--rule)}
 @media (max-width:640px){header.bar nav{margin-left:0;width:100%}}
@@ -332,8 +336,31 @@ _FORM_GUARD_SCRIPT = (
     "},true);"
     "document.addEventListener('click',function(ev){"
     "var t=ev.target;if(t&&t.matches&&t.matches('input[data-autoselect]')){t.select();}"
-    "});</script>"
+    "var b=t&&t.closest&&t.closest('button[data-copy]');if(!b)return;"
+    "var row=b.parentNode,i=row.querySelector('input'),st=row.querySelector('[role=status]');"
+    "function done(ok){st.textContent=ok?'Copied to clipboard.':'Select the text and copy it.';"
+    "b.textContent=ok?'Copied':'Copy';setTimeout(function(){b.textContent='Copy';},2000);}"
+    "function fallback(){i.select();var ok=false;try{ok=document.execCommand('copy');}catch(e){}done(ok);}"
+    "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value)"
+    ".then(function(){done(true);},fallback);}else{fallback();}"
+    "});"
+    "document.querySelectorAll('button[data-copy]').forEach(function(b){b.hidden=false;});"
+    "</script>"
 )
+
+
+def secret_field(value: str, label_id: str) -> str:
+    """A shown-once value (API key, signing secret, share link): read-only,
+    selected on click, labelled by the element `label_id`, with a Copy
+    button. The button starts hidden and `_FORM_GUARD_SCRIPT` reveals it, so
+    a browser without script never shows a button that does nothing."""
+    return (
+        '<div class="copy-row">'
+        f'<input type="text" readonly aria-labelledby="{h(label_id)}" value="{h(value)}" '
+        'data-autoselect spellcheck="false" autocomplete="off">'
+        '<button type="button" class="btn" data-copy hidden>Copy</button>'
+        '<span class="copy-status" role="status" aria-live="polite"></span></div>'
+    )
 
 
 def content_security_policy(*scripts: str) -> str:

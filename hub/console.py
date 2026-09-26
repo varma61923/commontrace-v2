@@ -102,6 +102,7 @@ from hub.admin import (
     html_headers,
     live_badge,
     refuse_cross_origin,
+    secret_field,
 )
 from hub.billing import StripeSettings, create_billing_portal_session, create_checkout_session
 from hub.config import HubConfig
@@ -725,8 +726,7 @@ def _render_share_form(share_url: str | None) -> str:
             '<div class="share-box"><b id="share-url-label">Shareable link generated.</b><br>'
             f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
             "anyone who has the link -- treat it like the report data it is."
-            f'<input type="text" readonly aria-labelledby="share-url-label" '
-            f'value="{h(share_url)}" data-autoselect></div>'
+            f'{secret_field(share_url, "share-url-label")}</div>'
         )
     return (
         f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
@@ -1359,8 +1359,8 @@ def _render_keys(keys: list[ApiKey], is_admin: bool, fresh: dict | None = None) 
             "<code>read,write</code>; a dashboard wants <code>read</code>.</p>"]
     if fresh:
         body.append(
-            '<div class="verdict warn"><h2>New key — shown once</h2>'
-            f'<p class="rev">{h(fresh["raw_key"])}</p>'
+            '<div class="verdict warn"><h2 id="new-key-label">New key — shown once</h2>'
+            f'{secret_field(fresh["raw_key"], "new-key-label")}'
             "<p>Store this now. It will not be shown again, and this Hub keeps only its "
             "hash.</p></div>"
         )
@@ -1502,8 +1502,7 @@ def _render_webhooks(
             "(shown once)</b><br>"
             '<span class="muted">Verify the delivery signature with this. It cannot be shown '
             "again — rotate the endpoint to get a new one.</span>"
-            f'<input type="text" readonly aria-labelledby="webhook-secret-label" '
-            f'value="{h(fresh["secret"])}" data-autoselect></div>'
+            f'{secret_field(fresh["secret"], "webhook-secret-label")}</div>'
         )
     body.append(_tiles([
         ("Endpoints", _num(len(endpoints))),

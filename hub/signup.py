@@ -38,7 +38,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit
 from hub.abuse import RateLimiter, rate_limit_key
-from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin
+from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin, secret_field
 from hub.auth import issue_api_key
 from hub.db import session_scope
 from hub.models import Organization
@@ -88,8 +88,8 @@ _ISSUED = """
 <h1>Account created</h1>
 <p class="sub">Store this key now -- it is never shown again, and anyone holding it has full
 access to this organization's memory.</p>
-<div class="share-box"><b>Your API key</b>
-<input type="text" readonly value="{key}" data-autoselect></div>
+<div class="share-box"><b id="api-key-label">Your API key</b>
+{key_field}</div>
 <p class="sub">Organization id: <span class="rev">{org_id}</span></p>
 <p><a href="{console_path}/signin">Sign in to the console →</a>, or use this key directly with
 the <code>commontrace</code> CLI / an MCP client.</p>
@@ -164,7 +164,8 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
             )
             org_id = org.id
         return _page("Account created", _ISSUED.format(
-            key=h(issued.raw_key), org_id=h(org_id), console_path=console_path,
+            key_field=secret_field(issued.raw_key, "api-key-label"), org_id=h(org_id),
+            console_path=console_path,
         ))
 
     app.add_route(SIGNUP_PATH, signup_page, methods=["GET"])
