@@ -924,19 +924,33 @@ class TestProofSharing:
         assert response.status_code == 303
         assert response.headers["location"].endswith("/signin")
 
+    async def test_a_link_in_the_url_is_never_presented_as_the_one_generated(
+        self, session_factory, org_and_key
+    ):
+        """/proof?share_url=<anything> used to render <anything> under
+        "Shareable link generated." -- a way to put an attacker's page in
+        the console's own voice."""
+        _org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            response = await client.get(
+                f"{console.CONSOLE_PATH}/proof", params={"share_url": "https://evil.example/x"})
+        assert response.status_code == 200
+        assert "evil.example" not in response.text
+        assert "Shareable link generated." not in response.text
+
     async def test_a_signed_in_org_can_mint_and_then_view_its_own_link(
         self, session_factory, org_and_key
     ):
         _org_id, raw_key = org_and_key
         async with _client(_app(session_factory=session_factory)) as client:
             await _signed_in(client, raw_key)
-            share_response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
-            assert share_response.status_code == 303
-            location = share_response.headers["location"]
-            assert location.startswith(f"{console.CONSOLE_PATH}/proof?share_url=")
-
-            proof_response = await client.get(location)
+            proof_response = await client.post(f"{console.CONSOLE_PATH}/proof/share")
+            # Shown in this response, never through a URL: a ?share_url=
+            # redirect put the live link into browser history.
+            assert proof_response.status_code == 200
             assert "Shareable link generated." in proof_response.text
+            assert "location" not in proof_response.headers
 
         # The minted URL resolves with NO cookies at all -- a fresh, bare
         # client, exactly like an outsider who was only handed the link.

@@ -1899,6 +1899,7 @@ def add_console_routes(
 
     async def _proof_view(
         request: Request, org_id: str, is_admin: bool, *, experiment_error: str = "",
+        share_url: str | None = None,
     ) -> Response:
         # An optional rate the reader supplies in the URL. Never stored: this
         # product ships the quantity and takes the price from whoever is
@@ -1912,11 +1913,12 @@ def add_console_routes(
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id, value_per_occasion=rate)
-        # Set immediately after proof_share's redirect (below) -- rendered
-        # once, not persisted, so refreshing the page without the query
-        # param drops back to the plain "generate a link" form rather than
-        # re-displaying a link that may since have been superseded.
-        share_url = request.query_params.get("share_url")
+        # Only ever the link proof_share just minted, passed in directly --
+        # never read from the URL. It used to arrive as ?share_url=, which put
+        # the link (a live credential for this org's data) into browser
+        # history and let anyone send a signed-in user a /proof?share_url=
+        # link to a page of their own that the console then presented as
+        # "Shareable link generated".
         share_box = _render_share_form(share_url)
         return _page("Proof", share_box + _render_proof(
             outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
@@ -1929,8 +1931,8 @@ def add_console_routes(
         return await _proof_view(request, str(claims["org"]), _is_admin(claims))
 
     async def proof_share(request: Request) -> Response:
-        """Mints a new share link for the signed-in org and redirects back
-        to the Proof page with it. POST, not GET: this creates a new
+        """Mints a new share link for the signed-in org and shows the Proof
+        page with it, in this response. POST, not GET: this creates a new
         capability (a live, un-guessable link to the org's own data) and
         must not be triggerable by a prefetch, a browser extension
         crawling links, or a `<img>` tag someone points at it."""
@@ -1940,9 +1942,7 @@ def add_console_routes(
         org_id = str(claims["org"])
         token = issue_share_token(_secret(), org_id)
         url = str(request.url.replace(path=f"{CONSOLE_PATH}/proof/shared/{token}", query=""))
-        return RedirectResponse(
-            f"{CONSOLE_PATH}/proof?share_url={_url_quote(url, safe='')}", status_code=303
-        )
+        return await _proof_view(request, org_id, _is_admin(claims), share_url=url)
 
     async def proof_shared(request: Request) -> Response:
         """The public, unauthenticated view a share link resolves to. No

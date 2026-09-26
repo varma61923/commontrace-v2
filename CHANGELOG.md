@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A freshly minted share link went into browser history, and the console
+  would present any link as its own.** Generating a link redirected to
+  `/app/proof?share_url=<link>`, so the live credential landed in history and
+  sync; and a signed-in user sent `/app/proof?share_url=https://anything`
+  saw that URL under "Shareable link generated". The link is now shown in the
+  response that mints it, and the Proof page no longer reads one from the URL.
 - **The Hub's logs held share-link tokens and customer search text.** The
   request log recorded `/app/proof/shared/<token>` verbatim -- the token is
   the credential for that org's live report for 14 days -- and uvicorn's own
