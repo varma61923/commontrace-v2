@@ -109,7 +109,8 @@ class HubConfig:
     # a trace can never legitimately exceed max_trace_bytes (64KiB)
     # serialized, so 1MiB leaves generous room for JSON-RPC/MCP envelope
     # overhead while still rejecting anything trying to smuggle a much
-    # larger payload through.
+    # larger payload through. Enforced on every route, not only the MCP
+    # transport: hub/server.py:BodySizeLimitMiddleware.
     max_request_body_bytes: int = 1_048_576
 
     # --- Abuse controls (contribute_trace) ---

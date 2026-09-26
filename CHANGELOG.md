@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unauthenticated request with a huge body could exhaust the Hub's
+  memory.** `HUB_MAX_REQUEST_BODY_BYTES` (1 MiB) was enforced only by the MCP
+  transport; the signup and sign-in forms, the REST API, SCIM and the Stripe
+  webhook buffered bodies of any size, several before authenticating. Every
+  route now refuses a larger body with 413 -- by its declared
+  `Content-Length` before reading it, and by counting bytes as they arrive,
+  so a chunked or understated body cannot get around it.
 - **One misclick revoked a production API key.** Revoke and rotate (keys and
   webhook secrets), disabling a webhook, deleting an alert rule, purging
   traces and applying retention acted on the first click, with no way back.

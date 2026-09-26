@@ -390,6 +390,72 @@ async def _send_json(send, status: int, body: dict, extra_headers=()) -> None:
     await send({"type": "http.response.body", "body": payload})
 
 
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodySizeLimitMiddleware:
+    """Refuse any request body over `max_bytes`, on every route.
+
+    The MCP transport already enforces HubConfig.max_request_body_bytes, but
+    only for itself. Everything else -- the signup and console sign-in forms,
+    the REST API, SCIM, the Stripe webhook -- read the whole body with
+    Starlette, which has no limit of its own, and several of those routes
+    read it before any authentication. One unauthenticated request with a
+    multi-gigabyte body was buffered in full; a handful at once was enough
+    to exhaust a replica's memory. Nothing legitimate here is within an
+    order of magnitude of the limit.
+
+    Raw ASGI, like LoadShedMiddleware. A declared Content-Length over the
+    limit is refused before a byte of the body is read; a chunked or
+    understated body is counted as it arrives and refused the moment it
+    passes the limit, so the header cannot be used to get around it.
+    """
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        refusal = {"error": "payload_too_large", "detail": f"request body exceeds {self.max_bytes} bytes"}
+        for name, value in scope.get("headers", ()):
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    await _send_json(send, 400, {"error": "bad_request", "detail": "invalid Content-Length"})
+                    return
+                if declared > self.max_bytes:
+                    await _send_json(send, 413, refusal)
+                    return
+        received = 0
+        started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if not started:
+                await _send_json(send, 413, refusal)
+
+
 def _rate_limited_response(detail: str, retry_after: float) -> JSONResponse:
     """A 429 that says WHEN to come back.
 
@@ -1799,6 +1865,10 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             networks=tuple(ipaddress.ip_network(c, strict=False) for c in config.ip_allowlist),
             trusted_proxy_hops=config.trusted_proxy_hops,
         )
+    # Before anything reads a body -- see BodySizeLimitMiddleware -- and
+    # inside RequestContextMiddleware, so a refusal is still logged with a
+    # request id.
+    inner_app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.max_request_body_bytes)
     # Added last => outermost: a request id exists (and the request gets
     # logged) even for calls the auth middleware rejects with a 401, and
     # for one LoadShedMiddleware sheds or times out.
