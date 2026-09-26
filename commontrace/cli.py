@@ -80,15 +80,6 @@ def main(argv: list[str] | None = None) -> int:
         # one-line "the following arguments are required".
         build_parser().print_help(sys.stderr)
         return 2
-    if not argv[0].startswith("-") and argv[0] not in _COMMANDS:
-        close = difflib.get_close_matches(argv[0], _COMMANDS, n=3, cutoff=0.6)
-        hint = f" Did you mean: {', '.join(close)}?" if close else ""
-        print(
-            f"commontrace: unknown command {argv[0]!r}.{hint} "
-            "Run `commontrace --help` for the list.",
-            file=sys.stderr,
-        )
-        return 2
     try:
         parser = build_parser(argv[0] if argv else None)
     except ModuleNotFoundError as exc:
@@ -99,6 +90,17 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    commands = next(
+        (list(a.choices) for a in parser._actions if isinstance(a, argparse._SubParsersAction)), [])
+    if not argv[0].startswith("-") and argv[0] not in commands:
+        close = difflib.get_close_matches(argv[0], commands, n=3, cutoff=0.6)
+        hint = f" Did you mean: {', '.join(close)}?" if close else ""
+        print(
+            f"commontrace: unknown command {argv[0]!r}.{hint} "
+            "Run `commontrace --help` for the list.",
+            file=sys.stderr,
+        )
+        return 2
     args = parser.parse_args(argv)
     try:
         res = args.func(args)
