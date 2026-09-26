@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hub` user that serves the network, so that process cannot rewrite its
   own code even where the filesystem is not mounted read-only.
 
+- **Optional bearer token for `/metrics` (`HUB_METRICS_TOKEN`).** Unset,
+  nothing changes; set, a scrape without that token gets a 401 (compared in
+  constant time), for deployments that cannot keep `/metrics` off a
+  reachable network.
+
 ### Accessibility
 
 - The console nav marks the current page (`aria-current`), pages have a

@@ -1701,6 +1701,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             per_minute=config.readyz_rate_limit_per_minute, burst=config.readyz_rate_limit_burst
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
+        metrics_token=config.metrics_token,
     )
     add_disclosure_route(inner_app, config)
     inner_app.add_middleware(

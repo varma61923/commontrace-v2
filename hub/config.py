@@ -246,6 +246,12 @@ class HubConfig:
     # the worst a leaked token buys is visibility -- which is bad enough that
     # it belongs behind the same TLS and network controls as everything else.
     admin_token: str = ""
+    # Optional bearer token for GET /metrics. Unset (default): /metrics is
+    # open, as a Prometheus scraper usually expects -- safe only on a
+    # monitoring network, since request rates and paths are visible to
+    # whoever can reach it. Set: a scrape must send
+    # `Authorization: Bearer <token>` (Prometheus `authorization:` block).
+    metrics_token: str = ""
 
     # The org that Knowledge Base entries are published UNDER when an
     # operator accepts a community submission. Never the submitting org --
@@ -680,6 +686,7 @@ class HubConfig:
             encryption_key=env_secret("HUB_ENCRYPTION_KEY"),
             encryption_key_previous=env_secret("HUB_ENCRYPTION_KEY_PREVIOUS"),
             admin_token=env_secret("HUB_ADMIN_TOKEN"),
+            metrics_token=env_secret("HUB_METRICS_TOKEN"),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),
             console_secret=env_secret("HUB_CONSOLE_SECRET"),
             data_region=os.environ.get("HUB_DATA_REGION", ""),

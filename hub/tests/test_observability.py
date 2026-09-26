@@ -351,3 +351,40 @@ class TestTransportSafety:
             database_url="postgresql+asyncpg://x/y", host="0.0.0.0", allow_insecure_http=True,
         )
         config.validate_transport_safety()  # must not raise
+
+
+class TestMetricsToken:
+    """HUB_METRICS_TOKEN: optional bearer auth for /metrics."""
+
+    @staticmethod
+    async def _get(token: str, headers: dict | None = None):
+        import httpx
+        from starlette.applications import Starlette
+
+        def _no_db():
+            raise AssertionError("/metrics must not touch the database")
+
+        app = Starlette()
+        observability.add_health_routes(app, _no_db, metrics_token=token)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            return await c.get("/metrics", headers=headers or {})
+
+    @pytest.mark.asyncio
+    async def test_unset_it_stays_open(self):
+        assert (await self._get("")).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_set_it_requires_the_bearer_token(self):
+        assert (await self._get("scrape-secret")).status_code == 401
+        wrong = await self._get("scrape-secret", {"Authorization": "Bearer nope"})
+        assert wrong.status_code == 401 and "Bearer" in wrong.headers["www-authenticate"]
+        assert (await self._get("scrape-secret", {"Authorization": "Basic scrape-secret"})).status_code == 401
+        right = await self._get("scrape-secret", {"Authorization": "Bearer scrape-secret"})
+        assert right.status_code == 200 and right.headers["content-type"].startswith("text/plain")
+
+    def test_it_is_read_from_the_environment(self, monkeypatch):
+        from hub.config import HubConfig
+
+        monkeypatch.setenv("HUB_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+        monkeypatch.setenv("HUB_METRICS_TOKEN", "from-env")
+        assert HubConfig.from_env().metrics_token == "from-env"

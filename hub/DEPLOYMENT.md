@@ -559,7 +559,10 @@ arbitrary URLs.
 
 `/metrics` touches no database, so it stays cheap — and readable — exactly
 when the database is down. Expose it to your monitoring network, not the
-public internet, the same as any `/metrics`.
+public internet, the same as any `/metrics`. Where it cannot be kept off a
+reachable network, set `HUB_METRICS_TOKEN`: a scrape must then send
+`Authorization: Bearer <token>` (Prometheus: an `authorization:` block with
+`credentials_file:`), and anything else gets a 401.
 
 ## 5. Running it
 

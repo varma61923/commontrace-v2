@@ -324,6 +324,7 @@ def add_health_routes(
     session_factory: async_sessionmaker,
     readyz_rate_limiter: RateLimiter | None = None,
     trusted_proxy_hops: int = 0,
+    metrics_token: str = "",
 ) -> None:
     """Wire /healthz (liveness) and /readyz (readiness). See module docstring
     for why these must answer different questions.
@@ -391,6 +392,21 @@ def add_health_routes(
                 status_code=429,
                 headers={"Retry-After": seconds},
             )
+        if metrics_token:
+            # Optional (HUB_METRICS_TOKEN): a deployment that cannot keep
+            # /metrics off a reachable network can require the scraper's
+            # bearer token. Compared in constant time.
+            import hmac
+
+            header = request.headers.get("authorization", "") if request is not None else ""
+            scheme, _, presented = header.partition(" ")
+            if scheme.lower() != "bearer" or not hmac.compare_digest(
+                presented.strip().encode(), metrics_token.encode()
+            ):
+                return JSONResponse(
+                    {"status": "unauthorized"}, status_code=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
+                )
         return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.add_route("/healthz", healthz, methods=["GET"])
