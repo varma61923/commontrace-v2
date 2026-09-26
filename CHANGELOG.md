@@ -7,15 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **A Copy button beside every shown-once secret in the Hub** -- a new API
-  key (signup and console), a webhook signing secret, a share link. It
-  confirms through a status message a screen reader announces, falls back
-  to select-and-copy where the clipboard API is unavailable, and stays
-  hidden in a browser without script. The signup page's key field also
-  gained the accessible name it was missing.
-
 ### Fixed
 
 - **Every CLI command paid for every other command's imports** -- numpy,
@@ -155,6 +146,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   table columns of row buttons have a header a screen reader can announce.
 
 ### Added
+
+- **A Copy button beside every shown-once secret in the Hub** -- a new API
+  key (signup and console), a webhook signing secret, a share link. It
+  confirms through a status message a screen reader announces, falls back
+  to select-and-copy where the clipboard API is unavailable, and stays
+  hidden in a browser without script. The signup page's key field also
+  gained the accessible name it was missing.
 
 - **`commontrace doctor` says whether the store's models are cached.** For
   each model the store's retrieval loads (the index's embedder when fusion
