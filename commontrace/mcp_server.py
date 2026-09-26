@@ -76,6 +76,7 @@ import contextlib
 import datetime
 import glob
 import io
+import logging
 import os
 from typing import Any
 
@@ -109,6 +110,8 @@ from commontrace import evidence as evidence_mod
 from commontrace.commands._format import read_or_warn
 from commontrace.commands._traces import load_trace_candidates
 from commontrace.commands._validators import REFUSE_CHARS, check_text_size
+
+logger = logging.getLogger(__name__)
 
 # The lesson fields an agent may set. Anything outside this set is ignored
 # rather than written: `uses`, `last_hit` and `hub_trace_id` are maintained by
@@ -1590,10 +1593,50 @@ def _replace_section(body: str, name: str, text: str) -> str:
     return body.rstrip() + f"\n\n{replacement}"
 
 
+WARM_ENV = "COMMONTRACE_MCP_WARM"
+
+
+def _warm_models(root: str, delay: float = 2.0) -> None:
+    """Load, ahead of the first `retrieve`, the models it would otherwise
+    wait for (seconds each): the cross-encoder and the semantic arm's
+    embedder, and refresh a stale index -- but only what this store's
+    configuration will use, and only if it has a lesson to rank.
+
+    Runs on a daemon thread. It waits briefly first so the stdio transport
+    has claimed the real stdout (the MCP SDK then points fd 1 at stderr, so
+    nothing a library prints can reach the wire), and it never swaps
+    `sys.stdout` itself, which the transport reads when it starts. Both
+    model caches are lock-protected, so a `retrieve` that arrives mid-warm
+    simply waits for the load it would have done anyway. Any failure is
+    left for `retrieve` to meet and report as it always has.
+    """
+    import time
+
+    time.sleep(delay)
+    try:
+        active, _terms = lesson_cache.load_active_with_terms(root, None, reader=frontmatter.read)
+        if not active:
+            return
+        config = retrieval_io.load_config(root)
+        if config.fusion != retrieval_io.FUSION_NONE:
+            from commontrace import semantic_arm
+
+            if semantic_arm.available() and not semantic_arm.ensure_fresh(root):
+                semantic_arm.ranked_slugs(root, "warm up", 1)
+        if config.rerank != retrieval_io.RERANK_NONE and rerank_arm.available():
+            rerank_arm.ready(config.rerank)
+    except Exception:  # noqa: BLE001 - warming is an optimisation, never a failure
+        logger.debug("model warm-up failed", exc_info=True)
+
+
 def serve(root: str, *, allow_approval: bool = True) -> int:
     """Run the server on stdio until the client disconnects."""
+    import threading
+
     import anyio
 
     mcp = build_server(root, allow_approval=allow_approval)
+    if os.environ.get(WARM_ENV, "1").strip().lower() not in ("0", "false", "no", "off"):
+        threading.Thread(target=_warm_models, args=(root,), name="commontrace-warm", daemon=True).start()
     anyio.run(mcp.run_stdio_async)
     return 0

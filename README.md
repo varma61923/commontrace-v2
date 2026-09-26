@@ -1056,6 +1056,9 @@ about 360 ms on a 4-core CPU; `cross-encoder-fast` reads 27 in about 45 ms. The 
 only what changed. A store mid-experiment stays on what its log says it
 ran. `COMMONTRACE_DEFAULT_FUSION=none` keeps the reranker without the
 semantic index, and `COMMONTRACE_DEFAULT_RERANK=none` turns both off.
+`commontrace serve` loads the models a store will use in the background as it
+starts, so an agent's first `retrieve` does not wait for them (8.7s down to
+0.3s); `COMMONTRACE_MCP_WARM=0` turns that off.
 
 On LoCoMo, fused retrieval with reranking puts an answering turn in the top
 5 for 67.0% of questions, up from 53.1% without it.

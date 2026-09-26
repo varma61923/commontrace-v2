@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no viewport tag, so phones rendered them zoomed out; they now fit the
   screen, scroll wide tables, and follow the system dark mode.
 
+- **An agent's first `retrieve` waited ~9s for models to load.** The MCP
+  server now loads the cross-encoder and embedder its store will use on a
+  background thread as it starts (and refreshes a stale index), so the
+  first retrieval took 0.28s instead of 8.7s in an end-to-end stdio session.
+  Stores with nothing to rank, or lexical-only stores, load nothing;
+  `COMMONTRACE_MCP_WARM=0` turns it off.
+
 ### Security
 
 - **Every Hub HTML page sends a Content-Security-Policy** that allows only

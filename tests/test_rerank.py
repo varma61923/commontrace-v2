@@ -467,3 +467,46 @@ def test_an_empty_store_answers_without_loading_a_model_or_touching_the_index(tm
     assert "reranker" not in capsys.readouterr().err
     out = call(mcp_server.build_server(store), "retrieve", task=TASK, top_k=2)
     assert out["lessons"] == [] and not out.get("rerank_note") and not out.get("fusion_note")
+
+
+def test_the_server_warms_the_models_a_store_will_use(store, monkeypatch):
+    """The first `retrieve` should not wait seconds for a model the store
+    was always going to load: `serve` loads them on a background thread."""
+    loaded = []
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(rerank_arm, "ready", lambda mode: loaded.append(("rerank", mode)) or "")
+    monkeypatch.setattr(semantic_arm, "available", lambda: True)
+    monkeypatch.setattr(semantic_arm, "ensure_fresh", lambda root: loaded.append(("index", root)) or "")
+    monkeypatch.setattr(semantic_arm, "ranked_slugs", lambda *a, **k: loaded.append(("embed",)) or (0, [], []))
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_GATED, rerank=retrieval_io.RERANK_CE)
+    mcp_server._warm_models(store, delay=0)
+    assert loaded == [("index", store), ("embed",), ("rerank", retrieval_io.RERANK_CE)]
+
+
+def test_the_server_warms_nothing_a_store_will_not_use(tmp_path, monkeypatch):
+    def _forbidden(*_a, **_k):
+        raise AssertionError("nothing to warm")
+
+    monkeypatch.setattr(rerank_arm, "ready", _forbidden)
+    monkeypatch.setattr(semantic_arm, "ensure_fresh", _forbidden)
+    empty = str(tmp_path / "empty")
+    assert main(["init", "--dest", empty]) == 0
+    retrieval_io.configure(empty, fusion=retrieval_io.FUSION_GATED, rerank=retrieval_io.RERANK_CE)
+    mcp_server._warm_models(empty, delay=0)  # no lessons: nothing to rank
+
+    lexical = str(tmp_path / "lexical")
+    assert main(["init", "--dest", lexical]) == 0
+    _write_lesson(lexical, "only", body="Do the thing.", description="the thing")
+    retrieval_io.configure(lexical, fusion=retrieval_io.FUSION_NONE, rerank=retrieval_io.RERANK_NONE)
+    mcp_server._warm_models(lexical, delay=0)  # lexical only: no model at all
+
+
+def test_the_warm_up_can_be_turned_off(store, monkeypatch):
+    started = []
+    monkeypatch.setenv(mcp_server.WARM_ENV, "0")
+    monkeypatch.setattr(mcp_server, "_warm_models", lambda *a, **k: started.append(a))
+    import anyio
+
+    monkeypatch.setattr(anyio, "run", lambda *a, **k: None)
+    assert mcp_server.serve(store) == 0
+    assert started == []
