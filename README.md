@@ -707,6 +707,13 @@ refuses one carrying a secret or a prompt-injection payload
 (`commontrace/memory_guard.py`), and records **who** approved it, so an
 agent-approved lesson stays distinguishable from a human-approved one.
 
+**Credentials never reach a stored trace.** A key that leaks into an
+agent's log (AWS, GitHub, Slack, Stripe, Google or Anthropic keys, PEM
+private keys, JWTs) is replaced with `[REDACTED <kind>]` when the trace is
+captured or imported, and `capture` says how many it removed. For a store
+that predates this, `commontrace doctor` counts the traces that still hold
+one and `commontrace redact` (`--dry-run` to preview) removes them.
+
 Those all check *what* is being activated. For *who*, write
 `memory/approval-policy.yaml`:
 

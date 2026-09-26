@@ -150,6 +150,23 @@ def _declared_agent_type(root: str) -> str | None:
     return value.strip() or None
 
 
+def _traces_with_credentials(root: str) -> int:
+    """How many trace files contain a high-confidence credential. A plain
+    text scan, no YAML parse: `commontrace redact` does the rewriting."""
+    from commontrace import memory_guard
+    from commontrace.commands.redact_cmd import trace_paths
+
+    count = 0
+    for path in trace_paths(root):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if memory_guard.redact_secrets(fh.read())[1]:
+                    count += 1
+        except OSError:
+            continue
+    return count
+
+
 def _models_in_use(root: str, config) -> list[tuple[str, str]]:
     """(role, model name) for each model this store's retrieval will load."""
     from commontrace import rerank_arm, retrieval_io, semantic_arm
@@ -273,6 +290,17 @@ def run(args: argparse.Namespace) -> int:
             )
         else:
             _check("trace filename collisions", True, "none detected")
+
+        leaked = _traces_with_credentials(root)
+        if leaked:
+            _check(
+                "credentials in stored traces", False,
+                f"{leaked} trace file(s) hold an API key, token or private key captured before "
+                "traces were redacted on write. `commontrace redact` removes them "
+                "(`--dry-run` to preview); then rotate those keys.",
+            )
+        else:
+            _check("credentials in stored traces", True, "none found")
 
         declared = _declared_agent_type(root)
         effective = paths.store_agent_type(root)

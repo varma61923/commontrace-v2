@@ -39,6 +39,7 @@ try:
         pilot_cmd,
         prove_cmd,
         query_cmd,
+        redact_cmd,
         release_cmd,
         reliability_cmd,
         retrieval_cmd,
@@ -80,6 +81,7 @@ else:
         impact_cmd,
         pilot_cmd,
         sync_cmd,
+        redact_cmd,
         doctor_cmd,
     ]
 

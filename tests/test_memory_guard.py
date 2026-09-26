@@ -260,3 +260,62 @@ def test_the_mcp_capture_tool_stores_no_credential(tmp_path):
     assert out.get("ok", True) is not False
     stored = _captured(root)
     assert AWS not in stored and GITHUB not in stored
+
+
+_OLD_TRACE = f"""---
+id: abcd1234-0000-0000-0000-000000000001
+title: deploy with {AWS}
+agent_type: code
+tags: [deploy]
+---
+## Context
+The log printed {AWS} and {GITHUB}
+
+## Solution
+Rotated it.
+"""
+
+
+def _old_store(tmp_path):
+    from commontrace.cli import main
+
+    root = str(tmp_path / "old")
+    assert main(["init", "--dest", root]) == 0
+    path = tmp_path / "old" / "memory" / "traces" / "2026-01-01_deploy-with-akiaiosfodnn7example_abcd1234--000001.md"
+    path.write_text(_OLD_TRACE, encoding="utf-8")
+    return root, path
+
+
+def test_redact_cleans_a_store_that_predates_redaction(tmp_path, capsys):
+    from commontrace import frontmatter
+    from commontrace.cli import main
+
+    root, path = _old_store(tmp_path)
+    assert main(["redact", "--dest", root, "--dry-run"]) == 0
+    assert path.read_text(encoding="utf-8") == _OLD_TRACE  # a dry run writes nothing
+    assert "would redact 3" in capsys.readouterr().out
+
+    assert main(["redact", "--dest", root]) == 0
+    stored = _captured(root)
+    assert AWS not in stored and GITHUB not in stored and "akiaiosfodnn7example" not in stored
+    assert not path.exists()  # renamed away from the key in its name
+    (renamed,) = [p for p in (tmp_path / "old" / "memory" / "traces").glob("2026-01-01_*.md")]
+    fm, _body = frontmatter.read(str(renamed))
+    assert fm["id"] == "abcd1234-0000-0000-0000-000000000001" and fm["tags"] == ["deploy"]
+    assert fm["title"] == "deploy with [REDACTED AWS access key ID]"  # still a string, not a YAML list
+
+    capsys.readouterr()
+    assert main(["redact", "--dest", root]) == 0
+    assert "no credentials found" in capsys.readouterr().out
+
+
+def test_doctor_warns_about_credentials_in_stored_traces(tmp_path, capsys):
+    from commontrace.cli import main
+
+    root, _path = _old_store(tmp_path)
+    main(["doctor", "--dest", root])
+    assert "[WARN] credentials in stored traces - 1 trace file(s)" in capsys.readouterr().out
+    assert main(["redact", "--dest", root]) == 0
+    capsys.readouterr()
+    main(["doctor", "--dest", root])
+    assert "[OK  ] credentials in stored traces - none found" in capsys.readouterr().out

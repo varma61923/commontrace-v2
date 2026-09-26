@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capture` tool), `import` and the OpenTelemetry exporter now replace each
   one with `[REDACTED <kind>]` and say how many they removed; the rest of
   the trace is kept. Lessons were already refused at approval.
+- **`commontrace redact`** cleans a store that predates that: it rewrites
+  each affected trace through the atomic writer, renames a file whose name
+  was built from a key, and `--dry-run` previews it. `commontrace doctor`
+  warns when stored traces still hold credentials.
 - **Every Hub HTML page sends a Content-Security-Policy** that allows only
   its own inline scripts, by SHA-256 hash: no inline event handlers, no
   plugins, no framing, and forms may post only to the Hub or to Stripe.
