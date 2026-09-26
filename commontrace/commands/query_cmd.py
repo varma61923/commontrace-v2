@@ -688,8 +688,22 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     # The index's model, read before ranking because it sets the pool's depth
     # (rerank_arm.POOL_DEPTHS); the index was refreshed before this runs. A
     # failure below falls back to `_run_lexical`, which uses its own depth.
-    reranking, depth, rerank_skipped = _rerank_depth(
-        config, args.top_k, retrieval_io.embedder_tag(semantic_arm.stored_model(root)))
+    embedder = retrieval_io.embedder_tag(semantic_arm.stored_model(root))
+    # The reranker loads (seconds) while the semantic arm's subprocess runs
+    # (seconds), not after it. The subprocess is asked for the depth a
+    # reranking query needs; if the model then fails to load, the arm is
+    # simply run again at the depth a plain query uses, so the result is
+    # exactly what running them one after the other would have given.
+    early, early_depth = None, 0
+    if config.rerank != retrieval_io.RERANK_NONE and rerank_arm.available():
+        import threading
+
+        loader = threading.Thread(target=rerank_arm.ready, args=(config.rerank,), daemon=True)
+        loader.start()
+        early_depth = rerank_arm.pool_size(args.top_k, config.rerank, embedder)
+        early = _semantic_slugs(args, root, missing_hint, extra=len(harmful) + early_depth - args.top_k)
+        loader.join()
+    reranking, depth, rerank_skipped = _rerank_depth(config, args.top_k, embedder)
     if config.fusion == retrieval_io.FUSION_GATED and not reranking:
         # Gated fusion admits semantic candidates only on the reranker's
         # word; without one it is reranked-or-plain lexical retrieval, and is
@@ -711,8 +725,10 @@ def _run_hybrid(args: argparse.Namespace, root: str, missing_hint: str) -> int:
     lexical, withdrawn_lexical = harm.split(lexical, harmful, core, depth)
     floor_cleared = {r.slug for r in lexical + withdrawn_lexical if r.relevance >= floor}
 
-    rc, semantic, stdout = _semantic_slugs(
-        args, root, missing_hint, extra=len(harmful) + depth - args.top_k)
+    rc, semantic, stdout = (
+        early if early is not None and early_depth == depth
+        else _semantic_slugs(args, root, missing_hint, extra=len(harmful) + depth - args.top_k)
+    )
     semantic, withdrawn_semantic = harm.split(
         semantic, harmful, core, depth, slug_of=lambda s: s)
     if already_shown and rc == 0:

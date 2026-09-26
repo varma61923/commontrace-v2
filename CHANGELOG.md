@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stores with nothing to rank, or lexical-only stores, load nothing;
   `COMMONTRACE_MCP_WARM=0` turns it off.
 
+- **Every `commontrace query` on a populated store took ~15.5s; now ~6s.**
+  Two causes, same results either way. Each model load asked the Hugging
+  Face Hub whether a newer version existed (~2s per model per query, and a
+  request to a third party every time): models now load from the local
+  cache, and only a model that is not cached is downloaded. And the
+  reranker loaded only after the semantic arm's subprocess finished; it now
+  loads alongside it. If it then fails to load, the semantic arm runs again
+  at the plain depth, so the result matches the sequential path.
+- Every query printed two "Loading weights" progress bars. Loads from the
+  cache are now quiet; a real download still shows its progress.
+
 ### Security
 
 - **Every Hub HTML page sends a Content-Security-Policy** that allows only

@@ -37,6 +37,7 @@ Hooks Dreamer v2.4 (NOT implemented here, documented for future use):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import glob
 import hashlib
@@ -337,6 +338,36 @@ def index_model(index_path: str, fallback: "str | None" = None) -> str:
     return fallback if fallback in TRUSTED_MODELS else DEFAULT_MODEL_NAME
 
 
+@contextlib.contextmanager
+def _no_progress_bars():
+    """Quiet the library's "Loading weights" bars for a load from the local
+    cache: they are noise on every query. A real download keeps its bars.
+    transformers keeps its own switch beside huggingface_hub's; both are
+    restored afterwards."""
+    restore = []
+    try:
+        from huggingface_hub import utils as hub_utils
+
+        if not hub_utils.are_progress_bars_disabled():
+            hub_utils.disable_progress_bars()
+            restore.append(hub_utils.enable_progress_bars)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        from transformers.utils import logging as transformers_logging
+
+        if transformers_logging.is_progress_bar_enabled():
+            transformers_logging.disable_progress_bar()
+            restore.append(transformers_logging.enable_progress_bar)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        yield
+    finally:
+        for enable in restore:
+            enable()
+
+
 def build_or_update_index(
     lessons_dir: str,
     output_path: str,
@@ -428,7 +459,13 @@ def build_or_update_index(
                 raise ImportError(
                     "sentence_transformers is required to encode new or modified lessons.")
             log(f"Loading model {model_name} (cached under ~/.cache/huggingface/) ...")
-            model = SentenceTransformer(model_name)
+            try:
+                # From the local cache when it is there: a cached model
+                # otherwise still costs a Hugging Face Hub round trip.
+                with _no_progress_bars():
+                    model = SentenceTransformer(model_name, local_files_only=True)
+            except Exception:  # noqa: BLE001 - not cached, or an older library: fetch it
+                model = SentenceTransformer(model_name)
         log(f"Encoding {len(texts_to_encode)} lessons (reusing {len(reused_embeddings)} cached) ...")
         new_embs = model.encode(
             texts_to_encode,

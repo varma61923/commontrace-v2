@@ -47,6 +47,7 @@ scores each pair on its own, so leaving it out moves nothing else.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -136,11 +137,49 @@ def mode_for_tag(model_tag: str) -> str | None:
     return next((m for m, (_name, t) in MODELS.items() if t == model_tag), None)
 
 
+@contextlib.contextmanager
+def _no_progress_bars():
+    """Quiet the library's "Loading weights" bars for a load from the local
+    cache: they are noise on every query. A real download keeps its bars.
+    transformers keeps its own switch beside huggingface_hub's; both are
+    restored afterwards."""
+    restore = []
+    try:
+        from huggingface_hub import utils as hub_utils
+
+        if not hub_utils.are_progress_bars_disabled():
+            hub_utils.disable_progress_bars()
+            restore.append(hub_utils.enable_progress_bars)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        from transformers.utils import logging as transformers_logging
+
+        if transformers_logging.is_progress_bar_enabled():
+            transformers_logging.disable_progress_bar()
+            restore.append(transformers_logging.enable_progress_bar)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        yield
+    finally:
+        for enable in restore:
+            enable()
+
+
 def _load(mode: str = DEFAULT_MODE):
     if mode not in _LOADED:
         from sentence_transformers import CrossEncoder
 
-        _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu")
+        # From the local cache first: a cached model otherwise still costs a
+        # round trip to the Hugging Face Hub on every load (~2s per model,
+        # per query, and a request to a third party each time). Only a model
+        # that is not cached yet is fetched.
+        try:
+            with _no_progress_bars():
+                _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu", local_files_only=True)
+        except Exception:  # noqa: BLE001 - not cached (or an older library): fetch it
+            _LOADED[mode] = CrossEncoder(MODELS[mode][0], device="cpu")
     return _LOADED[mode]
 
 

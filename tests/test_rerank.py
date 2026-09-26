@@ -510,3 +510,37 @@ def test_the_warm_up_can_be_turned_off(store, monkeypatch):
     monkeypatch.setattr(anyio, "run", lambda *a, **k: None)
     assert mcp_server.serve(store) == 0
     assert started == []
+
+
+def test_the_cli_loads_the_reranker_alongside_the_semantic_arm(store, monkeypatch):
+    """The reranker loads while the semantic arm runs, so the arm is asked
+    for the reranking depth up front; when the model then loads, that one
+    run is used."""
+    _stub_both(monkeypatch)
+    _rerank_store(store)
+    depths = []
+    stub = query_cmd._semantic_slugs
+    monkeypatch.setattr(query_cmd, "_semantic_slugs", lambda args, root, hint, extra=0: (
+        depths.append(args.top_k + extra) or stub(args, root, hint, extra)))
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(rerank_arm, "ready", lambda mode: "")
+    monkeypatch.setattr(rerank_arm, "rerank", lambda task, slugs, texts, top_k, **k: ([(s, 1.0) for s in slugs[:top_k]], []))
+    assert query_cmd.run(_args(store, TASK, top_k=2)) == 0
+    assert depths == [rerank_arm.pool_size(2, retrieval_io.RERANK_CE)]
+
+
+def test_a_reranker_that_fails_to_load_mid_query_changes_nothing(store, monkeypatch):
+    """If the model fails to load while the semantic arm ran at the deeper
+    depth, the arm runs again at the plain depth: the result is exactly the
+    store's result with reranking off."""
+    _stub_both(monkeypatch)
+    _rerank_store(store)
+    monkeypatch.setattr(rerank_arm, "available", lambda: True)
+    monkeypatch.setattr(rerank_arm, "ready", lambda mode: "the model could not load")
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_RRF, rerank=retrieval_io.RERANK_CE)
+    assert query_cmd.run(_args(store, TASK, top_k=2, experiment=True, occasion_id="failed-load")) == 0
+    retrieval_io.configure(store, fusion=retrieval_io.FUSION_RRF, rerank=retrieval_io.RERANK_NONE)
+    assert query_cmd.run(_args(store, TASK, top_k=2, experiment=True, occasion_id="plain")) == 0
+    failed, plain = _logged(store, "failed-load"), _logged(store, "plain")
+    assert failed.keys() == plain.keys() and failed
+    assert {r["scorer"] for r in failed.values()} == {r["scorer"] for r in plain.values()}

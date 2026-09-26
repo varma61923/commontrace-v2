@@ -19,6 +19,7 @@ Usage:
     python query.py "my task" --top-k=10 --include-importance-floor=4
 """
 import argparse
+import contextlib
 import datetime
 import glob
 import json
@@ -380,6 +381,47 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+@contextlib.contextmanager
+def _no_progress_bars():
+    """Quiet the library's "Loading weights" bars for a load from the local
+    cache: they are noise on every query. A real download keeps its bars.
+    transformers keeps its own switch beside huggingface_hub's; both are
+    restored afterwards."""
+    restore = []
+    try:
+        from huggingface_hub import utils as hub_utils
+
+        if not hub_utils.are_progress_bars_disabled():
+            hub_utils.disable_progress_bars()
+            restore.append(hub_utils.enable_progress_bars)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        from transformers.utils import logging as transformers_logging
+
+        if transformers_logging.is_progress_bar_enabled():
+            transformers_logging.disable_progress_bar()
+            restore.append(transformers_logging.enable_progress_bar)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        yield
+    finally:
+        for enable in restore:
+            enable()
+
+
+def _load_cached_first(model_name):
+    """The model from the local Hugging Face cache when it is there, else
+    fetched. A cached model otherwise still costs a Hub round trip on every
+    load (~2s, and a request to a third party each query)."""
+    try:
+        with _no_progress_bars():
+            return SentenceTransformer(model_name, local_files_only=True)
+    except Exception:  # noqa: BLE001 - not cached, or a library without the flag
+        return SentenceTransformer(model_name)
+
+
 class Ranked:
     """What one semantic retrieval produced, before anything is printed.
 
@@ -450,7 +492,7 @@ def load_model(model_name=DEFAULT_MODEL_NAME):
         # uncaught this raised a raw OSError/traceback from deep inside
         # huggingface_hub instead of the clean, actionable error every
         # other failure path in this function already gives.
-        return SentenceTransformer(model_name)
+        return _load_cached_first(model_name)
     except OSError as exc:
         return Ranked(1, stderr=[
             f"[ERR] Could not load model {model_name!r}: {exc}\n"
