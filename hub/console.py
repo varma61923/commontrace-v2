@@ -2716,11 +2716,14 @@ def add_console_routes(
     app.add_route(f"{CONSOLE_PATH}/alerts", alerts_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/alerts/create", refuse_cross_origin(alerts_create), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/alerts/{{rule_id}}/delete", refuse_cross_origin(alerts_delete), methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/alerts/generate-report", refuse_cross_origin(alerts_generate_report), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/alerts/generate-report", refuse_cross_origin(alerts_generate_report), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/webhooks", webhooks_page, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/webhooks/create", refuse_cross_origin(webhooks_create), methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/rotate", refuse_cross_origin(webhooks_rotate), methods=["POST"])
-    app.add_route(f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", refuse_cross_origin(webhooks_disable), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/rotate", refuse_cross_origin(webhooks_rotate), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/webhooks/{{endpoint_id}}/disable", refuse_cross_origin(webhooks_disable), methods=["POST"])
     app.add_route(f"{CONSOLE_PATH}/audit", audit_page, methods=["GET"])
 
 
