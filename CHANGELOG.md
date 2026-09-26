@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A webhook could target Alibaba Cloud's instance metadata service**
+  (100.100.100.200). The check refused private, loopback and link-local
+  addresses, but carrier-grade NAT space (100.64.0.0/10) is none of those;
+  webhook targets must now resolve to a globally routable address.
 - **The Hub URL check let the cloud-metadata address through in other
   spellings.** `https://2852039166/`, `https://0xa9fea9fe/`,
   `https://169.254.169.254./` and `https://[::ffff:169.254.169.254]/` all
