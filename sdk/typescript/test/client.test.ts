@@ -278,6 +278,7 @@ test("checkHubUrl refuses what the Python client refuses", () => {
   for (const bad of [
     "http://hub.example.com/mcp", "ftp://hub.example.com/", "file:///etc/passwd", "not a url",
     "https://169.254.169.254/latest", "https://[fe80::1]/mcp", "https://[fd00:ec2::254]/mcp",
+    "https://2852039166/", "https://0xa9fea9fe/", "https://[::ffff:169.254.169.254]/", "https://[::ffff:a9fe:a9fe]/",
   ]) {
     assert.throws(() => checkHubUrl(bad), HubConfigurationError, bad);
   }

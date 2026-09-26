@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Hub URL check let the cloud-metadata address through in other
+  spellings.** `https://2852039166/`, `https://0xa9fea9fe/`,
+  `https://169.254.169.254./` and `https://[::ffff:169.254.169.254]/` all
+  reach 169.254.169.254, but the Python client only recognised the dotted
+  form and the TypeScript SDK missed the IPv4-mapped one, so either would
+  have sent the Hub API key there. Both now read the address the way the
+  resolver will.
 - **Any site could sign a user out of the console** with an `<img>` tag
   pointing at `/app/signout`, which acted on a GET. Sign out is now a form
   post (the nav's button looks as it did); a GET asks first.

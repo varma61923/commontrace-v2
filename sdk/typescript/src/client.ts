@@ -47,7 +47,14 @@ export function checkHubUrl(url: string): URL {
         "as a Bearer token on every call. Use https://, or localhost/127.0.0.1 for local development.",
     );
   }
-  const linkLocalV4 = /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host);
+  // The URL parser has already turned every numeric IPv4 form ("2852039166",
+  // "0xa9fea9fe") into dotted decimal, but an IPv4-mapped IPv6 address comes
+  // out in hex ("::ffff:a9fe:a9fe" for 169.254.169.254): unmap it first.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  const v4 = mapped
+    ? [parseInt(mapped[1], 16) >> 8, parseInt(mapped[1], 16) & 255, parseInt(mapped[2], 16) >> 8, parseInt(mapped[2], 16) & 255].join(".")
+    : host;
+  const linkLocalV4 = /^169\.254\.\d{1,3}\.\d{1,3}$/.test(v4);
   const linkLocalV6 = /^fe[89ab][0-9a-f]:/.test(host);
   if (linkLocalV4 || linkLocalV6 || host === "fd00:ec2::254") {
     throw new HubConfigurationError(
