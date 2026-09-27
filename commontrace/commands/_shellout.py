@@ -68,7 +68,10 @@ def find_reference_script(root: str, relative: str) -> str | None:
     (or cwd) at it.
     """
     if _store_scripts_allowed():
-        store_copy = os.path.join(root, relative)
+        store_copy = os.path.abspath(os.path.join(root, relative))
+        root_abs = os.path.abspath(root)
+        if not (store_copy == root_abs or store_copy.startswith(root_abs + os.sep)):
+            return None
         if os.path.isfile(store_copy):
             print(
                 "[commontrace] warning: running reference script from store root "
@@ -93,6 +96,7 @@ def find_reference_script(root: str, relative: str) -> str | None:
 def run_script(
     root: str, relative: str, extra_args: list[str], missing_hint: str,
     capture: Literal[False] = False,
+    extra_env: dict[str, str] | None = None,
 ) -> int: ...
 
 
@@ -100,6 +104,7 @@ def run_script(
 def run_script(
     root: str, relative: str, extra_args: list[str], missing_hint: str,
     capture: Literal[True],
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[int, str]: ...
 
 
@@ -109,6 +114,7 @@ def run_script(
     extra_args: list[str],
     missing_hint: str,
     capture: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> int | tuple[int, str]:
     """Run a reference script as a subprocess.
 
@@ -136,6 +142,17 @@ def run_script(
     # PYTHONUTF8 forces the child's interpreter into UTF-8 mode (PEP 540)
     # whether capture is True or False, ensuring consistent encoding across platforms.
     env["PYTHONUTF8"] = "1"
+    # PYTHONSAFEPATH prevents Python 3.11+ from prepending current directory or empty string
+    # to sys.path, eliminating module hijacking risks.
+    env["PYTHONSAFEPATH"] = "1"
+    if extra_env:
+        env.update(extra_env)
+
+    cmd = [sys.executable]
+    if sys.version_info >= (3, 11):
+        cmd.append("-P")
+    cmd.extend([script, *extra_args])
+
     if capture:
         # Both ends of the pipe pinned to UTF-8 explicitly, not left to the
         # host locale: text=True alone decodes using
@@ -153,9 +170,9 @@ def run_script(
         # undecodable byte still degrades to U+FFFD instead of crashing
         # the parent CLI over the child's stdout.
         result = subprocess.run(
-            [sys.executable, script, *extra_args], env=env,
+            cmd, env=env,
             stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode, result.stdout
-    result = subprocess.run([sys.executable, script, *extra_args], env=env)
+    result = subprocess.run(cmd, env=env)
     return result.returncode

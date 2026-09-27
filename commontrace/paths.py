@@ -160,3 +160,117 @@ def index_path(root: str) -> str:
 def schemas_dir() -> str:
     """The schemas bundled with the installed package (works even without a repo checkout)."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas")
+
+
+class PathTraversalError(ValueError):
+    """Raised when a candidate path resolves outside the allowed base directory boundary."""
+    pass
+
+
+def is_within_directory(base_dir: str, candidate_path: str) -> bool:
+    """Return True if candidate_path strictly resides within base_dir (resolving symlinks)."""
+    base_real = os.path.realpath(os.path.abspath(str(base_dir)))
+    if not os.path.isabs(str(candidate_path)):
+        candidate_full = os.path.join(base_real, str(candidate_path))
+    else:
+        candidate_full = str(candidate_path)
+    candidate_real = os.path.realpath(os.path.abspath(candidate_full))
+    base_prefix = base_real if base_real.endswith(os.sep) else base_real + os.sep
+    return candidate_real == base_real or candidate_real.startswith(base_prefix)
+
+
+def enforce_boundary(base_dir: str, candidate_path: str, allow_within: bool = True) -> str:
+    """Resolves candidate_path relative to base_dir, normalizes both paths (resolving symlinks),
+    and strictly verifies that candidate_path resides within base_dir.
+    Raises ValueError or PathTraversalError if candidate_path escapes base_dir.
+    Returns the sanitized, canonical absolute path.
+    """
+    if not base_dir:
+        raise ValueError("base_dir must not be empty")
+    if not candidate_path:
+        raise ValueError("cannot read: candidate_path must not be empty")
+
+    base_abs = os.path.abspath(str(base_dir))
+    base_real = os.path.realpath(base_abs)
+
+    if not os.path.isabs(str(candidate_path)):
+        candidate_full = os.path.join(base_real, str(candidate_path))
+    else:
+        candidate_full = str(candidate_path)
+    candidate_abs = os.path.abspath(candidate_full)
+    candidate_real = os.path.realpath(candidate_abs)
+
+    base_prefix = base_real if base_real.endswith(os.sep) else base_real + os.sep
+    if allow_within:
+        is_safe = (candidate_real == base_real) or candidate_real.startswith(base_prefix)
+    else:
+        is_safe = (candidate_real == base_real)
+
+    if not is_safe:
+        raise PathTraversalError(
+            f"cannot read: path traversal detected: {candidate_path!r} resolves outside boundary {base_dir!r}"
+        )
+    return candidate_real
+
+
+def safe_prepare_output_path(out_path: str, allow_unlink_leaf: bool = True) -> str:
+    """Validate and prepare a file path for safe writing without symlink write-through.
+
+    1. Checks all existing directory components leading to out_path. If any existing
+       intermediate directory is a symlink, rejects it by raising PathTraversalError.
+    2. If the leaf file itself is a symlink:
+       - If allow_unlink_leaf is True, unlinks the leaf symlink so the subsequent open()
+         writes to a new regular file rather than through the symlink.
+       - If allow_unlink_leaf is False, raises PathTraversalError.
+    3. Safely creates parent directories (exist_ok=True) and verifies that the created
+       parent directory is not a symlink.
+    Returns the normalized, safe target path.
+    """
+    if not out_path:
+        raise ValueError("Output path must not be empty")
+
+    norm_path = os.path.abspath(str(out_path))
+    parent_dir = os.path.dirname(norm_path)
+
+    # Check intermediate directory components from root down to parent_dir
+    parts = []
+    curr = parent_dir
+    while True:
+        parts.append(curr)
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
+    parts.reverse()
+
+    for comp in parts:
+        if comp == os.sep:
+            continue
+        if os.path.islink(comp):
+            raise PathTraversalError(
+                f"refusing to write through symlinked directory: {comp!r}"
+            )
+
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+        if os.path.islink(parent_dir):
+            raise PathTraversalError(
+                f"refusing to write through symlinked directory: {parent_dir!r}"
+            )
+
+    if os.path.islink(norm_path) or os.path.islink(str(out_path)):
+        if allow_unlink_leaf:
+            target_to_unlink = norm_path if os.path.islink(norm_path) else str(out_path)
+            try:
+                os.unlink(target_to_unlink)
+            except OSError as exc:
+                raise PathTraversalError(
+                    f"cannot remove leaf symlink at {out_path!r}: {exc}"
+                ) from exc
+        else:
+            raise PathTraversalError(
+                f"refusing to write through leaf symlink: {out_path!r}"
+            )
+
+    return norm_path
+

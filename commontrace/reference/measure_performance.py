@@ -54,6 +54,7 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+    np = None
 
 # Bumped from 1.1.0: additive-only fields `operational_cost` and `semantic_duplicates`
 # (Phase 3, P5 / P8). No existing key was removed or renamed.
@@ -448,8 +449,13 @@ def load_episodes(n=None):
     episodes = []
     skipped = []
     for p in paths:
-        with open(p, encoding="utf-8-sig") as fh:
-            fm = parse_frontmatter(fh.read())
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                fm = parse_frontmatter(fh.read())
+        except OSError as exc:
+            print(f"[WARN] skipping unreadable episode file {p}: {exc}", file=sys.stderr)
+            skipped.append(p)
+            continue
         if fm:
             fm["_path"] = p
             episodes.append(fm)
@@ -468,8 +474,13 @@ def load_lessons():
         name = os.path.basename(p).replace(".md", "")
         if name.endswith("_template"):
             continue
-        with open(p, encoding="utf-8-sig") as fh:
-            fm = parse_frontmatter(fh.read())
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                fm = parse_frontmatter(fh.read())
+        except OSError as exc:
+            print(f"[WARN] skipping unreadable lesson file {p}: {exc}", file=sys.stderr)
+            skipped.append(p)
+            continue
         if fm:
             fm["_path"] = p
             lessons[name] = fm
@@ -496,6 +507,51 @@ def compute_lesson_quality(episodes):
     if not ratios:
         return None, 0
     return sum(ratios) / len(ratios), len(ratios)
+
+
+LAMBDA_VERDICTS = ("ACCEPTED", "REJECTED", "NEEDS_REFINEMENT")
+
+
+def _normalize_verdict(raw):
+    """'needs refinement', 'NEEDS-REFINEMENT' and 'NEEDS_REFINEMENT' are one
+    verdict; anything else outside LAMBDA_VERDICTS is counted as 'OTHER'
+    rather than dropped, so a typo is visible instead of shrinking the total."""
+    verdict = str(raw or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return verdict if verdict in LAMBDA_VERDICTS else "OTHER"
+
+
+def compute_lambda_review(episodes):
+    """Lambda's per-proposal verdicts, from each episode's `lambda_decisions`
+    (slug -> ACCEPTED | REJECTED | NEEDS_REFINEMENT, written in Phase 11).
+
+    `lesson_quality` sees only which proposals were APPLIED, so it cannot
+    tell a proposal Lambda rejected from one it sent back for refinement --
+    and those call for different fixes (Omega proposing the wrong things vs
+    proposing the right things badly). Episodes that predate the field are
+    skipped, not counted as empty reviews.
+
+    Returns None when no episode carries the field.
+    """
+    counts = {v: 0 for v in (*LAMBDA_VERDICTS, "OTHER")}
+    n_episodes = 0
+    for ep in episodes:
+        decisions = ep.get("lambda_decisions")
+        if not isinstance(decisions, dict) or not decisions:
+            continue
+        n_episodes += 1
+        for verdict in decisions.values():
+            counts[_normalize_verdict(verdict)] += 1
+    total = sum(counts.values())
+    if not total:
+        return None
+    return {
+        "n_episodes": n_episodes,
+        "n_proposals": total,
+        "counts": counts,
+        "acceptance_rate": counts["ACCEPTED"] / total,
+        "rejection_rate": counts["REJECTED"] / total,
+        "refinement_rate": counts["NEEDS_REFINEMENT"] / total,
+    }
 
 
 def compute_implicit_retrieval(episodes):
@@ -834,9 +890,105 @@ def compute_operational_cost(telemetry_path=None):
     }
 
 
-def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOLD):
-    """Load memory/attention/index.npz and report lesson pairs with cosine similarity
-    above `threshold` as merge candidates (recommendation only -- never merges/deletes).
+def _chunked_pairwise_duplicates(
+    embeddings: "np.ndarray",
+    slugs: "list[str]",
+    threshold: float = 0.85,
+    chunk_size: int = 1000,
+) -> "list[tuple[str, str, float]]":
+    """Compute pairwise cosine similarities in float32 blocks without materializing
+    the full N x N matrix or full coordinate arrays in memory.
+    Guarantees memory usage is bounded to O(chunk_size * N) rather than O(N^2).
+    """
+    if not HAS_NUMPY:
+        return []
+    n = len(slugs)
+    if n < 2 or embeddings.ndim != 2 or embeddings.shape[0] != n:
+        return []
+
+    if chunk_size is None or chunk_size <= 0:
+        chunk_size = 1000
+
+    # Ensure float32 precision for bounded memory and speed
+    embs = np.asarray(embeddings, dtype=np.float32)
+
+    pairs: list[tuple[str, str, float]] = []
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        block_h = end - start
+
+        # Dot product of block against remaining vectors [start:n]
+        # Avoids computing comparisons against earlier vectors [0:start] which were
+        # already evaluated when those earlier vectors were in the row block.
+        sim_block = embs[start:end] @ embs[start:].T
+
+        # Mask lower triangle and diagonal of the leading square block_h x block_h
+        tril_i, tril_j = np.tril_indices(block_h)
+        sim_block[tril_i, tril_j] = -1.0
+
+        match_bi, match_k = np.where(sim_block > threshold)
+        for bi, k in zip(match_bi.tolist(), match_k.tolist()):
+            i = start + bi
+            j = start + k
+            pairs.append((slugs[i], slugs[j], float(sim_block[bi, k])))
+
+    pairs.sort(key=lambda t: t[2], reverse=True)
+    return pairs
+
+
+class SemanticDuplicatesResult(tuple):
+    """2-tuple (count, pairs) that also supports dict-like key access and attributes."""
+
+    def __new__(cls, count: int, pairs: list, n_lessons: int = 0, threshold: float = 0.85):
+        return super().__new__(cls, (count, pairs))
+
+    def __init__(self, count: int, pairs: list, n_lessons: int = 0, threshold: float = 0.85):
+        self.count = count
+        self.pairs = pairs
+        self.n_lessons = n_lessons
+        self.threshold = threshold
+        self.available = True
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            if item == "pairs":
+                return self.pairs
+            if item == "count":
+                return self.count
+            if item == "n_lessons":
+                return self.n_lessons
+            if item == "threshold":
+                return self.threshold
+            if item == "available":
+                return self.available
+            raise KeyError(item)
+        return super().__getitem__(item)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key):
+        if isinstance(key, str):
+            return key in ("count", "pairs", "n_lessons", "threshold", "available")
+        return super().__contains__(key)
+
+
+def compute_semantic_duplicates(
+    index_path_or_embeddings=None,
+    threshold_or_slugs=None,
+    threshold=SEMANTIC_DUP_THRESHOLD,
+    chunk_size=1000,
+    **kwargs,
+):
+    """Load memory/attention/index.npz (or accept precomputed embeddings/slugs)
+    and report lesson pairs with cosine similarity above `threshold` as merge
+    candidates (recommendation only -- never merges/deletes).
+
+    Processes similarity in chunked float32 blocks (bounded to O(chunk_size * N) RAM)
+    to eliminate O(N^2) memory bottlenecks at scale.
 
     Guards: missing `numpy` (the `attention` extra isn't installed) or a missing/unreadable
     index.npz both degrade to `available: False` with an explanatory message, never a crash.
@@ -849,7 +1001,31 @@ def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOL
                 "(`pip install -e '.[attention]'`) to enable semantic near-duplicate detection."
             ),
         }
-    path = index_path or _attention_index_path()
+
+    # Detect if invoked directly with (embeddings, slugs) per PROJECT.md interface contract:
+    # compute_semantic_duplicates(embeddings: np.ndarray, slugs: list[str],
+    #                             threshold: float = 0.85, chunk_size: int = 1000)
+    is_direct = False
+    if index_path_or_embeddings is not None and not isinstance(index_path_or_embeddings, (str, os.PathLike)):
+        if isinstance(index_path_or_embeddings, np.ndarray):
+            is_direct = True
+        elif hasattr(index_path_or_embeddings, "shape") or isinstance(index_path_or_embeddings, (list, tuple)):
+            is_direct = True
+
+    if is_direct:
+        embeddings = np.asarray(index_path_or_embeddings, dtype=np.float32)
+        slugs = [str(s) for s in threshold_or_slugs] if threshold_or_slugs is not None else []
+        thresh = float(kwargs.get("threshold", threshold))
+        c_size = int(kwargs.get("chunk_size", chunk_size))
+        pairs = _chunked_pairwise_duplicates(embeddings, slugs, threshold=thresh, chunk_size=c_size)
+        return SemanticDuplicatesResult(len(pairs), pairs, len(slugs), thresh)
+
+    # Standard path: index_path or default index path
+    path = index_path_or_embeddings or _attention_index_path()
+    thresh = threshold_or_slugs if isinstance(threshold_or_slugs, (int, float)) else threshold
+    thresh = float(kwargs.get("threshold", thresh))
+    c_size = int(kwargs.get("chunk_size", chunk_size))
+
     if not os.path.exists(path):
         return {
             "available": False,
@@ -861,38 +1037,16 @@ def compute_semantic_duplicates(index_path=None, threshold=SEMANTIC_DUP_THRESHOL
     try:
         with np.load(path, allow_pickle=False) as data:
             slugs = [str(s) for s in data["slugs"]]
-            embeddings = np.asarray(data["embeddings"], dtype=np.float64)
+            embeddings = np.asarray(data["embeddings"], dtype=np.float32)
     except Exception as exc:  # noqa: BLE001 - any load failure degrades, never crashes
         return {"available": False, "message": f"Failed to load {path}: {exc}"}
 
     n = len(slugs)
-    # embeddings.ndim != 2, not just the row-count check: a 1D array (e.g.
-    # `n` embedding rows collapsed by a prior bug, or a hand-crafted
-    # index.npz) can still satisfy `embeddings.shape[0] == n` for n == its
-    # own length, and `embeddings @ embeddings.T` on a 1D array is a scalar
-    # dot product, not a similarity matrix -- `sim[i, j]` below then raises
-    # IndexError ("too many indices for array: array is 0-dimensional")
-    # instead of the clean "no data" this function's contract promises.
     if n < 2 or embeddings.ndim != 2 or embeddings.shape[0] != n:
-        return {"available": True, "pairs": [], "n_lessons": n, "threshold": threshold}
+        return {"available": True, "pairs": [], "n_lessons": n, "threshold": thresh}
 
-    sim = embeddings @ embeddings.T
-    # Vectorized candidate extraction, not a pure-Python double loop: the
-    # matmul above is already one C/BLAS call, but the O(n^2)/2 pairwise
-    # scan that followed it was pure Python bytecode -- for a 10k-lesson
-    # corpus that is ~50M loop iterations, multiple seconds of wall time
-    # for what triu_indices + boolean masking does in a handful of
-    # vectorized numpy calls.
-    triu_i, triu_j = np.triu_indices(n, k=1)
-    scores = sim[triu_i, triu_j]
-    mask = scores > threshold
-    idx_i, idx_j, matched_scores = triu_i[mask], triu_j[mask], scores[mask]
-    pairs = [
-        (slugs[i], slugs[j], float(s))
-        for i, j, s in zip(idx_i.tolist(), idx_j.tolist(), matched_scores.tolist())
-    ]
-    pairs.sort(key=lambda t: t[2], reverse=True)
-    return {"available": True, "pairs": pairs, "n_lessons": n, "threshold": threshold}
+    pairs = _chunked_pairwise_duplicates(embeddings, slugs, threshold=thresh, chunk_size=c_size)
+    return {"available": True, "pairs": pairs, "n_lessons": n, "threshold": thresh}
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1113,9 @@ def compute_lexical_duplicates(lessons, threshold):
     way -- two lessons saying the same thing split the retrieval signal
     between them and make the corpus look larger than the knowledge in it.
 
+    Uses an inverted index and length-pruning to eliminate O(N^2) CPU bottlenecks,
+    achieving O(candidate pairs) scaling.
+
     Recommendation only: never merges or deletes anything.
     """
     items = []
@@ -967,19 +1124,64 @@ def compute_lexical_duplicates(lessons, threshold):
         if tokens:
             items.append((name, tokens))
 
-    pairs = []
-    for i in range(len(items)):
-        name_a, tokens_a = items[i]
-        for j in range(i + 1, len(items)):
-            name_b, tokens_b = items[j]
-            union = tokens_a | tokens_b
-            if not union:
-                continue
-            score = len(tokens_a & tokens_b) / len(union)
-            if score >= threshold:
+    n_items = len(items)
+    if n_items < 2:
+        return {"pairs": [], "n_lessons": n_items, "threshold": threshold}
+
+    # Fallback for degenerate thresholds <= 0
+    if threshold <= 0:
+        pairs = []
+        for i in range(n_items):
+            name_a, tokens_a = items[i]
+            for j in range(i + 1, n_items):
+                name_b, tokens_b = items[j]
+                union = tokens_a | tokens_b
+                if not union:
+                    continue
+                score = len(tokens_a & tokens_b) / len(union)
                 pairs.append({"a": name_a, "b": name_b, "score": round(score, 3)})
+        pairs.sort(key=lambda pair: (-pair["score"], pair["a"], pair["b"]))
+        return {"pairs": pairs, "n_lessons": n_items, "threshold": threshold}
+
+    # Precompute token counts for rapid length bounding:
+    # Mathematical property: Jaccard(A, B) <= min(|A|, |B|) / max(|A|, |B|)
+    # Therefore any pair with score >= threshold requires:
+    # |B| >= |A| * threshold  and  |B| <= |A| / threshold
+    item_lens = [len(toks) for _, toks in items]
+
+    # Inverted index: token -> list of item indices containing that token
+    token_to_items: dict[str, list[int]] = {}
+    for idx, (_, tokens) in enumerate(items):
+        for t in tokens:
+            token_to_items.setdefault(t, []).append(idx)
+
+    pairs = []
+    for i in range(n_items):
+        name_a, tokens_a = items[i]
+        len_a = item_lens[i]
+        min_len_b = len_a * threshold
+        max_len_b = len_a / threshold
+
+        # Count shared tokens with all candidates j > i
+        shared_counts: dict[int, int] = {}
+        for t in tokens_a:
+            for j in token_to_items.get(t, []):
+                if j > i:
+                    shared_counts[j] = shared_counts.get(j, 0) + 1
+
+        for j, intersection_len in shared_counts.items():
+            len_b = item_lens[j]
+            if len_b < min_len_b or len_b > max_len_b:
+                continue
+            union_len = len_a + len_b - intersection_len
+            if union_len <= 0:
+                continue
+            score = intersection_len / union_len
+            if score >= threshold:
+                pairs.append({"a": name_a, "b": items[j][0], "score": round(score, 3)})
+
     pairs.sort(key=lambda pair: (-pair["score"], pair["a"], pair["b"]))
-    return {"pairs": pairs, "n_lessons": len(items), "threshold": threshold}
+    return {"pairs": pairs, "n_lessons": n_items, "threshold": threshold}
 
 
 def _parse_last_hit(value):
@@ -1305,6 +1507,19 @@ def render_markdown(r, alerts=None):
         out.append(f"-> **{fmt_pct(lq['value'])}** across {lq['n']} valid episodes")
     out.append("")
 
+    lr = r.get("lambda_review")
+    if lr:
+        out.append("#### Lambda verdicts")
+        out.append(
+            f"{lr['n_proposals']} proposals over {lr['n_episodes']} episodes: "
+            f"**{fmt_pct(lr['acceptance_rate'])} accepted**, "
+            f"{fmt_pct(lr['rejection_rate'])} rejected, "
+            f"{fmt_pct(lr['refinement_rate'])} sent back for refinement"
+            + (f", {lr['counts']['OTHER']} with an unrecognised verdict" if lr["counts"]["OTHER"] else "")
+            + "."
+        )
+        out.append("")
+
     out.append("### implicit_retrieval (2 angles)")
     out.append("Precision and richness of Alpha retrieval. `hit` is not bounded by `retrieved` —")
     out.append("see semantic doc (counter-examples / background rules can count as hits).")
@@ -1610,11 +1825,12 @@ def render_html(md_content, timestamp, alerts=None):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>/commontrace Memory Benchmark — {timestamp}</title>
 <style>
 body {{
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px;
-  margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d;
+  margin: 2em auto; padding: 0 1.5em; line-height: 1.6; color: #2d2d2d; background: #fff;
 }}
 h1, h2, h3 {{ color: #1a1a1a; }}
 h1 {{ border-bottom: 2px solid #444; padding-bottom: 0.3em; }}
@@ -1635,6 +1851,17 @@ hr {{ border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }}
 .alerts {{ background: #fff8e1; border: 1px solid #f0c000; border-radius: 6px; padding: 1em 1.5em; margin: 1em 0; }}
 .alerts h2 {{ color: #b07000; border-bottom: none; }}
 .alerts li {{ color: #7a5000; }}
+td {{ overflow-wrap: anywhere; }}
+@media (max-width: 640px) {{ table {{ display: block; overflow-x: auto; }} body {{ padding: 0 1em; }} }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #0f141a; color: #e2e8f0; }}
+  h1, h2, h3 {{ color: #f1f5f9; }}
+  h1 {{ border-color: #9aa8b8; }} h2, hr {{ border-color: #2a3440; }}
+  code, th {{ background: #18202a; }} th, td {{ border-color: #2a3440; }}
+  strong {{ color: #7cb8ff; }} em {{ color: #9aa8b8; }}
+  .alerts {{ background: #2a2414; border-color: #5a4a22; }}
+  .alerts h2, .alerts li {{ color: #e3c16b; }}
+}}
 </style>
 </head>
 <body>
@@ -1782,6 +2009,7 @@ def main():
         "lesson_quality": {"value": lq_value, "n": lq_n},
         "implicit_retrieval": {"strict": ir_strict, "permissive": ir_permissive, "n": ir_n},
         "transfer_gap": {"value": tg_value, "n": tg_n, "untraceable": tg_untraceable},
+        "lambda_review": compute_lambda_review(episodes),
         "episodes": episodes,
         "extras": extras,
         "operational_cost": operational_cost,

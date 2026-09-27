@@ -58,6 +58,7 @@ import hmac
 import html
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -67,7 +68,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import (
@@ -151,7 +152,23 @@ header.bar b{font-size:.95rem;letter-spacing:.01em}
 header.bar .ro{font-family:ui-monospace,monospace;font-size:.66rem;letter-spacing:.12em;
   text-transform:uppercase;color:var(--muted);border:1px solid var(--rule);
   padding:.15rem .45rem;border-radius:2px}
-header.bar nav{margin-left:auto;display:flex;gap:1rem;font-size:.9rem}
+header.bar nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:.9rem}
+.live-toggle{font:inherit;font-size:.72rem;padding:.1rem .45rem;border:1px solid var(--rule);
+  border-radius:2px;background:var(--surface);color:var(--muted);cursor:pointer}
+.live-toggle[aria-pressed=true]{color:var(--ink);border-color:var(--ink)}
+header.bar nav a[aria-current=page]{color:var(--ink);font-weight:600;text-decoration:none}
+header.bar nav form{margin:0;display:inline}
+header.bar nav .linkish{font:inherit;padding:0;border:0;background:none;color:var(--accent);
+  text-decoration:underline;cursor:pointer}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+.copy-row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.5rem}
+.copy-row input{flex:1 1 16rem;min-width:0;margin:0;font-family:ui-monospace,monospace}
+.copy-status{flex-basis:100%;font-size:.8rem;color:var(--muted);min-height:1em}
+.copy-status:empty{display:none}
+.skip{position:absolute;left:-9999px;top:0}.skip:focus{left:1rem;top:.5rem;z-index:10;
+  background:var(--surface);color:var(--ink);padding:.4rem .7rem;border:1px solid var(--rule)}
+@media (max-width:640px){header.bar nav{margin-left:0;width:100%}}
 main{max-width:1100px;margin:0 auto;padding:2rem 1.25rem 4rem;
   display:flex;flex-direction:column;gap:2.25rem}
 h1{font-size:1.5rem;margin:0 0 .2rem;letter-spacing:-.01em}
@@ -222,11 +239,12 @@ form.stack textarea{min-height:5rem;resize:vertical;font-family:inherit}
 form.stack input:focus-visible,form.stack textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:1px}
 @media (max-width:640px){.cmd{grid-template-columns:1fr}
-  form.act{flex-wrap:wrap}form.act input[type=text]{min-width:0;flex:1}}
+  form.act{flex-wrap:wrap}form.act input:not([type=hidden]):not([type=checkbox]),
+  form.act select{min-width:0;flex:1 1 9rem}}
 """
 
 
-def _auto_refresh_script(seconds: int) -> str:
+def auto_refresh_script(seconds: int) -> str:
     """A dependency-free "this page is live" mechanism: reloads on a
     timer, so an operator watching for a queue to grow or a rate to
     climb (this console's whole reason to exist -- see the module
@@ -242,15 +260,45 @@ def _auto_refresh_script(seconds: int) -> str:
     """
     return (
         "<script>(function(){"
-        f"var KEY='ct-scroll-'+location.pathname+location.search;"
+        "var KEY='ct-scroll-'+location.pathname+location.search,PAUSE='ct-live-paused',timer=null;"
         "var y=sessionStorage.getItem(KEY);"
         "if(y!==null){window.scrollTo(0,parseInt(y,10)||0);sessionStorage.removeItem(KEY);}"
+        "function paused(){try{return localStorage.getItem(PAUSE)==='1';}catch(e){return false;}}"
+        "var btn=document.querySelector('[data-live-toggle]');"
+        "function label(){if(!btn)return;var p=paused();btn.hidden=false;"
+        "btn.textContent=p?'Resume live updates':'Pause live updates';"
+        "btn.setAttribute('aria-pressed',p?'true':'false');}"
         "function isEditing(){var el=document.activeElement;"
         "return !!el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT');}"
-        "function tick(){if(isEditing()){setTimeout(tick,3000);return;}"
+        # A tab nobody is looking at does not reload: it waits until it is
+        # shown again, instead of re-running the page's queries (up to 1.4s
+        # of statistics on the console overview) every few seconds forever.
+        "function tick(){if(paused())return;"
+        "if(document.hidden){document.addEventListener('visibilitychange',function v(){"
+        "if(!document.hidden){document.removeEventListener('visibilitychange',v);tick();}});return;}"
+        "if(isEditing()){timer=setTimeout(tick,3000);return;}"
         "sessionStorage.setItem(KEY,String(window.scrollY));location.reload();}"
-        f"setTimeout(tick,{int(seconds)}*1000);"
+        f"function schedule(){{clearTimeout(timer);if(!paused())timer=setTimeout(tick,{int(seconds)}*1000);}}"
+        "if(btn)btn.addEventListener('click',function(){"
+        "try{localStorage.setItem(PAUSE,paused()?'0':'1');}catch(e){}label();schedule();});"
+        "label();schedule();"
         "})();</script>"
+    )
+
+
+def live_badge(seconds: int) -> str:
+    """The header's "live" marker for an auto-refreshing page, and the
+    control that pauses it. WCAG 2.2.1 asks that a time limit -- here, a
+    reload every few seconds -- can be turned off: someone reading slowly,
+    or with a screen reader, loses their place on every reload. The button
+    stays hidden unless the refresh script runs, and the choice is kept for
+    every page in this browser."""
+    if not seconds:
+        return ""
+    return (
+        f'<span class="ro" title="Refreshes automatically every {int(seconds)}s '
+        'unless you are typing in a field or have paused it">live</span>'
+        '<button type="button" class="live-toggle" data-live-toggle hidden>Pause live updates</button>'
     )
 
 
@@ -272,38 +320,151 @@ def _auto_refresh_script(seconds: int) -> str:
 # test here posts with httpx, which runs no JavaScript and so could not
 # have seen it. The class is cosmetic precisely so that nothing about
 # what gets submitted depends on this script running.
+#
+# It also carries the pages' two other behaviours, so that no page needs an
+# inline event handler (which the Content-Security-Policy below forbids):
+# a form with `data-confirm` asks first, and a read-only input with
+# `data-autoselect` selects itself on click, for copying a key or link.
 _FORM_GUARD_SCRIPT = (
     "<script>document.addEventListener('submit',function(ev){"
     "var f=ev.target;"
     "if(f.dataset.ctSubmitting==='1'){ev.preventDefault();return;}"
     "if(ev.defaultPrevented)return;"
+    "if(f.dataset.confirm&&!window.confirm(f.dataset.confirm)){ev.preventDefault();return;}"
     "f.dataset.ctSubmitting='1';"
     "if(ev.submitter){ev.submitter.classList.add('busy');}"
-    "},true);</script>"
+    "},true);"
+    "document.addEventListener('click',function(ev){"
+    "var t=ev.target;if(t&&t.matches&&t.matches('input[data-autoselect]')){t.select();}"
+    "var b=t&&t.closest&&t.closest('button[data-copy]');if(!b)return;"
+    "var row=b.parentNode,i=row.querySelector('input'),st=row.querySelector('[role=status]');"
+    "function done(ok){st.textContent=ok?'Copied to clipboard.':'Select the text and copy it.';"
+    "b.textContent=ok?'Copied':'Copy';setTimeout(function(){b.textContent='Copy';},2000);}"
+    "function fallback(){i.select();var ok=false;try{ok=document.execCommand('copy');}catch(e){}done(ok);}"
+    "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value)"
+    ".then(function(){done(true);},fallback);}else{fallback();}"
+    "});"
+    "document.querySelectorAll('button[data-copy]').forEach(function(b){b.hidden=false;});"
+    "</script>"
 )
 
 
-def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
-    live_badge = (
-        f'<span class="ro" title="Refreshes automatically every {int(auto_refresh_seconds)}s '
-        'unless you are typing in a field">live</span>'
-        if auto_refresh_seconds else ""
+def secret_field(value: str, label_id: str) -> str:
+    """A shown-once value (API key, signing secret, share link): read-only,
+    selected on click, labelled by the element `label_id`, with a Copy
+    button. The button starts hidden and `_FORM_GUARD_SCRIPT` reveals it, so
+    a browser without script never shows a button that does nothing."""
+    return (
+        '<div class="copy-row">'
+        f'<input type="text" readonly aria-labelledby="{h(label_id)}" value="{h(value)}" '
+        'data-autoselect spellcheck="false" autocomplete="off">'
+        '<button type="button" class="btn" data-copy hidden>Copy</button>'
+        '<span class="copy-status" role="status" aria-live="polite"></span></div>'
     )
-    refresh_script = _auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
+
+
+def content_security_policy(*scripts: str) -> str:
+    """A Content-Security-Policy that lets exactly these inline scripts run.
+
+    Every page here is server-rendered with its scripts inline, so the
+    policy allows each by its SHA-256 and nothing else: text that escaped
+    `h()` by some future mistake still could not run. Styles stay inline
+    (style attributes cannot be hashed), and forms may post only to this
+    origin or to Stripe, where the billing buttons redirect.
+    """
+    import base64
+    import hashlib
+    import re
+
+    hashes = []
+    for script in scripts:
+        for body in re.findall(r"<script>(.*?)</script>", script, flags=re.S):
+            digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+            hashes.append(f"'sha256-{digest}'")
+    return (
+        "default-src 'none'; "
+        f"script-src {' '.join(hashes) if hashes else chr(39) + 'none' + chr(39)}; "
+        "style-src 'unsafe-inline'; img-src data:; "
+        "form-action 'self' https://*.stripe.com; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
+
+
+# Headers every HTML page here sends: the policy above, and no caching --
+# this is live tenant data, and a cached copy in a shared browser is one
+# more place it sits at rest.
+def html_headers(*scripts: str, referrer: str = "same-origin") -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store, private", "Referrer-Policy": referrer,
+        "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        "Content-Security-Policy": content_security_policy(*scripts),
+        # A window another site opened (or that opened this one) gets no
+        # handle to it, and no other origin can load it as a subresource.
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        # Nothing here uses these; a script injected despite the CSP gets
+        # none of them either.
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), payment=()",
+    }
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def cross_origin_refused(request: Request) -> bool:
+    """Whether a state-changing request came from another origin's page.
+
+    The console's session cookie is `SameSite=Strict`, which keeps it off
+    requests from other *sites* -- but a page on a sibling subdomain (a
+    user-content host, a staging app, anything under the same registrable
+    domain) is the same site, gets the cookie attached, and could post a
+    console form in a signed-in user's name. The browser says where a
+    request came from: `Sec-Fetch-Site` on every current browser, and
+    `Origin` on older ones, which is compared with the Host it was sent to
+    (the same two-step check as Go's net/http CrossOriginProtection). A
+    request carrying neither is not a browser's cross-origin form post and
+    goes through: the session cookie still has to be valid.
+    """
+    if request.method in _SAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
+
+
+def refuse_cross_origin(handler):
+    """`handler`, answering 403 to a cross-origin state-changing request
+    (see `cross_origin_refused`) instead of acting on it."""
+
+    async def guarded(request: Request) -> Response:
+        if cross_origin_refused(request):
+            return Response("cross-origin request refused", status_code=403)
+        return await handler(request)
+
+    guarded.__name__ = getattr(handler, "__name__", "guarded")
+    guarded.__doc__ = handler.__doc__
+    return guarded
+
+
+def _page(title: str, body: str, *, auto_refresh_seconds: int = 0) -> HTMLResponse:
+    badge = live_badge(auto_refresh_seconds)
+    refresh_script = auto_refresh_script(auto_refresh_seconds) if auto_refresh_seconds else ""
     return HTMLResponse(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>{h(title)} · CommonTrace Hub</title><style>{_CSS}</style></head><body>"
         "<header class=\"bar\"><div class=\"in\"><b>CommonTrace Hub</b>"
         "<span class=\"ro\">operator console</span>"
-        f"{live_badge}"
+        f"{badge}"
         f"<nav><a href=\"{ADMIN_PATH}\">Overview</a>"
         f"<a href=\"{ADMIN_PATH}/kb\">Knowledge Base</a>"
         "<a href=\"/metrics\">Metrics</a></nav></div></header>"
         f"<main>{body}</main>{refresh_script}{_FORM_GUARD_SCRIPT}</body></html>",
-        # No caching: this is live operational state, and a cached copy in a
-        # shared browser is one more place tenant data sits at rest.
-        headers={"Cache-Control": "no-store"},
+        headers=html_headers(refresh_script, _FORM_GUARD_SCRIPT),
     )
 
 
@@ -346,6 +507,11 @@ def _cmd(what: str, command: str) -> str:
 # under the admin secret -- unforgeable without that secret, and scoped so a
 # token minted for "reject submission X" cannot be replayed as "approve
 # submission Y".
+def _flash_sig(admin_token: str, message: str) -> str:
+    return hmac.new(
+        admin_token.encode(), b"flash\0" + message.encode(), "sha256").hexdigest()[:32]
+
+
 def _csrf_token(admin_token: str, action: str, target: str) -> str:
     import hashlib
     return hmac.new(
@@ -748,12 +914,14 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
             if k.revoked_at is None:
                 key_actions = (
                     f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/rotate" '
+                    'data-confirm="Rotate this key? It stops working now." '
                     'class="act" style="display:inline">'
                     f'<input type="hidden" name="key_id" value="{h(k.id)}">'
                     f'<input type="hidden" name="csrf" '
                     f'value="{h(_csrf_token(admin_token, "rotate_key", str(k.id)))}">'
                     '<button type="submit" class="btn">Rotate</button></form> '
                     f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/keys/revoke" '
+                    'data-confirm="Revoke this key? This cannot be undone." '
                     'class="act" style="display:inline">'
                     f'<input type="hidden" name="key_id" value="{h(k.id)}">'
                     f'<input type="hidden" name="csrf" '
@@ -930,6 +1098,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
         if preview["n_doomed"]:
             apply_form = (
                 f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/retention/apply" '
+                'data-confirm="Permanently delete the traces listed above?" '
                 'class="act" style="margin-top:.5rem">'
                 f'<input type="hidden" name="digest" value="{h(preview["digest"])}">'
                 f'<input type="hidden" name="csrf" '
@@ -1079,6 +1248,7 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
     )
     purge_subject_form = (
         f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-subject-traces" '
+        'data-confirm="Permanently delete every trace tagged with this subject?" '
         'class="act" style="margin-top:1rem">'
         f'<input type="hidden" name="org_id" value="{h(org.id)}">'
         f'<input type="hidden" name="csrf" '
@@ -1096,7 +1266,8 @@ def _render_org(d: dict, admin_token: str, flash: str = "", fresh_key: str = "")
     )
 
     danger_zone = (
-        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-trace" class="act">'
+        f'<form method="post" action="{ADMIN_PATH}/org/{h(org.id)}/purge-trace" class="act" '
+        'data-confirm="Permanently delete this trace and its amendments?">'
         f'<input type="hidden" name="org_id" value="{h(org.id)}">'
         f'<input type="hidden" name="csrf" '
         f'value="{h(_csrf_token(admin_token, "purge_trace", org.id))}">'
@@ -1373,7 +1544,7 @@ def add_admin_routes(
         # for the same reason hub/server.py limits auth attempts: the compare
         # is cheap here, but an unauthenticated endpoint that hits Postgres on
         # every request is a lever without one.
-        client_key = resolve_client_key(request, trusted_proxy_hops)
+        client_key = rate_limit_key(request, trusted_proxy_hops)
         allowed, retry_after = await limiter.check(client_key)
         if not allowed:
             import math
@@ -1399,7 +1570,7 @@ def add_admin_routes(
         denied = await _guard(request)
         if denied is not None:
             return denied
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         return await _overview_view(flash=flash)
 
     async def generate_encryption_key_route(request: Request) -> Response:
@@ -1438,7 +1609,7 @@ def add_admin_routes(
             return _page("Not found", '<section><h1>No such organization</h1>'
                                       f'<p class="sub">Nothing on this Hub has that id. '
                                       f'<a href="{ADMIN_PATH}">Back to the overview</a>.</p></section>')
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         subject_id = request.query_params.get("subject_id", "")[:200]
         if subject_id:
             async with session_scope(session_factory) as session:
@@ -1467,7 +1638,7 @@ def add_admin_routes(
             return denied
         if not commons_enabled:
             return _page("Knowledge Base", _COMMONS_OFF)
-        flash = request.query_params.get("done", "")[:200]
+        flash = _flash(request)
         async with session_scope(session_factory) as session:
             data = await _kb_data(session)
         return _page(
@@ -1512,8 +1683,21 @@ def add_admin_routes(
     def _back(path: str, message: str) -> Response:
         # POST-then-redirect: without it a reload re-submits the decision,
         # and a moderation decision is not something to repeat by accident.
+        # The message rides in the URL, so it is signed: see _flash.
         from urllib.parse import quote
-        return Response(status_code=303, headers={"Location": f"{path}?done={quote(message)}"})
+        return Response(status_code=303, headers={
+            "Location": f"{path}?done={quote(message)}&sig={_flash_sig(admin_token, message)}"})
+
+    def _flash(request: Request) -> str:
+        """The `done=` message, only if this console wrote it. Unsigned, any
+        link could make the operator console announce whatever its author
+        liked ("Key revoked.", "Call support on ...") to an operator whose
+        browser already holds the console's credentials."""
+        message = request.query_params.get("done", "")[:500]
+        signature = request.query_params.get("sig", "")
+        if message and hmac.compare_digest(_flash_sig(admin_token, message), signature):
+            return message
+        return ""
 
     async def kb_review(request: Request) -> Response:
         form, submission_id, denied = await _moderate(

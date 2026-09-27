@@ -206,3 +206,20 @@ class TestStartupToleratesADeadDatabase:
             assert "lifespan.startup.complete" in [m["type"] for m in messages]
         finally:
             await engine.dispose()
+
+
+class TestEveryRouteBoundsItsRequestBody:
+    async def test_an_oversized_body_is_refused_off_the_mcp_path_too(self, config, session_factory):
+        """Only /mcp enforced HUB_MAX_REQUEST_BODY_BYTES; an unauthenticated
+        POST anywhere else was buffered whole, however large."""
+        import httpx
+
+        app = build_app(config, session_factory)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/traces/search", content=b"x" * (config.max_request_body_bytes + 1),
+                headers={"content-type": "application/json"},
+            )
+        assert response.status_code == 413
+        assert response.json()["error"] == "payload_too_large"
+        assert response.headers.get("x-request-id")

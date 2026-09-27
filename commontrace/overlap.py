@@ -51,11 +51,6 @@ import re
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 
-try:
-    import numpy as np
-except ImportError:
-    np = None
-
 # Signature length. Standard error of the Jaccard estimate is ~1/sqrt(k),
 # so 128 permutations gives ~8.8% -- fine for "is the overlap 5% or 40%?",
 # which is the decision this exists to inform. Raise it if you ever need to
@@ -176,7 +171,7 @@ def minhash(text: str, num_perm: int = DEFAULT_NUM_PERM) -> list[int]:
 def estimate_jaccard(sig_a: list[int], sig_b: list[int]) -> float:
     """Fraction of agreeing positions == unbiased Jaccard estimate.
 
-    Deliberately pure Python, not numpy, despite `np` being importable here:
+    Deliberately pure Python, not numpy (and numpy is not imported at all):
     both callers (overlap.find_coverage, reliability.find_contradictions)
     invoke this once per (item, item) PAIR inside an O(n^2) loop, and at this
     module's fixed signature length (128 -- see _permutations' docstring)

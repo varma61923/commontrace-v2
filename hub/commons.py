@@ -129,12 +129,28 @@ MAX_HITS_PER_TRACE_PER_QUERY = 20
 # scan would under-report the one number this product's strategy rests on,
 # which is exactly the failure mode to avoid.
 #
-# The real fix past this ceiling is an approximate-nearest-neighbour index
-# (pgvector, or a dedicated ANN service). Deliberately not built yet:
-# classic MinHash LSH banding was measured first and rejected on evidence
-# -- at this module's 0.30 match threshold, r=2 filters almost nothing
-# (77% candidate rate) and r=4 loses 36% of true matches. Low thresholds
-# are simply where LSH stops paying.
+# What a query actually spent its time on, measured at this ceiling
+# (20,000 entries, realistic word-frequency text): ~1.4s re-reading the
+# corpus from Postgres, ~3ms comparing one signature against it. The
+# comparison was never the problem; the reload was, and hub/commons_cache.py
+# removes it by keeping the corpus in memory until it changes. That took
+# commons_search from ~1.6s to ~29ms and a 50-failure commons_overlap from
+# ~1.9s to ~210ms. What the cap bounds now is comparison work alone, which
+# is linear in submitted x corpus and is the cost to measure before raising
+# it.
+#
+# Two index designs were measured and rejected, so that neither is retried
+# on the strength of sounding faster:
+#   * MinHash LSH banding -- at this module's 0.30 match threshold, r=2
+#     filters almost nothing (77% candidate rate) and r=4 loses 36% of true
+#     matches. Low thresholds are where LSH stops paying.
+#   * An exact inverted index over (position, value) pairs, which would
+#     return identical results. Its work is proportional to the query's
+#     total similarity to the corpus, not to the number of true matches,
+#     and signatures are over word SETS: common domain words ("error",
+#     "timeout") appear in most entries, so most entries share values with
+#     most queries. At 1,000 entries it joined ~50,000 rows for 50 queries
+#     and took ~1.5s against ~70ms for the full scan.
 MAX_COMMONS_CORPUS = 20_000
 
 try:  # pragma: no cover - exercised by whichever path the environment has
@@ -542,11 +558,16 @@ def best_matches(
     Hub dependency. hub/tests/test_commons.py asserts the two agree, so the
     fast path can never quietly diverge from the reference one.
     """
-    if not corpus_signatures:
+    # len(), not truthiness: the corpus may be a numpy matrix (hub/
+    # commons_cache.py), whose truth value is ambiguous rather than "empty".
+    if len(corpus_signatures) == 0:
         return [(-1, 0.0) for _ in submitted]
 
     if _np is not None:
-        corpus = _np.array(corpus_signatures, dtype=_np.uint64)
+        # asarray, not array: the cached matrix is already uint64, and
+        # copying ~1KB per corpus entry on every query would give back a
+        # real share of what caching it saved.
+        corpus = _np.asarray(corpus_signatures, dtype=_np.uint64)
         out: list[tuple[int, float]] = []
         for _label, sig in submitted:
             sims = (corpus == _np.array(sig, dtype=_np.uint64)).sum(axis=1) / COMMONS_NUM_PERM
@@ -607,11 +628,11 @@ def rank_candidates(
     outranking the right answer is the specific failure a naive
     "rank by votes" blend produces.
     """
-    if not corpus_signatures or top_k <= 0:
+    if len(corpus_signatures) == 0 or top_k <= 0:
         return []
 
     if _np is not None:
-        corpus = _np.array(corpus_signatures, dtype=_np.uint64)
+        corpus = _np.asarray(corpus_signatures, dtype=_np.uint64)
         sims = (corpus == _np.array(query_signature, dtype=_np.uint64)).sum(axis=1) / COMMONS_NUM_PERM
         # argpartition would be cheaper asymptotically, but top_k is small
         # and bounded (MAX_SEARCH_CANDIDATES) while the corpus scan above it

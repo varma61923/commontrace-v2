@@ -170,6 +170,13 @@ def _row_to_trace(line_no: int, row: dict[str, Any], mapping: FieldMapping) -> I
     if missing:
         return SkippedRow(line_no=line_no, reason=f"missing/empty required field(s): {', '.join(missing)}")
 
+    # Credentials in imported logs are redacted, not stored
+    # (commontrace/memory_guard.py:redact_secrets).
+    from commontrace.memory_guard import redact_secrets
+
+    title, _ = redact_secrets(title)
+    context_text, _ = redact_secrets(context_text)
+    solution_text, _ = redact_secrets(solution_text)
     return ImportedRow(
         line_no=line_no,
         title=title,

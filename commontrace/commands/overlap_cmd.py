@@ -140,8 +140,12 @@ def run_sign(args: argparse.Namespace) -> int:
             )
         )
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as fh:
+    try:
+        safe_out = paths.safe_prepare_output_path(args.out)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] could not write {args.out!r}: {exc}", file=sys.stderr)
+        return 1
+    with open(safe_out, "w", encoding="utf-8") as fh:
         json.dump(sig.to_dict(), fh, indent=2)
 
     n_lessons = len(sig.lessons())

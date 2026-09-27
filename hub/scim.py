@@ -98,7 +98,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from hub import audit, auth, rbac, scopes
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 from hub.crud import _is_uuid
 from hub.db import session_scope
 from hub.models import Organization, ScimGroup, ScimGroupMembership, User
@@ -672,7 +672,7 @@ async def _authenticate(
     `ApiKeyAuthMiddleware` auth-attempt rate limiting exactly, against a
     dedicated limiter so SCIM traffic and MCP traffic never share (or
     starve) the same bucket."""
-    client_key = resolve_client_key(request, trusted_proxy_hops)
+    client_key = rate_limit_key(request, trusted_proxy_hops)
     allowed, retry_after = await auth_rate_limiter.check(client_key)
     if not allowed:
         return _rate_limited(retry_after)

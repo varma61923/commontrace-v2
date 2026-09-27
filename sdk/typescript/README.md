@@ -45,7 +45,16 @@ await client.contributeTrace({
 
 // Any tool this client has no dedicated method for yet is still reachable:
 await client.call("assign_trace", { trace_id: "…", user_id: "…" });
+
+// Done: release the connection, or a Node process may not exit.
+await client.close();
 ```
+
+`connect()` sends the API key on every call, so it refuses a URL it will
+not send it to, before connecting: anything but `http`/`https`, plaintext
+`http://` to anything but localhost, and link-local or cloud-metadata
+addresses. The same rules as the Python client; `checkHubUrl(url)` applies
+them on their own.
 
 ## Error handling
 
@@ -55,6 +64,8 @@ await client.call("assign_trace", { trace_id: "…", user_id: "…" });
   identically, **except** `rate_limited`, which `call()` already retries
   for you (see below) — you will only ever see a `rate_limited`
   `HubToolError` once the retry budget is spent.
+- `HubConfigurationError` — `connect()` refused the URL (see above); the
+  configuration has to change.
 - `HubConnectionError` — the request never reached a tool-level answer:
   transport failure, unreachable server, a malformed response.
 

@@ -136,9 +136,13 @@ async def _reject_private_target(url: str, *, resolve=None) -> None:
     for family, _type, _proto, _canonname, sockaddr in addrinfo:
         raw_ip = sockaddr[0]
         ip = ipaddress.ip_address(raw_ip)
+        # `not is_global` also catches what is neither private nor public:
+        # 100.64.0.0/10 (carrier-grade NAT), where Alibaba Cloud serves its
+        # instance metadata (100.100.100.200).
         if (
             ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+            or not ip.is_global
         ):
             raise EventError(
                 f"webhook host {hostname!r} resolves to {raw_ip}, a private/"

@@ -63,6 +63,12 @@ def main() -> None:
         host=config.host,
         port=config.port,
         log_config=None,
+        # RequestContextMiddleware already logs every request (method, path,
+        # status, duration, request id). uvicorn's own access line would add
+        # a second copy WITH the query string -- a customer's memory search
+        # text (?q=), a share link's token (?share_url=) -- through the same
+        # root JSON handler.
+        access_log=False,
         timeout_graceful_shutdown=config.graceful_shutdown_seconds,
     )
 

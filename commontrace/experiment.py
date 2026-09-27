@@ -364,10 +364,20 @@ def anytime_confidence_interval(
     # sequence changes the multiplier applied to it, not the quantity.
     variance = rate1 * (1 - rate1) / n1 + rate2 * (1 - rate2) / n2
     if variance <= 0.0:
-        # Degenerate arm (every occasion succeeded, or none did). No spread to
-        # bound, and a zero-width interval would claim certainty from a
-        # sample that has simply not seen both outcomes yet.
-        return (-1.0, 1.0)
+        # Both arms degenerate (every occasion succeeded, or none did). The
+        # plug-in variance is zero, and a zero-width interval would claim
+        # certainty from a sample that has simply not seen both outcomes.
+        #
+        # This used to return (-1, 1) -- "no claim" at ANY sample size, so a
+        # lesson that worked on every one of a thousand occasions it was
+        # injected into, and never once without it, could not be declared
+        # to help (nor one that always failed, to hurt) however long the
+        # fleet ran. Use the variance bound that holds for any outcome in
+        # [0, 1] instead: a Bernoulli's variance is at most 1/4, so this is
+        # the widest the spread can honestly be. It keeps a small degenerate
+        # sample spanning zero, which was the point, and lets a large one
+        # conclude.
+        variance = 0.25 / n1 + 0.25 / n2
 
     n_effective = min(n1, n2)
     target = target_n_per_arm if target_n_per_arm > 0 else n_effective

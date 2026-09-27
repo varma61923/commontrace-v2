@@ -44,7 +44,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from hub.abuse import RateLimiter, resolve_client_key
+from hub.abuse import RateLimiter, rate_limit_key
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
@@ -135,11 +135,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             status = response.status_code
             response.headers[REQUEST_ID_HEADER] = request_id
             # Cheap, always-safe defense-in-depth headers on every response.
-            # This is a JSON API with no browser-rendered surface, so a full
-            # Content-Security-Policy has nothing to scope (no inline
-            # scripts/styles of its own to allow), but these cost nothing and
-            # remove a browser's default assumptions that don't hold for a
-            # JSON API: don't guess the content type from the body
+            # The HTML pages (console, admin, signup) send their own
+            # Content-Security-Policy, hashed to their own inline scripts
+            # (hub/admin.py:html_headers); these cost nothing and remove a
+            # browser's default assumptions that don't hold for a JSON API
+            # either: don't guess the content type from the body
             # (nosniff), never render a response in a frame, don't leak the
             # request URL to a Referer header on outbound links from any
             # tool that happens to render this JSON. HSTS is a no-op unless
@@ -163,12 +163,24 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 "request",
                 extra={
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    "http_path": loggable_path(request.url.path),
                     "http_status": status,
                     "duration_ms": duration_ms,
                 },
             )
             current_request_id.reset(token)
+
+
+# A share link's token IS the credential for that report (anyone holding
+# the URL sees the org's live data for its lifetime), so it never reaches a
+# log line: log shippers and aggregators are read far more widely than the
+# console is.
+_SECRET_PATH_SEGMENT = re.compile(r"(/proof/shared/)[^/]+")
+
+
+def loggable_path(path: str) -> str:
+    """`path` with any secret-bearing segment replaced by `[redacted]`."""
+    return _SECRET_PATH_SEGMENT.sub(r"\1[redacted]", path)
 
 
 class Metrics:
@@ -324,6 +336,7 @@ def add_health_routes(
     session_factory: async_sessionmaker,
     readyz_rate_limiter: RateLimiter | None = None,
     trusted_proxy_hops: int = 0,
+    metrics_token: str = "",
 ) -> None:
     """Wire /healthz (liveness) and /readyz (readiness). See module docstring
     for why these must answer different questions.
@@ -338,14 +351,14 @@ def add_health_routes(
     generous bucket that a real orchestrator's poll interval (typically
     every few seconds) never comes close to. `trusted_proxy_hops` is
     HubConfig.trusted_proxy_hops, passed straight through to
-    hub.abuse.resolve_client_key -- see that config field's docstring."""
+    hub.abuse.rate_limit_key -- see that config field's docstring."""
     readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> JSONResponse:
-        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
         allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             # Retry-After for the same reason hub/server.py's 429s carry it:
@@ -382,7 +395,7 @@ def add_health_routes(
         touches no database, so it is cheap even when the database is down
         -- which is exactly when you want to be able to read it.
         """
-        client_key = resolve_client_key(request, trusted_proxy_hops) if request is not None else "unknown"
+        client_key = rate_limit_key(request, trusted_proxy_hops) if request is not None else "unknown"
         allowed, retry_after = await readyz_rate_limiter.check(client_key)
         if not allowed:
             seconds = str(max(1, math.ceil(retry_after)))
@@ -391,6 +404,21 @@ def add_health_routes(
                 status_code=429,
                 headers={"Retry-After": seconds},
             )
+        if metrics_token:
+            # Optional (HUB_METRICS_TOKEN): a deployment that cannot keep
+            # /metrics off a reachable network can require the scraper's
+            # bearer token. Compared in constant time.
+            import hmac
+
+            header = request.headers.get("authorization", "") if request is not None else ""
+            scheme, _, presented = header.partition(" ")
+            if scheme.lower() != "bearer" or not hmac.compare_digest(
+                presented.strip().encode(), metrics_token.encode()
+            ):
+                return JSONResponse(
+                    {"status": "unauthorized"}, status_code=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="metrics"'},
+                )
         return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.add_route("/healthz", healthz, methods=["GET"])

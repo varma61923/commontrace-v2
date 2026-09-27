@@ -109,6 +109,11 @@
                                        measuring ([outcome], default "resolved") so a
                                        later report can be checked against it
     stop-experiment <org_id>       -> stop withholding. Observations are kept
+    harm-policy <org_id> [inform|withdraw]
+                                   -> show or set what search does with a trace the
+                                       experiment measured making outcomes WORSE:
+                                       inform (default) returns it with its verdict;
+                                       withdraw stops returning it and names it
     export-assignments <org_id> [file]
                                    -> every arm decision, as CSV, for a customer's own
                                        analyst to re-run the comparison from. Includes
@@ -280,7 +285,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from commontrace import experiment, prereg, raw_export
+from commontrace import experiment, harm, prereg, raw_export
 from hub import abuse, alerts, audit, auth, commons, crud, events, outcomes, plans, rbac, retention
 from hub.billing import StripeError, StripeSettings, cancel_subscription
 from hub.config import HubConfig
@@ -1433,6 +1438,42 @@ async def stop_experiment(
         )
     print(f"experiment stopped for {org_id}. Nothing further will be withheld.")
     print(f"  Observations are kept. `python -m hub.manage experiment {org_id}` still reads them.")
+    return True
+
+
+async def harm_policy(
+    org_id: str, policy: str = "", session_factory=None, actor: str = audit.ACTOR_OPERATOR_CLI,
+) -> bool:
+    """Show or set what search does with a trace measured to hurt outcomes
+    (commontrace/harm.py). Setting it does not start a new randomization:
+    it acts before arms are assigned and on the anytime-valid verdict, so
+    the experiment that produced the verdict is not biased by acting on it.
+    """
+    if policy and policy not in harm.POLICIES:
+        print(f"error: policy must be one of {', '.join(harm.POLICIES)}, got {policy!r}",
+              file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        if not policy:
+            print(f"{org.name}  ({org_id})   harm policy: {org.harm_policy}")
+            return True
+        previous = org.harm_policy
+        org.harm_policy = policy
+        await session.flush()
+        await audit.record(
+            session, actor=actor, action="set_harm_policy",
+            org_id=org_id, target_type="org", target_id=org_id,
+            summary=f"{previous} -> {policy}",
+        )
+    print(f"harm policy for {org_id}: {previous} -> {policy}")
+    if policy == harm.POLICY_WITHDRAW:
+        print("  Search stops returning traces this org's experiment measured as HURTS,")
+        print("  and names them under `withdrawn` with their evidence instead.")
     return True
 
 
@@ -2857,6 +2898,7 @@ _COMMANDS = {
     "plan-experiment": (plan_experiment, 1, 3),
     "start-experiment": (start_experiment, 1, 4),
     "stop-experiment": (stop_experiment, 1, 1),
+    "harm-policy": (harm_policy, 1, 2),
     "export-assignments": (export_assignments, 1, 2),
     "experiment": (experiment_results, 1, 1),
     "list-quarantined": (list_quarantined, 0, 1),

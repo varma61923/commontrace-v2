@@ -1,6 +1,7 @@
 export { HubClient } from "./client.js";
 export type { HubClientOptions, ToolCaller } from "./client.js";
-export { HubConnectionError, HubToolError } from "./errors.js";
+export { checkHubUrl } from "./client.js";
+export { HubConfigurationError, HubConnectionError, HubToolError } from "./errors.js";
 export type {
   AccountUsage,
   AmendTraceArgs,

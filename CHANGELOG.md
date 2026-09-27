@@ -7,8 +7,417 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A link could make either console announce any message.** After an
+  action, both consoles showed the `?done=` text from the URL as their
+  confirmation banner, so `/admin/kb?done=Call+…` or `/app/kb?done=…` put
+  arbitrary words in the console's voice (escaped, but trusted-looking). The
+  customer console now accepts only a fixed code (`?done=voted`), and the
+  operator console only a message it signed itself.
+- **A freshly minted share link went into browser history, and the console
+  would present any link as its own.** Generating a link redirected to
+  `/app/proof?share_url=<link>`, so the live credential landed in history and
+  sync; and a signed-in user sent `/app/proof?share_url=https://anything`
+  saw that URL under "Shareable link generated". The link is now shown in the
+  response that mints it, and the Proof page no longer reads one from the URL.
+- **The Hub's logs held share-link tokens and customer search text.** The
+  request log recorded `/app/proof/shared/<token>` verbatim -- the token is
+  the credential for that org's live report for 14 days -- and uvicorn's own
+  access log, which reached the same JSON handler, added every query string
+  (`/app/memory?q=…`, `?share_url=…`). The token is now logged as
+  `[redacted]`, and uvicorn's duplicate access line is off; the middleware's
+  own line (method, path, status, duration, request id) remains.
+- **An unauthenticated request with a huge body could exhaust the Hub's
+  memory.** `HUB_MAX_REQUEST_BODY_BYTES` (1 MiB) was enforced only by the MCP
+  transport; the signup and sign-in forms, the REST API, SCIM and the Stripe
+  webhook buffered bodies of any size, several before authenticating. Every
+  route now refuses a larger body with 413 -- by its declared
+  `Content-Length` before reading it, and by counting bytes as they arrive,
+  so a chunked or understated body cannot get around it.
+- **One misclick revoked a production API key.** Revoke and rotate (keys and
+  webhook secrets), disabling a webhook, deleting an alert rule, purging
+  traces and applying retention acted on the first click, with no way back.
+  Each now asks for confirmation first (the org purge already required
+  retyping its name), and a test fails if an irreversible form ships
+  without it.
+- **Every CLI command paid for every other command's imports** -- numpy,
+  asyncio and ssl among them, about 140ms. Only the invoked command's module
+  is loaded now: `commontrace capture`, which agent hooks run after every
+  task, went from 189ms to 66ms; `lesson list` and `query` from ~190ms to
+  about 80ms, the rest of their saving from dropping an unused numpy import
+  in `commontrace/overlap.py`. `--help` is unchanged.
+- **The Hub image and compose stack are built from base images pinned by
+  digest** (`python:3.12-slim@sha256:…`, `postgres:16@sha256:…`), so a
+  re-pushed tag cannot change what is built. Dependabot's docker and
+  docker-compose ecosystems propose new digests as PRs, and a test fails if
+  an unpinned image is added.
+- **Hub HTML pages now send `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Resource-Policy: same-origin` and a Permissions-Policy that
+  turns off camera, microphone, location, USB and payment APIs.** A window
+  another site opened no longer keeps a handle to the console, no other
+  origin can load a console page as a subresource, and a script that got
+  past the CSP gets none of those device APIs.
+- **Rate limits keyed on a client's address did nothing against an IPv6
+  client.** One host is typically assigned a whole /64 and can send from any
+  address in it, so each request could land in a fresh bucket: the console's
+  five-attempt sign-in limit stopped no one from guessing API keys, and the
+  same was true of signup, MCP/REST/SCIM auth and `/readyz`. Every such
+  limiter now counts an IPv6 client by its /64 (and an IPv4-mapped address
+  as its IPv4 client). The IP allowlist still checks the exact address.
+- **A webhook could target Alibaba Cloud's instance metadata service**
+  (100.100.100.200). The check refused private, loopback and link-local
+  addresses, but carrier-grade NAT space (100.64.0.0/10) is none of those;
+  webhook targets must now resolve to a globally routable address.
+- **The Hub URL check let the cloud-metadata address through in other
+  spellings.** `https://2852039166/`, `https://0xa9fea9fe/`,
+  `https://169.254.169.254./` and `https://[::ffff:169.254.169.254]/` all
+  reach 169.254.169.254, but the Python client only recognised the dotted
+  form and the TypeScript SDK missed the IPv4-mapped one, so either would
+  have sent the Hub API key there. Both now read the address the way the
+  resolver will.
+- **Any site could sign a user out of the console** with an `<img>` tag
+  pointing at `/app/signout`, which acted on a GET. Sign out is now a form
+  post (the nav's button looks as it did); a GET asks first.
+- **A page on a sibling subdomain could post console forms as the signed-in
+  user.** The session cookie is `SameSite=Strict`, but a sibling subdomain
+  is the same site, so the browser still attached it. Every console and
+  signup form post now refuses a request the browser marks as coming from
+  another origin (`Sec-Fetch-Site`, or `Origin` against `Host` on older
+  browsers), with a test that fails if a new POST route is registered
+  without the guard.
+- **Hub console and admin pages were unreadable in dark mode.** Every primary
+  button drew white text on a near-white background (contrast 1.2:1), and
+  the red/amber/green verdict boxes and pills kept light-mode colours under
+  light text. Both now use the theme's colours.
+- **Every console page scrolled sideways on a phone.** The nav bar did not
+  wrap (665px of content on a 390px screen), and wide tables and the memory
+  search box overflowed. The nav wraps, tables scroll inside their own box,
+  and admin forms stack their fields instead of squeezing them to a few
+  characters wide.
+- **`commontrace query` on a store with no lessons took 12–19 seconds** to
+  return nothing: it loaded the cross-encoder and rebuilt the semantic index
+  first. It now returns in about 0.2s, and MCP's `retrieve` makes the same
+  decision without a spurious "reranker did not run" note.
+- **The console session cookie lost `Secure` behind a TLS proxy in another
+  container or an ingress**, because the Hub only sees `https` from a proxy
+  on 127.0.0.1. A declared proxy (`HUB_TRUSTED_PROXY_HOPS` > 0) now always
+  gets a `Secure` cookie.
+- **A console left open in a background tab kept reloading** every
+  15-45 seconds, re-running its queries (up to 1.4s of statistics on the
+  overview) for as long as it stayed open. A hidden tab now waits and
+  reloads once it is shown again.
+- The CLI's HTML reports (`taxonomy`, `impact`, `pilot`, `bench --html`) had
+  no viewport tag, so phones rendered them zoomed out; they now fit the
+  screen, scroll wide tables, and follow the system dark mode.
+
+- **An agent's first `retrieve` waited ~9s for models to load.** The MCP
+  server now loads the cross-encoder and embedder its store will use on a
+  background thread as it starts (and refreshes a stale index), so the
+  first retrieval took 0.28s instead of 8.7s in an end-to-end stdio session.
+  Stores with nothing to rank, or lexical-only stores, load nothing;
+  `COMMONTRACE_MCP_WARM=0` turns it off.
+
+- **Every `commontrace query` on a populated store took ~15.5s; now ~6s.**
+  Two causes, same results either way. Each model load asked the Hugging
+  Face Hub whether a newer version existed (~2s per model per query, and a
+  request to a third party every time): models now load from the local
+  cache, and only a model that is not cached is downloaded. And the
+  reranker loaded only after the semantic arm's subprocess finished; it now
+  loads alongside it. If it then fails to load, the semantic arm runs again
+  at the plain depth, so the result matches the sequential path.
+- Every query printed two "Loading weights" progress bars. Loads from the
+  cache are now quiet; a real download still shows its progress.
+
+### Security
+
+- **Credentials in captured or imported traces were stored verbatim.** A key
+  that leaked into a log line (AWS, GitHub, Slack, Stripe, Google or
+  Anthropic keys, PEM private keys, JWTs) went into the local trace file --
+  its filename too, when it was in the title -- where every later agent
+  could read it and `sync` would push it to the Hub. `capture` (and MCP's
+  `capture` tool), `import` and the OpenTelemetry exporter now replace each
+  one with `[REDACTED <kind>]` and say how many they removed; the rest of
+  the trace is kept. Lessons were already refused at approval.
+- **`commontrace redact`** cleans a store that predates that: it rewrites
+  each affected trace through the atomic writer, renames a file whose name
+  was built from a key, and `--dry-run` previews it. `commontrace doctor`
+  warns when stored traces still hold credentials.
+- **Every Hub HTML page sends a Content-Security-Policy** that allows only
+  its own inline scripts, by SHA-256 hash: no inline event handlers, no
+  plugins, no framing, and forms may post only to the Hub or to Stripe.
+  Markup that ever escaped `h()` still could not run script. The inline
+  `onclick`/`onsubmit` handlers it replaces are now data attributes read by
+  the shared page script; `hub/tests/test_page_security.py` holds each
+  page's policy to exactly the scripts it renders.
+
+- **The TypeScript SDK sent the API key to any URL**, including plaintext
+  `http://` to a remote host and cloud-metadata addresses. `connect()` now
+  applies the Python client's rules before connecting and throws
+  `HubConfigurationError`; `checkHubUrl()` exposes them. It also gains
+  `close()`, without which the connection stayed open and a Node process
+  could hang on exit.
+
+- The Hub image's code is now owned by root and only readable by the
+  `hub` user that serves the network, so that process cannot rewrite its
+  own code even where the filesystem is not mounted read-only.
+
+- **Optional bearer token for `/metrics` (`HUB_METRICS_TOKEN`).** Unset,
+  nothing changes; set, a scrape without that token gets a 401 (compared in
+  constant time), for deployments that cannot keep `/metrics` off a
+  reachable network.
+
+### Accessibility
+
+- **Live pages can be paused.** The console overview and the operator
+  pages reload themselves every 15-45 seconds; a "Pause live updates"
+  button in the header now stops that (WCAG 2.2.1), and the choice is
+  kept across pages in that browser.
+- The console nav marks the current page (`aria-current`), pages have a
+  skip-to-content link, every focusable control shows a focus ring, and
+  table columns of row buttons have a header a screen reader can announce.
+
+### Added
+
+- **`commontrace lesson list --json`** prints one JSON array (name,
+  agent_type, importance, status, description, domain, path) for scripts,
+  instead of the aligned table; `--status` and `--agent-type` filter it the
+  same way.
+- **`commontrace` suggests the command you meant** (`unknown command
+  'captur'. Did you mean: capture?`) instead of listing all 27, and with no
+  command at all prints the full help rather than a one-line error. Exit
+  codes are unchanged.
+- **A Copy button beside every shown-once secret in the Hub** -- a new API
+  key (signup and console), a webhook signing secret, a share link. It
+  confirms through a status message a screen reader announces, falls back
+  to select-and-copy where the clipboard API is unavailable, and stays
+  hidden in a browser without script. The signup page's key field also
+  gained the accessible name it was missing.
+
+- **`commontrace doctor` says whether the store's models are cached.** For
+  each model the store's retrieval loads (the index's embedder when fusion
+  is on, the reranker when reranking is on) it reports `[OK]` when the
+  local cache holds it, or explains that the first query will download it
+  and how to prepare a host without internet. Checked from the cache
+  alone, with no network request.
+- **The accurate reranker is the default, over a shallower pool.** With the
+  arctic-embed semantic arm, the answer is almost always near the top of
+  one arm or the other, so gated fusion now hands the reranker each arm's
+  top 10 (accurate model) or top 15 (fast model) instead of 30
+  (`rerank_arm.POOL_DEPTHS`). That halves the accurate model's work, and a
+  new store now gets it by default: on LoCoMo, R@10 0.739, R@5 0.685 and MRR
+  0.630, against 0.694 / 0.608 / 0.541 for the previous default (the fast
+  model over 30), in about 360 ms on lesson-length text. The fast model over
+  15 reaches 0.707 / 0.613 / 0.543 in about 45 ms. The depth is part of the
+  treatment, like the gate: stores on the original model, and reranked
+  lexical retrieval, keep 30, and stores whose log names the fast model keep
+  it. The curated fixture is unchanged at either depth.
+
+- **A stronger semantic arm: new indexes embed with
+  `Snowflake/snowflake-arctic-embed-m-v1.5`.** Same size and width as the
+  original `multi-qa-mpnet-base-dot-v1` (109M parameters, 768 dims), and it
+  finds more: on LoCoMo its exact cosine search puts an answering turn in
+  the top 10 for 70.6% of questions, against 56.1% for mpnet. The default
+  (gated fusion, fast reranker) rises from R@10 0.669 to 0.694 and the
+  accurate reranker from 0.731 to 0.762 (R@5 0.703, MRR 0.643), the
+  highest measured. Seven local models were measured; arctic-embed led by
+  nine points of R@10, and also leads mpnet on LongMemEval (R@5 0.954 vs
+  0.907).
+  - **An index keeps the model it was built with.** The model decides which
+    lessons the semantic arm surfaces, so it is part of the treatment: an
+    existing mpnet index is refreshed and ranked with mpnet, and a store
+    whose index is missing is rebuilt with the model its experiment log
+    names. `commontrace index --force --model <name>` switches on purpose.
+  - **Labels name the model.** Fused and semantic-only assignments record
+    it, `ce:tinybert2(gated(idf-v2+semantic@arctic-m))`; the original
+    model's labels are unchanged, so existing experiments read as the
+    treatment they always were.
+  - **The gate is set per model.** With the arctic arm, gated fusion admits
+    a below-floor candidate at a cross-encoder score of -8 rather than -4:
+    re-measured on the curated fixture, every field keeps recall 1.0 and its
+    collateral down to -9 (accurate) and -10 (fast). Stores on mpnet keep -4.
+  - **Still only trusted models load.** `TRUSTED_MODELS` in
+    `commontrace/reference/query.py` is a fixed allow-list; an index naming
+    anything else is refused before any model loads, as before. arctic-embed
+    queries carry the model's retrieval instruction; lessons are encoded as
+    they are.
+
+- **Gated fusion (`commontrace retrieval --fusion gated`), the new default
+  where the attention extra is installed.** Both arms feed the reranker,
+  but a lesson that did not clear the lexical relevance floor reaches the
+  page only when the cross-encoder scores it at least -4
+  (`rerank_arm.GATE_THRESHOLDS`). Floor-cleared lessons are admitted as
+  before, so on the curated fixture every field keeps exactly its recall
+  and collateral, which plain fusion does not (3.0x collateral, over the
+  2.4x ceiling). On LoCoMo it reaches R@5 0.598, R@10 0.669, NDCG 0.545 and
+  MRR 0.537 with the fast reranker, and 0.679 / 0.731 / 0.627 / 0.630 with
+  the accurate one. On
+  LongMemEval it matches lexical retrieval with the fast reranker. Both
+  surfaces run it identically and log `ce:<model>(gated(<scorer>+semantic))`;
+  without a reranker it runs as lexical retrieval and says so. Stores with
+  experiment history keep what their log says they ran;
+  `COMMONTRACE_DEFAULT_FUSION=none` keeps the old default.
+
+- **Lambda's verdicts are kept, and measured.** Episodes now record
+  `lambda_decisions`: Lambda's verdict on every Omega proposal, rejected and
+  sent-back ones included. `commontrace bench` reports the acceptance,
+  rejection and refinement rates from it (`lambda_review`). Before, only the
+  applied proposals were recorded, so `lesson_quality` could not tell a
+  proposal Lambda rejected from one it sent back for refinement: two
+  different failures of Omega with two different fixes. Episodes that
+  predate the field are skipped, and an unrecognised verdict is counted, not
+  dropped.
+
+- **Cross-encoder reranking, opt-in** (`commontrace retrieval --rerank
+  cross-encoder|cross-encoder-fast`, `commontrace/rerank_arm.py`). The first
+  stage (lexical, or fused with the semantic arm) hands its top 30
+  candidates to a small cross-encoder, which reads the task and each lesson
+  together and reorders them; the page is its top k. `cross-encoder`
+  (`ms-marco-MiniLM-L-6-v2`) is the accurate one, about 265 ms per query on
+  a 4-core CPU; `cross-encoder-fast` (`ms-marco-TinyBERT-L-2-v2`) takes about
+  30 ms. On LoCoMo's 1,531 questions, fused retrieval with reranking finds
+  an answering turn in the top 5 for 67.0% of questions and in the top 10
+  for 72.6%. It reorders only what the first stage
+  found, after the floor, `exclude_shown` and core handling, and never
+  adds a lesson. Both surfaces run it identically; assignments record
+  `ce:<model>(<first stage>)`, so turning it on, or changing model, reads
+  as a new treatment.
+  A withdrawn lesson is named only if its score would have put it on the
+  page. A store that cannot load the model ranks exactly as if it had not
+  asked, and says so (`rerank_note`).
+- **The semantic index keeps itself current.** A lesson approved or edited
+  after the last `commontrace index` used to make the index stale. Every
+  retrieval then silently fell back to keyword-only ranking and logged
+  those occasions under a different eligibility label, which the audit
+  reads as a changed treatment. Now both `query` and the MCP `retrieve`
+  tool refresh a stale index before ranking, re-embedding only lessons
+  whose text changed. The MCP server uses the model it already holds, and
+  the index builder takes that model and a logger that keeps progress off
+  its stdio protocol channel.
+- **Agents now get fused retrieval.** When a store has set
+  `commontrace retrieval --fusion rrf`, the MCP `retrieve` tool ranks by
+  keyword and meaning together, as `commontrace query` does. Before this it
+  stayed lexical, because the semantic arm was a subprocess that reloaded
+  a sentence-transformer on every call. That cost agents nine points of
+  LoCoMo recall@10 (0.540 vs 0.645).
+  - The semantic script's ranking is now one function, `rank()`, which
+    both surfaces call. The subprocess prints it (byte-identical output,
+    checked against the previous script), and `commontrace/semantic_arm.py`
+    calls it in-process with the model and index held in memory.
+  - Same freshness gate and fallback on both surfaces; same over-fetch,
+    harm split and `exclude_shown` filter on the semantic arm; same RRF
+    constant; same eligibility label and relevance on the holdout log and
+    the receipt.
+  - A test runs both surfaces on one store with the same semantic ranking
+    and requires identical eligibility, labels and logged relevance,
+    including under `exclude_shown`.
+- **`idf-v3`, an opt-in stemmed lexical scorer.** It is `idf-v2` with every
+  term Porter-stemmed, so "resets", "reset" and "resetting" are one term.
+  The stemmer is a stdlib implementation of the 1980 algorithm
+  (`commontrace/_stem.py`), and it matches NLTK's reference on all 12,281
+  words tested. The scorer has its own floor (0.064), chosen jointly
+  against the field fixture, `commons/eval` and LoCoMo. On LongMemEval,
+  which played no part in that choice, it raises session recall@5 from
+  0.852 to 0.926. It is not the default: at its floor, one of the eight
+  curated fields (clinical) retrieves more collateral than under
+  `idf-v2`, and the default has to beat the historical scorer in every
+  field. Opt in with `commontrace retrieval --scorer idf-v3`; switching
+  scorer starts a new randomization, like any eligibility change.
+
+- **A lesson proven to make outcomes worse can now be withdrawn
+  automatically.** `commontrace retrieval --on-harm withdraw` stops `query`
+  and the MCP `retrieve` tool from injecting any lesson whose verdict is
+  HURTS. Instead, the lesson is named with its effect and interval
+  wherever it would have appeared, and in the retrieval receipt. It acts
+  only on the anytime-valid verdict of a readable experiment. It is
+  applied before arms are assigned, and after ranking, so no other
+  lesson's relevance or eligibility moves. Core lessons are exempt, and
+  a new randomization gives every lesson a fresh trial. The default,
+  `inform`, is unchanged behaviour (`commontrace/harm.py`). On the Hub,
+  `python -m hub.manage harm-policy <org> withdraw` does the same for
+  `search_traces` (new `organizations.harm_policy` column). The filter
+  runs in the query, so paging stays exact, and a withdrawn trace's
+  near-duplicates are withdrawn with it: the holdout measured them as
+  one unit, so leaving a re-telling in would hand the same content back.
+
+- **Search results now carry each lesson's measured causal evidence.**
+  Once an org has holdout data, every `search_traces` result includes
+  `evidence`: its `verdict` (HELPS, HURTS, NO_MEASURABLE_EFFECT,
+  UNDERPOWERED or NOT_MEASURED), `effect`, `ci_95` and arm sizes. Before
+  this, a lesson proven to help and one measured to make outcomes worse
+  came back looking identical; only `working_set` ever showed an effect.
+  The verdict is `causal_effects`' own, so every surface agrees. No
+  numbers are shown while the experiment is compromised. The analysis is
+  cached per org and recomputed only when that org's experiment data or
+  settings change (or after five minutes, since the validity audit
+  depends on occasion age); an org with no holdout data gets no extra
+  fields at all. The local store's `retrieve` MCP tool carries the same
+  evidence (`commontrace/evidence.py`), computed by the one function
+  `experiment_status` now uses as well.
+- **Fixed before release: the evidence cache recomputed on every search
+  during an experiment.** Its first key counted holdout assignments, and a
+  search with an `occasion_id` writes one, so an org running an experiment
+  rebuilt the whole analysis on every search. It now tracks resolved
+  outcomes and settings; a pending assignment cannot move an effect.
+- **Knowledge Base queries no longer re-read the corpus on every call.**
+  `commons_search` at 20,000 entries went from ~1.6s to ~29ms, and a
+  50-failure `commons_overlap` from ~1.9s to ~210ms (A/B on identical
+  data; the speedup grows with the corpus). Measured first: ~1.4s of each
+  query was loading and decoding rows, ~3ms was the comparison. Each Hub
+  process now keeps the matchable corpus in memory (`hub/commons_cache.py`)
+  and reloads it only when a trigger-maintained version in the new
+  `commons_corpus_state` table moves. Results are unchanged: every matched
+  row is re-read with the visibility filter applied, and a test compares
+  the cached and direct paths on corpora built to exercise every exclusion
+  and a truncating scan cap. **Requires migration `c3e8a1f05b92`.**
+- **`commontrace.measure.CausalMemory`** — wraps any retrieval callable so
+  memories held by another system (a vector database, a memory SDK, a
+  LangGraph store) get the same per-memory causal verdict from
+  `commontrace experiment` as this store's own lessons, without migrating
+  them. See README § "Already have a memory store?".
+- **`holdout_io.record_outcome`** — report a task outcome by occasion id
+  alone, for applications with no episode or trace file to carry it.
+  Repeated identical reports are a no-op; a contradicting report raises.
+
 ### Changed
 
+- **Fast reranking is on by default where the attention extra is installed.**
+  A store that has not chosen a reranker and has no experiment history
+  reranks the lexical arm's floor-cleared candidates with
+  `cross-encoder-fast` (~30 ms). On the curated fixture it keeps every
+  field's recall and collateral exactly as before and raises precision@1;
+  on LoCoMo, R@5 rises from 0.472 to 0.562 and MRR from
+  0.387 to 0.518. Stores with logged assignments stay on what their log
+  says they ran, configured or not. `COMMONTRACE_DEFAULT_RERANK=none` turns
+  the default off. Fusion stays opt-in: it fills every slot on the page,
+  which the fixture's collateral ceiling rejects.
+
+- **Local retrieval is 6.9× faster at 6,400 lessons (~300ms → ~44ms),
+  with identical rankings.** Measured with
+  `commontrace/reference/measure_local_latency.py`.
+  - The lesson cache now keeps its parsed, validated file in memory,
+    keyed on the file's identity, instead of re-decoding and
+    re-validating it on every call. Every lesson file is still stat'ed on
+    every call, so staleness is detected exactly as before.
+  - `rank_lessons` keeps an inverted index per store snapshot, keyed on
+    each lesson's path and file stamp, and scores only lessons that share
+    a term with the query.
+  - It selects the top k instead of sorting every match.
+  - Proven bit-identical to the previous code on 13,725 rankings under
+    three hash seeds: every relevance, tie order and adjustment matches.
+    Relevance decides eligibility, so an experiment cannot tell the
+    difference.
+  - On LoCoMo the lexical query is 0.6ms at p50, against 5.9ms before and
+    0.9ms for `rank_bm25`.
+  - The CI latency gate is tightened from 2,000ms to 500ms at 6,400 lessons.
+- **`commontrace experiment`, its `--strict` gate and `commontrace pilot`
+  now read a running experiment the way the MCP tools and the Hub do.**
+  They tested against a fixed 5% threshold, so one store could fail its
+  CI gate on a HURTS that `retrieve` reported as UNDERPOWERED, and the
+  pilot report could disagree with both. `--strict` runs on every build,
+  and a fixed threshold checked that often is crossed by luck. A verdict
+  now has to clear the anytime-valid boundary everywhere. `--fixed-horizon`
+  keeps the one-shot reading for a finished run nobody acted on midway.
 - **Trimmed `hub/server.py`'s `search_traces` MCP tool docstring** —
   every registered tool's docstring is sent to every connected agent's
   system context on every session, so a near-verbatim restatement of the
@@ -23,6 +432,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no loss of the actionable behavioral contract.
 
 ### Fixed
+
+- **Every fused experiment was declared invalid.** The marginal-eligibility
+  check compared each assignment's relevance with the retrieval floor. A
+  fused ranking records its rank-fusion score, which never exceeds 2/61,
+  beside the lexical arm's floor of 0.04, so every fused assignment counted
+  as a lesson that barely matched. Any store using `--fusion rrf`, on
+  `commontrace query` or MCP `retrieve`, had its audit report every lesson
+  100% marginal and INVALIDATES: no causal numbers were shown and harm
+  withdrawal never acted. The check now judges only rows a floor decided
+  (the lexical scorers, and unlabelled rows, which predate fusion). Existing
+  logs are read correctly without migration.
+- **A perfect split could never be declared.** The anytime-valid interval
+  returned "no claim" (−100% to +100%) whenever neither arm had seen both
+  outcomes, however many occasions had accrued. So a lesson that worked on
+  every occasion it was injected into, and never without it, stayed
+  UNDERPOWERED forever, on the Hub as well as locally. That case now uses
+  the variance bound that holds for any 0/1 outcome (¼ per observation).
+  A small sample still makes no claim; a large one concludes.
+- **The local evidence surfaces now read a running experiment the way the
+  Hub does.** The evidence on `retrieve` results and `experiment_status`
+  used a fixed 5% threshold. Both are looked at on every call, and a
+  fixed threshold under repeated looks is crossed by luck. They now use
+  the same anytime-valid boundary as the Hub's `causal_effects`.
+
+- **A torn line in the holdout or outcome log no longer takes the next
+  record with it.** A writer that died mid-line left the file without a
+  trailing newline, so the next append was glued onto the fragment and
+  the reader dropped both. Appends now terminate a fragment first.
+- **The Knowledge Base catalogue (`browse_commons`) is no longer ordered by
+  query traffic**, which any caller can inflate. It now orders by standing,
+  then trust, with a total tie-break, in SQL as well as after it — so
+  "disputed entries sort last" holds across pages, not just within one.
 
 - **`hub/console.py`'s `alerts_create` could 500 on a malformed request
   instead of returning its intended validation error.** `form.get(...)`

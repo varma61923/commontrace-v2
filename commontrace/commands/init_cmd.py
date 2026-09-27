@@ -5,6 +5,7 @@ import os
 
 from commontrace import paths, templates
 from commontrace.commands import _validators
+from commontrace.commands._shellout import has_attention_deps
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -83,7 +84,9 @@ def run(args: argparse.Namespace) -> int:
                     index_file,
                     slugs=np.array([], dtype=str),
                     embeddings=np.zeros((0, 768), dtype=np.float32),
-                    model_name="multi-qa-mpnet-base-dot-v1",
+                    # An empty index pins no model: the first build uses
+                    # the default (build_index.index_model).
+                    model_name="Snowflake/snowflake-arctic-embed-m-v1.5",
                     encoded_field="description+domain+tags+applies_when+do_not_apply_when+rule",
                     timestamp="",
                     n_lessons=0,
@@ -125,6 +128,18 @@ def run(args: argparse.Namespace) -> int:
             ))
 
         print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
+
+    if has_attention_deps():
+        # Recommended, not switched on: whether a store fuses must be its
+        # recorded decision, not a side effect of what happens to be
+        # installed on the machine that ran `init`.
+        print(
+            "[commontrace] The attention extra is installed, so retrieval searches by "
+            "keyword and meaning and a cross-encoder decides what reaches the page "
+            "(gated fusion). The first retrieval embeds the store's lessons. Where "
+            "retrieval latency matters more than accuracy, use the fast model:\n"
+            "  commontrace retrieval --rerank cross-encoder-fast"
+        )
 
     print()
     print("Next steps:")

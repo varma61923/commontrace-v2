@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import ipaddress
 import json
 import logging
 import re
@@ -263,6 +264,34 @@ def resolve_client_key(request, trusted_proxy_hops: int) -> str:
     if len(hops) >= trusted_proxy_hops:
         return hops[-trusted_proxy_hops]
     return request.client.host if request.client else "unknown"
+
+
+def rate_limit_key(request, trusted_proxy_hops: int) -> str:
+    """The bucket a client-address-keyed rate limiter charges this request
+    to: `resolve_client_key`'s address, with an IPv6 address widened to its
+    /64.
+
+    A single host is routinely handed a whole /64 -- 2^64 addresses it can
+    source requests from at will -- so a limiter keyed on the full address
+    gave one attacker a fresh budget per request: the console's sign-in
+    limit (5 attempts) became no limit on guessing API keys at all. A /64
+    is the smallest block that reliably belongs to one subscriber. An
+    IPv4-mapped IPv6 address is the IPv4 client it maps. Anything that is
+    not an address ("unknown") is its own key, as before.
+
+    For limiting only: an allowlist check needs the exact address, and
+    reads `resolve_client_key` directly.
+    """
+    key = resolve_client_key(request, trusted_proxy_hops)
+    try:
+        ip = ipaddress.ip_address(key)
+    except ValueError:
+        return key
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return key
 
 
 @dataclass

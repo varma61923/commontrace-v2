@@ -15,6 +15,7 @@ lessons_retrieved_by_alpha: []
 lessons_hit: []
 lessons_proposed_by_omega: []
 lessons_validated_by_lambda: []  # renamed in v2.2 (automatic Lambda validation, no longer user validation)
+lambda_decisions: {}  # slug -> ACCEPTED | REJECTED | NEEDS_REFINEMENT, every Omega proposal (Phase 11)
 ---
 
 ## What happened

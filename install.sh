@@ -57,6 +57,13 @@ if [[ "${IN_PLACE}" == "true" ]]; then
   DEST="${SCRIPT_DIR}"
 fi
 
+# Refuse installation to dangerous system paths
+DEST_CANONICAL=$(mkdir -p "${DEST}" 2>/dev/null && cd "${DEST}" 2>/dev/null && pwd -P || echo "${DEST}")
+if [[ "${DEST_CANONICAL}" == "/" || "${DEST_CANONICAL}" == "/etc" || "${DEST_CANONICAL}" == "/bin" || "${DEST_CANONICAL}" == "/sbin" || "${DEST_CANONICAL}" == "/usr" || "${DEST_CANONICAL}" == "/var" || "${DEST_CANONICAL}" == "/home" || -z "${DEST}" ]]; then
+  echo "[ERROR] Refusing to install into system root or protected directory: ${DEST}" >&2
+  exit 1
+fi
+
 # Verify Python is available
 if ! command -v "${PYTHON}" &>/dev/null; then
   echo "[ERROR] Python not found: ${PYTHON}" >&2
@@ -203,11 +210,17 @@ if [[ "${BUILD_INDEX}" == "true" ]]; then
   lesson_count=$(find "${LESSONS_DIR}" -name "lesson_*.md" ! -name "lesson_template.md" 2>/dev/null | wc -l | tr -d ' ')
   if [[ "${lesson_count}" -eq 0 ]]; then
     echo "      No active lessons found — skipping index build."
-    echo "      (Re-run later: ${PYTHON} ${DEST}/memory/attention/build_index.py)"
+    echo "      (Re-run later: commontrace index)"
   else
-    COMMONTRACE_ROOT="${DEST}" "${PYTHON}" "${DEST}/memory/attention/build_index.py" \
-      && echo "      Index built." \
-      || echo "      [WARN] Index build failed (sentence-transformers may not be installed yet)."
+    if [[ -f "${DEST}/commontrace/reference/build_index.py" ]]; then
+      COMMONTRACE_ROOT="${DEST}" "${PYTHON}" "${DEST}/commontrace/reference/build_index.py" \
+        && echo "      Index built." \
+        || echo "      [WARN] Index build failed (sentence-transformers may not be installed yet)."
+    else
+      COMMONTRACE_ROOT="${DEST}" "${PYTHON}" -m commontrace.cli index \
+        && echo "      Index built." \
+        || echo "      [WARN] Index build failed (sentence-transformers may not be installed yet)."
+    fi
   fi
 else
   echo "[4/4] Skipping attention index build (--no-index)."
@@ -230,8 +243,8 @@ echo "    commontrace bench            # memory health"
 echo "    commontrace bench --pilot    # business-outcome metrics"
 echo ""
 echo "    # Query memory"
-echo "    ${PYTHON} ${DEST}/memory/attention/query.py \"my task description\""
+echo "    commontrace query \"my task description\""
 echo ""
 echo "    # Rebuild attention index"
-echo "    ${PYTHON} ${DEST}/memory/attention/build_index.py"
+echo "    commontrace index"
 echo ""

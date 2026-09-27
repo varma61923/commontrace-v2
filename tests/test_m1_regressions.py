@@ -366,26 +366,23 @@ def test_init_cmd_scaffolds_attention(tmp_path):
 # Task 13: overlap.estimate_jaccard vectorization
 # ---------------------------------------------------------------------------
 def test_overlap_estimate_jaccard():
-    # Force the pure-Python fallback path so the test works whether or not numpy
-    # is installed (if numpy is a MagicMock stub, np.equal().mean() returns another
-    # MagicMock which coerces to 1.0 for every comparison — always wrong).
-    with patch.object(overlap, "np", None):
-        sig1 = [1, 2, 3, 4]
-        sig2 = [1, 2, 0, 4]
-        assert overlap.estimate_jaccard(sig1, sig2) == 0.75
+    # Pure Python (overlap.py imports no numpy), so nothing to stub.
+    sig1 = [1, 2, 3, 4]
+    sig2 = [1, 2, 0, 4]
+    assert overlap.estimate_jaccard(sig1, sig2) == 0.75
 
-        sig_identical = [5, 6, 7]
-        assert overlap.estimate_jaccard(sig_identical, sig_identical) == 1.0
+    sig_identical = [5, 6, 7]
+    assert overlap.estimate_jaccard(sig_identical, sig_identical) == 1.0
 
-        sig_disjoint = [1, 2, 3]
-        sig_disjoint2 = [4, 5, 6]
-        assert overlap.estimate_jaccard(sig_disjoint, sig_disjoint2) == 0.0
+    sig_disjoint = [1, 2, 3]
+    sig_disjoint2 = [4, 5, 6]
+    assert overlap.estimate_jaccard(sig_disjoint, sig_disjoint2) == 0.0
 
-        with pytest.raises(ValueError):
-            overlap.estimate_jaccard([], [])
+    with pytest.raises(ValueError):
+        overlap.estimate_jaccard([], [])
 
-        with pytest.raises(ValueError):
-            overlap.estimate_jaccard([1, 2], [1])
+    with pytest.raises(ValueError):
+        overlap.estimate_jaccard([1, 2], [1])
 
 
 # ---------------------------------------------------------------------------

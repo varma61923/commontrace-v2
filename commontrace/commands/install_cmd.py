@@ -229,8 +229,9 @@ def _find_skill_md(root: str, dest: str) -> str | None:
     return None
 
 
-def _break_symlink(path: str) -> None:
-    """Replace a symlink at `path` with a normal file, before writing it.
+def _break_symlink(path: str, base_dir: str | None = None) -> None:
+    """Replace a symlink at `path` (and any intermediate directory symlinks) with
+    a normal file/directory, before writing it.
 
     Both `open(path, "w")` and `shutil.copyfile` FOLLOW a symlink and write
     through to whatever it points at. `install` writes to fixed, predictable
@@ -246,26 +247,60 @@ def _break_symlink(path: str) -> None:
     returns True for a symlink to a regular file. `os.path.islink` is the
     only check that sees the link itself.
     """
-    if os.path.islink(path):
-        print(f"  [WARN] replacing symlink (not writing through it): {path}")
-        os.unlink(path)
+    path_abs = os.path.abspath(path)
+    if base_dir is not None:
+        base_abs = os.path.abspath(base_dir)
+        try:
+            rel = os.path.relpath(path_abs, base_abs)
+        except ValueError:
+            rel = None
+        if rel and not rel.startswith(".."):
+            parts = rel.split(os.sep)
+            curr = base_abs
+            for part in parts:
+                curr = os.path.join(curr, part)
+                if os.path.islink(curr):
+                    print(f"  [WARN] replacing symlink (not writing through it): {curr}")
+                    os.unlink(curr)
+            paths.enforce_boundary(base_abs, path_abs)
+            return
+
+    components = []
+    head = path_abs
+    while True:
+        components.append(head)
+        parent = os.path.dirname(head)
+        if parent == head:
+            break
+        head = parent
+    components.reverse()
+    for comp in components:
+        if comp == os.sep:
+            continue
+        if os.path.islink(comp):
+            print(f"  [WARN] replacing symlink (not writing through it): {comp}")
+            os.unlink(comp)
 
 
-def _write(path: str, content: str) -> None:
-    _break_symlink(path)
+def _write(path: str, content: str, base_dir: str | None = None) -> None:
+    _break_symlink(path, base_dir=base_dir)
     if os.path.isfile(path):
         print(f"  [WARN] overwriting existing file: {path}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if base_dir is not None:
+        paths.enforce_boundary(base_dir, path)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     print(f"  wrote {path}")
 
 
-def _copy(src: str, dest: str) -> None:
-    _break_symlink(dest)
+def _copy(src: str, dest: str, base_dir: str | None = None) -> None:
+    _break_symlink(dest, base_dir=base_dir)
     if os.path.isfile(dest):
         print(f"  [WARN] overwriting existing file: {dest}")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if base_dir is not None:
+        paths.enforce_boundary(base_dir, dest)
     shutil.copyfile(src, dest)
     print(f"  copied {src} -> {dest}")
 
@@ -293,18 +328,18 @@ def run(args: argparse.Namespace) -> int:
     if args.target == "claude-code":
         out = os.path.join(dest, ".claude", "skills", "commontrace", "SKILL.md")
         if skill_md:
-            _copy(skill_md, out)
+            _copy(skill_md, out, base_dir=dest)
         else:
-            _write(out, _GENERIC_POINTER_SKILL)
+            _write(out, _GENERIC_POINTER_SKILL, base_dir=dest)
         print("  Invoke with: /commontrace <task description + success criteria>")
         _write_local_mcp(dest, root)
 
     elif args.target == "devin":
         out = os.path.join(dest, ".devin", "skills", "commontrace", "SKILL.md")
         if skill_md:
-            _copy(skill_md, out)
+            _copy(skill_md, out, base_dir=dest)
         else:
-            _write(out, _GENERIC_POINTER_SKILL)
+            _write(out, _GENERIC_POINTER_SKILL, base_dir=dest)
 
     elif args.target == "cursor":
         out = os.path.join(dest, ".cursor", "rules", "commontrace.mdc")
@@ -318,9 +353,10 @@ def run(args: argparse.Namespace) -> int:
             "CommonTrace Hub via `search_traces`) for lessons whose `applies_when` "
             "matches this task. After finishing, capture what happened with "
             "`commontrace capture` so the next run benefits. Spec: protocol/PROTOCOL.md.\n",
+            base_dir=dest,
         )
         example = os.path.join(dest, "commontrace.hub.mcp.json.example")
-        _write(example, _hub_mcp_example())
+        _write(example, _hub_mcp_example(), base_dir=dest)
         print(f"  To connect to the Hub: merge {example} into .cursor/mcp.json")
         _print_hub_credential_warning(example)
         _write_local_mcp(dest, root)
@@ -334,12 +370,13 @@ def run(args: argparse.Namespace) -> int:
             "CommonTrace Hub via `search_traces`) for applicable lessons. After "
             "finishing, capture what happened with `commontrace capture`. "
             "Spec: protocol/PROTOCOL.md.\n",
+            base_dir=dest,
         )
         _write_local_mcp(dest, root)
 
     elif args.target == "generic-mcp":
         example = os.path.join(dest, "commontrace.hub.mcp.json.example")
-        _write(example, _hub_mcp_example())
+        _write(example, _hub_mcp_example(), base_dir=dest)
         print("  Any MCP-capable agent (OpenAI Agents SDK, custom orchestrators, etc.)")
         print(f"  can attach to the Hub by merging {example} into its MCP client config.")
         _print_hub_credential_warning(example)
@@ -353,6 +390,7 @@ def run(args: argparse.Namespace) -> int:
             "This project uses the CommonTrace Protocol. See protocol/PROTOCOL.md "
             "for the spec, memory/ for the local store, and `commontrace --help` "
             "for the CLI.\n",
+            base_dir=dest,
         )
 
     print("[commontrace] install complete.")

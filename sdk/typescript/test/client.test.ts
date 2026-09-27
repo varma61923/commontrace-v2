@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 
 import { clampRetryAfter, parseToolResult } from "../src/client.js";
-import { HubClient, HubConnectionError, HubToolError, type ToolCaller } from "../src/index.js";
+import { HubClient, HubConfigurationError, HubConnectionError, HubToolError, checkHubUrl, type ToolCaller } from "../src/index.js";
 
 /** A fake caller: no network, no MCP server, no real Hub -- exactly the
  * seam `HubClient.withCaller` exists for. Records every call it saw so
@@ -267,3 +267,42 @@ test("client.call handles valid JSON null response without TypeError", async () 
 
 
 
+
+test("checkHubUrl refuses what the Python client refuses", () => {
+  for (const ok of [
+    "https://hub.example.com/mcp", "http://localhost:8420/mcp", "http://127.0.0.1/mcp",
+    "http://[::1]:8420/mcp", "https://10.0.0.5/mcp",
+  ]) {
+    assert.equal(checkHubUrl(ok).href, new URL(ok).href, ok);
+  }
+  for (const bad of [
+    "http://hub.example.com/mcp", "ftp://hub.example.com/", "file:///etc/passwd", "not a url",
+    "https://169.254.169.254/latest", "https://[fe80::1]/mcp", "https://[fd00:ec2::254]/mcp",
+    "https://2852039166/", "https://0xa9fea9fe/", "https://[::ffff:169.254.169.254]/", "https://[::ffff:a9fe:a9fe]/",
+  ]) {
+    assert.throws(() => checkHubUrl(bad), HubConfigurationError, bad);
+  }
+});
+
+test("connect() refuses a plaintext remote URL before sending the key anywhere", async () => {
+  let fetched = false;
+  await assert.rejects(
+    () => HubClient.connect("http://hub.example.com/mcp", "ct_live_secret", {
+      fetch: (async () => { fetched = true; throw new Error("no"); }) as never,
+    }),
+    HubConfigurationError,
+  );
+  assert.equal(fetched, false);
+});
+
+test("close() releases the caller's connection once", async () => {
+  let closed = 0;
+  const caller: ToolCaller = {
+    async callTool() { return {}; },
+    async close() { closed += 1; },
+  };
+  const client = HubClient.withCaller(caller);
+  await client.close();
+  await client.close();
+  assert.equal(closed, 1);
+});

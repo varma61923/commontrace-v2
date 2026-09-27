@@ -165,7 +165,9 @@ def run(args: argparse.Namespace) -> int:
     n_lines = causal_report.n_assignments if causal_report else 0
     causal_effects = (
         None if not holdout_rows
-        else (experiment.analyze(obs) if (obs and causal_report.readable) else [])
+        # sequential=True: the same reading `commontrace experiment` and the
+        # MCP tools give, which is the agreement this report depends on.
+        else (experiment.analyze(obs, sequential=True) if (obs and causal_report.readable) else [])
     )
 
     pilot_json = _load_pilot_metrics(root, args.agent_type)

@@ -2,13 +2,15 @@
 """Build attention index for /commontrace memory lessons (v2.3).
 
 Encode each ACTIVE lesson (description + domain + tags + applies_when +
-do_not_apply_when + rule) using multi-qa-mpnet-base-dot-v1 (local execution
-after first download — no runtime API calls, no telemetry).
+do_not_apply_when + rule) with a trusted sentence-embedding model (local
+execution after first download — no runtime API calls, no telemetry): the
+model the existing index was built with, else DEFAULT_MODEL_NAME, unless
+--model names another.
 
 Output: memory/attention/index.npz with fields:
     - slugs (np.ndarray[str])      : lesson identifiers, ordered
     - embeddings (np.ndarray[N,D]) : L2-normalized embeddings (cosine == dot)
-    - model_name (str)             : "multi-qa-mpnet-base-dot-v1"
+    - model_name (str)             : one of TRUSTED_MODELS
     - encoded_field (str)          : human-readable schema of what was encoded
     - timestamp (str)              : ISO-8601 build time
     - n_lessons (int)              : number of active lessons indexed
@@ -16,6 +18,8 @@ Output: memory/attention/index.npz with fields:
 Usage:
     python build_index.py            # rebuild if outdated (or if missing)
     python build_index.py --force    # rebuild always
+    python build_index.py --force --model multi-qa-mpnet-base-dot-v1
+                                     # rebuild with another trusted model
 
 Trigger:
     - Auto: end of Phase 11 if Lambda created/updated/revised any lesson
@@ -30,17 +34,33 @@ Hooks Dreamer v2.4 (NOT implemented here, documented for future use):
     `embeddings` matrix (sim > 0.85 = candidate fusion). The fields above are
     stable contract for that downstream use.
 """
+from __future__ import annotations
+
 import argparse
+import contextlib
 import datetime
 import glob
+import hashlib
 import os
 import re
 import sys
 import tempfile
+from typing import Any
 
-import numpy as np
-import yaml
-from sentence_transformers import SentenceTransformer
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 # Delimiter must be its own line, not just the substring "---" anywhere in the file --
 # a plain content.split("---", 2) corrupts any field whose value contains "---".
@@ -56,8 +76,18 @@ _DELIM_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 # pipe corrupts every line built from it, not just its own.
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-MODEL_NAME = "multi-qa-mpnet-base-dot-v1"
-# multi-qa-mpnet-base-dot-v1's fixed sentence-embedding output width. Needed
+# Every model this script builds with. query.py holds the same allow-list, with
+# the query prefix each model needs, and loads only a model named in it: see its
+# comment for why an index file's own model_name is not trusted input, and for
+# each model's measured recall.
+TRUSTED_MODELS = ("multi-qa-mpnet-base-dot-v1", "Snowflake/snowflake-arctic-embed-m-v1.5")
+#: What a NEW index is built with. An existing index keeps its model
+#: (`index_model`), because the model decides which lessons the semantic arm
+#: surfaces: changing it under a running experiment would change its treatment.
+DEFAULT_MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v1.5"
+_TRUSTED_MODEL_NAME = DEFAULT_MODEL_NAME
+MODEL_NAME = DEFAULT_MODEL_NAME
+# Every trusted model's fixed sentence-embedding output width. Needed
 # to write a correctly-shaped 0-row embeddings array when there are no
 # active lessons to encode (see main()'s `not slugs` branch below), without
 # having to load the model just to ask it -- the whole point of that branch
@@ -151,8 +181,22 @@ def build_query_text(frontmatter: dict, body: str) -> str:
     return " | ".join(parts)
 
 
+class ActiveLesson(tuple):
+    """3-tuple (slug, query_text, agent_type) with metadata attributes."""
+
+    def __new__(cls, slug: str, query_text: str, agent_type: str, importance: int = 3, status: str = "active"):
+        return super().__new__(cls, (slug, query_text, agent_type))
+
+    def __init__(self, slug: str, query_text: str, agent_type: str, importance: int = 3, status: str = "active"):
+        self.slug = slug
+        self.query_text = query_text
+        self.agent_type = agent_type
+        self.importance = importance
+        self.status = status
+
+
 def iter_active_lessons(lessons_dir: str):
-    """Yield (slug, query_text, agent_type) for each ACTIVE lesson.
+    """Yield ActiveLesson(slug, query_text, agent_type, importance, status) for each ACTIVE lesson.
 
     agent_type travels with the embedding so `query.py --agent-type` can scope
     results to one fleet. Without it the semantic retriever had no way to
@@ -211,11 +255,32 @@ def iter_active_lessons(lessons_dir: str):
                 f"({_SLUG_RE.pattern}), skipping", file=sys.stderr
             )
             continue
-        yield slug, build_query_text(frontmatter, body), str(frontmatter.get('agent_type') or '')
+
+        try:
+            importance_val = int(frontmatter.get("importance", 3))
+        except (TypeError, ValueError):
+            importance_val = 3
+        status_val = str(frontmatter.get("status", "active") or "active")
+
+        yield ActiveLesson(
+            str(slug),
+            build_query_text(frontmatter, body),
+            str(frontmatter.get("agent_type") or ""),
+            importance=importance_val,
+            status=status_val,
+        )
 
 
-def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray,
-                 agent_types: "list[str]" = None) -> None:
+def _write_index(
+    index_path: str,
+    slugs: "list[str]",
+    embeddings: "np.ndarray",
+    agent_types: "list[str]" = None,
+    hashes: "list[str]" = None,
+    importances: "list[int]" = None,
+    statuses: "list[str]" = None,
+    model_name: str = MODEL_NAME,
+) -> None:
     """Atomically write index.npz: build to a unique per-process tmp file
     under the same directory, then os.replace() over the final path.
 
@@ -233,9 +298,12 @@ def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray,
         np.savez(
             tmp_path,
             slugs=np.array(slugs),
-            agent_types=np.array(agent_types if agent_types is not None else [''] * len(slugs)),
+            agent_types=np.array(agent_types if agent_types is not None else [""] * len(slugs)),
             embeddings=embeddings.astype(np.float32),
-            model_name=np.array(MODEL_NAME),
+            hashes=np.array(hashes if hashes is not None else [""] * len(slugs)),
+            importances=np.array(importances if importances is not None else [3] * len(slugs), dtype=np.int16),
+            statuses=np.array(statuses if statuses is not None else ["active"] * len(slugs)),
+            model_name=np.array(model_name),
             encoded_field=np.array(ENCODED_FIELD),
             # UTC, not a naive local timestamp: PROTOCOL.md specifies
             # ISO-8601 UTC everywhere, and a naive local time cannot be
@@ -254,48 +322,217 @@ def _write_index(index_path: str, slugs: "list[str]", embeddings: np.ndarray,
         raise
 
 
+def index_model(index_path: str, fallback: "str | None" = None) -> str:
+    """The model to (re)build `index_path` with when none is named: the one it
+    was built with, if that is trusted and the index holds any lesson, else
+    `fallback` (a trusted name: the model a store's experiment log says it
+    ranked with), else DEFAULT_MODEL_NAME. An empty index (what `commontrace
+    init` writes) pins nothing: no lesson was ever ranked with it."""
+    try:
+        with np.load(index_path, allow_pickle=False) as data:
+            name = str(data["model_name"])
+            if name in TRUSTED_MODELS and int(data["embeddings"].shape[0]) > 0:
+                return name
+    except Exception:
+        pass
+    return fallback if fallback in TRUSTED_MODELS else DEFAULT_MODEL_NAME
+
+
+@contextlib.contextmanager
+def _no_progress_bars():
+    """Quiet the library's "Loading weights" bars for a load from the local
+    cache: they are noise on every query. A real download keeps its bars.
+    transformers keeps its own switch beside huggingface_hub's; both are
+    restored afterwards."""
+    restore = []
+    try:
+        from huggingface_hub import utils as hub_utils
+
+        if not hub_utils.are_progress_bars_disabled():
+            hub_utils.disable_progress_bars()
+            restore.append(hub_utils.enable_progress_bars)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        from transformers.utils import logging as transformers_logging
+
+        if transformers_logging.is_progress_bar_enabled():
+            transformers_logging.disable_progress_bar()
+            restore.append(transformers_logging.enable_progress_bar)
+    except Exception:  # noqa: BLE001 - an older library: leave its bars alone
+        pass
+    try:
+        yield
+    finally:
+        for enable in restore:
+            enable()
+
+
+def build_or_update_index(
+    lessons_dir: str,
+    output_path: str,
+    model_name: "str | None" = None,
+    force_rebuild: bool = False,
+    model: Any = None,
+    log: Any = print,
+) -> dict[str, Any]:
+    """Computes SHA-256 hash of lesson content. Reuses precomputed embeddings for unchanged
+    hashes from output_path. Encodes only new/modified lessons.
+    Saves embeddings, slugs, hashes, importances, and statuses into output_path (.npz).
+
+    `model_name` defaults to `index_model(output_path)`; a name outside
+    TRUSTED_MODELS is refused. `model` is an already-loaded instance of
+    `model_name`, for a long-lived process
+    that holds one (commontrace/semantic_arm.py); `log` receives the progress lines,
+    which such a process must keep off stdout -- the MCP server's stdout is its
+    protocol channel.
+    """
+    if np is None:
+        raise ImportError("numpy is required to build or update the attention index.")
+    if model_name is None:
+        model_name = index_model(output_path)
+    if model_name not in TRUSTED_MODELS:
+        raise ValueError(
+            f"{model_name!r} is not a trusted embedding model; expected one of {list(TRUSTED_MODELS)}")
+
+    active_items = list(iter_active_lessons(lessons_dir))
+    slugs = [item[0] for item in active_items]
+    texts = [item[1] for item in active_items]
+    agent_types = [item[2] for item in active_items]
+    importances = [getattr(item, "importance", 3) for item in active_items]
+    statuses = [getattr(item, "status", "active") for item in active_items]
+    hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
+
+    if not slugs:
+        embeddings = np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+        _write_index(
+            output_path,
+            slugs,
+            embeddings,
+            agent_types,
+            hashes=hashes,
+            importances=importances,
+            statuses=statuses,
+            model_name=model_name,
+        )
+        return {
+            "output_path": output_path,
+            "n_lessons": 0,
+            "reused_count": 0,
+            "encoded_count": 0,
+            "model_name": model_name,
+        }
+
+    cached_vectors: dict[tuple[str, str], np.ndarray] = {}
+    if os.path.exists(output_path) and not force_rebuild:
+        try:
+            with np.load(output_path, allow_pickle=False) as data:
+                if (
+                    str(data.get("model_name", "")) == model_name
+                    and str(data.get("encoded_field", "")) == ENCODED_FIELD
+                    and data["embeddings"].ndim == 2
+                    and data["embeddings"].shape[1] == EMBEDDING_DIM
+                ):
+                    c_slugs = [str(s) for s in data["slugs"]]
+                    c_embs = np.asarray(data["embeddings"], dtype=np.float32)
+                    if "hashes" in data.files:
+                        c_hashes = [str(h) for h in data["hashes"]]
+                        for s, h, emb in zip(c_slugs, c_hashes, c_embs):
+                            cached_vectors[(s, h)] = emb
+        except Exception:
+            cached_vectors = {}
+
+    texts_to_encode: list[str] = []
+    indices_to_encode: list[int] = []
+    reused_embeddings: dict[int, np.ndarray] = {}
+
+    for idx, (slug, text, chash) in enumerate(zip(slugs, texts, hashes)):
+        if not force_rebuild and (slug, chash) in cached_vectors:
+            reused_embeddings[idx] = cached_vectors[(slug, chash)]
+        else:
+            indices_to_encode.append(idx)
+            texts_to_encode.append(text)
+
+    if texts_to_encode:
+        if model is None:
+            if SentenceTransformer is None:
+                raise ImportError(
+                    "sentence_transformers is required to encode new or modified lessons.")
+            log(f"Loading model {model_name} (cached under ~/.cache/huggingface/) ...")
+            try:
+                # From the local cache when it is there: a cached model
+                # otherwise still costs a Hugging Face Hub round trip.
+                with _no_progress_bars():
+                    model = SentenceTransformer(model_name, local_files_only=True)
+            except Exception:  # noqa: BLE001 - not cached, or an older library: fetch it
+                model = SentenceTransformer(model_name)
+        log(f"Encoding {len(texts_to_encode)} lessons (reusing {len(reused_embeddings)} cached) ...")
+        new_embs = model.encode(
+            texts_to_encode,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        embeddings = np.zeros((len(slugs), EMBEDDING_DIM), dtype=np.float32)
+        for idx, emb in reused_embeddings.items():
+            embeddings[idx] = emb
+        for idx, emb in zip(indices_to_encode, new_embs):
+            embeddings[idx] = emb
+    else:
+        embeddings = np.zeros((len(slugs), EMBEDDING_DIM), dtype=np.float32)
+        for idx, emb in reused_embeddings.items():
+            embeddings[idx] = emb
+
+    _write_index(
+        output_path,
+        slugs,
+        embeddings,
+        agent_types,
+        hashes=hashes,
+        importances=importances,
+        statuses=statuses,
+        model_name=model_name,
+    )
+    return {
+        "output_path": output_path,
+        "n_lessons": len(slugs),
+        "reused_count": len(reused_embeddings),
+        "encoded_count": len(indices_to_encode),
+        "model_name": model_name,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "--force",
+        "--rebuild",
         action="store_true",
-        help="Rebuild even if index.npz already exists",
+        dest="force",
+        help="Rebuild even if index.npz already exists, bypassing vector cache",
+    )
+    parser.add_argument(
+        "--model",
+        choices=TRUSTED_MODELS,
+        default=None,
+        help="Embedding model to build with (default: the one the existing index "
+             f"was built with, else {DEFAULT_MODEL_NAME}). A different model is a "
+             "different semantic ranking: a store mid-experiment records it as a new "
+             "treatment.",
+    )
+    parser.add_argument(
+        "--fallback-model",
+        choices=TRUSTED_MODELS,
+        default=None,
+        help="Model to build with when the existing index pins none (it is missing "
+             "or empty) and --model is not given: the one a store's experiment "
+             "ranked with (`commontrace index` passes it).",
     )
     args = parser.parse_args()
+    model_name = args.model or index_model(INDEX_PATH, args.fallback_model)
 
-    slugs: list[str] = []
-    texts: list[str] = []
-    agent_types: list[str] = []
-    for slug, query_text, agent_type in iter_active_lessons(LESSONS_DIR):
-        slugs.append(slug)
-        texts.append(query_text)
-        agent_types.append(agent_type)
-
-    if not slugs:
-        # A freshly initialized repository has 0 active lessons -- that is
-        # not an error, it is the starting state every repo passes through.
-        # Refusing to write index.npz here used to trap query.py in an
-        # unrecoverable loop: query.py requires index.npz to exist, its own
-        # error message says "run build_index.py first", and build_index.py
-        # exited 1 without writing one. Writing an empty (0-row) index lets
-        # query.py load it and correctly report "no lessons match" instead.
-        print(f"[INFO] No active lessons found under {LESSONS_DIR}. Writing an empty index.")
-        embeddings = np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
-        _write_index(INDEX_PATH, slugs, embeddings, agent_types)
-        return 0
-
+    # Staleness check: if not args.force, check if the index is already fully up-to-date
     if os.path.exists(INDEX_PATH) and not args.force:
-        # Staleness check has three parts: (a) mtime, which catches additions/edits,
-        # (b) the indexed slug set vs. the current one, which mtime alone can't catch --
-        # deleting a lesson file doesn't advance any *remaining* file's mtime, so an
-        # mtime-only check would report "up to date" while a stale slug lingers in
-        # index.npz -- and (c) the model/field/dimension the index was built with.
-        # Without (c), an index.npz built with a different embedding model (or copied
-        # in from another environment/checkout) still passes (a) and (b) and gets
-        # reported "up-to-date", so query.py's own model_name/dimension guards reject
-        # it on the very next run with "Model mismatch ... rebuild the index" -- a
-        # loop this same staleness check should have caught instead of deferring to
-        # query.py's stricter, later checks.
         index_mtime = _safe_mtime(INDEX_PATH)
         newest_lesson = max(
             (_safe_mtime(p) for p in glob.glob(os.path.join(LESSONS_DIR, "lesson_*.md"))),
@@ -305,7 +542,7 @@ def main() -> int:
             with np.load(INDEX_PATH, allow_pickle=False) as data:
                 indexed_slugs = {str(s) for s in data["slugs"]}
                 model_matches = (
-                    str(data["model_name"]) == MODEL_NAME
+                    str(data["model_name"]) == model_name
                     and str(data["encoded_field"]) == ENCODED_FIELD
                     and data["embeddings"].ndim == 2
                     and data["embeddings"].shape[1] == EMBEDDING_DIM
@@ -313,26 +550,18 @@ def main() -> int:
         except Exception:
             indexed_slugs = None
             model_matches = False
-        same_slugs = indexed_slugs is not None and indexed_slugs == set(slugs)
+
+        active_slugs = {item[0] for item in iter_active_lessons(LESSONS_DIR)}
+        same_slugs = indexed_slugs is not None and indexed_slugs == active_slugs
         if newest_lesson <= index_mtime and same_slugs and model_matches:
-            print(f"Index up-to-date at {INDEX_PATH} (use --force to rebuild anyway)")
+            print(f"Index up-to-date at {INDEX_PATH} (use --force or --rebuild to rebuild anyway)")
             return 0
 
-    print(f"Loading model {MODEL_NAME} (cached under ~/.cache/huggingface/) ...")
-    model = SentenceTransformer(MODEL_NAME)
-    print(f"Encoding {len(texts)} lessons ...")
-    embeddings = model.encode(
-        texts,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-
-    _write_index(INDEX_PATH, slugs, embeddings, agent_types)
+    res = build_or_update_index(LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force)
     print(
-        f"Index built: {len(slugs)} lessons, "
-        f"model={MODEL_NAME}, dim={embeddings.shape[1]}, "
-        f"path={INDEX_PATH}"
+        f"Index built: {res['n_lessons']} lessons ({res['encoded_count']} encoded, "
+        f"{res['reused_count']} reused from cache), "
+        f"model={res['model_name']}, dim={EMBEDDING_DIM}, path={INDEX_PATH}"
     )
     return 0
 

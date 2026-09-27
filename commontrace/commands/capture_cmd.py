@@ -9,7 +9,7 @@ import re
 import sys
 import uuid
 
-from commontrace import frontmatter, paths, templates, trace_io, validate
+from commontrace import frontmatter, memory_guard, paths, templates, trace_io, validate
 from commontrace.commands import _validators
 from commontrace.frontmatter import locked
 
@@ -203,6 +203,19 @@ def run(args: argparse.Namespace) -> int:
         what="trace",
     ):
         return 1
+    # A credential that leaked into the experience is redacted before the
+    # trace is written (commontrace/memory_guard.py:redact_secrets): the
+    # rest of what happened is kept, the key is not.
+    title, found_title = memory_guard.redact_secrets(args.title)
+    context, found_context = memory_guard.redact_secrets(args.context)
+    solution, found_solution = memory_guard.redact_secrets(args.solution)
+    redacted = found_title + found_context + found_solution
+    if redacted:
+        print(
+            f"[commontrace] redacted {len(redacted)} credential(s) before storing this trace: "
+            f"{', '.join(dict.fromkeys(redacted))}.",
+            file=sys.stderr,
+        )
     root = paths.resolve_root(args.dest)
     tdir = paths.traces_dir(root)
     os.makedirs(tdir, exist_ok=True)
@@ -223,7 +236,7 @@ def run(args: argparse.Namespace) -> int:
     trace_id = occasion_id or str(uuid.uuid4())
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     date = datetime.date.today().isoformat()
-    slug = _slugify(args.title)
+    slug = _slugify(title)
     # The trace id is in the filename unconditionally, not only as a
     # collision fallback. `if os.path.exists(): pick another name` is
     # check-then-act: two agents capturing a same-titled trace in the same
@@ -243,7 +256,6 @@ def run(args: argparse.Namespace) -> int:
     # occasion id instead of updating it, exactly the failure
     # _outcomes_by_occasion's dict-keyed-on-id lookup depends on not
     # happening.
-    title, context, solution = args.title, args.context, args.solution
     agent_id = args.agent_id
     outcome = _outcome_from_args(args)
     created_at = None

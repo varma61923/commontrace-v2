@@ -192,3 +192,130 @@ class TestScanFieldsAndReport:
         assert report.findings
         assert not report.blocking_findings
         assert not report.should_block
+
+
+# --- Redaction of raw experience ---------------------------------------------
+
+AWS = "AKIAIOSFODNN7EXAMPLE"
+GITHUB = "ghp_" + "a" * 36
+
+
+def test_redact_secrets_replaces_each_credential_and_names_it():
+    text, found = mg.redact_secrets(f"key {AWS} then token {GITHUB}; see the runbook")
+    assert AWS not in text and GITHUB not in text
+    assert text == "key [REDACTED AWS access key ID] then token [REDACTED GitHub token]; see the runbook"
+    assert found == ["AWS access key ID", "GitHub token"]
+
+
+def test_redact_secrets_leaves_ordinary_text_alone():
+    for text in ("", "retry with backoff and jitter", "password reset email bounced for user@example.com"):
+        assert mg.redact_secrets(text) == (text, [])
+
+
+def _captured(root: str) -> str:
+    import glob
+    import os
+
+    return "\n".join(
+        os.path.basename(p) + "\n" + open(p, encoding="utf-8").read()
+        for p in glob.glob(os.path.join(root, "memory", "traces", "*.md"))
+    )
+
+
+def test_capture_stores_no_credential_anywhere_in_the_trace(tmp_path, capsys):
+    from commontrace.cli import main
+
+    root = str(tmp_path / "s")
+    assert main(["init", "--dest", root]) == 0
+    assert main(["capture", "--dest", root, "--title", f"deploy with {AWS}",
+                 "--context", f"used {AWS}", "--solution", f"rotate {GITHUB}"]) == 0
+    stored = _captured(root)
+    assert AWS not in stored and GITHUB not in stored  # the filename included
+    assert "[REDACTED AWS access key ID]" in stored and "[REDACTED GitHub token]" in stored
+    assert "redacted 3 credential(s)" in capsys.readouterr().err
+
+
+def test_import_stores_no_credential(tmp_path):
+    from commontrace.cli import main
+
+    root = str(tmp_path / "s")
+    assert main(["init", "--dest", root]) == 0
+    src = tmp_path / "in.jsonl"
+    src.write_text('{"title": "leak %s", "context": "ctx %s", "solution": "ok"}\n' % (AWS, GITHUB))
+    assert main(["import", "--dest", root, "--agent-type", "code", str(src)]) == 0
+    stored = _captured(root)
+    assert AWS not in stored and GITHUB not in stored
+    assert "[REDACTED AWS access key ID]" in stored
+
+
+def test_the_mcp_capture_tool_stores_no_credential(tmp_path):
+    from commontrace import mcp_server
+    from commontrace.cli import main
+    from tests.test_mcp_server import call
+
+    root = str(tmp_path / "s")
+    assert main(["init", "--dest", root]) == 0
+    out = call(mcp_server.build_server(root), "capture", title="leaky deploy",
+               context_text=f"the log printed {AWS} " + "x" * 30, solution_text=f"rotated {GITHUB} " + "y" * 30)
+    assert out.get("ok", True) is not False
+    stored = _captured(root)
+    assert AWS not in stored and GITHUB not in stored
+
+
+_OLD_TRACE = f"""---
+id: abcd1234-0000-0000-0000-000000000001
+title: deploy with {AWS}
+agent_type: code
+tags: [deploy]
+---
+## Context
+The log printed {AWS} and {GITHUB}
+
+## Solution
+Rotated it.
+"""
+
+
+def _old_store(tmp_path):
+    from commontrace.cli import main
+
+    root = str(tmp_path / "old")
+    assert main(["init", "--dest", root]) == 0
+    path = tmp_path / "old" / "memory" / "traces" / "2026-01-01_deploy-with-akiaiosfodnn7example_abcd1234--000001.md"
+    path.write_text(_OLD_TRACE, encoding="utf-8")
+    return root, path
+
+
+def test_redact_cleans_a_store_that_predates_redaction(tmp_path, capsys):
+    from commontrace import frontmatter
+    from commontrace.cli import main
+
+    root, path = _old_store(tmp_path)
+    assert main(["redact", "--dest", root, "--dry-run"]) == 0
+    assert path.read_text(encoding="utf-8") == _OLD_TRACE  # a dry run writes nothing
+    assert "would redact 3" in capsys.readouterr().out
+
+    assert main(["redact", "--dest", root]) == 0
+    stored = _captured(root)
+    assert AWS not in stored and GITHUB not in stored and "akiaiosfodnn7example" not in stored
+    assert not path.exists()  # renamed away from the key in its name
+    (renamed,) = [p for p in (tmp_path / "old" / "memory" / "traces").glob("2026-01-01_*.md")]
+    fm, _body = frontmatter.read(str(renamed))
+    assert fm["id"] == "abcd1234-0000-0000-0000-000000000001" and fm["tags"] == ["deploy"]
+    assert fm["title"] == "deploy with [REDACTED AWS access key ID]"  # still a string, not a YAML list
+
+    capsys.readouterr()
+    assert main(["redact", "--dest", root]) == 0
+    assert "no credentials found" in capsys.readouterr().out
+
+
+def test_doctor_warns_about_credentials_in_stored_traces(tmp_path, capsys):
+    from commontrace.cli import main
+
+    root, _path = _old_store(tmp_path)
+    main(["doctor", "--dest", root])
+    assert "[WARN] credentials in stored traces - 1 trace file(s)" in capsys.readouterr().out
+    assert main(["redact", "--dest", root]) == 0
+    capsys.readouterr()
+    main(["doctor", "--dest", root])
+    assert "[OK  ] credentials in stored traces - none found" in capsys.readouterr().out

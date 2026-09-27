@@ -690,6 +690,22 @@ MARGINAL_BAND = 0.10
 _MARGINAL_WEAKENS = 0.40
 _MARGINAL_INVALIDATES = 0.70
 
+# The eligibility labels whose relevance is on the floor's scale: the lexical
+# scorers (commontrace/retrieval.py's LEXICAL_SCORERS; kept literal here so
+# the Hub image needs no retrieval module, and tests/test_integrity_fusion.py
+# fails if the two drift). A fused ranking ("rrf(...)") records a
+# rank-fusion score and a semantic one ("semantic") a cosine, beside the
+# LEXICAL arm's floor. Neither was decided by that floor, and a fusion
+# score never exceeds 2/61, so judging them against it called every fused
+# assignment marginal and every fused experiment invalid.
+_FLOOR_GATED_SCORERS = frozenset({"idf-v3", "idf-v2", "count-v1"})
+
+
+def _floor_decided(row: Assignment) -> bool:
+    # No label means a log line from before labels were recorded, which was
+    # lexical: fusion shipped after the label did.
+    return row.scorer is None or row.scorer in _FLOOR_GATED_SCORERS
+
 # How far a lesson's assignment count may exceed the median before it looks
 # like it is absorbing occasions that are not about it.
 _CONCENTRATION_MULTIPLE = 3.0
@@ -716,8 +732,23 @@ def check_marginal_eligibility(rows: list[Assignment]) -> Finding:
     logged before the evidence was recorded cannot be assessed, and reporting
     it as clean would be as wrong as reporting it as marginal.
     """
-    scored = [r for r in rows if r.relevance is not None and r.floor is not None]
-    numbers: dict = {"n_scored": len(scored), "n_unscored": len(rows) - len(scored)}
+    recorded = [r for r in rows if r.relevance is not None and r.floor is not None]
+    scored = [r for r in recorded if _floor_decided(r)]
+    numbers: dict = {
+        "n_scored": len(scored),
+        "n_unscored": len(rows) - len(recorded),
+        "n_not_floor_gated": len(recorded) - len(scored),
+    }
+    if not scored and recorded:
+        return Finding(
+            "marginal_eligibility", SEVERITY_OK,
+            "Eligibility was decided by rank, not a relevance floor, so there is "
+            "no floor to have barely cleared.",
+            "These assignments come from fused or semantic retrieval, which admits "
+            "the top-ranked lessons; the recorded floor gates only the lexical "
+            "arm. Concentration and drift are still checked.",
+            numbers,
+        )
     if not scored:
         return Finding(
             "marginal_eligibility", SEVERITY_OK,

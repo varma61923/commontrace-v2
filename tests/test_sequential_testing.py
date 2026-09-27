@@ -104,6 +104,19 @@ class TestTheConfidenceSequence:
         lo, hi = experiment.anytime_confidence_interval(50, 50, 50, 50)
         assert lo <= 0.0 <= hi
 
+    def test_a_degenerate_split_concludes_once_there_is_enough_of_it(self):
+        """Every injected occasion succeeded and every withheld one failed.
+        Treating "no observed spread" as "no claim at any n" meant the
+        strongest possible effect could never be declared -- in either
+        direction -- however long the fleet ran. A handful of occasions
+        still says nothing; sixty per arm says a great deal."""
+        small = experiment.anytime_confidence_interval(5, 5, 0, 5, target_n_per_arm=97)
+        assert small[0] <= 0.0 <= small[1]
+        helps = experiment.anytime_confidence_interval(60, 60, 0, 60, target_n_per_arm=97)
+        assert helps[0] > 0.0
+        hurts = experiment.anytime_confidence_interval(0, 60, 60, 60, target_n_per_arm=97)
+        assert hurts[1] < 0.0
+
     def test_an_empty_arm_yields_no_claim(self):
         lo, hi = experiment.anytime_confidence_interval(0, 0, 10, 20)
         assert lo <= 0.0 <= hi

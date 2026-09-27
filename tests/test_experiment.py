@@ -667,6 +667,9 @@ class TestSemanticPathRunsTheExperiment:
         # present -- and without this these tests would exercise the fallback
         # rather than the semantic path they exist to pin.
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
+        # The stubbed script ranks lessons this store never wrote to disk; an
+        # empty store would (rightly) skip the semantic arm altogether.
+        monkeypatch.setattr(query_cmd, "_has_candidates", lambda args, root: True)
         monkeypatch.setattr(
             query_cmd, "run_script",
             lambda root, rel, args, hint, capture=False: (
@@ -754,6 +757,7 @@ class TestSemanticPathRunsTheExperiment:
 
         monkeypatch.setattr(query_cmd, "has_attention_deps", lambda: True)
         monkeypatch.setattr(query_cmd, "_index_is_unusable", lambda root: "")
+        monkeypatch.setattr(query_cmd, "_has_candidates", lambda args, root: True)
         monkeypatch.setattr(query_cmd, "run_script", _fake_run_script)
 
         main(["init", "--agent-type", "code", "--dest", str(store)])
