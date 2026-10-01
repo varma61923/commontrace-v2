@@ -105,3 +105,22 @@ async def run_webhook_delivery(
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
         except asyncio.TimeoutError:
             pass
+
+
+async def run_connector_sweep(session_factory, *, interval_seconds: int, stop_event: asyncio.Event) -> None:
+    """Record success for connector candidates whose window has passed with no
+    reversal (hub/connectors/service.py:finalize_matured). Same shape as the
+    loops above: log-and-continue, wake promptly on `stop_event`."""
+    from hub.connectors import service
+
+    while not stop_event.is_set():
+        try:
+            finalized = await service.finalize_matured(session_factory)
+            if finalized:
+                logger.info("connector sweep: finalized %d outcome(s)", finalized)
+        except Exception:
+            logger.exception("connector sweep failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass

@@ -1,0 +1,191 @@
+{
+  "action": "candidate_stage_change",
+  "payload": {
+    "application": {
+      "applied_at": "2013-03-22T00:00:00Z",
+      "candidate": {
+        "addresses": [
+          {
+            "type": "home",
+            "value": "123 Fake St."
+          }
+        ],
+        "attachments": [
+          {
+            "filename": "resume.pdf",
+            "type": "resume",
+            "url": "https://prod-heroku.s3.amazonaws.com/..."
+          },
+          {
+            "filename": "cover_letter.pdf",
+            "type": "cover_letter",
+            "url": "https://prod-heroku.s3.amazonaws.com/..."
+          },
+          {
+            "filename": "portfolio.pdf",
+            "type": "attachment",
+            "url": "https://prod-heroku.s3.amazonaws.com/..."
+          }
+        ],
+        "can_email": true,
+        "company": null,
+        "coordinator": {
+          "email": "alicia.flopple.3128@example.com",
+          "employee_id": "789GHI",
+          "id": 3128,
+          "name": "Alicia Flopple"
+        },
+        "created_at": "2013-10-04T01:24:44Z",
+        "custom_fields": {
+          "favorite_color": {
+            "name": "Favorite Color",
+            "type": "short_text",
+            "value": "Blue"
+          }
+        },
+        "educations": [
+          {
+            "degree": "Bachelor's Degree",
+            "discipline": "Information Systems",
+            "end_date": "01/01/2016",
+            "school_name": "Harvard University",
+            "start_date": "01/01/2012"
+          }
+        ],
+        "email_addresses": [
+          {
+            "type": "personal",
+            "value": "giuseppe.hurley@example.com"
+          }
+        ],
+        "employments": [
+          {
+            "company_name": "Greenhouse",
+            "end_date": "01/01/2016",
+            "start_date": "01/01/2012",
+            "title": "Engineer"
+          }
+        ],
+        "external_id": "241b399ce4b0fd1c84e5528d",
+        "first_name": "Giuseppe",
+        "id": 265772,
+        "is_private": false,
+        "last_name": "Hurley",
+        "phone_numbers": [
+          {
+            "type": "home",
+            "value": "330-281-8004"
+          }
+        ],
+        "photo_url": null,
+        "recruiter": {
+          "email": "alicia.flopple.3128@example.com",
+          "employee_id": "789GHI",
+          "id": 3128,
+          "name": "Alicia Flopple"
+        },
+        "social_media_addresses": [
+          {
+            "value": "linkedin.example.com/ghurley"
+          }
+        ],
+        "tags": [
+          "Import from Previous ATS"
+        ],
+        "title": "Great Person",
+        "url": "https://app.greenhouse.io/people/265772",
+        "website_addresses": [
+          {
+            "type": "personal",
+            "value": "ghurley.example.com"
+          }
+        ]
+      },
+      "credited_to": {
+        "email": "ada@example.com",
+        "employee_id": "123ABC",
+        "id": 15,
+        "name": "Ada Lacey"
+      },
+      "current_stage": {
+        "id": 71416,
+        "interviews": [
+          {
+            "id": 113101,
+            "interview_kit": {
+              "content": "Assess their skills",
+              "questions": [],
+              "url": "https://app.greenhouse.io/guides/113153/people/265772"
+            },
+            "interviewers": [
+              {
+                "display_name": "Carl Buddha",
+                "id": 2622,
+                "status": "tentative"
+              }
+            ],
+            "name": "Assessment",
+            "status": "to_be_scheduled"
+          }
+        ],
+        "name": "Assessment"
+      },
+      "custom_fields": {
+        "custom_application_field": {
+          "name": "Custom Application Field",
+          "type": "short_text",
+          "value": "Example"
+        }
+      },
+      "id": 265277,
+      "jobs": [
+        {
+          "closed_at": null,
+          "confidential": false,
+          "created_at": "2013-10-02T22:59:29Z",
+          "created_by_id": 273555,
+          "custom_fields": {
+            "employment_type": {
+              "name": "Employment Type",
+              "type": "single_select",
+              "value": "Full Time"
+            }
+          },
+          "departments": [
+            {
+              "external_id": "ex-dept-1",
+              "id": 237,
+              "name": "Community"
+            }
+          ],
+          "id": 3485,
+          "job_post_id": 553282,
+          "name": "Designer",
+          "notes": "Digital and print",
+          "offices": [
+            {
+              "external_id": "ex-office-1",
+              "id": 54,
+              "location": "New York, NY",
+              "name": "New York"
+            }
+          ],
+          "opened_at": "2015-01-23T00:25:04Z",
+          "requisition_id": null,
+          "status": "open"
+        }
+      ],
+      "last_activity_at": "2015-02-09T16:38:36Z",
+      "prospect": false,
+      "rejected_at": null,
+      "rejection_details": null,
+      "rejection_reason": null,
+      "source": {
+        "id": 31,
+        "name": "Agency"
+      },
+      "status": "active",
+      "url": "https://app.greenhouse.io/people/265772?application_id= 265277"
+    }
+  }
+}

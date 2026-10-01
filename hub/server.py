@@ -47,6 +47,7 @@ from hub.abuse import (
 from hub.admin import add_admin_routes
 from hub.billing import StripeSettings, add_billing_webhook_route
 from hub.config import DEFAULT_SEARCH_LIMIT, HubConfig
+from hub.connector_routes import add_connector_routes
 from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.disclosure import add_disclosure_route
@@ -1765,6 +1766,15 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
             trusted_proxy_hops=config.trusted_proxy_hops,
         )
 
+    # A system of record (Zendesk, GitHub) reporting how occasions turned out.
+    # Opt-in and absent until configured; authenticated by the vendor's signature,
+    # not an API key. See hub/connectors/service.py for the order of operations.
+    if config.connectors_enabled:
+        add_connector_routes(
+            inner_app, session_factory, config=config,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+        )
+
     # An IdP calls this, authenticated per-org via a dedicated `scim`-scoped
     # ApiKey (hub/scopes.py), not a shared deployment-wide secret -- so
     # unlike /admin, /app and /signup this is always mounted; see
@@ -1849,6 +1859,14 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
                         signing_key=config.ledger_signing_key,
                         cipher=config.cipher(),
                         batch_size=config.webhook_scheduler_batch_size,
+                    )
+                ))
+            if config.connectors_enabled:
+                tasks.append(asyncio.create_task(
+                    scheduler.run_connector_sweep(
+                        session_factory,
+                        interval_seconds=config.connector_sweep_interval_seconds,
+                        stop_event=stop_event,
                     )
                 ))
             if not tasks:

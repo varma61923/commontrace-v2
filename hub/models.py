@@ -1554,3 +1554,91 @@ class ProcessedWebhookEvent(Base):
     # inspection can show WHY a duplicate was ignored, not just that it was.
     outcome: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class Connector(Base):
+    """One org's link to a system of record (Zendesk, GitHub, ...), through which
+    that system's webhooks report how occasions turned out.
+
+    `secret` is the vendor's signing secret, which must be USED on every
+    delivery and so cannot be a hash. It is stored sealed by the deployment's
+    envelope cipher and bound to its org (hub/connectors/service.py), and is
+    refused outright when no cipher is configured. `dry_run` is on at creation:
+    a new connector verifies and parses and reports what it WOULD record, and an
+    operator turns it live once the mapping looks right.
+    """
+
+    __tablename__ = "connectors"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    secret: Mapped[str] = mapped_column(String(2000), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConnectorDelivery(Base):
+    """The replay ledger: one row per vendor delivery a connector has handled.
+
+    Unique on (connector, delivery id, dry_run) so a redelivery is recognised,
+    while a delivery first seen in dry-run is still processed once the connector
+    goes live. Insert-or-ignore decides the race between two simultaneous
+    copies; exactly one proceeds.
+    """
+
+    __tablename__ = "connector_deliveries"
+    __table_args__ = (
+        UniqueConstraint("connector_id", "delivery_id", "dry_run", name="uq_connector_delivery"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    connector_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("connectors.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    delivery_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+
+
+class PendingOutcome(Base):
+    """A candidate success waiting out its window.
+
+    A solved ticket or merged PR is only a success if it stays that way. This row
+    holds it until `mature_at`; a reversal before then turns it into a failure,
+    and `finalize_matured` records success after it. `ref` links a later reversal
+    that names a vendor reference rather than the occasion (a revert commit).
+    """
+
+    __tablename__ = "connector_pending_outcomes"
+    __table_args__ = (
+        UniqueConstraint("connector_id", "occasion_id", name="uq_connector_pending_occasion"),
+        Index("ix_connector_pending_connector_ref", "connector_id", "ref"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    connector_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("connectors.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    occasion_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    ref: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    mature_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

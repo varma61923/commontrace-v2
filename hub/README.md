@@ -92,6 +92,9 @@ hub/rest.py         JSON API at /api/v1/* for the CommonTrace Claude Code plugin
                     HUB_REST_API_ENABLED is set)
 hub/otlp.py         POST /v1/traces: a live OpenTelemetry SDK/Collector ingests directly (OTLP/JSON
                     only; off unless HUB_OTLP_INGEST_ENABLED is set)
+hub/connectors/     outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record
+                    how occasions turned out; see base.py for the model (off unless
+                    HUB_CONNECTORS_ENABLED is set); hub/connector_routes.py mounts the route
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)

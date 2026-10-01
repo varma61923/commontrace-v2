@@ -679,6 +679,16 @@ python -m commons.eval.causal_harness
 LangGraph: `commontrace.integrations.langgraph.with_lessons(node, memory)`.
 Hub: `HUB_OTLP_INGEST_ENABLED=true` accepts OTLP/JSON spans at `POST /v1/traces`.
 
+Hub outcome connectors (Zendesk, GitHub): a system of record's signed webhooks record how occasions
+turned out. Needs `HUB_ENCRYPTION_KEY`; a connector starts in dry-run.
+
+```bash
+HUB_CONNECTORS_ENABLED=true                      # mounts POST /connectors/{id}/events + the sweep
+HUB_CONNECTOR_SECRET=<vendor signing secret> python -m hub.manage connector-add <org_id> zendesk '{"window_days": 7}'
+python -m hub.manage connector-deliveries <connector_id>   # what it WOULD record
+python -m hub.manage connector-live <connector_id>
+```
+
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.

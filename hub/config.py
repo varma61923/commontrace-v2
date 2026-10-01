@@ -333,6 +333,17 @@ class HubConfig:
     # process). See hub/otlp.py's own docstring for the parsing this reuses
     # rather than re-implements, and for why OTLP-JSON only (not protobuf).
     otlp_ingest_enabled: bool = False
+
+    # --- Outcome connectors (hub/connectors/, hub/connector_routes.py) ---
+    # Off by default and ABSENT (not merely refused) until set: a deployment that
+    # has not opted in has no `/connectors/...` route to probe. True mounts
+    # `POST /connectors/{id}/events`, where a system of record's signed webhooks
+    # report how occasions turned out, and runs the sweep that records success for
+    # candidates whose window has passed with no reversal. (A deployment that
+    # prefers cron can run `hub.manage connector-finalize` instead, but must then
+    # still set this to mount the route.)
+    connectors_enabled: bool = False
+    connector_sweep_interval_seconds: int = 300
     # Bulk export of the curated Knowledge Base corpus (crud.export_commons).
     #
     # OFF by default, unlike commons_enabled, and the asymmetry is the point.
@@ -709,6 +720,9 @@ class HubConfig:
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
             rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
             otlp_ingest_enabled=_env_bool("HUB_OTLP_INGEST_ENABLED", False),
+            connectors_enabled=_env_bool("HUB_CONNECTORS_ENABLED", False),
+            connector_sweep_interval_seconds=_env_int_in_range(
+                "HUB_CONNECTOR_SWEEP_INTERVAL_SECONDS", 300, 10, 86_400),
             commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),

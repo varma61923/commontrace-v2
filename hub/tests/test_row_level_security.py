@@ -47,6 +47,9 @@ from sqlalchemy import text
 from hub import auth
 
 # The migration is the single source of truth for the policy text.
+from hub.alembic.versions.a7c3e91d4b20_outcome_connectors import (  # noqa: E402
+    _NEW_TABLES as _CONNECTOR_TABLES,
+)
 from hub.alembic.versions.d5c8b3a91e77_row_level_security import (  # noqa: E402
     _OWN_ROWS,
     _SCOPED_TABLES,
@@ -66,7 +69,7 @@ _UNSAFE_QUERY = text("SELECT title FROM traces WHERE title LIKE :pat ORDER BY ti
 async def rls(session_factory):
     """Install the migration's policies for the duration of one test."""
     async with session_scope(session_factory) as session:
-        for table in _SCOPED_TABLES:
+        for table in (*_SCOPED_TABLES, *_CONNECTOR_TABLES):
             await session.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
             await session.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
             await session.execute(text(
@@ -85,7 +88,7 @@ async def rls(session_factory):
         yield
     finally:
         async with session_scope(session_factory) as session:
-            for table in (*_SCOPED_TABLES, "traces"):
+            for table in (*_SCOPED_TABLES, *_CONNECTOR_TABLES, "traces"):
                 await session.execute(text(f"DROP POLICY IF EXISTS org_isolation ON {table}"))
                 await session.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
                 await session.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))
@@ -120,7 +123,7 @@ async def enforcing_factory(session_factory, config):
         yield session_factory
         return
 
-    tables = (*_SCOPED_TABLES, "traces")
+    tables = (*_SCOPED_TABLES, *_CONNECTOR_TABLES, "traces")
     try:
         async with session_scope(session_factory) as session:
             await session.execute(text(
@@ -266,6 +269,50 @@ class TestWritesCannotCrossTenants:
                 async with session_scope(enforcing_factory) as session:
                     session.add(Trace(org_id=b_id, title="forged", context_text="x",
                                       solution_text="x", agent_type="code"))
+        finally:
+            auth.current_org_id.reset(token)
+        assert "row-level security" in str(exc_info.value).lower()
+
+
+class TestConnectorTablesAreIsolated:
+    """The connector tables hold a sealed vendor secret and the replay ledger; a
+    forgotten org predicate there must not be a breach either."""
+
+    async def _connectors(self, session_factory, a_id, b_id):
+        from hub.models import Connector
+
+        async with session_scope(session_factory) as session:
+            session.add_all([
+                Connector(org_id=a_id, provider="zendesk", secret="sealed-a"),
+                Connector(org_id=b_id, provider="github", secret="sealed-b"),
+            ])
+
+    async def test_a_query_with_no_org_predicate_returns_only_the_callers_connectors(
+        self, rls, enforcing_factory, session_factory, two_orgs
+    ):
+        a_id, b_id, _ = two_orgs
+        await self._connectors(session_factory, a_id, b_id)
+        token = auth.current_org_id.set(a_id)
+        try:
+            async with session_scope(enforcing_factory) as session:
+                seen = [r[0] for r in (await session.execute(
+                    text("SELECT secret FROM connectors ORDER BY secret"))).all()]
+                ledger = (await session.execute(text("SELECT count(*) FROM connector_deliveries"))).scalar_one()
+        finally:
+            auth.current_org_id.reset(token)
+        assert seen == ["sealed-a"] and ledger == 0
+
+    async def test_writing_a_connector_into_another_org_is_refused(
+        self, rls, enforcing_factory, two_orgs
+    ):
+        from hub.models import Connector
+
+        a_id, b_id, _ = two_orgs
+        token = auth.current_org_id.set(a_id)
+        try:
+            with pytest.raises(Exception) as exc_info:
+                async with session_scope(enforcing_factory) as session:
+                    session.add(Connector(org_id=b_id, provider="zendesk", secret="forged"))
         finally:
             auth.current_org_id.reset(token)
         assert "row-level security" in str(exc_info.value).lower()

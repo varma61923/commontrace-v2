@@ -170,6 +170,20 @@
                                    -> permanently delete every trace tagged with
                                        subject_id, full amendment chain included.
                                        Irreversible.
+    connector-add <org_id> <provider> [config_json]
+                                    -> link a system of record (zendesk, github) so its
+                                        webhooks record outcomes. The vendor's signing
+                                        secret is read from $HUB_CONNECTOR_SECRET or a
+                                        hidden prompt, never argv. Starts in DRY-RUN.
+    connector-list <org_id>         -> connectors, mode, last event
+    connector-live <connector_id>   -> start recording outcomes (connector-dry-run reverses)
+    connector-dry-run <connector_id>
+    connector-enable <connector_id> / connector-disable <connector_id>
+    connector-deliveries <connector_id> [limit]
+                                    -> what recent deliveries did (or would have done)
+    connector-finalize              -> record success for candidates whose window passed
+                                        with no reversal (the Hub runs this itself when
+                                        HUB_CONNECTORS_ENABLED is set)
     webhook-add <org_id> <https_url> [events]
                                    -> tell this org's own systems what happens here.
                                        [events] is a comma-separated subset of
@@ -281,6 +295,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 import uuid
 from collections import Counter
@@ -2895,6 +2910,142 @@ async def generate_report(org_id: str, session_factory=None) -> bool:
     return True
 
 
+def _connector_summary(c) -> str:
+    mode = "dry-run" if c.dry_run else "LIVE"
+    state = mode if c.enabled else f"{mode}, disabled"
+    last = c.last_event_at.isoformat(timespec="seconds") if c.last_event_at else "never"
+    return f"{c.id}  {c.provider:8s} {state:18s} last event: {last}  {c.name}".rstrip()
+
+
+async def connector_add(
+    org_id: str, provider: str, config_json: str = "", session_factory=None,
+) -> bool:
+    """Create a connector and print where the vendor should send its webhooks."""
+    import getpass
+    import json as _json
+
+    from hub.connectors import service as connector_service
+
+    secret = os.environ.get("HUB_CONNECTOR_SECRET", "")
+    if not secret and sys.stdin.isatty():
+        secret = getpass.getpass("Vendor signing secret (hidden): ")
+    if not secret:
+        print("error: set HUB_CONNECTOR_SECRET (or run interactively) -- the vendor's signing "
+              "secret is never taken from the command line.", file=sys.stderr)
+        return False
+    try:
+        config = _json.loads(config_json) if config_json else {}
+    except ValueError as exc:
+        print(f"error: config_json is not valid JSON: {exc}", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        if await session.get(Organization, org_id) is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        try:
+            connector = await connector_service.create_connector(
+                session, org_id, provider, secret, cipher=_config_cipher(), config=config,
+            )
+        except connector_service.ConnectorError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        connector_id = connector.id
+    print(f"connector {connector_id} ({provider}) created in DRY-RUN")
+    print(f"  point the vendor's webhook at:  POST /connectors/{connector_id}/events")
+    print("  It verifies and parses deliveries and records what it WOULD do, nothing else.")
+    print(f"  Check `connector-deliveries {connector_id}`, then `connector-live {connector_id}`.")
+    return True
+
+
+async def connector_list(org_id: str, session_factory=None) -> bool:
+    from hub.models import Connector
+
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        rows = (await session.execute(
+            select(Connector).where(Connector.org_id == org_id).order_by(Connector.created_at)
+        )).scalars().all()
+    if not rows:
+        print("no connectors")
+    for row in rows:
+        print(_connector_summary(row))
+    return True
+
+
+async def _connector_change(connector_id: str, change, session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    session_factory = session_factory or _default_session_factory()
+    try:
+        async with session_scope(session_factory) as session:
+            connector = await change(session, connector_id)
+            line = _connector_summary(connector)
+    except connector_service.ConnectorError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+    print(line)
+    return True
+
+
+async def connector_live(connector_id: str, session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    return await _connector_change(
+        connector_id, lambda s, i: connector_service.set_live(s, i, True), session_factory)
+
+
+async def connector_dry_run(connector_id: str, session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    return await _connector_change(
+        connector_id, lambda s, i: connector_service.set_live(s, i, False), session_factory)
+
+
+async def connector_enable(connector_id: str, session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    return await _connector_change(
+        connector_id, lambda s, i: connector_service.set_enabled(s, i, True), session_factory)
+
+
+async def connector_disable(connector_id: str, session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    return await _connector_change(
+        connector_id, lambda s, i: connector_service.set_enabled(s, i, False), session_factory)
+
+
+async def connector_deliveries(connector_id: str, limit: str = "20", session_factory=None) -> bool:
+    from hub.models import ConnectorDelivery
+
+    session_factory = session_factory or _default_session_factory()
+    try:
+        count = max(1, min(int(limit), 200))
+    except ValueError:
+        print("error: limit must be a whole number", file=sys.stderr)
+        return False
+    async with session_scope(session_factory) as session:
+        rows = (await session.execute(
+            select(ConnectorDelivery).where(ConnectorDelivery.connector_id == connector_id)
+            .order_by(ConnectorDelivery.received_at.desc()).limit(count)
+        )).scalars().all()
+    if not rows:
+        print("no deliveries")
+    for row in rows:
+        print(f"{row.received_at.isoformat(timespec='seconds')}  {row.delivery_id[:36]:36s}  {row.outcome}")
+    return True
+
+
+async def connector_finalize(session_factory=None) -> bool:
+    from hub.connectors import service as connector_service
+
+    session_factory = session_factory or _default_session_factory()
+    done = await connector_service.finalize_matured(session_factory)
+    print(f"finalized {done} outcome(s)")
+    return True
+
+
 _COMMANDS = {
     "create-org": (create_org, 1, 1),
     "issue-key": (issue_key, 1, 3),
@@ -2941,6 +3092,14 @@ _COMMANDS = {
     "purge-subject-traces": (purge_subject_traces, 2, 2),
     # +1 on max_args: the optional trailing --yes flag, stripped in main()
     # before the underlying function ever sees it.
+    "connector-add": (connector_add, 2, 3),
+    "connector-list": (connector_list, 1, 1),
+    "connector-live": (connector_live, 1, 1),
+    "connector-dry-run": (connector_dry_run, 1, 1),
+    "connector-enable": (connector_enable, 1, 1),
+    "connector-disable": (connector_disable, 1, 1),
+    "connector-deliveries": (connector_deliveries, 1, 2),
+    "connector-finalize": (connector_finalize, 0, 0),
     "webhook-add": (webhook_add, 2, 3),
     "webhook-list": (webhook_list, 1, 1),
     "webhook-rotate": (webhook_rotate, 1, 1),

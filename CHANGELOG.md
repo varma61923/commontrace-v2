@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   threshold, `from_all`, `from_any` (all three-valued, `None` while a window is
   open).
 
+- **Outcome connectors (Hub).** `POST /connectors/{id}/events` turns a system of
+  record's signed webhooks into recorded outcomes: Zendesk (solved, reopened, bad
+  CSAT) and GitHub (merged, closed unmerged, reverted). Built from the vendors'
+  documented signatures and example payloads; constant-time verification,
+  replay-window and delivery-id ledger (race-safe), org-bound sealed secrets
+  (refused without `HUB_ENCRYPTION_KEY`), dry-run by default, forced RLS. A solved
+  ticket or merged PR is a pending candidate that becomes success only once its
+  window passes with no reversal; a reversal inside it is a failure at once. Opt-in
+  with `HUB_CONNECTORS_ENABLED`; `hub.manage connector-*` to manage.
+
 ### Changed
 
 - A bare `commontrace init`, a store with no declared type, and Hub traces with
