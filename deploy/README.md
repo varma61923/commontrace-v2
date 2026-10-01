@@ -9,6 +9,15 @@
 Validated in CI (`helm lint`/`template`, `terraform validate`/`fmt`); nothing here is applied by CI or talks to an
 account. `terraform apply` creates billable resources: plan first. State files are gitignored; use a remote backend.
 
+## Keys, regions and air-gapped installs
+
+Storage is encrypted with a customer-managed key (`kms_key_arn` on AWS, `kms_key_name` on GCP); the Hub's own
+at-rest key can be held by the customer's KMS too (`hub/kms.py`). An org can be pinned to a region
+(`python -m hub.manage set-region <org> eu`); a Hub declaring a different `HUB_DATA_REGION` then refuses its keys.
+For an install with no outbound network, mirror the image into your registry, set `networkPolicy.enabled` with only
+the database reachable, leave `COMMONTRACE_LLM_*` unset (drafting then falls back to scaffolds) or point
+`COMMONTRACE_LLM_PROVIDER=openai-compatible` at a model server inside the network.
+
 ## SLOs
 
 Availability 99.9% (not 5xx) and latency 95% under 250 ms, over 30 days, as multi-window burn-rate alerts in
