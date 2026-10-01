@@ -290,8 +290,15 @@ def main(argv: list[str] | None = None) -> int:
         "--backend", default="memory", choices=("memory", "postgres", "both"),
         help="rate-limiter backend to drive load through (default: %(default)s)",
     )
+    parser.add_argument(
+        "--auth-cache", type=float, default=0.0, metavar="SECONDS",
+        help="HUB_AUTH_CACHE_SECONDS for this run (default: 0, off); see hub/auth.py for the trade-off",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
+    from hub import auth
+
+    auth.configure_auth_cache(args.auth_cache)
 
     try:
         clients = sorted({int(c) for c in args.clients.split(",") if c.strip()})

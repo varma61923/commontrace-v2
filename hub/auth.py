@@ -55,6 +55,7 @@ import contextvars
 import hashlib
 import hmac
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -265,6 +266,7 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     if not old.scopes:
         raise ValueError(f"api key {old_key_id} holds no scopes, so it has nothing to carry forward")
     old.revoked_at = datetime.now(timezone.utc)
+    clear_auth_cache()
     # Carry the old key's expiry *policy* forward: a key that was issued to
     # expire in 90 days rotates into another 90-day key, rather than
     # silently becoming a non-expiring one.
@@ -278,6 +280,7 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
 
 
 async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
+    clear_auth_cache()
     await session.execute(
         update(ApiKey).where(ApiKey.id == key_id).values(revoked_at=datetime.now(timezone.utc))
     )
@@ -303,6 +306,55 @@ class AuthenticatedKey:
     # the column existed, which held every capability at issuance -- see
     # scopes.satisfies for why that is distinct from an empty tuple.
     scopes: tuple[str, ...] | None = None
+
+
+# --- An opt-in, short-lived cache of verified keys ---------------------------------------------------------------
+#
+# Every authenticated request opens a session, runs a key lookup and commits, which is most of the per-request cost
+# (hub/bench_concurrency.py). HUB_AUTH_CACHE_SECONDS lets a replica remember a key it just verified for that many
+# seconds. Off by default (0), because it trades revocation latency for throughput and that is the operator's call:
+#
+#   * a key revoked or rotated through THIS process is forgotten at once (the whole cache is cleared);
+#   * a key revoked through another replica, or by editing the database, can still be served for up to the
+#     configured seconds; a key that expires inside the window can be served until the window ends;
+#   * the cache is keyed by the key's HMAC (never the raw key), holds at most _AUTH_CACHE_MAX entries, and a
+#     failed verification is never cached, so it cannot be used to make an invalid key look valid.
+#
+# Capped at 60 seconds: past that it is a different security posture, not a tuning knob.
+_AUTH_CACHE_TTL = 0.0
+_AUTH_CACHE_MAX = 4096
+_AUTH_CACHE: dict[str, tuple[float, "AuthenticatedKey"]] = {}
+
+
+def configure_auth_cache(seconds: float) -> None:
+    global _AUTH_CACHE_TTL
+    _AUTH_CACHE_TTL = max(0.0, min(float(seconds), 60.0))
+    _AUTH_CACHE.clear()
+
+
+def clear_auth_cache() -> None:
+    _AUTH_CACHE.clear()
+
+
+def cached_key(raw_key: str) -> "AuthenticatedKey | None":
+    """A verified key remembered from the last few seconds, or None. Costs no database access."""
+    if _AUTH_CACHE_TTL <= 0 or not raw_key:
+        return None
+    entry = _AUTH_CACHE.get(_key_hmac(raw_key))
+    if entry is None:
+        return None
+    if time.monotonic() >= entry[0]:
+        _AUTH_CACHE.pop(_key_hmac(raw_key), None)
+        return None
+    return entry[1]
+
+
+def _remember(raw_key: str, key: "AuthenticatedKey") -> None:
+    if _AUTH_CACHE_TTL <= 0:
+        return
+    if len(_AUTH_CACHE) >= _AUTH_CACHE_MAX:
+        _AUTH_CACHE.clear()
+    _AUTH_CACHE[_key_hmac(raw_key)] = (time.monotonic() + _AUTH_CACHE_TTL, key)
 
 
 #: The region this deployment serves (HUB_DATA_REGION), set once at start-up. Empty means none declared, and
@@ -355,6 +407,8 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
         key = await _verify_by_legacy_scan(session, raw_key, now)
     if key is not None and not await _region_ok(session, key.org_id):
         return None
+    if key is not None:
+        _remember(raw_key, key)
     return key
 
 

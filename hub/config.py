@@ -426,6 +426,8 @@ class HubConfig:
     # is symmetric and its loss (not just its leak) is unrecoverable: an
     # existing encrypted value simply stops decrypting with no other key to
     # try.
+    # How long a replica may remember a key it just verified (hub/auth.py). 0 is off, which is the default.
+    auth_cache_seconds: float = 0.0
     encryption_key: str = ""
     # Comma-separated retired keys, tried in order if the current key fails
     # to decrypt a stored value -- see hub/encryption.py's "Key rotation"
@@ -713,6 +715,7 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
+            auth_cache_seconds=_env_int_in_range("HUB_AUTH_CACHE_SECONDS", 0, 0, 60),
             encryption_key=encryption_key,
             encryption_key_previous=encryption_key_previous,
             admin_token=env_secret("HUB_ADMIN_TOKEN"),

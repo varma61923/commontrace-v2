@@ -220,9 +220,11 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                 auth.current_scopes.reset(scope_token)
                 auth.current_user.reset(user_token)
 
-        async with self._session_factory() as session:
-            authenticated = await auth.verify_api_key(session, raw_token)
-            await session.commit()  # persists last_used_at touch
+        authenticated = auth.cached_key(raw_token)        # opt-in, seconds-long; see hub/auth.py
+        if authenticated is None:
+            async with self._session_factory() as session:
+                authenticated = await auth.verify_api_key(session, raw_token)
+                await session.commit()  # persists last_used_at touch
 
         if authenticated is None:
             # One message for invalid / revoked / expired alike -- see
@@ -1670,6 +1672,7 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
     # An org pinned to another region is not authenticated by this deployment (hub/auth.py).
     auth.configure_region(config.data_region)
+    auth.configure_auth_cache(config.auth_cache_seconds)
     rate_limiter = make_rate_limiter(config)
     if config.rate_limit_backend == "memory":
         # In-process buckets reset on restart and N replicas allow ~N× the
