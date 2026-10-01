@@ -67,5 +67,15 @@
     },
     "success": 6,
     "of": 6
+  },
+  "cold_start": {
+    "what": "fresh venv: pip install . -> init -> proof wizard --yes -> gateway -> first POST /v1/recall returning a holdout assignment",
+    "seconds_pip_install": 11.6,
+    "seconds_init_and_proof_start": 0.3,
+    "seconds_gateway_to_first_assignment": 1.5,
+    "seconds_total": 13.4,
+    "target_seconds": 600,
+    "met": true,
+    "note": "this machine, warm pip cache for dependencies; a customer on a slow link adds download time"
   }
 }
