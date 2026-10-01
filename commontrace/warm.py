@@ -21,6 +21,13 @@ the embedding model the worker already holds), and the cross-encoder's scores
 (commontrace/rerank_arm.py; loaded by that module's own `_load`, so the scores
 are the ones the CLI would have computed).
 
+And it runs whole commands (`CLI_COMMANDS`; `commontrace query`): the CLI
+process otherwise imported the package, parsed the lesson cache and built the
+ranking index on every call, which at 10,000 lessons cost as much as both
+models. The command is `commontrace.cli.main`, run here in the caller's
+environment and working directory; calls it makes to the script or the
+reranker are answered in this process (`_LOCAL`), never through a socket.
+
 Who can talk to it: the socket lives in a per-user directory that must be
 owned by the caller and closed to everyone else (mode 0700; checked, not
 assumed, because a shared /tmp lets anyone pre-create the name), the socket
@@ -77,8 +84,16 @@ _QUERY_SCRIPT = os.path.join("memory", "attention", "query.py")
 _BUILD_SCRIPT = os.path.join("memory", "attention", "build_index.py")
 
 
+#: Inside a worker: the _Script it serves. Calls a command makes there are
+#: answered by it directly; a worker never connects to a socket, its own
+#: included (it serves one request at a time, so that would deadlock).
+_LOCAL = None
+
+
 def available() -> bool:
     """Whether this platform and environment allow a worker at all."""
+    if _LOCAL is not None:
+        return False
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         return False
     return os.environ.get("COMMONTRACE_WARM", "").strip().lower() not in {"0", "false", "no", "off"}
@@ -86,7 +101,8 @@ def available() -> bool:
 
 def enabled(relative: str) -> bool:
     """Whether a call to the reference script `relative` may use a worker."""
-    return os.path.normpath(relative) in (_QUERY_SCRIPT, _BUILD_SCRIPT) and available()
+    return os.path.normpath(relative) in (_QUERY_SCRIPT, _BUILD_SCRIPT) and (
+        _LOCAL is not None or available())
 
 
 def worker_script(relative: str, script: str) -> str:
@@ -260,6 +276,8 @@ def _spawn(script: str, path: str, root: str | None, env: dict) -> bool:
 def _call(script: str, request: dict, root: str | None, env: dict, valid) -> dict | None:
     """A worker's reply that `valid(reply)` accepts, starting a worker if none
     is running; None when the caller should do the work itself."""
+    if _LOCAL is not None:
+        return None
     path = socket_path(script)
     if path is None:
         return None
@@ -282,10 +300,58 @@ def run(
     query script; `build` runs the index builder beside it instead."""
     if not os.path.isfile(script):
         return None
+    if _LOCAL is not None:
+        # Inside the worker, for a command it is running: answer from the
+        # script it already holds, or let the caller run the subprocess.
+        if os.path.realpath(script) != os.path.realpath(_LOCAL.path):
+            return None
+        reply = _LOCAL.build(argv, os.path.abspath(root)) if build else _LOCAL.answer(argv, os.path.abspath(root))
+        return reply["rc"], reply["stdout"], reply["stderr"]
     request = {"protocol": PROTOCOL, "argv": list(argv), "root": os.path.abspath(root)}
     if build:
         request["op"] = "build"
     reply = _call(script, request, root, env, lambda r: (
+        isinstance(r.get("rc"), int) and isinstance(r.get("stdout"), str) and isinstance(r.get("stderr"), str)
+    ))
+    if reply is None:
+        return None
+    return reply["rc"], reply["stdout"], reply["stderr"]
+
+
+#: Commands a worker runs whole (`commontrace <command> ...`): the ones whose
+#: cost is loading models and the store, so a one-shot process pays it every
+#: call. Each is the same code a one-shot process runs (commontrace/cli.py).
+CLI_COMMANDS = ("query",)
+
+
+def run_cli(argv: list[str]) -> tuple[int, str, str] | None:
+    """(rc, stdout, stderr) of `commontrace *argv`, run by a worker in this
+    process's environment and working directory; None when the caller should
+    run it itself (no worker can be had, or the command is not one a worker
+    runs).
+
+    The worker holds the models, the parsed lesson cache and the ranking
+    index between calls, which a one-shot process loads every time: at
+    10,000 lessons that was most of a query. It runs `commontrace.cli.main`
+    -- the command, its arguments, its output and its exit status are the
+    one-shot process's -- with this process's environment and directory in
+    place for the call. Its stdout and stderr come back separately, so on a
+    terminal the warnings print before the results rather than among them.
+    """
+    if not argv or argv[0] not in CLI_COMMANDS or not available():
+        return None
+    if os.environ.get("COMMONTRACE_ALLOW_STORE_SCRIPTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None  # a contributor's own scripts: run them as they are on disk
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return None
+    env = dict(os.environ)
+    request = {"protocol": PROTOCOL, "op": "cli", "argv": list(argv), "cwd": cwd, "env": env}
+    spawn_env = dict(env)
+    spawn_env["PYTHONUTF8"] = "1"
+    spawn_env["PYTHONSAFEPATH"] = "1"
+    reply = _call(packaged_query_script(), request, None, spawn_env, lambda r: (
         isinstance(r.get("rc"), int) and isinstance(r.get("stdout"), str) and isinstance(r.get("stderr"), str)
     ))
     if reply is None:
@@ -479,15 +545,32 @@ class _Script:
         module.TELEMETRY_PATH = os.path.join(root, "memory", "alpha_telemetry.jsonl")
         return self._main(module, self.path, argv)
 
-    def _main(self, module, path: str, argv: list[str]) -> dict:
-        """Run `module.main()` as `python path *argv` would, capturing its output."""
+    def cli(self, argv: list[str], cwd: str, env: dict) -> dict:
+        """What `commontrace *argv` would print, run here with the caller's
+        environment and working directory in place for the call."""
+        import importlib
+
+        cli = importlib.import_module("commontrace.cli")
+        saved_env, saved_cwd = dict(os.environ), os.getcwd()
+        os.environ.clear()
+        os.environ.update(env)
+        try:
+            os.chdir(cwd)
+            return self._main(None, "commontrace", argv, call=lambda: cli.main(list(argv)))
+        finally:
+            os.chdir(saved_cwd)
+            os.environ.clear()
+            os.environ.update(saved_env)
+
+    def _main(self, module, path: str, argv: list[str], call=None) -> dict:
+        """Run `module.main()` (or `call()`) as `python path *argv` would, capturing its output."""
         out, err = io.StringIO(), io.StringIO()
         saved_argv = sys.argv
         sys.argv = [path, *argv]
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 try:
-                    rc = module.main()
+                    rc = call() if call is not None else module.main()
                 except SystemExit as exc:
                     rc = _exit_code(exc.code, err)
                 except Exception:  # noqa: BLE001 - reported the way an uncaught exception would be
@@ -565,6 +648,7 @@ def serve(script: str, path: str, warm_root: str | None, idle: float) -> int:
     if warm_root:
         with contextlib.suppress(Exception):
             loaded.preload(warm_root)
+    _serve_locally(loaded)
 
     server.settimeout(min(_TICK_SECONDS, idle / 2))
     last = time.monotonic()
@@ -589,6 +673,18 @@ def serve(script: str, path: str, warm_root: str | None, idle: float) -> int:
         os.close(lock)
 
 
+def _serve_locally(loaded: _Script) -> None:
+    """Mark this process as the worker for `loaded`, in this module and in the
+    package's own copy of it: this file runs as __main__, while the commands
+    it runs import `commontrace.warm`, a second module object."""
+    global _LOCAL
+    _LOCAL = loaded
+    with contextlib.suppress(Exception):
+        import importlib
+
+        importlib.import_module("commontrace.warm")._LOCAL = loaded
+
+
 def _replaced(path: str, inode: int) -> bool:
     try:
         return os.lstat(path).st_ino != inode
@@ -605,7 +701,21 @@ def _handle(conn: socket.socket, loaded: _Script) -> None:
         request = _recv(conn, _MAX_REQUEST_BYTES)
         if request.get("protocol") != PROTOCOL:
             return
-        if request.get("op", "query") == "rerank":
+        if request.get("op") == "cli":
+            argv, cwd, env = request.get("argv"), request.get("cwd"), request.get("env")
+            if (
+                not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv)
+                or argv[0] not in CLI_COMMANDS
+                or not isinstance(cwd, str) or not os.path.isabs(cwd)
+                or not isinstance(env, dict)
+                or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+            ):
+                return
+            try:
+                reply = loaded.cli(argv, cwd, env)
+            except Exception as exc:  # noqa: BLE001 - e.g. no package here: the caller runs it itself
+                reply = {"protocol": PROTOCOL, "error": "%s: %s" % (type(exc).__name__, exc)}
+        elif request.get("op", "query") == "rerank":
             mode, pairs = request.get("mode"), request.get("pairs")
             if not isinstance(mode, str) or not isinstance(pairs, list) or not all(
                 isinstance(p, list) and len(p) == 2 and all(isinstance(t, str) for t in p) for p in pairs

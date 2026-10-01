@@ -511,3 +511,106 @@ def test_the_real_model_scores_identically_through_the_worker(env, monkeypatch):
     local = [float(x) for x in rerank_arm._load("cross-encoder-fast").predict(
         pairs, batch_size=64, show_progress_bar=False)]
     assert remote == local
+
+
+# --- whole commands, run by the worker (commontrace/cli.py, warm.run_cli) ----
+
+
+def _lexical_store(tmp_path, name="cli-store"):
+    from commontrace import frontmatter, paths
+    from commontrace.cli import main
+
+    root = str(tmp_path / name)
+    main(["init", "--agent-type", "code", "--dest", root])
+    for slug, rule in (("idem", "Send an idempotency key on every payment retry."),
+                       ("pool", "Cap the connection pool before a retry storm.")):
+        frontmatter.write(os.path.join(paths.lessons_dir(root), f"lesson_{slug}.md"),
+                          {"name": slug, "status": "active", "description": rule, "agent_type": "code",
+                           "importance": 3, "applies_when": "payments are retried"},
+                          f"## Rule\n{rule}\n")
+    return root
+
+
+class TestAWorkerRunsTheQueryCommand:
+    def test_same_output_as_running_it_here(self, tmp_path, script, capsys):
+        from commontrace.cli import main
+
+        root = _lexical_store(tmp_path)
+        capsys.readouterr()
+        argv = ["query", "payment retry", "--lexical", "--dest", root]
+        rc = main(list(argv))
+        here = capsys.readouterr()
+        reply = warm._Script(script).cli(argv, str(tmp_path), dict(os.environ))
+        assert (reply["rc"], reply["stdout"], reply["stderr"]) == (rc, here.out, here.err)
+        assert "idem" in reply["stdout"]
+
+    def test_the_callers_environment_and_directory_apply_and_are_restored(self, tmp_path, script, monkeypatch):
+        root = _lexical_store(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        before_env, before_cwd = dict(os.environ), os.getcwd()
+        env = dict(os.environ, COMMONTRACE_ROOT=root, CT_WARM_PROBE="1")
+        reply = warm._Script(script).cli(["query", "payment retry", "--lexical"], str(elsewhere), env)
+        assert reply["rc"] == 0 and "idem" in reply["stdout"]   # found through the caller's COMMONTRACE_ROOT
+        assert dict(os.environ) == before_env and os.getcwd() == before_cwd
+
+    def test_argparse_errors_and_exit_status_come_back(self, tmp_path, script):
+        reply = warm._Script(script).cli(["query", "--bogus"], str(tmp_path), dict(os.environ))
+        assert reply["rc"] == 2 and reply["stderr"].startswith("usage: commontrace query")
+
+    def test_inside_a_worker_nothing_connects_to_a_socket(self, tmp_path, script, monkeypatch):
+        loaded = warm._Script(script)
+        monkeypatch.setattr(warm, "_LOCAL", loaded)
+        monkeypatch.setattr(warm, "_exchange", lambda *a, **k: pytest.fail("connected to a socket"))
+        assert not warm.available()
+        assert warm.enabled(QUERY)
+        assert warm.rerank_scores("cross-encoder", [("a", "b")]) is None
+        assert warm.run_cli(["query", "x"]) is None
+        root = _store(tmp_path, "store")
+        rc, out, _err = warm.run(script, ["--", "q"], root, dict(os.environ))
+        assert rc == 0 and "# q" in out                         # answered from the script it holds
+        assert warm.run(str(tmp_path / "other.py"), ["--", "q"], root, {}) is None
+
+    def test_only_listed_commands_and_well_formed_requests_are_run(self, tmp_path, env, script, capfd):
+        _shellout.run_script(_store(tmp_path, "store"), QUERY, ["--", "q"], "hint", capture=True)
+        sock = warm.socket_path(script)
+        for request in (
+            {"op": "cli", "argv": ["init", "--dest", str(tmp_path)], "cwd": str(tmp_path), "env": {}},
+            {"op": "cli", "argv": ["query", "x"], "cwd": "relative", "env": {}},
+            {"op": "cli", "argv": ["query", "x"], "cwd": str(tmp_path), "env": {"A": 1}},
+            {"op": "cli", "argv": [], "cwd": str(tmp_path), "env": {}},
+        ):
+            assert warm._ask(sock, dict(request, protocol=warm.PROTOCOL), connect_deadline=0.0) is None
+        assert _ask_pid(sock)
+
+    def test_the_client_only_asks_when_it_should(self, monkeypatch):
+        from commontrace import cli
+
+        asked = []
+        monkeypatch.setattr(warm, "run_cli", lambda argv: asked.append(argv))
+        monkeypatch.setenv("COMMONTRACE_WARM", "0")
+        assert cli._from_worker(["query", "x"]) is None
+        monkeypatch.setenv("COMMONTRACE_WARM", "1")
+        assert cli._from_worker(["init"]) is None
+        monkeypatch.setattr(_shellout, "has_attention_deps", lambda: False)
+        assert cli._from_worker(["query", "x"]) is None
+        assert asked == []
+
+
+@pytest.mark.skipif(not _real_models_cached(), reason="needs the attention extra and cached models")
+def test_the_real_query_command_prints_the_same_through_the_worker(tmp_path, env):
+    """The real script, the real models, a real worker, against the one-shot command."""
+    import subprocess
+    import sys
+
+    root = _lexical_store(tmp_path, "real")
+    run_env = dict(os.environ, HF_HUB_OFFLINE="1")
+    subprocess.run([sys.executable, "-m", "commontrace", "index", "--dest", root],
+                   env=dict(run_env, COMMONTRACE_WARM="0"), capture_output=True, check=True)
+    results = []
+    for setting in ("0", "1", "1"):
+        r = subprocess.run([sys.executable, "-m", "commontrace", "query", "retrying a payment", "--dest", root],
+                           env=dict(run_env, COMMONTRACE_WARM=setting), capture_output=True, text=True)
+        results.append((r.returncode, r.stdout, r.stderr))
+    assert results[0] == results[1] == results[2]
+    assert "idem" in results[0][1]

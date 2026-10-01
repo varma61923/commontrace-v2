@@ -64,6 +64,30 @@ def build_parser(only: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+def _from_worker(argv: list[str]) -> int | None:
+    """Run `argv` in the warm worker when it is a command one runs and the
+    attention extra is installed (commontrace/warm.py); its exit status, or
+    None to run it here."""
+    from commontrace import warm
+
+    if not argv or argv[0] not in warm.CLI_COMMANDS or not warm.available():
+        return None
+    from commontrace.commands._shellout import has_attention_deps
+
+    if not has_attention_deps():
+        return None  # nothing to keep loaded: the lexical path is fast as it is
+    answered = warm.run_cli(argv)
+    if answered is None:
+        return None
+    rc, out, err = answered
+    if err:
+        sys.stderr.write(err)
+        sys.stderr.flush()
+    sys.stdout.write(out)
+    sys.stdout.flush()
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     if _MISSING_DEPENDENCY is not None:
         print(
@@ -75,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if argv is None:
         argv = sys.argv[1:]
+    answered = _from_worker(argv)
+    if answered is not None:
+        return answered
     if not argv:
         # Nothing asked: the full command list is more use than argparse's
         # one-line "the following arguments are required".

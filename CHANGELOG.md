@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The warm worker runs `commontrace query` whole.** It already held the models; the CLI process still imported
+  the package, parsed the lesson cache and built the lexical index on every call. With the attention extra, `query`
+  now runs in the worker (`commontrace.cli.main`, in the caller's environment and working directory), and every
+  failure runs it in-process as before. At 10,000 lessons: about 1.0 s to 0.47 s p50, 0.55 s p95. Output and exit
+  status are the in-process command's; stderr is written before stdout rather than interleaved.
 - **`commontrace query` with the attention extra in about 0.55 s, from 7-8.5 s** (default fusion and
   reranking, 1000 lessons, 4-core CPU; semantic alone 0.25 s from 6.5 s). The first call starts a per-user worker
   (`commontrace/warm.py`) that keeps the reference script, the embedding model, the cross-encoder and the parsed

@@ -439,16 +439,19 @@ the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
 
-With the `attention` extra, the first semantic query starts a background
-worker that keeps the embedding model and the cross-encoder loaded, and
-later queries are answered by it. On a 1000-lesson store on a 4-core CPU, a
-query with the default fusion and reranking takes about 0.55 s instead of
-7-8.5 s, and semantic ranking alone about 0.25 s instead of 6.5 s; nearly
-all that remains is the models' own forward passes. The first query after a
+With the `attention` extra, the first query starts a background worker
+that keeps the embedding model, the cross-encoder, the parsed lesson store
+and its ranking index loaded, and runs later `commontrace query` calls
+itself, in the caller's environment and directory. On a 1000-lesson store on
+a 4-core CPU, a query with the default fusion and reranking takes about
+0.55 s instead of 7-8.5 s; at 10,000 lessons about 0.47 s (p95 0.55 s)
+instead of about 1 s with the models alone kept loaded. Nearly all that
+remains is the models' own forward passes. The first query after a
 lesson changes refreshes the index through the same worker, re-reading only
 the lessons that changed: about 2 s instead of 16-18 s. The output is what the
 one-shot run would have printed, byte for byte (the same models, loaded the
-same way), and any problem with the worker falls back to the one-shot run. It is Unix-only, listens on a
+same way; stderr arrives before stdout rather than interleaved), and any
+problem with the worker falls back to the one-shot run. It is Unix-only, listens on a
 socket only you can reach, and exits after 10 idle minutes
 (`COMMONTRACE_WARM_IDLE`, in seconds); `COMMONTRACE_WARM=0` turns it off.
 
