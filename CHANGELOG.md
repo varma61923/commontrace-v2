@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Billing on proven value (`commontrace bill`).** An invoice is built from a price schedule the owner supplies
+  (every term required, no defaults) and proof packages that verify. Synthetic data, a compromised experiment,
+  an unestablished effect and (by default) an interim run bill nothing; billing is cumulative per experiment so a
+  later package bills only the increase and the same package never bills twice. The Hub reports a value line to
+  Stripe's meter events, only for billable plans and never with a live key unless allowed.
+- **The Hub as a Helm chart and Terraform** (Postgres on AWS and GCP: customer-managed keys, TLS, high
+  availability, point-in-time recovery), with SLO burn-rate alerts over the metrics the Hub exports. CI validates
+  them with pinned, checksummed tools. Bring-your-own-key for the Hub's at-rest key through the customer's KMS
+  (`hub/kms.py`), and data residency enforced at authentication (`hub.manage set-region`).
+- **A conformance suite (`commontrace conformance`)** and PROTOCOL.md section 13: vectors for assignment, the
+  value ledger, the raw-assignments digest and a lesson revision, runnable against any language over stdio, plus
+  checks of a store and a gateway. An independent Go implementation written from the spec passes three layers.
+- **The lesson workbench in the console** (review queue, gate results, edit, approve, reject), a shareable proof
+  page, `commontrace proof wizard` (with a rehearsal on a simulated fleet), a scheduled `commontrace dream` pass,
+  `distill --failed` / `--signal`, Bedrock and Vertex drafting behind the `[llm]` extra, and failure signals
+  clustered by IDF-weighted average linkage (adjusted Rand index 0.945 on held-out labelled seeds, from 0.23).
+- **Fixed:** a model draft left `TODO` in two sections, so `lesson approve` refused every drafted lesson.
+
 - **A door for any agent, including robots (`commontrace gateway`) and a local console.** Plain
   HTTP + JSON or stdio JSON lines, memory-agnostic, token-authenticated, with protected
   (safety) memories that are never withheld, one environment per store so simulation is never

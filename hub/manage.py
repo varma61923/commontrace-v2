@@ -84,6 +84,7 @@
                                        whole point of reviewing before crediting
                                        (hub/plans.py "why bonus_commons_queries is not
                                        the same mistake twice")
+    set-region <org_id> <region|none> -> pin an org to a data region (enforced against HUB_DATA_REGION).
     set-plan <org_id> <plan>       -> change an org's entitlements (hub/plans.py):
                                        free | team | scale | operator
     usage [org_id]                 -> what each org is entitled to and has used this
@@ -205,6 +206,7 @@
                                        carries a stable event_id, so receivers must
                                        deduplicate on it
     generate-encryption-key        -> print a fresh HUB_ENCRYPTION_KEY (hub/encryption.py).
+    wrap-encryption-key KEY [REGION] -> print a new key wrapped by a customer KMS key (hub/kms.py).
                                        Unset (the default) means WebhookEndpoint.url is
                                        stored as plaintext, exactly as it always was --
                                        see hub/DEPLOYMENT.md's "Encryption at rest" section
@@ -2246,6 +2248,33 @@ async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
     return True
 
 
+async def set_region(org_id: str, region: str, session_factory=None) -> bool:
+    """Pin an org to a data region (or `none` to unpin). A Hub that declares a different HUB_DATA_REGION then
+    stops authenticating that org's keys, so its data cannot be written to the wrong region by a misrouted
+    client (hub/auth.py). Letters, digits and hyphens, up to 32."""
+    import re
+
+    value = (region or "").strip().lower()
+    if value in ("none", "-", ""):
+        value = ""
+    elif not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", value):
+        print("error: a region is letters, digits and hyphens (e.g. eu, us, eu-west-1), up to 32; "
+              "`none` unpins", file=sys.stderr)
+        return False
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        org = await session.get(Organization, org_id)
+        if org is None:
+            print(f"error: no such organization: {org_id}", file=sys.stderr)
+            return False
+        was, org.data_region = org.data_region, (value or None)
+        await audit.record(
+            session, actor=audit.ACTOR_OPERATOR_CLI, action="set_region", org_id=org_id, target_type="org",
+            target_id=org_id, summary=f"{was!r} -> {value or None!r}")
+    print(f"{org_id}: {was or 'unpinned'} -> {value or 'unpinned'}")
+    return True
+
+
 async def usage(org_id: str | None = None, session_factory=None) -> bool:
     """Entitlements and consumption for the current period.
 
@@ -2684,6 +2713,20 @@ def _config_cipher():
     return HubConfig.from_env().cipher()
 
 
+async def wrap_encryption_key(key_id: str, region: str = "") -> bool:
+    """Print a NEW encryption key wrapped by the customer's KMS key (HUB_ENCRYPTION_KEY_KMS_WRAPPED). Only the
+    wrapped form is printed: the plaintext key never leaves this call (hub/kms.py)."""
+    from hub.kms import generate_wrapped
+
+    print(generate_wrapped(key_id, region=region or None))
+    print(
+        "Set this as HUB_ENCRYPTION_KEY_KMS_WRAPPED, with HUB_KMS_KEY_ID and HUB_KMS_REGION. To rotate, move the "
+        "current value to HUB_ENCRYPTION_KEY_PREVIOUS_KMS_WRAPPED before replacing it.",
+        file=sys.stderr,
+    )
+    return True
+
+
 async def generate_encryption_key() -> bool:
     """Print a fresh HUB_ENCRYPTION_KEY. Not read from or written to
     anywhere -- copy it into this deployment's secret store yourself."""
@@ -3072,6 +3115,7 @@ _COMMANDS = {
     "approve-submission": (approve_submission, 2, 3),
     "reject-submission": (reject_submission, 1, 2),
     "set-plan": (set_plan, 2, 2),
+    "set-region": (set_region, 2, 2),
     "usage": (usage, 0, 1),
     "retrieval": (retrieval, 0, 1),
     "revenue": (revenue, 0, 0),
@@ -3106,6 +3150,7 @@ _COMMANDS = {
     "webhook-disable": (webhook_disable, 1, 1),
     "webhook-deliver": (webhook_deliver, 0, 1),
     "generate-encryption-key": (generate_encryption_key, 0, 0),
+    "wrap-encryption-key": (wrap_encryption_key, 1, 2),
     "create-alert-rule": (create_alert_rule, 4, 5),
     "list-alert-rules": (list_alert_rules, 1, 1),
     "delete-alert-rule": (delete_alert_rule, 1, 1),

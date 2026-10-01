@@ -59,6 +59,9 @@ def add_disclosure_route(app, config: HubConfig) -> None:
     async def disclosure(request: Request) -> JSONResponse:
         return JSONResponse({
             "data_region": _field(config.data_region),
+            # Not a claim about storage: that this deployment refuses to authenticate an org that is pinned to a
+            # different region (`hub.manage set-region`), so a misrouted client cannot write into it.
+            "region_enforced_for_pinned_orgs": bool(config.data_region.strip()),
             "operator_legal_name": _field(config.operator_legal_name),
             "operator_support_contact": _field(config.operator_support_contact),
             "note": (

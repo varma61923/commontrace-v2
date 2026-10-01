@@ -82,6 +82,9 @@ class Organization(Base):
     # resolves to the smallest plan, never an unlimited one -- see
     # hub/plans.py:get.
     plan: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
+    # The region this org's data is pinned to (hub/auth.py enforces it against HUB_DATA_REGION). NULL means
+    # unpinned: any deployment may serve it, which is every existing org's behaviour.
+    data_region: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Permanent addition to this org's monthly Knowledge Base query
     # allowance (hub/plans.py:query_allowance), earned one
     # hub/manage.py review-submission approval at a time -- never by the

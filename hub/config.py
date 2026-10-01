@@ -682,6 +682,11 @@ class HubConfig:
                 "Refusing to start with no configured database rather than "
                 "guessing a default connection string."
             )
+        # The at-rest key, plain or unwrapped by the customer's KMS (hub/kms.py). Resolved once, here, so a
+        # KMS that refuses stops start-up instead of the Hub running without the key it was told to use.
+        from hub import kms
+
+        encryption_key, encryption_key_previous = kms.resolve(os.environ, env_secret)
         return cls(
             database_url=database_url,
             host=os.environ.get("HUB_HOST", "127.0.0.1"),
@@ -708,8 +713,8 @@ class HubConfig:
             allow_insecure_http=_env_bool("HUB_ALLOW_INSECURE_HTTP", False),
             allow_rls_bypass=_env_bool("HUB_ALLOW_RLS_BYPASS", False),
             require_rls=_env_bool("HUB_REQUIRE_RLS", False),
-            encryption_key=env_secret("HUB_ENCRYPTION_KEY"),
-            encryption_key_previous=env_secret("HUB_ENCRYPTION_KEY_PREVIOUS"),
+            encryption_key=encryption_key,
+            encryption_key_previous=encryption_key_previous,
             admin_token=env_secret("HUB_ADMIN_TOKEN"),
             metrics_token=env_secret("HUB_METRICS_TOKEN"),
             operator_org_id=os.environ.get("HUB_OPERATOR_ORG_ID", ""),

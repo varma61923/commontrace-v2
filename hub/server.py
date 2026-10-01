@@ -1668,6 +1668,8 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 
 
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
+    # An org pinned to another region is not authenticated by this deployment (hub/auth.py).
+    auth.configure_region(config.data_region)
     rate_limiter = make_rate_limiter(config)
     if config.rate_limit_backend == "memory":
         # In-process buckets reset on restart and N replicas allow ~N× the

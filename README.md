@@ -718,6 +718,19 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   http://localhost:8787/v1/recall          # then POST /v1/outcome {occasion_id, succeeded | signals}
 ```
 
+```bash
+commontrace gateway --allow-approval                  # the console can also review, edit, approve, reject drafts
+commontrace dream --recipe cron                       # a scheduled pass that only writes status=review drafts
+commontrace function precision labelled.jsonl         # how often the outcome detector agrees with a person
+commontrace bill template                             # the terms YOU set; there are no default prices
+commontrace bill invoice --schedule prices.json --org acme --period 2026-Q1 \
+    --agent-months 36 --package proof-acme/ --key-file KEY          # preview; add --commit to record
+commontrace conformance exec "./your-implementation"  # check any language against the protocol vectors
+commontrace doctor --troubleshooting                  # what each check means and how to fix it
+```
+
+Deploy the Hub with [`deploy/`](deploy/README.md) (a Helm chart and Terraform for Postgres on AWS and GCP).
+
 The caller brings its own memories; protected ones (safety constraints) are never withheld,
 simulation and reality are never pooled, and nothing is withheld until an experiment is
 started on purpose. Open the printed console URL for the verdicts, who is calling, and what

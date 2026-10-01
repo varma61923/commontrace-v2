@@ -305,6 +305,35 @@ class AuthenticatedKey:
     scopes: tuple[str, ...] | None = None
 
 
+#: The region this deployment serves (HUB_DATA_REGION), set once at start-up. Empty means none declared, and
+#: nothing is enforced. An org pinned to a different region is not authenticated here: see `_region_ok`.
+_DEPLOYMENT_REGION = ""
+
+
+def configure_region(region: str) -> None:
+    global _DEPLOYMENT_REGION
+    _DEPLOYMENT_REGION = normalize_region(region)
+
+
+def normalize_region(region: str | None) -> str:
+    return (region or "").strip().lower()
+
+
+async def _region_ok(session: AsyncSession, org_id: str) -> bool:
+    """False when this deployment declares a region and the org is pinned to a different one. An org with no
+    region, and a deployment with none declared, are both unconstrained (today's behaviour). Checked after the
+    key itself verifies, so a wrong key still looks like a wrong key and nothing about regions leaks to a caller
+    who has no valid one."""
+    if not _DEPLOYMENT_REGION:
+        return True
+    pinned = normalize_region(await session.scalar(select(Organization.data_region).where(Organization.id == org_id)))
+    if not pinned or pinned == _DEPLOYMENT_REGION:
+        return True
+    logger.warning("refused a key for org %s: it is pinned to region %r and this deployment serves %r",
+                   org_id, pinned, _DEPLOYMENT_REGION)
+    return False
+
+
 async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKey | None:
     """Return the authenticated org (plus the key's non-secret prefix, for
     audit attribution), or None if the key is invalid, revoked, or expired.
@@ -321,10 +350,12 @@ async def verify_api_key(session: AsyncSession, raw_key: str) -> AuthenticatedKe
         return None
     now = datetime.now(timezone.utc)
 
-    fast = await _verify_by_hmac(session, raw_key, now)
-    if fast is not None:
-        return fast
-    return await _verify_by_legacy_scan(session, raw_key, now)
+    key = await _verify_by_hmac(session, raw_key, now)
+    if key is None:
+        key = await _verify_by_legacy_scan(session, raw_key, now)
+    if key is not None and not await _region_ok(session, key.org_id):
+        return None
+    return key
 
 
 async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) -> AuthenticatedKey | None:
