@@ -57,6 +57,7 @@ from __future__ import annotations
 import hmac
 import html
 import logging
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -436,13 +437,47 @@ def cross_origin_refused(request: Request) -> bool:
     return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
 
 
+def malformed_id_param(request: Request) -> str | None:
+    """The name of a `*_id` path parameter that is not a UUID, else None.
+
+    Every id in this schema is a UUID column. Handing Postgres anything else
+    raises a driver error, which surfaced as a 500 on any console or admin
+    route taking an id (found by hub/tests/test_cross_tenant_fuzz.py). A value
+    that cannot be an id names nothing, so it is the same 404 an unknown id gets.
+    """
+    for name, value in request.path_params.items():
+        if not name.endswith("_id"):
+            continue
+        try:
+            uuid.UUID(str(value))
+        except ValueError:
+            return name
+    return None
+
+
+def require_uuid_params(handler):
+    """`handler`, answering 404 when a `*_id` path parameter is not a UUID."""
+
+    async def guarded(request: Request) -> Response:
+        if malformed_id_param(request):
+            return Response("not found", status_code=404)
+        return await handler(request)
+
+    guarded.__name__ = getattr(handler, "__name__", "guarded")
+    guarded.__doc__ = handler.__doc__
+    return guarded
+
+
 def refuse_cross_origin(handler):
     """`handler`, answering 403 to a cross-origin state-changing request
-    (see `cross_origin_refused`) instead of acting on it."""
+    (see `cross_origin_refused`) instead of acting on it, and 404 to an id
+    that cannot be an id (see `malformed_id_param`)."""
 
     async def guarded(request: Request) -> Response:
         if cross_origin_refused(request):
             return Response("cross-origin request refused", status_code=403)
+        if malformed_id_param(request):
+            return Response("not found", status_code=404)
         return await handler(request)
 
     guarded.__name__ = getattr(handler, "__name__", "guarded")
