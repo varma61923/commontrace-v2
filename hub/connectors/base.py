@@ -34,6 +34,7 @@ no replay protection.
 from __future__ import annotations
 
 import hmac
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -107,13 +108,18 @@ def clean_id(value: object, label: str) -> str:
     return text
 
 
+_FRACTION = re.compile(r"(?<=:\d\d)\.(\d+)")
+
+
 def parse_timestamp(value: str) -> datetime:
-    """ISO-8601 with a trailing Z, which `fromisoformat` rejects before 3.11."""
+    """ISO-8601 as vendors send it. Before 3.11 `fromisoformat` rejects a trailing Z and any fraction that is
+    not exactly 3 or 6 digits, and Zendesk sends nanoseconds; the fraction is cut (never rounded) to 6."""
     from datetime import timezone
 
     text = value.strip()
     if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
+    text = _FRACTION.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     parsed = datetime.fromisoformat(text)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 

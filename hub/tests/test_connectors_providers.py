@@ -109,6 +109,17 @@ class TestZendeskSignature:
         assert exc.value.status == 400
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("2025-01-10T17:27:48.105316520+00:00", "2025-01-10T17:27:48.105316+00:00"),   # Zendesk: nanoseconds
+    ("2025-01-10T17:27:48.999999999-05:00", "2025-01-10T17:27:48.999999-05:00"),   # cut, never rounded up
+    ("2025-01-10T17:27:48.1Z", "2025-01-10T17:27:48.100000+00:00"),
+    ("2025-01-10T17:27:48Z", "2025-01-10T17:27:48+00:00"),
+    ("2025-01-10T17:27:48", "2025-01-10T17:27:48+00:00"),
+])
+def test_vendor_timestamps_parse_on_every_supported_python(text, expected):
+    assert base.parse_timestamp(text).isoformat() == expected
+
+
 class TestZendeskSignals:
     CFG = zendesk.validate_config({})
 
