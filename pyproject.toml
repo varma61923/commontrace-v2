@@ -151,7 +151,8 @@ include = ["commontrace*"]
 # kb_packs/*.jsonl is the curated substrate content `commontrace kb install`
 # reads -- shipped for the same reason: a command that works from a clone
 # and fails after `pip install` is not a feature a customer has.
-commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl"]
+# ui/* is the local console `commontrace gateway` serves: plain files, no build step.
+commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*"]
 
 [tool.ruff]
 line-length = 120

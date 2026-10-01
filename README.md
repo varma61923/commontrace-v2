@@ -704,6 +704,24 @@ for the full CLI reference.
 
 ---
 
+### 12 — Any agent, any language, any robot: the gateway and console
+
+```bash
+commontrace gateway --env real --protect safety/      # HTTP + JSON; prints an API URL and a console URL
+commontrace gateway --stdio                           # one JSON object per line, no network
+commontrace fleet adopt robot-1/ --dest robot-2/           # robot-2 randomizes exactly as robot-1 does
+commontrace fleet merge robot-1/ robot-2/ --dest pooled/   # refuses what cannot honestly be pooled
+
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"occasion_id":"ep-1","agent_id":"arm-7","items":[{"id":"grasp/soft-cup","text":"..."}]}' \
+  http://localhost:8787/v1/recall          # then POST /v1/outcome {occasion_id, succeeded | signals}
+```
+
+The caller brings its own memories; protected ones (safety constraints) are never withheld,
+simulation and reality are never pooled, and nothing is withheld until an experiment is
+started on purpose. Open the printed console URL for the verdicts, who is calling, and what
+is being withheld or withdrawn (no build step; works at phone width, light or dark).
+
 ## Quick Start — Agents with no terminal (MCP)
 
 Everything above is a CLI, which quietly restricts CommonTrace to agents that

@@ -575,7 +575,8 @@ class Gateway:
                                 "start` or `commontrace experiment --configure`.")
         self._log_event({"kind": "recall", "occasion_id": occasion, "agent_id": agent,
                          "delivered": len(delivered), "withheld": len(withheld),
-                         "withdrawn": len(withdrawn), "protected": len(response["protected"])})
+                         "withdrawn": len(withdrawn), "protected": len(response["protected"]),
+                         "quarantined": len(quarantined)})
         return response
 
     def _outcome(self, req: dict, _query) -> dict:
@@ -666,11 +667,12 @@ class Gateway:
         for e in self._read_events(5000):
             who = e.get("agent_id") or "(unattributed)"
             a = agents.setdefault(who, {"agent_id": who, "recalls": 0, "outcomes": 0, "succeeded": 0,
-                                        "withheld": 0, "protected": 0, "last_seen": ""})
+                                        "withheld": 0, "protected": 0, "quarantined": 0, "last_seen": ""})
             if e.get("kind") == "recall":
                 a["recalls"] += 1
                 a["withheld"] += int(e.get("withheld", 0))
                 a["protected"] += int(e.get("protected", 0))
+                a["quarantined"] += int(e.get("quarantined", 0))
             elif e.get("kind") == "outcome":
                 a["outcomes"] += 1
                 a["succeeded"] += 1 if e.get("succeeded") else 0

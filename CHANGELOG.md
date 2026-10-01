@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A door for any agent, including robots (`commontrace gateway`) and a local console.** Plain
+  HTTP + JSON or stdio JSON lines, memory-agnostic, token-authenticated, with protected
+  (safety) memories that are never withheld, one environment per store so simulation is never
+  pooled with reality, relaxed durability for control loops, and signal detectors for
+  measurement-style outcomes. `commontrace fleet adopt|check|merge` makes many robots one
+  experiment and refuses what cannot be pooled. The console it serves (verdict forest plot with
+  a table fallback, live activity, per-agent view, safety policy) is dependency-free, treats
+  every id as text, runs under a strict CSP, and passes an automated accessibility check at
+  phone and desktop widths in light and dark.
+
 - **The Agent Learning Proof (`commontrace proof`).** `start` forecasts (and refuses a run that
   cannot answer in time), starts the holdout and registers the design before any data;
   `status` reports progress, validity and each memory's verdict; `report` writes a package
