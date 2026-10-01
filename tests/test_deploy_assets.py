@@ -25,7 +25,7 @@ def test_the_burn_rate_alerts_use_the_objectives_they_name():
     assert "6 * 0.001" in rules["HubAvailabilitySlowBurn"]["expr"]
     assert rules["HubAvailabilityFastBurn"]["labels"]["slo"] == "availability-99.9"
     # 95% under 250 ms -> a 0.05 budget; the 250 ms bucket must be one the Hub actually exports
-    pytest.importorskip("starlette")  # hub/ needs its own requirements; the core-install job has none
+    pytest.importorskip("hub.observability")  # hub/ needs its own requirements; the core-install job has none
     from hub.observability import Metrics
     assert 250 in Metrics.BUCKETS_MS
     assert "6 * 0.05" in rules["HubLatencyBurn"]["expr"]

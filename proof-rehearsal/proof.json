@@ -1,5 +1,5 @@
 {
-  "audited_at": "2026-10-01T09:04:04.752839+00:00",
+  "audited_at": "2026-10-01T10:37:34.859902+00:00",
   "design": {
     "baseline": 0.5,
     "daily_occasions": 100.0,
@@ -33,12 +33,12 @@
     },
     "planned_occasions": 198,
     "rate": 0.5,
-    "started_at": "2026-10-01T09:04:04.263012+00:00",
+    "started_at": "2026-10-01T10:37:34.478694+00:00",
     "value_per_occasion": null
   },
   "deviations": [],
   "evidence": {
-    "digest": "3af331c035fdb29e3829cc1b958a47bb0e6856f67a535d71b23ac37bd66cbea8",
+    "digest": "68d48d20b3812200bce45c82afd4699e529346d732156ade56ef4c01601e9dc4",
     "file": "assignments.csv",
     "occasions": 990,
     "rows": 990
@@ -50,14 +50,14 @@
     ],
     "recoverable": {
       "ci_95": [
-        32.64,
-        64.98
+        23.89,
+        55.81
       ],
       "memories": [
         "sim-harmful-memory"
       ],
       "money": null,
-      "occasions": 48.82
+      "occasions": 39.86
     },
     "store_policy": "inform",
     "withdrawn_automatically": false
@@ -71,14 +71,14 @@
         "numbers": {
           "gap": 0.0,
           "injected_rate": 1.0,
-          "injected_resolved": 486,
-          "injected_total": 486,
+          "injected_resolved": 492,
+          "injected_total": 492,
           "maturity_horizon_seconds": null,
           "p": 1.0,
           "pending_too_young": 0,
           "withheld_rate": 1.0,
-          "withheld_resolved": 504,
-          "withheld_total": 504
+          "withheld_resolved": 498,
+          "withheld_total": 498
         },
         "severity": "OK"
       },
@@ -92,13 +92,13 @@
       {
         "check": "arm_balance",
         "detail": "",
-        "headline": "Withheld share is 50.9%, consistent with the configured 50.0% (p=0.589).",
+        "headline": "Withheld share is 50.3%, consistent with the configured 50.0% (p=0.874).",
         "numbers": {
           "configured_rate": 0.5,
-          "observed_rate": 0.509090909090909,
-          "p": 0.5889932838432697,
+          "observed_rate": 0.503030303030303,
+          "p": 0.8737394419527438,
           "total": 990,
-          "withheld": 504
+          "withheld": 498
         },
         "severity": "OK"
       },
@@ -111,7 +111,7 @@
             0.5
           ],
           "salts": [
-            "20261001T090404-61a41663-0.5"
+            "20261001T103734-98563d0d-0.5"
           ]
         },
         "severity": "OK"
@@ -152,10 +152,10 @@
       {
         "check": "outcome_variation",
         "detail": "",
-        "headline": "486 of 990 recorded occasions succeeded.",
+        "headline": "481 of 990 recorded occasions succeeded.",
         "numbers": {
           "resolved": 990,
-          "succeeded": 486
+          "succeeded": 481
         },
         "severity": "OK"
       },
@@ -195,47 +195,47 @@
   "ledger_root": "19fb4bcc3347bd43084a4915cc877a109486ad877e4f0bfbbb87e833b9c4bb5f",
   "memories": [
     {
-      "ci_high": -0.1943,
-      "ci_low": -0.3868,
-      "effect": -0.2906,
+      "ci_high": -0.1439,
+      "ci_low": -0.3362,
+      "effect": -0.2401,
       "lesson_slug": "sim-harmful-memory",
-      "min_detectable_effect": 0.1454,
-      "n_injected": 168,
-      "n_withheld": 162,
+      "min_detectable_effect": 0.1426,
+      "n_injected": 166,
+      "n_withheld": 164,
       "note": "Outcomes are WORSE when this is injected. Correlational scoring cannot see this -- only the holdout can.",
-      "p_value": 0.0,
-      "rate_injected": 0.1786,
-      "rate_withheld": 0.4691,
+      "p_value": 2e-06,
+      "rate_injected": 0.1867,
+      "rate_withheld": 0.4268,
       "significant": true,
       "verdict": "HURTS"
     },
     {
-      "ci_high": 0.3229,
-      "ci_low": 0.1276,
-      "effect": 0.2252,
+      "ci_high": 0.3032,
+      "ci_low": 0.1048,
+      "effect": 0.204,
       "lesson_slug": "sim-helpful-memory",
-      "min_detectable_effect": 0.1492,
-      "n_injected": 156,
-      "n_withheld": 174,
+      "min_detectable_effect": 0.1455,
+      "n_injected": 166,
+      "n_withheld": 164,
       "note": "Injecting this lesson causes better outcomes.",
-      "p_value": 1.4e-05,
-      "rate_injected": 0.7885,
-      "rate_withheld": 0.5632,
+      "p_value": 8.2e-05,
+      "rate_injected": 0.7711,
+      "rate_withheld": 0.5671,
       "significant": true,
       "verdict": "HELPS"
     },
     {
-      "ci_high": 0.1676,
-      "ci_low": -0.0477,
-      "effect": 0.06,
+      "ci_high": 0.0946,
+      "ci_low": -0.1211,
+      "effect": -0.0132,
       "lesson_slug": "sim-neutral-memory",
-      "min_detectable_effect": 0.1555,
-      "n_injected": 162,
-      "n_withheld": 168,
-      "note": "162 injected / 168 withheld clears the 10-per-arm floor, but this design could only have detected ~16% or larger, against a target of 10%. Finding nothing here is 'cannot answer yet', not 'no effect' -- widen the holdout rate or keep accruing.",
-      "p_value": 0.275777,
-      "rate_injected": 0.5123,
-      "rate_withheld": 0.4524,
+      "min_detectable_effect": 0.1565,
+      "n_injected": 160,
+      "n_withheld": 170,
+      "note": "160 injected / 170 withheld clears the 10-per-arm floor, but this design could only have detected ~16% or larger, against a target of 10%. Finding nothing here is 'cannot answer yet', not 'no effect' -- widen the holdout rate or keep accruing.",
+      "p_value": 0.809958,
+      "rate_injected": 0.475,
+      "rate_withheld": 0.4882,
       "significant": false,
       "verdict": "UNDERPOWERED"
     }
@@ -243,18 +243,18 @@
   "mode": "sequential",
   "org_id": "rehearsal",
   "preregistration": {
-    "fingerprint": "0ef8fc6267a718fe7bbaeb7d5d1b25e323e2d3c36aad44dc2cd2f4b3086d32cd",
+    "fingerprint": "8ca4d807f0da4be2c55afcf4095b9a9e1e5254878c07478377107d25b9b8522f",
     "holdout_rate": 0.5,
     "minimum_practical_effect": 0.2,
     "notes": "Easy; occasion = one task; window 0d",
     "planned_occasions": 198,
     "primary_outcome": "the task finished",
-    "registered_at": "2026-10-01T09:04:04.262981+00:00",
-    "salt": "20261001T090404-61a41663-0.5",
+    "registered_at": "2026-10-01T10:37:34.478656+00:00",
+    "salt": "20261001T103734-98563d0d-0.5",
     "stopping_rule": "sequential"
   },
   "preregistration_clean": true,
-  "preregistration_fingerprint": "0ef8fc6267a718fe7bbaeb7d5d1b25e323e2d3c36aad44dc2cd2f4b3086d32cd",
+  "preregistration_fingerprint": "8ca4d807f0da4be2c55afcf4095b9a9e1e5254878c07478377107d25b9b8522f",
   "schema": 1,
   "signature": null,
   "signed_over": [
@@ -268,46 +268,46 @@
   "value": {
     "aggregate_readable": true,
     "ci_95": [
-      -35.91,
-      8.53
+      -28.93,
+      16.94
     ],
     "memories": [
       {
-        "ci_high": -32.64,
-        "ci_low": -64.98,
+        "ci_high": -23.89,
+        "ci_low": -55.81,
         "counted": true,
-        "effect": -0.2906,
-        "n_injected": 168,
-        "occasions_improved": -48.82,
+        "effect": -0.2401,
+        "n_injected": 166,
+        "occasions_improved": -39.86,
         "slug": "sim-harmful-memory",
         "verdict": "HURTS",
         "why_not": ""
       },
       {
-        "ci_high": 50.37,
-        "ci_low": 19.91,
+        "ci_high": 50.33,
+        "ci_low": 17.4,
         "counted": true,
-        "effect": 0.2252,
-        "n_injected": 156,
-        "occasions_improved": 35.13,
+        "effect": 0.204,
+        "n_injected": 166,
+        "occasions_improved": 33.86,
         "slug": "sim-helpful-memory",
         "verdict": "HELPS",
         "why_not": ""
       },
       {
-        "ci_high": 27.15,
-        "ci_low": -7.73,
+        "ci_high": 15.14,
+        "ci_low": -19.38,
         "counted": false,
-        "effect": 0.06,
-        "n_injected": 162,
-        "occasions_improved": 9.72,
+        "effect": -0.0132,
+        "n_injected": 160,
+        "occasions_improved": -2.11,
         "slug": "sim-neutral-memory",
         "verdict": "UNDERPOWERED",
         "why_not": "not established: this design could not detect an effect worth acting on, so multiplying it by a volume would produce a large number with no evidence under it"
       }
     ],
     "money": null,
-    "occasions_improved": -13.69,
+    "occasions_improved": -5.99,
     "readable": true,
     "reason": "",
     "value_per_occasion": null

@@ -16,12 +16,12 @@ Function: **Easy**. Occasion: one task. Success: the task finished. Window: 0 da
   Dropping unresolved occasions is unbiased when the two arms lose them equally, which is what this measures.
 - **[OK] Reporting schedule not checkable.**
   This log does not carry an assignment time and a resolution time for every row, so how long each occasion was watched is unknown. The attrition check still reads the totals; only the timing does not.
-- **[OK] Withheld share is 50.9%, consistent with the configured 50.0% (p=0.589).**
+- **[OK] Withheld share is 50.3%, consistent with the configured 50.0% (p=0.874).**
 - **[OK] One randomization throughout.**
 - **[OK] One retrieval configuration throughout.**
 - **[OK] Every (lesson, occasion) sits in exactly one arm.**
 - **[OK] All 3 lesson(s) held the same text throughout.**
-- **[OK] 486 of 990 recorded occasions succeeded.**
+- **[OK] 481 of 990 recorded occasions succeeded.**
 - **[OK] No retrieval scores recorded, so eligibility strength cannot be assessed.**
   Assignments logged before retrieval evidence was recorded carry no relevance score. Newer assignments will carry one; this check reports on those.
 - **[OK] No lesson is absorbing a disproportionate share of occasions.**
@@ -32,9 +32,9 @@ _Checked here: attrition, arm balance, mid-run re-randomization, conflicting arm
 
 | Memory | Verdict | Effect | 95% CI | Injected | Withheld |
 |---|---|---|---|---|---|
-| `sim-harmful-memory` | **HURTS** | -29.1% | [-38.7%, -19.4%] | 168 | 162 |
-| `sim-helpful-memory` | **HELPS** | +22.5% | [+12.8%, +32.3%] | 156 | 174 |
-| `sim-neutral-memory` | **UNDERPOWERED** | +6.0% | [-4.8%, +16.8%] | 162 | 168 |
+| `sim-harmful-memory` | **HURTS** | -24.0% | [-33.6%, -14.4%] | 166 | 164 |
+| `sim-helpful-memory` | **HELPS** | +20.4% | [+10.5%, +30.3%] | 166 | 164 |
+| `sim-neutral-memory` | **UNDERPOWERED** | -1.3% | [-12.1%, +9.5%] | 160 | 170 |
 
 _Intervals are anytime-valid: they stay valid however often the run was looked at, which is why they are wider than a single look at a finished run would give._
 
@@ -42,25 +42,25 @@ _Intervals are anytime-valid: they stay valid however often the run was looked a
 
 These made outcomes WORSE: `sim-harmful-memory`. The store's policy is `inform`, so they are still being delivered: `commontrace retrieval --on-harm withdraw` stops that.
 
-Over the measured window they cost about **49 occasions**, 95% interval 33 to 65. That is what stopping them gives back; it is measured, not forecast, and it is not billed.
+Over the measured window they cost about **40 occasions**, 95% interval 24 to 56. That is what stopping them gives back; it is measured, not forecast, and it is not billed.
 
 ## Value delivered
 
-**-14 occasions** went differently because of this memory, over the measured window (95% CI -36 to +9).
+**-6 occasions** went differently because of this memory, over the measured window (95% CI -29 to +17).
 
 Computed from 2 memory/memories whose causal effect is established. 1 contributed nothing, listed below with why.
 
-_Counting every measured memory rather than only the ones that cleared significance gives -14 occasions. The figure above selects on the same data it reports, which biases its magnitude away from zero; this one does not, and is not billable because it includes effects the experiment did not establish. The gap between them is what that selection is worth._
+_Counting every measured memory rather than only the ones that cleared significance gives -6 occasions. The figure above selects on the same data it reports, which biases its magnitude away from zero; this one does not, and is not billable because it includes effects the experiment did not establish. The gap between them is what that selection is worth._
 
-**Whole-policy comparison:** -1.0% (95% CI -7.3% to +5.2%) across 486 occasions that received a memory against 504 that received none -- -5 occasions.
+**Whole-policy comparison:** -1.6% (95% CI -7.9% to +4.6%) across 492 occasions that received a memory against 498 that received none -- -8 occasions.
 
 _Every occasion counts once here, whatever number of memories it received, which is what makes this addable when the per-memory figures are not. It attributes nothing to an individual memory._
 
 | Memory | Verdict | Injected | Effect | Occasions | Counted |
 |---|---|---:|---:|---:|---|
-| `sim-harmful-memory` | HURTS | 168 | -29.1% | -49 | yes |
-| `sim-helpful-memory` | HELPS | 156 | +22.5% | +35 | yes |
-| `sim-neutral-memory` | UNDERPOWERED | 162 | +6.0% | +10 | no |
+| `sim-harmful-memory` | HURTS | 166 | -24.0% | -40 | yes |
+| `sim-helpful-memory` | HELPS | 166 | +20.4% | +34 | yes |
+| `sim-neutral-memory` | UNDERPOWERED | 160 | -1.3% | -2 | no |
 
 Why the others contributed nothing:
 
@@ -72,14 +72,14 @@ Why the others contributed nothing:
 
 Registered before the run and run as registered.
 
-- fingerprint `0ef8fc6267a718fe7bbaeb7d5d1b25e323e2d3c36aad44dc2cd2f4b3086d32cd`
+- fingerprint `8ca4d807f0da4be2c55afcf4095b9a9e1e5254878c07478377107d25b9b8522f`
 
 ## Ledger and signature
 
 No ledger: nothing is billable here (no agreed value per occasion, an unreadable experiment, or nothing established).
 
 Ledger root `19fb4bcc3347bd43084a4915cc877a109486ad877e4f0bfbbb87e833b9c4bb5f`
-Data digest `3af331c035fdb29e3829cc1b958a47bb0e6856f67a535d71b23ac37bd66cbea8`
+Data digest `68d48d20b3812200bce45c82afd4699e529346d732156ade56ef4c01601e9dc4`
 
 **Not signed.** The chain and the data digest still check; without an issuer signature a party with write access could replace the whole package.
 

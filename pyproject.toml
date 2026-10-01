@@ -158,7 +158,7 @@ include = ["commontrace*"]
 # reads -- shipped for the same reason: a command that works from a clone
 # and fails after `pip install` is not a feature a customer has.
 # ui/* is the local console `commontrace gateway` serves: plain files, no build step.
-commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*"]
+commontrace = ["schemas/*.json", "reference/*.py", "fixtures/fields/*.json", "kb_packs/*.jsonl", "ui/*", "conformance_vectors.json"]
 
 [tool.ruff]
 line-length = 120

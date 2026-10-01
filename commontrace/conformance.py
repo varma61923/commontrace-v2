@@ -49,7 +49,7 @@ from commontrace import experiment, frontmatter, paths, raw_export, revision, va
 
 SUITE_VERSION = "1"
 #: The packaged copy (so `pip install` carries it) and the one beside the spec for readers; a test holds them equal.
-VECTORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas", "conformance.vectors.json")
+VECTORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conformance_vectors.json")
 SPEC_VECTORS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "protocol",
                                  "conformance", "vectors.json")
 NOT_TESTED = ("what is not tested: statistics (intervals, sequential validity), the integrity audit, retrieval "
