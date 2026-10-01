@@ -365,6 +365,21 @@ jobs:
       - name: Build the Hub image
         run: docker build -t commontrace-hub:ci .
 
+      - name: Scan the image for known vulnerabilities (Trivy)
+        # The image ships OS packages pip-audit never sees. Fails on a
+        # CRITICAL with a fix available (an unfixed one is not actionable
+        # here and would only block every merge until upstream ships);
+        # HIGH is printed so it is visible without blocking. Trivy itself is
+        # pinned by digest, like every base image in this repository.
+        run: |
+          TRIVY=aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 0 \
+            --no-progress commontrace-hub:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 \
+            --no-progress commontrace-hub:ci
+
       - name: Container starts and serves /healthz
         run: |
           # No database configured on purpose: liveness must come up without

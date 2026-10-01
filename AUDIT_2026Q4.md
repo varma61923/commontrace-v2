@@ -18,6 +18,12 @@ audit; it lists what was examined, so what was not is visible.
 | 5 | Medium | A revoked key could be rotated back to life, defeating revocation as the way to end a compromised key. | Fixed: refused; console and operator console answer "not rotated". | `test_a_revoked_key_cannot_be_rotated_back_to_life`, `test_rotating_a_revoked_key_from_the_console_changes_nothing` |
 | 6 | Low | Two simultaneous deliveries of one billing event: the loser raised `IntegrityError` (a 500) and the sender kept retrying. Nothing applied twice (the loser rolled back). | Fixed: 200 once the ledger confirms the event is recorded. | `hub/tests/test_billing.py::TestConcurrentReplay` |
 | 7 | Low | `hub/bench_concurrency.py` crashed in its cleanup after a memory-only run and leaked its org and keys. | Fixed. | run manually (`--backend memory`) |
+| 8 | High | Nine limiters were built as process-local `RateLimiter`s directly: console sign-in, signup (form and REST), share-link views, the operator console, connector, OTLP and REST auth, and `/readyz`. Under `HUB_RATE_LIMIT_BACKEND=postgres` each replica kept its own budget, so the sign-in guard of 5 attempts per source became 5 x replicas. | Fixed: every limiter is built by `abuse.make_named_limiter` on the configured backend, under its own name; a source scan fails if a route constructs one directly. | `hub/tests/test_shared_limiters.py` |
+| 9 | Medium | After an IdP rotated its signing key, every token carrying the new `kid` failed until the cached JWKS expired: up to an hour of SSO lockout per routine rotation. | Fixed: an unknown `kid` refetches the JWKS, at most once a minute per URI however many unknown kids arrive. | `hub/tests/test_sso.py::TestKeyRotation` |
+| 10 | Low | The verification key was built from the JWK's own `alg`, so the document rather than the allowlist decided the key type; an encryption key (`use: enc`) was accepted for signatures. | Fixed: the key is built for the token's allowlisted algorithm; `kty`, any declared `alg`, and `use` must agree. | `hub/tests/test_sso.py::TestTheJwkMustFitTheTokensAlgorithm` |
+| 11 | Medium | A Proof share link could not be revoked: a link forwarded too widely stayed live for its full 14 days. | Fixed: links carry the org's share generation; an admin's "Revoke all share links" bumps it (audited), and older links answer 404. Links for a deleted org also 404. | `hub/tests/test_console.py::TestShareLinks` revocation tests |
+| 12 | Medium | `X-Forwarded-For` was read from its first header line only, so a client-sent line won when a proxy added a second line; and a proxy that writes `IP:port` made every connection a fresh rate-limit bucket. | Fixed: all lines are read in order; a port is stripped before keying. | `hub/tests/test_abuse.py::TestForwardedForCannotBeSpoofed` |
+| 13 | Medium | Memory from external stores (Mem0, Zep, Letta, Claude memory stores, AgentCore) was measured but never screened for prompt injection. | Fixed: `MeasuredMemory` screens before arm assignment (quarantined memories are never logged as treated or withheld) and reports `quarantined` reasons by pattern name only. `CausalMemory(screen=True)` opts a bare wrapper in. | `tests/test_memory_adapters.py::TestExternalMemoryIsScreenedForInjection` |
 
 ## Checked and found sound
 
@@ -29,8 +35,12 @@ audit; it lists what was examined, so what was not is visible.
 
 ## Open
 
-* **Container scan not run.** The Docker daemon is unavailable in the environment this pass ran in, and an unverified CI step is worse than none. Add an image scan to CI once it can be exercised.
-* **Injection screen is pattern matching** with the limits `memory_guard` documents; an attacker who phrases around the patterns is not stopped. Text from external memory stores (`memory_adapters`) is measured, not screened: `CausalMemory` returns the caller's own item objects, and screening there would change what is withheld. Screen at the point the caller renders it.
-* **MCP over HTTP** was exercised at the crud layer (where the org filter lives), not through the transport with two live API keys.
-* **Key-rotation races** are covered for one key; concurrent `issue_api_key` against the plan's key limit is not examined.
-* Not examined: SSO/OIDC callback handling, the share-token format, rate-limiter bypass via header spoofing, dependency CVEs beyond the `pip-audit` already in CI.
+* **Injection screen is pattern matching** with the limits `memory_guard` documents; an attacker who phrases around the patterns is not stopped. It now covers lessons and external memories alike.
+* **Image scan runs in CI, not here.** `docker-build` scans the built image with Trivy (pinned by digest; fails on a fixable CRITICAL, prints HIGH). The Docker daemon is unavailable where this pass ran, so its first real result is CI's.
+* **Not examined:** an interactive OIDC authorization-code flow, because there is none: the Hub accepts bearer JWTs only (`hub/sso.py`), which findings 9 and 10 cover.
+
+## Closed since the first pass
+
+* **MCP over HTTP with two live keys:** CI's `compose-stack` job runs `hub.smoke` against the built image with two orgs' keys and checks that `get_trace`, `vote_trace` and `amend_trace` across the boundary answer `not_found`, and that one org's trace never surfaces through the other's `commons_overlap`.
+* **Concurrent key issuance against a plan's key limit:** plans carry no key limit, so there is nothing to race. The limits that do exist (`max_traces`, `max_agents`) re-check under `SELECT ... FOR UPDATE` on the org row.
+* **Share-token format, header spoofing, SSO verification:** findings 9-12.

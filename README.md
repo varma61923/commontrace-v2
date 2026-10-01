@@ -646,6 +646,24 @@ is deliberately conservative: a causal result from `commontrace experiment`
 (§9 above) always outranks a correlational one, and correlational data alone
 never earns an outright yes — see PILOT.md.
 
+### 10b — Block a release that should not ship
+
+```bash
+commontrace gate                                   # exit 1 names every blocking reason
+commontrace gate --format junit --output gate.xml  # one test case per check, for CI test reports
+commontrace gate --format github                   # GitHub Actions annotations on the run
+commontrace gate --strict                          # warnings block too
+```
+
+Run it before `release promote`. It fails on a COMPROMISED experiment, an
+active lesson whose anytime-valid verdict is HURTS (a warning instead if
+`--on-harm withdraw` already keeps it out of injection), and an active lesson
+that trips the content screen (a secret or an injection payload written in
+after approval) or still carries `TODO:` scaffolding. Contradicting active
+lessons, and a store with no verdicts yet, warn; `--strict` makes them block.
+Output names the check and the lesson, never the lesson's text, because CI
+logs travel further than the store does.
+
 ### 11 — More commands
 
 ```bash

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace gate`: fail a build on memory that should not ship.** Exit 1 on a COMPROMISED experiment, an
+  active lesson measured to hurt (a warning if harm withdrawal already keeps it out), an active lesson tripping
+  the content screen, or unedited scaffolding; contradictions and no-verdicts-yet warn (`--strict` blocks). Text,
+  JSON, JUnit XML and GitHub Actions annotation output; names checks and lessons, never lesson text.
+- **Revoke every Proof share link at once.** Links carry the org's share generation; an admin's "Revoke all share
+  links" (audited) ends every earlier link. Migration `c4f7a2d81e60`.
+- **External memories are screened for prompt injection.** `MeasuredMemory` (Mem0, Zep, Letta, Claude memory
+  stores, AgentCore) quarantines a memory that trips the injection screen before arm assignment, and reports it
+  in `Recall.quarantined` by pattern name. `CausalMemory(screen=True)` opts a bare wrapper in.
+- **Image vulnerability scan in CI.** The built Hub image is scanned with Trivy (pinned by digest): a fixable
+  CRITICAL fails the job, HIGH is reported.
+
 - **Billing on proven value (`commontrace bill`).** An invoice is built from a price schedule the owner supplies
   (every term required, no defaults) and proof packages that verify. Synthetic data, a compromised experiment,
   an unestablished effect and (by default) an interim run bill nothing; billing is cumulative per experiment so a
@@ -79,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The shared rate limiter decides in one statement.** `HUB_RATE_LIMIT_BACKEND=postgres` refilled and
+  decremented in two statements inside a transaction (four round trips, row lock held across them) for each of
+  the two limiter checks on every authenticated request. One upsert now refills, takes and reports the decision:
+  1,465 -> 2,417 decisions/s at 32 concurrent callers, p95 41 -> 26 ms, same exactly-`burst` guarantee under
+  concurrency (`hub/tests/test_shared_limiters.py`). No schema change; the DML-only runtime role still works.
+
 - Recording an outcome no longer re-parses the whole outcomes log (O(n^2) over a run: 2.7 s
   for 800 occasions, and every report for a fleet with 100k). The log is read incrementally
   and the cache is rebuilt whenever the file is not visibly the same file grown.
@@ -87,6 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no `agent_type` are `general`, not `code`.
 
 ### Fixed
+
+- **Brute-force limits multiplied by replica count.** Console sign-in, signup, share-link views, the operator
+  console, connector/OTLP/REST auth and `/readyz` built process-local limiters, so under
+  `HUB_RATE_LIMIT_BACKEND=postgres` each replica kept its own budget. All now share the configured backend.
+- **SSO lockout after an IdP key rotation.** A token with a newly rotated `kid` failed until the JWKS cache
+  expired (up to an hour). An unknown `kid` now refetches, at most once a minute per URI. The verification key
+  is also built for the token's allowlisted algorithm, and a JWK whose `kty`, `alg` or `use` disagrees is refused.
+- **Rate limits bypassable through `X-Forwarded-For`.** Only the header's first line was read, and a proxy that
+  writes `IP:port` gave every connection a fresh bucket. All lines are read in order and ports are stripped.
 
 - **A link could make either console announce any message.** After an
   action, both consoles showed the `?done=` text from the URL as their
