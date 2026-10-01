@@ -157,6 +157,8 @@ class Recall:
     items: list
     #: id -> the evidence (verdict, effect, interval) that got it withdrawn.
     withdrawn: dict = field(default_factory=dict)
+    #: id -> why the injection screen kept it out (pattern names, never text).
+    quarantined: dict = field(default_factory=dict)
 
 
 class CausalMemory:
@@ -187,6 +189,7 @@ class CausalMemory:
         check_every: int = DEFAULT_CHECK_EVERY,
         harm_watch: HarmWatch | None = None,
         durable: bool = True,
+        screen: bool = False,
     ) -> None:
         if not callable(retrieve):
             raise TypeError("retrieve must be callable")
@@ -198,6 +201,9 @@ class CausalMemory:
         self._text = text
         self._pinned = frozenset(str(p) for p in pinned)
         self._scorer = scorer
+        # Off by default here, because a bare CausalMemory may wrap a store
+        # whose items carry no text to screen; MeasuredMemory turns it on.
+        self._screen = screen
 
     @property
     def root(self) -> str:
@@ -227,6 +233,24 @@ class CausalMemory:
                 item_id = str(self._key(item))
                 if item_id in harmful and item_id not in self._pinned:
                     removed[item_id] = harmful[item_id]
+                else:
+                    kept.append(item)
+            items = kept
+
+        # Screened BEFORE assignment, like harm withdrawal and like lessons
+        # (commontrace/injection_guard.py): a memory left out of what the agent
+        # sees must not be logged as treated or withheld on this occasion, or
+        # the estimate is biased toward zero. Pinned memories are screened
+        # too -- being always delivered is a reason to check, not to skip.
+        quarantined: dict[str, str] = {}
+        if self._screen:
+            from commontrace import injection_guard
+
+            kept = []
+            for item in items:
+                labels = injection_guard.injection_labels({"text": self._text(item)})
+                if labels:
+                    quarantined[str(self._key(item))] = "injection screen: " + ", ".join(labels)
                 else:
                     kept.append(item)
             items = kept
@@ -262,6 +286,7 @@ class CausalMemory:
             )
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
+            quarantined=quarantined,
         )
 
     def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:

@@ -239,7 +239,7 @@ class MeasuredMemory:
     def __init__(
         self, adapter: Any, *, root: str | None = None, source_key: str | None = None,
         pinned: Iterable[str] = (), on_harm: str | None = None, delete_harmful: bool = False,
-        check_every: int = DEFAULT_CHECK_EVERY,
+        check_every: int = DEFAULT_CHECK_EVERY, screen_injection: bool = True,
     ) -> None:
         self.adapter = adapter
         self.root = paths.resolve_root(root)
@@ -248,6 +248,9 @@ class MeasuredMemory:
         self._causal = CausalMemory(
             self._eligible, root=self.root, key=lambda i: i.id, text=lambda i: i.text,
             pinned=pinned, scorer=f"adapter:{adapter.name}", on_harm=on_harm, check_every=check_every,
+            # A memory another system wrote is text this product never
+            # admitted, so it is screened the way an injected lesson is.
+            screen=screen_injection,
         )
 
     def _eligible(self, query: str, **kwargs: Any) -> list[Item]:
