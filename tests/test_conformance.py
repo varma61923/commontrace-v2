@@ -144,3 +144,14 @@ def test_an_independent_go_implementation_written_from_the_spec_passes_three_lay
                    env={**os.environ, "GOFLAGS": "-mod=mod"})
     results = conformance.run_exec(str(binary), conformance.load_vectors(), only=("assign", "ledger", "digest"))
     assert all(r.ok for r in results), [r.detail for r in results if not r.ok]
+
+
+def test_the_runner_never_hands_the_command_to_a_shell(tmp_path):
+    marker = tmp_path / "pwned"
+    results = conformance.run_exec(f"true; touch {marker}", conformance.load_vectors(), only=("digest",))
+    assert not marker.exists() and not results[0].ok
+
+
+def test_a_gateway_url_that_is_not_http_is_refused():
+    results = conformance.check_gateway("file:///etc/passwd", "x")
+    assert len(results) == 1 and not results[0].ok

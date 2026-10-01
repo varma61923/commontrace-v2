@@ -64,7 +64,7 @@ def run(args: argparse.Namespace) -> int:
     if not loopback and not args.tls_cert:
         print("[commontrace] warning: binding beyond loopback without TLS sends the bearer token in "
               "the clear; terminate TLS in front of this or pass --tls-cert/--tls-key.", file=sys.stderr)
-    if not loopback and args.host not in ("0.0.0.0", "::"):
+    if not loopback and args.host not in ("0.0.0.0", "::"):  # nosec B104 - a comparison, not a bind
         gw.allowed_hosts = gw.allowed_hosts | {args.host.lower()}
     try:
         server = gateway.make_http_server(
@@ -75,7 +75,7 @@ def run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     scheme = "https" if args.tls_cert else "http"
-    shown = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
+    shown = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host  # nosec B104 - display only
     port = server.server_address[1]
     print(f"[commontrace] gateway for {root}"
           + (f" (environment: {config.env})" if config.env else "")

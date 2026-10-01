@@ -39,9 +39,11 @@ import hashlib
 import json
 import os
 import random
+import shlex
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -169,10 +171,17 @@ def run_exec(command: str, vectors: dict, timeout: float = 30.0, only: tuple[str
         requests.append({"op": "revision", "frontmatter": v["frontmatter"], "body": v["body"]})
         expected.append(("revision", {"revision": v["revision"]}))
     try:
-        proc = subprocess.run(command, shell=True, input="".join(json.dumps(r) + "\n" for r in requests),  # noqa: S602
+        # No shell: the command is split into an argument vector, so a vector or a crafted argument can never be
+        # interpreted by a shell. Quote a path with spaces as you would on a command line.
+        argv = shlex.split(command)
+        if not argv:
+            return [Result("exec", False, "no command given")]
+        proc = subprocess.run(argv, input="".join(json.dumps(r) + "\n" for r in requests),  # nosec B603
                               capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return [Result("exec", False, f"no answer within {timeout:g}s")]
+    except OSError as exc:
+        return [Result("exec", False, f"cannot run {command!r}: {exc}")]
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     if len(lines) != len(requests):
         return [Result("exec", False, f"sent {len(requests)} requests, got {len(lines)} answers"
@@ -242,13 +251,15 @@ def check_store(root: str) -> list[Result]:
 
 
 def _call(base: str, method: str, path: str, token: str | None, body: dict | None = None) -> tuple[int, dict]:
+    if urllib.parse.urlsplit(base).scheme not in ("http", "https"):
+        return 0, {"error": "the gateway URL must be http or https"}
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(base.rstrip("/") + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310 - the operator's own URL
+        with urllib.request.urlopen(request, timeout=10) as resp:  # nosec B310 - scheme checked above
             return resp.status, json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         try:
