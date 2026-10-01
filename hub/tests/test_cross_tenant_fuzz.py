@@ -195,3 +195,26 @@ async def test_rotating_a_revoked_key_from_the_console_changes_nothing(session_f
     async with session_scope(session_factory) as session:
         after = (await session.execute(select(func.count()).select_from(ApiKey))).scalar_one()
     assert after == before
+
+
+async def test_no_scim_route_returns_5xx_for_a_malformed_id(session_factory, config, tenants):
+    """SCIM's tenant boundary is its own bearer scope (test_scim.py); here, only
+    that a value that cannot be an id answers 4xx, on every verb of every id route."""
+    from hub import scim
+    from hub.abuse import RateLimiter
+
+    async with session_scope(session_factory) as session:
+        issued = await auth.issue_api_key(session, tenants["b_org"], scopes=["scim"])
+    app = Starlette()
+    scim.add_scim_routes(
+        app, session_factory, auth_rate_limiter=RateLimiter(per_minute=1_000_000, burst=1_000_000),
+    )
+    headers = {"Authorization": f"Bearer {issued.raw_key}", "Content-Type": "application/scim+json"}
+    routes = _param_routes(app)
+    assert {t for _m, t, _p in routes} == {"/scim/v2/Users/{user_id}", "/scim/v2/Groups/{group_id}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        for method, template, params in routes:
+            for value in HOSTILE_IDS[1:]:
+                path = template.replace("{" + params[0] + "}", urllib.parse.quote(value, safe=""))
+                response = await client.request(method, path, headers=headers, content=b"{}")
+                assert response.status_code < 500, (method, template, value[:40], response.status_code)

@@ -227,9 +227,13 @@ async def run(clients: list[int], requests: int, backends: list[str], as_json: b
             report[backend] = rows
     finally:
         async with session_scope(session_factory) as session:
-            await session.execute(
-                text("DELETE FROM hub_rate_limit_buckets WHERE limiter_name LIKE 'bench-%'")
-            )
+            # Created lazily by the Postgres limiter, so absent after a
+            # memory-only run; deleting from it unguarded raised here and
+            # skipped the org/key cleanup below.
+            if (await session.execute(text("SELECT to_regclass('hub_rate_limit_buckets')"))).scalar():
+                await session.execute(
+                    text("DELETE FROM hub_rate_limit_buckets WHERE limiter_name LIKE 'bench-%'")
+                )
             await session.execute(
                 text("DELETE FROM api_keys WHERE org_id = :o"), {"o": org_id}
             )

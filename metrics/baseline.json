@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "commontrace": "2.0.0",
+  "machine": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v50-x86_64-with-glibc2.39",
+    "cpus": 4
+  },
+  "activation": {
+    "fleet": "simulated support fleet, outcomes drawn by this script",
+    "seconds_to_first_trace": 0.26,
+    "seconds_to_first_active_lesson": 0.51,
+    "seconds_to_first_injected_lesson": 0.64,
+    "lesson_injected": true,
+    "seconds_to_compute_first_causal_verdict": 0.16,
+    "simulated_occasions": 800,
+    "seeded_effect": 0.15,
+    "verdict": "HELPS",
+    "occasions_needed_for_5pp_at_70pct_baseline_50pct_holdout": 2638
+  },
+  "query_latency": {
+    "lessons": 1000,
+    "runs": 40,
+    "process": "cold subprocess per query",
+    "p50_ms": 214.9,
+    "p95_ms": 282.0
+  },
+  "hub": {
+    "what": "per-request floor (auth + rate limit) under concurrency, not search latency",
+    "memory": {
+      "1": {
+        "rps": 265,
+        "p95_ms": 5.5
+      },
+      "8": {
+        "rps": 402,
+        "p95_ms": 26.5
+      },
+      "32": {
+        "rps": 296,
+        "p95_ms": 230.3
+      }
+    },
+    "postgres": {
+      "1": {
+        "rps": 94,
+        "p95_ms": 14.4
+      },
+      "8": {
+        "rps": 108,
+        "p95_ms": 99.7
+      },
+      "32": {
+        "rps": 116,
+        "p95_ms": 447.8
+      }
+    }
+  },
+  "install": {
+    "targets": {
+      "claude-code": true,
+      "cursor": true,
+      "devin": true,
+      "windsurf": true,
+      "generic-mcp": true,
+      "generic": true
+    },
+    "success": 6,
+    "of": 6
+  }
+}
