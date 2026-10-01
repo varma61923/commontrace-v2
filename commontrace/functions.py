@@ -384,7 +384,7 @@ DEMO_LESSONS = (
     ("demo-harmful-memory", -0.12),
     ("demo-neutral-memory", 0.0),
 )
-DEMO_OCCASIONS = 1200
+DEMO_OCCASIONS = 2400
 
 
 def is_demo_store(root: str) -> bool:
@@ -419,10 +419,15 @@ def seed_demo(root: str, kit: FunctionKit, *, seed: int = 0,
     # integrity check can say only that it cannot tell whether the memory held still.
     revisions = {slug: f"demo-{slug}-r1" for slug in slugs}
     for i in range(occasions):
+        # Each occasion matches ONE memory, as real memories match different
+        # situations. Memories injected on the same occasions cannot be added
+        # into one total (commontrace/value.py), so overlapping demo memories
+        # would show a refusal where the value ledger should be.
+        slug = slugs[i % len(slugs)]
         withheld = holdout_io.assign_and_log(
-            root, slugs, occasion_id=f"DEMO-{kit.key}-{i:05d}", rate=kit.planning.holdout_rate,
-            salt=config.salt, revisions=revisions,
+            root, [slug], occasion_id=f"DEMO-{kit.key}-{i:05d}", rate=kit.planning.holdout_rate,
+            salt=config.salt, revisions={slug: revisions[slug]},
         )
-        p = kit.planning.baseline + sum(effects[s] for s in slugs if s not in withheld)
+        p = kit.planning.baseline + (effects[slug] if slug not in withheld else 0.0)
         holdout_io.record_outcome(root, f"DEMO-{kit.key}-{i:05d}", rng.random() < min(max(p, 0.02), 0.98))
     return slugs

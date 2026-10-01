@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Agent Learning Proof (`commontrace proof`).** `start` forecasts (and refuses a run that
+  cannot answer in time), starts the holdout and registers the design before any data;
+  `status` reports progress, validity and each memory's verdict; `report` writes a package
+  (`report.md`, `proof.json`, `assignments.csv`, optionally signed over the ledger root, the
+  data digest and the pre-registration fingerprint); `verify` recomputes the audit, every
+  estimate and the value ledger from the CSV alone and checks the digest, ledger chain,
+  pre-registration and signature, so an auditor needs the file and a key, not trust.
+  A compromised run states no figure and the refusal verifies; an interim run says so; a
+  demo is labelled synthetic everywhere. `function demo` memories now match disjoint
+  occasions, so a demo can show a value ledger.
+
 - **Automatic harm withdrawal for memory held anywhere.** `CausalMemory`, `MeasuredMemory`
   (Mem0, Letta, Zep, Claude memory stores, AgentCore) and file sources now follow the store's
   harm policy: with `commontrace retrieval --on-harm withdraw`, a memory whose anytime-valid
@@ -39,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `HUB_CONNECTORS_ENABLED`; `hub.manage connector-*` to manage.
 
 ### Changed
+
+- Recording an outcome no longer re-parses the whole outcomes log (O(n^2) over a run: 2.7 s
+  for 800 occasions, and every report for a fleet with 100k). The log is read incrementally
+  and the cache is rebuilt whenever the file is not visibly the same file grown.
 
 - A bare `commontrace init`, a store with no declared type, and Hub traces with
   no `agent_type` are `general`, not `code`.

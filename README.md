@@ -668,6 +668,13 @@ commontrace init --function support           # or --kit my_function.json
 commontrace function forecast --daily 40      # at your volume, how long until a verdict
 commontrace function demo                     # synthetic data in an empty store, to see a report
 
+# The Agent Learning Proof: plan, run, report, and let anyone re-derive it from the raw data
+commontrace proof start support --label "Acme" --daily 300 --value-per-occasion 12
+commontrace proof status
+commontrace proof report --key-file KEY        # report.md + proof.json + assignments.csv, signed
+commontrace proof verify proof-acme --key-file KEY   # recomputes everything from the CSV
+commontrace proof demo --value-per-occasion 12  # the same on synthetic data, clearly labelled
+
 # Failure signals, exportable as eval datasets
 commontrace signals list
 commontrace signals export "<name>" --format langsmith|braintrust

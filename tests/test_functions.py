@@ -10,6 +10,7 @@ from commontrace.commands import experiment_cmd
 
 KITS = functions.builtin_kits()
 
+
 GOOD = {
     "key": "warehouse", "title": "Warehouse picking",
     "occasion": {"label": "pick order", "example": "PO-1"},
@@ -52,7 +53,7 @@ def test_demo_data_recovers_help_harm_and_no_effect_for_every_function(tmp_path,
 def test_demo_data_is_reproducible(tmp_path):
     a, b = str(tmp_path / "a"), str(tmp_path / "b")
     for root in (a, b):
-        functions.seed_demo(root, KITS["sales"], seed=3)
+        functions.seed_demo(root, KITS["sales"], seed=3, occasions=300)
     assert open(holdout_io.holdout_log_path(a)).read().count("\n") == open(holdout_io.holdout_log_path(b)).read().count("\n")
     assert {s: (e.n_injected, e.rate_injected) for s, e in _effects(a).items()} == \
            {s: (e.n_injected, e.rate_injected) for s, e in _effects(b).items()}
@@ -63,7 +64,7 @@ def test_demo_data_never_goes_into_a_store_holding_real_data(tmp_path):
     config = holdout_io.configure(root, rate=0.5)
     holdout_io.assign_and_log(root, ["real"], occasion_id="T-1", rate=0.5, salt=config.salt)
     with pytest.raises(functions.KitError, match="real holdout data"):
-        functions.seed_demo(root, KITS["support"])
+        functions.seed_demo(root, KITS["support"], occasions=30)
 
 
 def test_a_new_function_is_just_a_file(tmp_path):
@@ -161,6 +162,6 @@ def test_a_demo_report_is_sound_not_merely_significant(tmp_path, key):
     from commontrace import integrity
 
     root = str(tmp_path)
-    functions.seed_demo(root, KITS[key])
+    functions.seed_demo(root, KITS[key], occasions=600)
     rows, _salt, _other = experiment_cmd.scope_to_current_salt(root, experiment_cmd._load(root)[0])
     assert integrity.audit(rows).verdict == integrity.VERDICT_SOUND

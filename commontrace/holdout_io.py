@@ -17,8 +17,9 @@ import datetime
 import json
 import math
 import os
+import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from commontrace import experiment, frontmatter, lesson_io, paths
 
@@ -316,25 +317,82 @@ class ConflictingOutcome(ValueError):
     """An occasion's outcome was reported twice with different answers."""
 
 
+def _parse_outcome_line(line: bytes | str, out: dict[str, bool]) -> None:
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(row, dict):
+        return
+    occasion, succeeded = row.get("occasion_id"), row.get("succeeded")
+    if isinstance(occasion, str) and occasion and isinstance(succeeded, bool):
+        out[occasion] = succeeded
+
+
+#: How many already-parsed trailing bytes are re-checked before the cache is trusted.
+_TAIL_CHECK = 64
+
+
+@dataclass
+class _OutcomeCache:
+    identity: tuple
+    offset: int = 0          # bytes consumed: only whole, newline-terminated lines
+    tail: bytes = b""        # the last bytes before `offset`, to notice a replaced file
+    outcomes: dict = field(default_factory=dict)
+
+
+_outcome_cache: dict[str, _OutcomeCache] = {}
+_outcome_cache_lock = threading.Lock()
+
+
+def _outcomes_shared(path: str) -> dict[str, bool]:
+    """The parsed outcomes, WITHOUT copying. Callers must not mutate the result.
+
+    The log is append-only, so re-parsing all of it for every report made
+    recording N outcomes cost O(N^2): measured at 2.7s for 800 occasions, and a
+    fleet with a hundred thousand would pay a hundred-thousand-line parse on
+    every outcome. This keeps what has been parsed and reads only what was
+    appended since. The cache is dropped and rebuilt whenever the file is not
+    visibly the same file grown (a different inode, a shorter file, or earlier
+    bytes that no longer match), so a replaced or truncated log is never served
+    stale. A final line with no newline yet (a write in flight, or a torn one) is
+    parsed for this call but never cached, exactly as the full read treated it.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    identity = (st.st_dev, st.st_ino)
+    with _outcome_cache_lock:
+        cache = _outcome_cache.get(path)
+        with open(path, "rb") as fh:
+            valid = cache is not None and cache.identity == identity and st.st_size >= cache.offset
+            if valid and cache.tail:
+                fh.seek(cache.offset - len(cache.tail))
+                valid = fh.read(len(cache.tail)) == cache.tail
+            if not valid:
+                cache = _OutcomeCache(identity=identity)
+                _outcome_cache[path] = cache
+            fh.seek(cache.offset)
+            chunk = fh.read()
+        whole = chunk.rfind(b"\n") + 1
+        for line in chunk[:whole].splitlines():
+            _parse_outcome_line(line, cache.outcomes)
+        if whole:
+            cache.offset += whole
+            cache.tail = (cache.tail + chunk[:whole])[-_TAIL_CHECK:]
+        pending = chunk[whole:]
+        if not pending.strip():
+            return cache.outcomes
+        merged = dict(cache.outcomes)
+        _parse_outcome_line(pending, merged)
+        return merged
+
+
 def read_outcomes(root: str) -> dict[str, bool]:
     """occasion_id -> succeeded, from `outcomes_log_path`. Malformed lines
     are skipped: a torn write must not take every other outcome with it."""
-    path = outcomes_log_path(root)
-    out: dict[str, bool] = {}
-    if not os.path.isfile(path):
-        return out
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            occasion, succeeded = row.get("occasion_id"), row.get("succeeded")
-            if isinstance(occasion, str) and occasion and isinstance(succeeded, bool):
-                out[occasion] = succeeded
-    return out
+    return dict(_outcomes_shared(outcomes_log_path(root)))
 
 
 def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
@@ -362,7 +420,7 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
     path = outcomes_log_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with frontmatter.locked(path):
-        existing = read_outcomes(root).get(occasion_id)
+        existing = _outcomes_shared(path).get(occasion_id)
         if existing is not None:
             if existing == succeeded:
                 return False
