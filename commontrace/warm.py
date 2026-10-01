@@ -158,14 +158,31 @@ def _fingerprint(path: str) -> str:
     return "%s:%d:%d" % (os.path.realpath(path), st.st_mtime_ns, st.st_size)
 
 
+def _package_fingerprint() -> str:
+    """Every module of this package as it is on disk now: (path, mtime, size)
+    for each .py file, hashed. The worker runs whole commands with the package
+    it imported, so an upgrade or an edit anywhere in it (not only to the
+    script or this file) must reach a new worker. About 1 ms for 130 files."""
+    stamps = []
+    for directory, dirnames, filenames in os.walk(_HERE):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for name in sorted(filenames):
+            if name.endswith(".py"):
+                full = os.path.join(directory, name)
+                st = os.stat(full)
+                stamps.append("%s:%d:%d" % (os.path.relpath(full, _HERE), st.st_mtime_ns, st.st_size))
+    return hashlib.sha256("\n".join(stamps).encode("utf-8")).hexdigest()
+
+
 def socket_path(script: str) -> str | None:
-    """The socket of the worker that serves `script` for this interpreter."""
+    """The socket of the worker that serves `script` for this interpreter and
+    this package as it is on disk."""
     directory = runtime_dir()
     if directory is None:
         return None
     try:
         key = "|".join([
-            str(PROTOCOL), os.path.realpath(sys.executable), _fingerprint(script), _fingerprint(__file__),
+            str(PROTOCOL), os.path.realpath(sys.executable), _fingerprint(script), _package_fingerprint(),
         ])
     except OSError:
         return None
@@ -422,6 +439,7 @@ class _Script:
 
         self.path = script
         self.fingerprint = _fingerprint(script)
+        self.package = _package_fingerprint()
         spec = importlib.util.spec_from_file_location("commontrace_warm_query", script)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -459,8 +477,11 @@ class _Script:
         module.load_index = cached_index
 
     def changed(self) -> bool:
+        """Whether the script or any module of the package changed since this
+        worker loaded them: then it exits, and the next call starts one that
+        runs the code on disk."""
         try:
-            return _fingerprint(self.path) != self.fingerprint
+            return _fingerprint(self.path) != self.fingerprint or _package_fingerprint() != self.package
         except OSError:
             return True
 

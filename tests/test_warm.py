@@ -614,3 +614,20 @@ def test_the_real_query_command_prints_the_same_through_the_worker(tmp_path, env
         results.append((r.returncode, r.stdout, r.stderr))
     assert results[0] == results[1] == results[2]
     assert "idem" in results[0][1]
+
+
+def test_an_edit_anywhere_in_the_package_reaches_a_new_worker(tmp_path, monkeypatch, env, script):
+    """The worker runs whole commands with the package it imported; editing
+    query_cmd.py (say) must not leave it serving the old code."""
+    pkg = tmp_path / "pkg"
+    (pkg / "commands").mkdir(parents=True)
+    (pkg / "warm.py").write_text("# stand-in\n")
+    module = pkg / "commands" / "query_cmd.py"
+    module.write_text("A = 1\n")
+    monkeypatch.setattr(warm, "_HERE", str(pkg))
+    before = warm.socket_path(script)
+    loaded = warm._Script(script)
+    assert not loaded.changed()
+    module.write_text("A = 22\n")
+    assert warm.socket_path(script) != before
+    assert loaded.changed()
