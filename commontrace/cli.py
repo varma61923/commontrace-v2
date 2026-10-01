@@ -33,7 +33,7 @@ _COMMANDS = (
     "init", "install", "capture", "import", "trace", "distill", "lesson", "release",
     "overlap", "commons", "kb", "account", "query", "serve", "index", "bench", "reliability",
     "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
-    "dream", "bill", "conformance", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
+    "dream", "bill", "conformance", "gate", "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
 )
 
 
