@@ -160,7 +160,13 @@ def load_blocklist(root: str) -> dict[str, set[str]]:
 
 
 def blocked_ids(root: str, path: str) -> set[str]:
-    return load_blocklist(root).get(_source_key(root, path), set())
+    return blocked_ids_for_key(root, _source_key(root, path))
+
+
+def blocked_ids_for_key(root: str, key: str) -> set[str]:
+    """Like blocked_ids, for a source identified by a name rather than a
+    file path (commontrace/memory_adapters.py)."""
+    return load_blocklist(root).get(key, set())
 
 
 def _write_blocklist_raw(path: str, raw: dict) -> None:
@@ -176,7 +182,10 @@ def withdraw(root: str, path: str, section_id: str) -> None:
     """Permanently exclude `section_id` of the file at `path` from every
     future render, on every occasion, ahead of the holdout draw. See this
     module's docstring for why this never edits `path` itself."""
-    key = _source_key(root, path)
+    withdraw_key(root, _source_key(root, path), section_id)
+
+
+def withdraw_key(root: str, key: str, section_id: str) -> None:
     blocklist_file = blocklist_path(root)
     with frontmatter.locked(blocklist_file):
         raw = _read_blocklist_raw(blocklist_file)
@@ -190,7 +199,10 @@ def withdraw(root: str, path: str, section_id: str) -> None:
 
 def reinstate(root: str, path: str, section_id: str) -> bool:
     """Undo `withdraw`. Returns True if `section_id` was actually blocked."""
-    key = _source_key(root, path)
+    return reinstate_key(root, _source_key(root, path), section_id)
+
+
+def reinstate_key(root: str, key: str, section_id: str) -> bool:
     blocklist_file = blocklist_path(root)
     with frontmatter.locked(blocklist_file):
         raw = _read_blocklist_raw(blocklist_file)
