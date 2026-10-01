@@ -66,6 +66,12 @@ def env_secret(name: str, default: str = "") -> str:
         with open(file_path, encoding="utf-8") as f:
             return f.read().strip()
     except OSError as exc:
+        # Not `file_path!r`: repr() escapes every backslash, so on Windows
+        # the message read `'C:\\\\Users\\\\...'` -- doubled, and no longer
+        # containing the path's own literal value at all, which is exactly
+        # what an operator needs to copy-paste back out to find the file.
+        # Reproduced running hub/tests on Windows, where this raised the
+        # right error but with a value nobody could act on.
         raise RuntimeError(
-            f"{name}_FILE={file_path!r} is set but could not be read: {exc}"
+            f"{name}_FILE='{file_path}' is set but could not be read: {exc}"
         ) from None

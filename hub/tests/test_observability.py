@@ -6,6 +6,7 @@ import json
 import logging
 
 import pytest
+from sqlalchemy import text
 
 from hub import observability
 
@@ -286,6 +287,20 @@ class TestHealthAndReadiness:
             app, session_factory, readyz_rate_limiter=RateLimiter(per_minute=60, burst=1)
         )
         readyz = next(r.endpoint for r in app.routes if getattr(r, "path", None) == "/readyz")
+
+        # Pays the FIRST connection's setup cost (pool creation, the
+        # driver's initial handshake) before the timed sequence below,
+        # outside the rate limiter entirely. Skipping this warm-up made the
+        # bucket's own "negligible refill within the test" assumption false
+        # on a slow first connection -- reproduced at over 2 SECONDS for a
+        # cold pool's first `SELECT 1` in one sandboxed environment, which
+        # is itself far more than the 1-second full-refill window a
+        # burst=1/per_minute=60 bucket allows, so the *second* call's
+        # rate-limit check ran long after the bucket had already refilled.
+        # That was connection latency the test never meant to measure, not
+        # the rate limiter failing to limit anything.
+        async with session_factory() as _warmup_session:
+            await _warmup_session.execute(text("SELECT 1"))
 
         request = _FakeRequest(client=_FakeClient(host="1.2.3.4"))
         first = await readyz(request)
