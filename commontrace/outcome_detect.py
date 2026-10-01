@@ -17,10 +17,20 @@ should not report an outcome for that occasion at all (`record_outcome` is
 still optional per occasion -- an unreported occasion is missing data,
 which the experiment already accounts for; a wrongly reported one is not).
 
+TIME WINDOWS
+------------
+Most business outcomes are not known when the work ends: a ticket is only
+"resolved" if it stays resolved for a week, an outreach only "worked" if a
+reply arrives within two. `from_event_within_window` and `from_no_reversal`
+answer `None` while the window is still open, so an occasion is never labelled
+from an outcome that has not had time to happen.
+
 WHAT THIS MODULE DOES NOT DO
 -------------------------------
-Reconcile multiple signals into one verdict when they disagree, or claim a
-precision figure against a labelled sample. Both need a real fleet's data
+Choose how several signals combine. `from_all` and `from_any` are the two
+explicit three-valued rules (a caller names which one its function means);
+anything subtler is the caller's. It also does not claim a precision figure
+against a labelled sample. Both need a real fleet's data
 to do honestly -- a stated combination rule invented without one would be
 exactly the kind of unverifiable number this product refuses to publish
 elsewhere (see STRATEGY.md's own discipline about §11.1's 10.9%). A caller
@@ -29,6 +39,9 @@ fleet's signals actually mean; this module gives each signal cleanly, not a
 merged opinion.
 """
 from __future__ import annotations
+
+import math
+from datetime import datetime, timedelta, timezone
 
 #: pytest's own exit codes (https://docs.pytest.org exit-code reference):
 #: 0 = all collected tests passed, 1 = some failed. 2 (interrupted by the
@@ -115,3 +128,110 @@ def from_human_takeover(human_took_over: bool) -> bool:
     caller and inevitably inverted by one of them eventually.
     """
     return not human_took_over
+
+
+def _aware(moment: datetime) -> datetime:
+    """Naive datetimes are read as UTC, so a naive and an aware value compare."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _check_window(window_days: float) -> timedelta:
+    if not window_days > 0 or not math.isfinite(window_days):
+        raise ValueError(f"window_days must be a positive number, got {window_days}")
+    return timedelta(days=window_days)
+
+
+def from_event_within_window(
+    event_at: datetime | None,
+    *,
+    started_at: datetime,
+    window_days: float,
+    now: datetime | None = None,
+) -> bool | None:
+    """Did a wanted event (a reply, a booked meeting, an accepted offer, a
+    stage advance) happen within `window_days` of the occasion?
+
+    True if it did. False if the window has closed without it, or it came
+    after the window. `None` while the window is open with no event yet --
+    the occasion has not concluded -- and for an event dated before the
+    occasion started, which is a data error, not an answer.
+    """
+    window = _check_window(window_days)
+    started = _aware(started_at)
+    if event_at is not None:
+        event = _aware(event_at)
+        if event < started:
+            return None
+        return event - started <= window
+    current = _aware(now) if now is not None else datetime.now(timezone.utc)
+    return False if current - started > window else None
+
+
+def from_no_reversal(
+    reversal_at: datetime | None,
+    *,
+    started_at: datetime,
+    window_days: float,
+    now: datetime | None = None,
+) -> bool | None:
+    """Did the result STAY done for `window_days` -- no reopen, no revert, no
+    rollback?
+
+    False if it was reversed inside the window. True once the window has
+    closed with no reversal (a reversal after the window does not count
+    against it). `None` while the window is open and nothing has reversed
+    yet: success is only known at the end of the window.
+    """
+    window = _check_window(window_days)
+    started = _aware(started_at)
+    if reversal_at is not None:
+        reversal = _aware(reversal_at)
+        if reversal < started:
+            return None
+        if reversal - started <= window:
+            return False
+        return True
+    current = _aware(now) if now is not None else datetime.now(timezone.utc)
+    return True if current - started > window else None
+
+
+def from_threshold(
+    value: float | None, *, minimum: float | None = None, maximum: float | None = None,
+) -> bool | None:
+    """A measured quantity read against a bound: conversion rate at least X,
+    position error at most Y, handle time within budget.
+
+    `None` for a missing or non-finite measurement. At least one bound is
+    required; with both, the value must sit inside them.
+    """
+    if minimum is None and maximum is None:
+        raise ValueError("give a minimum, a maximum, or both")
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise ValueError(f"minimum {minimum} is above maximum {maximum}")
+    if value is None or not math.isfinite(value):
+        return None
+    if minimum is not None and value < minimum:
+        return False
+    if maximum is not None and value > maximum:
+        return False
+    return True
+
+
+def from_all(*signals: bool | None) -> bool | None:
+    """Success only if every signal says so. Any False is a failure however
+    the others read; otherwise any `None` leaves it undecided."""
+    if not signals:
+        raise ValueError("from_all needs at least one signal")
+    if any(s is False for s in signals):
+        return False
+    return None if any(s is None for s in signals) else True
+
+
+def from_any(*signals: bool | None) -> bool | None:
+    """Success if at least one signal says so. Any True is a success; otherwise
+    any `None` leaves it undecided, since a signal still open may yet say yes."""
+    if not signals:
+        raise ValueError("from_any needs at least one signal")
+    if any(s is True for s in signals):
+        return True
+    return None if any(s is None for s in signals) else False

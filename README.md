@@ -662,6 +662,12 @@ commontrace lesson suggest-rewrite <slug>
 commontrace kb list
 commontrace kb install kubernetes-deployment
 
+# Any function: support sales hr coding marketing robotics legal finance clinical, or your own kit file
+commontrace function list
+commontrace init --function support           # or --kit my_function.json
+commontrace function forecast --daily 40      # at your volume, how long until a verdict
+commontrace function demo                     # synthetic data in an empty store, to see a report
+
 # Failure signals, exportable as eval datasets
 commontrace signals list
 commontrace signals export "<name>" --format langsmith|braintrust

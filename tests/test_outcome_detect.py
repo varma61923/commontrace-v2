@@ -98,3 +98,74 @@ class TestFromHumanTakeover:
 
     def test_no_takeover_is_read_as_resolved(self):
         assert od.from_human_takeover(False) is True
+
+
+# --- time-windowed and combined detectors ------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+
+def _days(n):
+    return T0 + timedelta(days=n)
+
+
+def test_event_within_window():
+    kw = dict(started_at=T0, window_days=14)
+    assert od.from_event_within_window(_days(3), **kw) is True
+    assert od.from_event_within_window(_days(14), **kw) is True
+    assert od.from_event_within_window(_days(15), **kw) is False       # came too late
+    assert od.from_event_within_window(None, now=_days(5), **kw) is None   # window still open
+    assert od.from_event_within_window(None, now=_days(20), **kw) is False  # closed, nothing came
+    assert od.from_event_within_window(_days(-1), **kw) is None        # before the occasion: data error
+
+
+def test_no_reversal_is_only_known_at_the_end_of_the_window():
+    kw = dict(started_at=T0, window_days=7)
+    assert od.from_no_reversal(None, now=_days(3), **kw) is None       # too early to say
+    assert od.from_no_reversal(None, now=_days(8), **kw) is True
+    assert od.from_no_reversal(_days(2), now=_days(3), **kw) is False  # reopened inside the window
+    assert od.from_no_reversal(_days(30), now=_days(31), **kw) is True  # reopened long after: not this occasion's
+    assert od.from_no_reversal(_days(-1), **kw) is None
+
+
+def test_naive_and_aware_datetimes_compare():
+    assert od.from_event_within_window(datetime(2026, 9, 2), started_at=T0, window_days=7) is True
+
+
+@pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf")])
+def test_a_window_must_be_a_positive_finite_number(bad):
+    with pytest.raises(ValueError):
+        od.from_event_within_window(None, started_at=T0, window_days=bad)
+    with pytest.raises(ValueError):
+        od.from_no_reversal(None, started_at=T0, window_days=bad)
+
+
+def test_threshold():
+    assert od.from_threshold(0.9, minimum=0.8) is True
+    assert od.from_threshold(0.7, minimum=0.8) is False
+    assert od.from_threshold(3.0, maximum=5.0) is True
+    assert od.from_threshold(6.0, minimum=1.0, maximum=5.0) is False
+    assert od.from_threshold(None, minimum=0.8) is None
+    assert od.from_threshold(float("nan"), minimum=0.8) is None
+    with pytest.raises(ValueError):
+        od.from_threshold(1.0)
+    with pytest.raises(ValueError):
+        od.from_threshold(1.0, minimum=5, maximum=1)
+
+
+def test_from_all_three_valued_logic():
+    assert od.from_all(True, True) is True
+    assert od.from_all(True, False, None) is False   # one failure decides it
+    assert od.from_all(True, None) is None
+    with pytest.raises(ValueError):
+        od.from_all()
+
+
+def test_from_any_three_valued_logic():
+    assert od.from_any(False, True, None) is True    # one success decides it
+    assert od.from_any(False, None) is None          # a signal still open may say yes
+    assert od.from_any(False, False) is False
+    with pytest.raises(ValueError):
+        od.from_any()

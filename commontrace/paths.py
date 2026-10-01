@@ -44,10 +44,6 @@ STARTER_DOMAINS = {
     GENERAL_AGENT_TYPE: ["other"],
 }
 
-# `commontrace init --function`: the business function, and the agent_type slug it
-# is stored under. "custom" takes its slug from --agent-type.
-FUNCTION_AGENT_TYPES = {"support": "support", "sales": "sales", "hr": "hr", "coding": "code"}
-
 
 def resolve_root(explicit: str | None = None) -> str:
     if explicit:

@@ -16,11 +16,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--function",
-        choices=(*paths.FUNCTION_AGENT_TYPES, "custom"),
         default=None,
-        help="Business function this store is for. 'custom' takes its slug from "
-             "--agent-type. Without --function or --agent-type the store is "
+        help="Business function kit: support, sales, hr, coding, marketing, robotics, legal, "
+             "finance, clinical (`commontrace function list`), or 'custom' to take the slug "
+             f"from --agent-type. Without --function or --agent-type the store is "
              f"'{paths.GENERAL_AGENT_TYPE}'.",
+    )
+    p.add_argument(
+        "--kit", default=None, metavar="FILE",
+        help="A function kit spec (JSON) for a function not built in; "
+             "validate it first with `commontrace function check`.",
     )
     p.add_argument(
         "--agent-type",
@@ -59,26 +64,42 @@ def _profile_for(args: argparse.Namespace) -> str:
     return "code-review" if args.agent_type == "code" else ""
 
 
-def resolve_agent_type(function: str | None, agent_type: str | None) -> str:
+def resolve_kit(function: str | None, kit_file: str | None):
+    """The kit named by --function / --kit, or None. Raises functions.KitError."""
+    from commontrace import functions
+
+    if function and kit_file:
+        raise functions.KitError("pass --function or --kit, not both")
+    if kit_file:
+        return functions.load_file(kit_file)
+    if function and function != "custom":
+        return functions.resolve(function)
+    return None
+
+
+def resolve_agent_type(function: str | None, agent_type: str | None, kit=None) -> str:
     """The agent_type to stamp on the store. Raises ValueError on a conflict."""
-    if function in (None, "custom"):
+    if kit is None:
         return agent_type or (function and "custom") or paths.GENERAL_AGENT_TYPE
-    expected = paths.FUNCTION_AGENT_TYPES[function]
-    if agent_type and agent_type != expected:
+    if agent_type and agent_type != kit.agent_type:
         raise ValueError(
-            f"--function {function} stores as agent_type {expected!r}, "
+            f"function {kit.key!r} stores as agent_type {kit.agent_type!r}, "
             f"which conflicts with --agent-type {agent_type!r}"
         )
-    return expected
+    return kit.agent_type
 
 
 def run(args: argparse.Namespace) -> int:
     try:
-        args.agent_type = resolve_agent_type(args.function, args.agent_type)
+        kit = resolve_kit(args.function, args.kit)
+        args.agent_type = resolve_agent_type(args.function, args.agent_type, kit)
     except ValueError as exc:
         print(f"[commontrace] error: {exc}", file=sys.stderr)
         return 2
     root = os.path.abspath(args.dest)
+    if kit is not None:
+        # The kit's starter domains, unless this type already has its own.
+        paths.STARTER_DOMAINS.setdefault(kit.agent_type, list(kit.domains) or ["other"])
     profile = _profile_for(args)
     mem = paths.memory_dir(root)
     lessons = paths.lessons_dir(root)
@@ -153,7 +174,16 @@ def run(args: argparse.Namespace) -> int:
                 has_episodes=os.path.isdir(paths.episodes_dir(root)),
             ))
 
+        if kit is not None:
+            from commontrace import functions
+
+            functions.save_to_store(root, kit)
         print(f"[commontrace] Initialized a {args.agent_type} store at {mem}")
+        if kit is not None:
+            print(f"  Occasion: one {kit.occasion_label} (e.g. {kit.occasion_example}). "
+                  f"Success: {kit.outcome.success}.")
+            print(f"  `commontrace function forecast {kit.key} --daily <occasions per day>` "
+                  "says how long a verdict takes at your volume.")
 
     if has_attention_deps():
         # Recommended, not switched on: whether a store fuses must be its

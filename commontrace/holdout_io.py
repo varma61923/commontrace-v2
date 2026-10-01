@@ -103,8 +103,13 @@ def configure(
     rate: float,
     detect: float = experiment.DEFAULT_PRACTICAL_EFFECT,
     note: str = "",
+    salt: str | None = None,
 ) -> ExperimentConfig:
     """Start (or restart) this store's experiment. Returns the new settings.
+
+    `salt` pins the randomization, for a reproducible simulation (demo data,
+    the harness). A live experiment should leave it unset: a fresh salt is
+    what keeps one randomization from being pooled with another.
 
     CHANGING THE RATE ROTATES THE SALT, and that is the whole point rather
     than a side effect. Assignment is `hash(lesson, occasion, salt) < rate`,
@@ -135,7 +140,7 @@ def configure(
         # called twice in the same second, pooling two experiments under one
         # salt; the uuid suffix makes every rotation unique while keeping
         # the human-readable timestamp prefix.
-        salt=f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
+        salt=salt or f"{now[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:8]}-{rate:g}",
         detect=detect,
         started_at=now,
         note=note,

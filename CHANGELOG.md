@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Function kits.** `commontrace function` and `init --function|--kit`: the
+  occasion, outcome model (real detectors, how they combine, how long to wait),
+  planning defaults and demo data that make the holdout work for a function, as
+  a validated spec. Built in: support, sales, hr, coding, marketing, robotics,
+  legal, finance, clinical; any other function is a JSON file. New detectors in
+  `outcome_detect`: event within a window, no reversal within a window, metric
+  threshold, `from_all`, `from_any` (all three-valued, `None` while a window is
+  open).
+
+### Changed
+
+- A bare `commontrace init`, a store with no declared type, and Hub traces with
+  no `agent_type` are `general`, not `code`.
+
 ### Fixed
 
 - **A link could make either console announce any message.** After an
