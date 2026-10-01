@@ -1,0 +1,74 @@
+# Required. Build with the repo-root Dockerfile and push to your registry.
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The name of a Secret YOU create (External Secrets, Sealed Secrets, a CI step). The chart never
+# renders secret values. Keys: HUB_DATABASE_URL, HUB_LEDGER_SIGNING_KEY, HUB_ENCRYPTION_KEY,
+# HUB_API_KEY_PEPPER, HUB_CONSOLE_SECRET, HUB_ADMIN_TOKEN (see deploy/k8s/secret.example.yaml).
+existingSecret: ""
+
+replicaCount: 2
+# The rate limiter must be shared once there is more than one replica (hub/DEPLOYMENT.md §6);
+# the chart refuses replicas > 1 with the in-process backend.
+config:
+  HUB_HOST: "0.0.0.0"
+  HUB_PORT: "8420"
+  HUB_LOG_LEVEL: "INFO"
+  HUB_ALLOW_INSECURE_HTTP: "true"        # TLS ends at the ingress; see hub/DEPLOYMENT.md §10
+  HUB_TRUSTED_PROXY_HOPS: "0"            # set to the exact number of trusted proxies in front
+  HUB_RATE_LIMIT_BACKEND: "postgres"
+  HUB_DB_POOL_SIZE: "10"
+  HUB_DB_MAX_OVERFLOW: "5"
+  HUB_REQUIRE_RLS: "true"
+  HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
+
+# Postgres max_connections must exceed (HUB_DB_POOL_SIZE + HUB_DB_MAX_OVERFLOW) x (max replicas +
+# surge). Set it so the chart can check it at render time.
+postgres:
+  maxConnections: 0
+
+migrations:
+  enabled: true                          # a pre-install/pre-upgrade hook Job
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests: { cpu: 250m, memory: 256Mi }
+  limits: { cpu: "1", memory: 512Mi }
+
+service:
+  type: ClusterIP
+  port: 8420
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecretName: ""
+  annotations: {}
+
+networkPolicy:
+  enabled: false
+  # Namespaces allowed to reach the Hub (the ingress controller's, and your agents').
+  allowedNamespaceLabels: []             # e.g. [{kubernetes.io/metadata.name: ingress-nginx}]
+  postgresCIDR: ""                       # egress to the database; empty = allow all egress
+
+metrics:
+  # A Prometheus Operator ServiceMonitor and PrometheusRule carrying the SLO alerts (deploy/slo.yaml).
+  serviceMonitor: false
+  alerts: false
+  tokenSecretKey: ""                     # a key in existingSecret holding HUB_METRICS_TOKEN, if set
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

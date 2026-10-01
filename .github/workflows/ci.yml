@@ -317,6 +317,41 @@ jobs:
         continue-on-error: true
         run: mypy commontrace/ hub/ --ignore-missing-imports
 
+  deploy-assets:
+    # The Helm chart and Terraform configurations are the only deployment code nothing else runs, so
+    # an unvalidated change would reach an operator first. Tools are pinned by version AND sha256
+    # (downloaded, not an unpinned third-party action); nothing here talks to a cloud account.
+    name: helm and terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned helm and terraform
+        run: |
+          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
+          echo "9318379b847e333460d33d291d4c088156299a26cd93d570a7f5d0c36e50b5bb  helm.tgz" | sha256sum -c -
+          tar xzf helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/helm
+          curl -sSfL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+          echo "186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  tf.zip" | sha256sum -c -
+          unzip -q tf.zip && sudo mv terraform /usr/local/bin/terraform
+
+      - name: Lint and render the chart (defaults, and every optional template on)
+        run: |
+          A="--set image.repository=registry.example/hub --set image.tag=1.0.0 --set existingSecret=hub-secrets"
+          helm lint deploy/helm/commontrace-hub $A
+          helm template t deploy/helm/commontrace-hub $A >/dev/null
+          helm template t deploy/helm/commontrace-hub $A --set metrics.alerts=true --set metrics.serviceMonitor=true \
+            --set networkPolicy.enabled=true --set ingress.enabled=true --set ingress.host=h.example \
+            --set autoscaling.enabled=true --set postgres.maxConnections=200 >/dev/null
+
+      - name: Validate Terraform
+        run: |
+          for d in deploy/terraform/aws deploy/terraform/gcp; do
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" validate
+            terraform -chdir="$d" fmt -check
+          done
+
   docker-build:
     # The image could not be built where it was authored (no Docker daemon),
     # so CI is the first thing that actually proves it builds and that the

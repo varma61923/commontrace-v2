@@ -1,0 +1,6 @@
+apiVersion: v2
+name: commontrace-hub
+description: "The CommonTrace Hub, a multi-tenant proof-and-governance service (Postgres is not included)"
+type: application
+version: 0.1.0
+appVersion: "2.0.0"

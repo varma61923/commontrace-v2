@@ -1,0 +1,36 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hub.name" . }}
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "hub.name" . }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.allowedNamespaceLabels }}
+        - namespaceSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+        {{- end }}
+        {{- if not .Values.networkPolicy.allowedNamespaceLabels }}
+        - podSelector: {}
+        {{- end }}
+      ports:
+        - { port: 8420, protocol: TCP }
+  egress:
+    # DNS, the database and whatever the operator's outbound calls (webhook delivery, SSO keys) need.
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - {{- if .Values.networkPolicy.postgresCIDR }}
+      to:
+        - ipBlock: { cidr: {{ .Values.networkPolicy.postgresCIDR | quote }} }
+      ports:
+        - { port: 5432, protocol: TCP }
+    {{- else }}
+      {}
+    {{- end }}
+{{- end }}
