@@ -2457,3 +2457,468 @@ mode that actually occurred, twice, both times identically: a signal was
 added, the author reasonably did not think of it as *shared*, and nothing
 anywhere disagreed. The honest claim is not "this cannot happen again" but
 "this can no longer happen quietly."
+
+---
+
+## 27. Update (2026-09-28): a first step toward measuring memory this
+product does not store -- one adapter, not the six
+
+Externally, the framing has shifted: agent platforms (Claude Managed
+Agents, AWS Bedrock AgentCore) now write memory for their own agents, and
+none of them measure whether what they wrote causes better outcomes. That
+is a real gap and a plausible positioning -- "the causal layer over any
+memory" -- but it is worth being precise about how much of it already
+existed here versus what this update actually adds, because the honest
+amount is smaller than "we built the causal layer over any memory" would
+suggest.
+
+**What already existed.** `commontrace/measure.py`'s `CausalMemory` wraps
+ANY retrieval callable -- `memory = CausalMemory(store.search)` -- and puts
+it through the exact same randomized holdout, append-only log, and
+`commontrace experiment` analysis every lesson in this store goes through.
+That is most of "causal layer over any memory" already, for any store
+shaped like a query-in, ranked-results-out API: Mem0, Zep, a custom vector
+store. `tests/test_measure.py` already proved the end-to-end claim before
+this update touched anything.
+
+**What did not fit, and what this update adds.** A query/retrieval shape
+does not describe CLAUDE.md, AGENTS.md, or a `.cursor/rules` file: there is
+no query, and the whole file is placed in every session unconditionally.
+`commontrace/memory_sources.py` (`FileMemorySource`) adds the missing unit
+of assignment -- a file's own `##` sections -- and a `render(occasion_id)`
+step that decides, per occasion, which sections to withhold, going through
+`CausalMemory`/`holdout_io` rather than a second implementation. Harm
+withdrawal (`withdraw()`) never edits the source file -- it writes to
+`memory/source_blocklist.json` and is enforced at render time, which is the
+spec's own "otherwise it becomes a blocklist" branch for a source this
+product does not own. CLI: `commontrace source sections|render|outcome|
+withdraw|reinstate`. Tests: `tests/test_memory_sources.py` (19, including
+the same planted-effect end-to-end shape `test_measure.py` uses) and
+`tests/test_source_cmd.py` (13, CLI wiring only).
+
+**What this does not claim.** Five of the six adapters a full build-out
+would need -- Claude Managed Agents memory stores, AWS AgentCore episodic
+memory/reflections, Mem0, Zep/Graphiti, Letta -- are not built. Each is a
+live API with its own auth, its own shape for "withhold this item," and (for
+several of them) its own story for whether harm withdrawal can write back
+at all. `FileMemorySource` was the cheapest of the six to build and verify
+honestly: no credentials, no egress, works air-gapped, the same reasoning
+`commontrace/adapters.py` already gives for reading vendor exports as files
+rather than live API pulls. Generalizing this pattern to a live API is a
+materially different piece of work per vendor -- an auth flow, a rate limit,
+and a decision about what "withhold" means for a store with no natural
+concept of a discrete, holdout-able section -- and none of that is done
+here.
+
+---
+
+## 28. Update (2026-09-28): assisted extraction, closing the TODO-scaffold
+gap without an SDK
+
+`commontrace distill` and `lesson suggest-revision` have always refused,
+on purpose, to fill in a lesson's Rule/`applies_when`/`do_not_apply_when`
+from a heuristic -- `distill.py`'s own words for it: "Proposing better
+evidence is honest; proposing the conclusion is not." That refusal was
+correct against a term-frequency count. It was never an argument against a
+model reading the SAME evidence and proposing an answer that then has to
+survive the SAME gate every other draft does.
+
+**What is built.** `commontrace/llm.py`: a strict-JSON draft call against
+Anthropic's Messages API or any OpenAI-compatible endpoint (so a local
+model server, or a customer-run proxy in front of Bedrock/Vertex, works
+without this codebase touching either provider's own signed-request API --
+deliberately not attempted here, since a signing implementation subtly
+wrong is a worse failure than not having one). A reply that is not a
+complete JSON object, or cites an occasion/trace id the caller never
+offered as evidence, is refused rather than trusted -- `--draft` on
+`distill`, `lesson suggest-revision`, and the new `lesson suggest-rewrite`
+(for a `HARMFUL` lesson, where the rule itself may be wrong, not just
+over-broad) all fall back to the exact pre-`--draft` `TODO: ...` scaffold,
+with a stated reason, whenever no usable draft comes back. Every draft
+still lands at `status: review` and still passes through `lesson
+approve`'s scaffolding/content-safety/redundancy/separation-of-duties gate
+-- nothing about that gate changed. Provenance (provider, model, a SHA-256
+of the exact prompt sent, token usage) is recorded on the draft's
+`llm_draft` frontmatter field, not asserted in prose. Tests:
+`tests/test_llm.py` (21, the HTTP layer and every refusal path),
+`tests/test_suggest_revision.py` (+9 for `--draft`/`suggest-rewrite`, 20 total),
+`tests/test_distill.py` (+5, 44 total).
+
+**Zero new dependencies, core or optional -- stronger than the spec asked
+for.** The plan this implements called for an optional `[llm]` extra;
+every provider here is a plain JSON-over-HTTPS endpoint, so stdlib
+`urllib` is enough and there is nothing to install at all. The one thing
+that cost real attention: `urllib.request` imports `ssl`, and importing
+`commontrace/llm.py` must not make that cost land on every `commontrace
+capture`/`query`/`lesson` invocation that never passes `--draft` --
+caught by `tests/test_cli.py::test_a_command_imports_only_what_it_uses`,
+which failed the first time this shipped. Fixed by moving the
+`urllib.request`/`urllib.error` imports inside the one function that
+actually makes a network call, so the network stack is paid for only when
+`--draft` is actually used.
+
+**What this does not claim.** No SDK for any provider -- a customer using
+Bedrock or Vertex needs their own OpenAI-compatible proxy in front of it,
+named but not built here. No "dream" consolidation job proposing merges/
+splits from `commontrace consolidate`'s report (the spec's fourth P0-2
+bullet) -- scoped out of this pass, not attempted and quietly dropped.
+No evaluation of draft quality against a curated fixture or a blinded
+human rating (the spec's own acceptance criteria for this workstream) --
+what is verified here is that the refusal paths work and the gate is not
+bypassed, not that a real model's drafts are good on some benchmark; that
+claim would need a real provider account and a labelled fixture, neither
+of which this pass had.
+
+---
+
+## 29. Update (2026-09-28): one framework middleware, verified against the
+real package -- and why the other seven are not built
+
+The spec calls for live-capture middleware across eight frameworks (OpenAI
+Agents SDK, Claude Agent SDK, Vercel AI SDK, LangGraph, CrewAI, Google ADK,
+Pydantic AI, Mastra). This pass built exactly one: `commontrace/
+integrations/langgraph.py`. The reason is the same discipline `commons/
+eval/`'s 10.9% finding runs on -- a claim about an API this repository
+cannot exercise is not evidence, it is a guess wearing evidence's clothes.
+
+**What was actually available to check against.** Of the eight, only
+`langgraph` (and its `langchain-core` dependency) is installed in this
+environment. The other seven are not, so any code written against their
+APIs would be asserting a method signature and calling convention from
+training-data memory of a fast-moving ecosystem, unverifiable and likely
+stale by the time anyone runs it -- exactly the category of claim §12.5
+already refuses to make about market figures, applied here to code instead
+of a number.
+
+**What building against the real package actually caught.** The design
+was: don't re-implement retrieval/ranking/holdout (that is `measure.py`'s
+`CausalMemory`, already built and tested), just derive the occasion id
+from LangGraph's own per-thread config and wrap a node with it. The first
+version annotated the wrapped node's `config` parameter as `dict | None`,
+which looked obviously correct and was wrong: LangChain's own runnable
+introspection recognizes the special forwarded-config parameter by name
+and by a `RunnableConfig` type annotation, and a `dict | None` annotation
+on a parameter NAMED `config` fails that check silently -- LangGraph passed
+`None` instead of the real config on every invocation, so every retrieval
+would have silently returned nothing, forever, with no error and no test
+failure to explain why -- three of eleven tests using a real compiled
+`StateGraph` caught this before it shipped; a test built entirely from a
+hand-rolled `config` dict without an actual `StateGraph.invoke()` call
+would have passed and shipped the bug. Fixed by leaving `config`
+unannotated (verified against the installed package, not guessed a second
+time). Tests: `tests/test_integrations_langgraph.py` (11), against a real
+compiled `langgraph.graph.StateGraph`, skipped rather than failed if
+`langgraph` is not installed.
+
+**What this does and does not claim.** `commontrace/integrations/` is a
+package specifically so a `mem0.py`/`pydantic_ai.py`/etc. can be added
+later without touching this file -- but each one needs the same
+verification this one got, against an actual installed copy of that
+framework, not against a remembered API shape. Writing seven more files
+that cannot be run against anything real would not be seven more features;
+it would be seven more places for exactly the bug above to ship silently.
+That is a smaller claim than the spec's eight-framework acceptance
+criterion, stated as such rather than padded to look like more.
+
+**Automatic outcome detection, the other half of this workstream.**
+`commontrace/outcome_detect.py` turns a signal an application already has
+-- a test runner's exit code, a ticket's status transition, a CSAT score,
+a retry count, whether a human took over -- into the plain `succeeded:
+bool` `record_outcome` needs, each against a vendor-agnostic vocabulary
+the caller supplies (ticket status strings) or a documented,
+non-arbitrary convention (pytest's own exit codes; a CSAT threshold
+expressed as a fraction of the scale's own max, not a hardcoded absolute
+number). Every detector returns `None` rather than guessing when a signal
+is genuinely ambiguous (an unlisted ticket status, a non-pass/fail exit
+code) -- a caller should not report an outcome at all for that occasion,
+because a wrongly-labelled observation is worse than a missing one in a
+randomized comparison. Tests: `tests/test_outcome_detect.py` (27).
+**Not claimed:** the spec's own acceptance criterion for this bullet is
+"verified against a labelled sample (precision >= 0.9)" -- that needs a
+real fleet's labelled data this pass does not have, and inventing a
+number to clear that bar would be the exact thing this module's own
+docstring refuses to do for combining ambiguous signals. What is verified
+is that each function implements the mapping it documents.
+
+---
+
+## 30. Update (2026-09-28): the causal-detection harness, run against
+itself rather than assumed to work
+
+`commons/eval/causal_harness.py` (`python -m commons.eval.causal_harness`)
+answers the market's "who ran the harness?" objection about this
+product's own core claim: does randomized holdout measurement detect a
+real effect, correctly withhold judgement on a null one, and refuse to
+score a tampered log. Every scenario drives the exact functions the CLI
+does -- `holdout_io.assign_and_log`/`record_outcome`, then
+`experiment_cmd._load`/`scope_to_current_salt` and `integrity.audit` -- not
+a re-implementation of either, so a disagreement between this script and
+`commontrace experiment` would be this repository's own bug, not a
+simulation artifact. 30 seeds per scenario, fixed in the file before any
+run, PASS at >=90% of seeds:
+
+| Scenario | Result |
+|---|---|
+| Detects a real +35pp effect as HELPS | **100%** (mean recovered effect 35.0%, true effect 35pp) |
+| Never claims an effect for a null lesson | **90%** (3/30 seeds falsely called HELPS/HURTS) |
+| Refuses a log with two holdout rates under one salt | **100%** (correctly reported unreadable/COMPROMISED) |
+
+**The middle number is the one worth reading carefully, not the one worth
+hiding.** 90% is this harness's own PASS threshold, not a comfortable
+margin above it -- at a well-powered n and the standard significance
+testing this product already documents (§3.2's own alpha-spending
+discussion), a small false-positive rate under the null is the EXPECTED,
+correct behavior of the statistics, not a defect to explain away. Reporting
+it at exactly the pass line rather than picking a rosier seed count or a
+looser threshold is the same discipline `commons/eval/`'s other scripts
+already hold themselves to.
+
+**A bug this harness's own construction found, before it found anything
+about the product.** The first version of the tampered-log scenario
+invented a salt string rather than using the store's own configured one,
+and scored 0/30 -- not because `check_assignment_drift` failed to detect
+tampering, but because `scope_to_current_salt` (what `commontrace
+experiment` scopes every analysis through) filters every row to the
+store's OWN configured salt first, so the invented-salt rows were filtered
+out before any check ever ran. Fixed by calling `holdout_io.configure()`
+and reusing its real salt. Left in the script's own comments rather than
+quietly corrected, on the same reasoning §29 gives for the LangGraph
+config-annotation bug: the failure mode worth naming is "this measured
+nothing and reported a false pass," not the specific line that caused it.
+
+**What this does not do.** Attrition and mid-run lesson edits -- named in
+the spec alongside seeded effects and tampering -- are not scenarios here
+yet; `tests/test_integrity.py`/`tests/test_survival.py` already cover both
+at the unit level (§25.2's Kaplan-Meier fix, `check_treatment_stability`),
+just not as a seeded, reproducible-by-anyone-with-different-seeds harness
+scenario the way the three above are.
+
+---
+
+## 31. Update (2026-09-28): failure signals -- naming what a fleet keeps
+hitting, and exporting it to a tool the fleet already runs
+
+`commontrace signals` (`commontrace/failure_signals.py`) clusters this
+store's traces recorded as a FAILURE (`outcome.resolved is False`, or
+`outcome.repeated_error is True` when `resolved` is unset -- never an
+unrecorded outcome, which is silence, not a failure) into named groups,
+using the exact same clustering `commontrace distill`/`commontrace
+taxonomy` already use rather than a third implementation of "group similar
+traces." Two things a lesson candidate does not need and a signal does:
+WHEN (`trend`: increasing/steady/decreasing/unknown, from a TIME-midpoint
+split of `Trace.created_at` -- an earlier, count-midpoint version of this
+split was reproduced to always read "steady" regardless of the actual
+date distribution, since splitting a list by rank count makes both halves
+equal in size by construction no matter how bunched the real dates are)
+and WHO (`affected_agents`, from `Trace.agent_id`, deduplicated).
+
+`commontrace signals export <name> --format langsmith|braintrust` turns
+one signal into a regression dataset, using the SAME field names
+(`inputs`/`outputs` for LangSmith, `input`/`expected` for Braintrust)
+`commontrace/adapters.py`'s importers already read back OUT of a real
+export from each -- reused in reverse rather than independently guessed a
+second time for the same two vendors. Tests: `tests/test_failure_signals.py`
+(19).
+
+**What this does not do.** The spec's other half of this workstream --
+"dispatch a coding agent through MCP with the traces, then verify the
+change with a holdout" -- is not built. That is a materially larger,
+different piece of work (an MCP client driving an external coding agent,
+plus wiring its result back through the holdout machinery) than clustering
+and exporting, and attempting it in the same pass as everything else in
+this update would risk the same "looks implemented without being one"
+failure this document refuses elsewhere.
+
+---
+
+## 32. Update (2026-09-28): `hub/tests/` actually run against Postgres for
+the first time this session, and three real bugs came back with it
+
+Every update through §31 was scoped to what this sandbox could run:
+`tests/` (PyYAML-only, no external services) had a real green bar behind
+every claim; `hub/` did not, because this environment had no Postgres and
+Docker's daemon was not running. That changed mid-session -- Docker
+Desktop started successfully, and a disposable Postgres container
+(`commontrace_dev`/`commontrace_hub_test`, matching `hub/README.md`'s own
+documented local test setup) made `python -m pytest hub/tests/` runnable
+for the first time here. First full run: **2120 passed, 8 failed, 1
+skipped** (73 minutes -- this sandbox, not a comment on the suite's own
+CI time). All 8 failures were investigated, not assumed; none were
+symptoms of the same root cause pattern as `tests/`'s own symlink-
+privilege failures (§ the client-side audit earlier this session), because
+none of them needed a privilege this sandbox lacks. Two were real,
+platform-portability bugs; one was a test that measured connection
+latency instead of the rate limiter.
+
+**Bug 1 -- `hub/console.py`'s shared-Proof-page banner crashed on Windows,
+full stop.** `_shared_page` formatted its expiry date with
+`strftime("%B %-d, %Y")`. `%-d` (day-of-month with no leading zero) is a
+glibc/macOS strftime extension, not a standard one -- CPython raises
+`ValueError: Invalid format string` for it against Windows' C runtime. Six
+of the eight failures were this one line: every test that ever rendered a
+shared report page failed on the date, not on anything the test was
+actually about. Fixed by building the string from portable pieces
+(`f"{dt:%B} {dt.day}, {dt:%Y}"`) -- identical output, no platform-specific
+directive.
+
+**Bug 2 -- `hub/secrets_provider.py`'s own error message hid the value it
+exists to report.** `env_secret`'s failure path built its `RuntimeError`
+with `f"{name}_FILE={file_path!r} ..."`. `repr()` escapes every backslash,
+so on Windows the message read `'C:\\\\Users\\\\...'` -- doubled, and no
+longer containing the path's own literal value at all. An operator
+reading this error on Windows could not copy-paste the path back out to
+find the file, which is the entire point of naming it. Fixed by
+interpolating the raw value instead of its repr.
+
+**Not a bug -- a test that assumed a fast first connection.**
+`test_readyz_is_rate_limited_per_client` asserted a burst=1 bucket
+refilling at 1/sec would still show 0 tokens on a SECOND call issued
+"immediately" after the first. Instrumented directly: in this sandbox,
+`session_factory()`'s first-ever query took over 2 seconds (connection
+pool creation + the driver's initial handshake), all of it happening
+*inside* the first `/readyz` call, after the rate limiter had already
+logged that call's timestamp -- so by the time the second call's rate
+check ran, more than the bucket's full 1-second refill window had already
+elapsed, and it legitimately let the second call through. The RateLimiter
+was doing exactly what it is supposed to do; the test's own "negligible
+refill within the test" comment named an assumption that a slow first
+connection breaks. Fixed in the test, not the product: a warm-up query
+against `session_factory()` now runs before the timed sequence starts, so
+the timing assertion measures the rate limiter's own behavior rather than
+connection-pool cold-start latency that happens to share a code path with
+it.
+
+**Verification.** All three fixes re-run: the 8 originally-failing tests
+now pass (300/300 in the four affected files, including everything else in
+them); a full `hub/tests/` re-run is the final check before this update is
+considered closed. `ruff check` clean on every changed file.
+
+**What this changes about the standing claim in §0's own operating
+rules** ("run the full Hub suite against Postgres before every push"): it
+was always the correct rule, and this session could not follow it until
+now. Both real bugs are invisible to `tests/`'s own suite (neither module
+it exercises reaches `hub/console.py`/`hub/secrets_provider.py`), and
+neither is Windows-specific in the way that matters commercially: the
+shipped Dockerfile is Linux-based, so the container this product actually
+deploys never hits `%-d`'s Windows failure mode. What IS real regardless of
+host OS: `hub/secrets_provider.py`'s escaped-path bug fires on any
+platform where a secret file's path contains a character `repr()` chooses
+to escape, and the underlying lesson generalizes past this one sandbox --
+a portability bug that no Linux CI run will ever surface is still a bug
+the moment a second environment (a contributor's laptop, a support
+engineer reproducing an issue, a future Windows-hosted deployment nobody
+has built yet but nothing here precludes) exercises that code path. This
+pass is the concrete argument for paying the cost of standing up Postgres
+rather than skipping the Hub suite by default, not a claim that these two
+specific bugs were about to ship to a real customer.
+
+### 32.1 With Postgres verifiable, the Hub-side half of P0-3 that was
+previously out of reach: `POST /v1/traces`
+
+§29 built the client-side half of "live capture everywhere" -- a
+verified LangGraph middleware, `outcome_detect.py` -- and named the
+Hub-side OTLP ingest endpoint as explicitly not attempted, because this
+sandbox had no way to verify anything touching `hub/`. That constraint is
+gone as of §32's first paragraph, so this closes the gap: `hub/otlp.py`
+adds `POST /v1/traces`, the standard OTLP/HTTP path, opt-in via
+`HUB_OTLP_INGEST_ENABLED` (absent, not merely refused, until set -- the
+same posture `/admin`/`/app`/`/signup`/`/api/v1/*` each already take).
+
+**Not a second parser.** Every span is normalized with
+`commontrace/adapters.py`'s `normalize(span, source="otel")` -- the exact
+function `commontrace import --source otel` and
+`commontrace/otel_exporter.py` already call, so this path inherits every
+GenAI-semantic-convention vintage that module already handles rather than
+tracking the drift a second time.
+
+**OTLP-JSON only, stated rather than silently narrower than the spec.**
+The full OTLP/HTTP spec also accepts protobuf; parsing it needs the
+generated `ExportTraceServiceRequest` message classes
+(`opentelemetry-proto`), which is not among `hub/requirements.txt`'s
+declared dependencies, and a hand-rolled protobuf decoder is exactly the
+kind of "looks implemented" risk this document refuses elsewhere. A
+protobuf request gets an explicit 415, not a silent partial parse; every
+mainstream OTLP exporter (the SDKs' own, an OTel Collector's `otlphttp`
+exporter) supports an `encoding: json` setting as an alternative.
+
+**New surface, held to the same bar as every other one** (AGENTS.md:
+"new routes get the cross-origin guard, CSP hashes, body limits, rate
+limits, RLS and scopes"): `X-API-Key` + `write` scope, verified with the
+IDENTICAL `auth.verify_api_key` call `hub/rest.py`'s `/api/v1/traces`
+uses, not a second implementation; the global `BodySizeLimitMiddleware`
+already bounds every route's body, and a separate span-COUNT ceiling
+(500 -- generous against the OTel SDK's own default 512-span batch cap)
+bounds a body just under the byte limit that still packs an unreasonable
+span count; every span goes through the SAME per-org write-rate bucket
+and entitlement check every other ingestion path already enforces, scoped
+to `org_id` in SQL by `crud.contribute_trace` exactly as every other
+write is (`hub/crud.py`'s own tenant-isolation invariant, unchanged);
+each span is deduplicated by its own OTel span id as an idempotency key,
+so a batch an exporter retries after a partial failure does not double-
+count.
+
+Tests: `hub/tests/test_otlp.py` (15) -- absence-until-configured,
+authentication/scope refusal, tenant isolation, idempotent replay, the
+explicit protobuf 415, and the span-count ceiling -- plus the adjacent
+surfaces this change touches (`test_rest.py`, `test_config_and_limits.py`,
+`test_build_app_startup.py`): 104 passed.
+
+**Correction, recorded rather than quietly edited.** An earlier draft of
+this paragraph said a full `hub/tests/` re-run was green with this route
+added. That sentence was written while that run was still in progress,
+and the run did not come back green: it reported 61 failed and 985
+errors. The test Postgres container had been SIGKILLed mid-run (exit 137)
+when the session hosting it ended, and the run's last two hours were
+connection failures against a database that no longer existed -- but the
+log kept only its last 30 lines, which is not enough to PROVE that from
+the log alone, so the honest status at the time of correction was "not
+verified," not "verified green with an explanation." See §32.2 for the
+re-run against a fresh database. The general lesson is the one this
+document keeps re-learning: a claim written ahead of its evidence is
+wrong even when it later turns out true.
+
+**What this does not do.** No metrics or logs ingest (`/v1/metrics`,
+`/v1/logs`) -- this product's object model is a Trace, and a span is the
+one OTLP signal with an obvious mapping to one; metrics/logs ingest would
+need a real decision about what Hub object they become, not just a route.
+No resource/scope-level attribute merging into each span (matching the
+existing `--source otel` importer's own scope exactly, not a richer
+behavior invented only for the live path).
+
+---
+
+## 33. Update (2026-10-01): substrate packs -- the Knowledge Base, installable
+locally, without a new word of content
+
+§14 made the Knowledge Base operator-curated and §15/§16 gave it growth
+and maintenance channels -- but its only consumer was a Hub query
+(`commons_search`/`commons_overlap`). A fleet with no Hub, or one that
+wants the knowledge AS lessons in its own store (so `query`, the holdout
+and `reliability` all see it), had no path. `commontrace kb install
+<pack>` (`commontrace/kb_packs.py`) is that path: four packs --
+`databases`, `security`, `kubernetes-deployment`, `concurrency-resilience`
+-- each a tag-grouped selection of `commons/seed/substrate-v1.jsonl`.
+
+**The claim kept small on purpose.** The spec for this workstream named
+example packs (Stripe webhooks, React 19, LLM tool-call quirks) that this
+corpus does not contain. They are not here, because writing them would
+mean authoring new substrate claims for this feature, and the corpus's own
+standing (§16) rests on every entry carrying a source someone can check.
+`tests/test_kb_packs.py` pins this: every pack record must exist verbatim
+in the curated corpus, and every one must carry a `source`.
+
+**Governance unchanged.** Installed lessons land at `status: review`, with
+`do_not_apply_when` and `## Counter-examples` left as `TODO:` -- the one
+judgement a generic pack cannot make for a specific fleet -- so `lesson
+approve` refuses each until a person states it. Re-install never
+overwrites an edited lesson; provenance (`kb_pack: {name, version}`, the
+version being a hash of the pack file's bytes) travels on each one. Pack
+files ship inside the package (pyproject.toml package-data), not read
+from `commons/`, which a `pip install` does not have. Tests:
+`tests/test_kb_packs.py` (15).
+
+**Not done:** the spec's "each lesson carries its measured effect across
+opted-in orgs" -- that is cross-org measurement, which §11.4's gate and the
+spec's own operating rules both say must wait for a privacy layer (PSI or
+differential privacy) and an explicit owner decision. Neither exists, so
+no cross-org number is attached to any pack lesson.

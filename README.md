@@ -335,6 +335,41 @@ and says so; `lesson validate` fails an *active* lesson in that state; and
 `sync --push` will not publish one. Fill it in first — that editing pass is
 the curation step, not a formality.
 
+**`--draft` asks a model to fill in that TODO instead of a human**, on
+`distill`, `lesson suggest-revision` (a `MISCALIBRATED` lesson fires too
+broadly) and `lesson suggest-rewrite` (a `HARMFUL` lesson's rule may be
+*wrong*, not just over-broad — always attempts a draft, since there is no
+honest heuristic placeholder for "what should this rule actually say"):
+
+```bash
+export COMMONTRACE_LLM_API_KEY=...           # required; no key, no draft attempted
+commontrace distill --draft
+commontrace lesson suggest-revision lesson_broad --draft
+commontrace lesson suggest-rewrite lesson_bad          # always tries an LLM draft
+```
+
+The model sees only the evidence the command already computed (the same
+grouped situation/solution variants, or the same hit/miss occasions
+`reliability` scored) and is required to answer a strict JSON object; an
+unparseable reply, a missing field, or a citation that isn't in the
+evidence offered is refused outright, and the command falls back to the
+same `TODO: ...` scaffold it would have written without `--draft` — with a
+stated reason on stderr. Nothing here shortcuts the gate above: an
+LLM-drafted candidate still lands at `status: review` and `lesson approve`
+still refuses it if `## How to apply`/`## Counter-examples` are unfilled
+or the content-safety/redundancy checks flag it. Provenance (provider,
+model, a hash of the exact prompt sent, token usage) travels in the
+draft's `llm_draft` frontmatter field.
+
+Zero new dependencies, core or optional (`commontrace/llm.py` speaks plain
+JSON-over-HTTPS with stdlib `urllib`) — set `COMMONTRACE_LLM_PROVIDER=
+openai-compatible` and `COMMONTRACE_LLM_BASE_URL` to point at a local model
+server or any OpenAI-compatible endpoint instead of the `anthropic`
+default. Bedrock/Vertex's own signed-request APIs are not implemented
+(both document an OpenAI-compatible endpoint of their own — point
+`COMMONTRACE_LLM_BASE_URL` at that instead of a hand-rolled, unverifiable
+SigV4/JWT signer).
+
 ### 6 — Measure what another fleet's lessons would be worth to you
 
 ```bash
@@ -501,6 +536,13 @@ commontrace experiment --strict         # non-zero exit if a lesson HURTS, or if
 
 **Step-by-step, with the sample sizes you need: [PILOT.md](PILOT.md).**
 
+Don't take the claim on trust: `python -m commons.eval.causal_harness`
+runs it against ground truth this repository seeds itself — a lesson with
+a real effect, one with none, and a tampered log — across 30 seeds nobody
+picked to be favorable, and prints the fraction each scenario got right.
+Change the seeds in that file and re-run it to check the numbers
+yourself.
+
 Every other number in this repo — including `reliability`'s `lift` — is
 **correlational**, and the confound is structural: a lesson is retrieved
 *because* the situation matched its activation condition, so the occasions
@@ -583,6 +625,53 @@ memory, with the same validity checks as above.
   different one for an occasion already on record raises rather than
   silently changing the result.
 
+**Wiring this into an agent framework, instead of by hand at every call
+site.** `commontrace/integrations/` adds the one framework-specific piece
+`CausalMemory` cannot know on its own: where a run's own identifier comes
+from, so the same run's holdout arm stays consistent across every node/
+step in it without a caller inventing an id. Today: `langgraph` (a
+`with_lessons(node, memory)` wrapper keyed on LangGraph's own
+`config["configurable"]["thread_id"]`, and `record_outcome(memory, config,
+succeeded=...)`). Importing `commontrace` never imports these — a project
+using none of the supported frameworks pays nothing for their existence,
+and adding one costs no new commontrace dependency (the framework itself
+is already the caller's own dependency).
+
+```python
+from commontrace.measure import CausalMemory
+from commontrace.integrations.langgraph import with_lessons, record_outcome
+
+memory = CausalMemory(my_store.search)
+graph.add_node("respond", with_lessons(respond_node, memory))
+...
+result = graph.invoke(state, config={"configurable": {"thread_id": "conv-42"}})
+record_outcome(memory, config, succeeded=result["resolved"])
+```
+
+#### Memory that lives in a plain file — CLAUDE.md, AGENTS.md, .cursor/rules
+
+`CausalMemory` above wraps a *retrieval call*: ask a query, get back ranked
+items. A file an agent platform writes to and reads back whole — CLAUDE.md,
+AGENTS.md, a `.cursor/rules/*.mdc` — has no query at all; the entire file
+lands in every session's context unconditionally. `FileMemorySource` (in
+`commontrace/memory_sources.py`) splits such a file into its own `##`
+sections and measures each one the same way, through the same holdout log
+and the same `commontrace experiment` analysis:
+
+```bash
+commontrace source sections CLAUDE.md                       # what would be measured separately
+commontrace source render CLAUDE.md --occasion-id task-4711 --out /tmp/this-session.md
+#   ... give the agent /tmp/this-session.md instead of CLAUDE.md for this session ...
+commontrace source outcome --occasion-id task-4711 --succeeded
+commontrace experiment                                       # a verdict per section, same as any lesson
+```
+
+Harm withdrawal never edits the source file — a customer's CLAUDE.md is not
+this product's file to rewrite. `commontrace source withdraw CLAUDE.md
+--section-id <id>` records the id in `memory/source_blocklist.json`, and
+every future `render` drops it before the holdout draw even runs; `source
+reinstate` undoes it.
+
 #### When a lesson is proven to hurt: stop handing it out
 
 A HURTS verdict is only useful if something happens next. Opt in, and
@@ -645,6 +734,42 @@ matching [the Plans section below](#plans-and-what-they-actually-enforce)'s
 is deliberately conservative: a causal result from `commontrace experiment`
 (§9 above) always outranks a correlational one, and correlational data alone
 never earns an outright yes — see PILOT.md.
+
+### 11 — Start with what every fleet rediscovers: curated substrate packs
+
+```bash
+commontrace kb list                       # databases, security, kubernetes-deployment, concurrency-resilience
+commontrace kb install kubernetes-deployment
+commontrace lesson list --status review   # fill in where each does NOT apply, then approve
+```
+
+A pack is a tag-grouped selection of the operator-curated Knowledge Base
+corpus this repository already ships (`commons/seed/substrate-v1.jsonl`),
+each record keeping its source citation — no content was written for
+packs. Installed lessons land at `status: review`: the one judgement a
+pack cannot make for you is where its rule does *not* apply in your stack,
+so `do_not_apply_when` and `## Counter-examples` stay as `TODO:` until a
+person writes them, and `lesson approve` refuses until then. Re-installing
+after an update never overwrites a lesson you've already edited.
+
+### 12 — Name a repeated failure, export it to the eval tool you already run
+
+```bash
+commontrace signals list                                  # named, sized, trended clusters of FAILURES
+commontrace signals export "<name>" --format langsmith > regression.jsonl
+commontrace signals export "<name>" --format braintrust > regression.jsonl
+```
+
+`signals` reuses `distill`'s clustering, restricted to traces recorded as a
+failure (`--not-resolved`, or `--repeated-error` when resolution was never
+recorded — an unrecorded outcome is silence, not a failure, and is never
+counted). Each signal carries `trend` (increasing/steady/decreasing, from
+when the underlying traces were captured) and `affected_agents` (from
+`--agent-id`), and exports in the same `inputs`/`outputs` (LangSmith) or
+`input`/`expected` (Braintrust) shape `commontrace import --source
+langsmith|braintrust` already reads back the other way — so this
+complements those tools' own eval/CI-gate workflows instead of duplicating
+them.
 
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
