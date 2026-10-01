@@ -1,0 +1,12 @@
+{
+  "name": "commontrace",
+  "description": "Prove which of your agent's learned memory changes outcomes, and withdraw what hurts.",
+  "owner": { "name": "CommonTrace" },
+  "plugins": [
+    {
+      "name": "commontrace",
+      "source": "./plugins/commontrace",
+      "description": "Install CommonTrace, start a randomized proof on your own agent's memory, and verify the report from raw data."
+    }
+  ]
+}

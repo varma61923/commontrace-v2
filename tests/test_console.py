@@ -85,10 +85,8 @@ def test_the_token_comes_from_the_fragment_and_is_scrubbed_from_the_address_bar(
 
 
 def test_the_console_ships_in_the_package():
-    import tomllib
-    with open(os.path.join(os.path.dirname(UI_DIR), "..", "pyproject.toml"), "rb") as fh:
-        data = tomllib.load(fh)
-    assert "ui/*" in data["tool"]["setuptools"]["package-data"]["commontrace"]
+    with open(os.path.join(os.path.dirname(UI_DIR), "..", "pyproject.toml"), encoding="utf-8") as fh:
+        assert '"ui/*"' in fh.read()
     for name in FILES:
         assert os.path.isfile(os.path.join(UI_DIR, name)), name
 

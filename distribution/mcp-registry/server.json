@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.varma61923/commontrace",
+  "title": "CommonTrace",
+  "description": "Agent memory store that measures, by randomized holdout, which lessons help and which hurt.",
+  "version": "2.0.0",
+  "repository": {
+    "url": "https://github.com/varma61923/commontrace-v2",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "commontrace",
+      "version": "2.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ]
+    }
+  ]
+}

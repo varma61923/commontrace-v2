@@ -1,0 +1,8 @@
+{
+  "name": "commontrace",
+  "version": "2.0.0",
+  "description": "Measure whether your agent's learned memory actually improves outcomes, withdraw what hurts, and keep an auditable trail.",
+  "author": { "name": "CommonTrace" },
+  "license": "MIT",
+  "keywords": ["memory", "agents", "evaluation", "governance"]
+}
