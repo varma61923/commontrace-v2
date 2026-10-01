@@ -34,6 +34,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
                    help="Override the store's harm policy for this gateway.")
     p.add_argument("--allow-host", action="append", default=[], metavar="NAME",
                    help="Extra Host header names to answer to (needed when binding beyond loopback).")
+    p.add_argument("--allow-approval", action="store_true",
+                   help="Let the console edit, approve and reject lessons in review (off by default: approving "
+                        "changes what every agent is told).")
     p.add_argument("--tls-cert", default=None)
     p.add_argument("--tls-key", default=None)
     p.set_defaults(func=run)
@@ -49,7 +52,7 @@ def run(args: argparse.Namespace) -> int:
     gw = gateway.Gateway(
         root, token=None if args.stdio else (args.token or gateway.load_or_create_token(root)),
         config=config, durable=not args.relaxed_durability, on_harm=args.on_harm,
-        allowed_hosts=tuple(args.allow_host))
+        allowed_hosts=tuple(args.allow_host), allow_approval=args.allow_approval)
     if args.stdio:
         print(f"[commontrace] gateway on stdio for {root}", file=sys.stderr)
         return gateway.serve_stdio(gw, sys.stdin, sys.stdout)

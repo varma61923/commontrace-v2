@@ -313,9 +313,10 @@ class Gateway:
     def __init__(
         self, root: str, *, token: str | None = None, config: GatewayConfig | None = None,
         durable: bool = True, on_harm: str | None = None, check_every: int = 25,
-        allowed_hosts: tuple[str, ...] = (),
+        allowed_hosts: tuple[str, ...] = (), allow_approval: bool = False,
     ) -> None:
         self.root = os.path.abspath(root)
+        self.allow_approval = allow_approval
         self.token = token
         self.config = config if config is not None else load_config(self.root)
         self.durable = durable
@@ -353,6 +354,16 @@ class Gateway:
         self._route("GET", "/v1/memories", self._memories, summary="Each memory's measured verdict.")
         self._route("GET", "/v1/occasions", self._occasions, summary="Recent recalls and outcomes (?limit=).")
         self._route("GET", "/v1/agents", self._agents, summary="Per-agent activity.")
+        self._route("GET", "/v1/lessons", self._lessons, summary="Lessons and what is waiting for review (?status=).")
+        self._route("GET", "/v1/lesson", self._lesson, summary="One lesson: text, gates, history (?slug=).")
+        self._route("POST", "/v1/lesson/edit", self._lesson_edit, request={
+            "slug": "a lesson in review", "rule": "optional", "applies_when": "optional",
+            "do_not_apply_when": "optional"}, summary="Edit a review draft. Needs --allow-approval.")
+        self._route("POST", "/v1/lesson/approve", self._lesson_approve, request={
+            "slug": "a lesson in review", "rationale": "optional"},
+            summary="Approve a review draft through every gate. Needs --allow-approval.")
+        self._route("POST", "/v1/lesson/reject", self._lesson_reject, request={
+            "slug": "a lesson in review", "reason": "why"}, summary="Reject a review draft. Needs --allow-approval.")
 
     def handle(
         self, method: str, target: str, headers: Mapping[str, str] | None = None,
@@ -622,7 +633,8 @@ class Gateway:
         out: dict = {
             "gateway": {"api": API_VERSION, "version": __version__, "env": self.config.env,
                         "protected_prefixes": list(self.config.protected_prefixes),
-                        "durable": self.durable, "harm_policy": retrieval_io.read_harm_policy(self.root)},
+                        "durable": self.durable, "harm_policy": retrieval_io.read_harm_policy(self.root),
+                        "approval_enabled": self.allow_approval},
             "experiment": {"running": bool(config.started_at) and config.running,
                            "rate": config.rate if config.started_at and config.running else 0.0},
             "activity": {"recalls": sum(1 for e in events if e.get("kind") == "recall"),
@@ -649,6 +661,44 @@ class Gateway:
                          for e in analysis.effects],
             "occasions": len({r.occasion_id for r in rows}),
         }
+
+    # -- the lesson workbench (commontrace/workbench.py) ------------------------------------
+
+    def _workbench(self, call):
+        from commontrace import workbench
+
+        try:
+            return call(workbench)
+        except workbench.WorkbenchError as exc:
+            raise ApiError(exc.status, exc.code, exc.message) from None
+
+    def _acting(self) -> None:
+        if not self.allow_approval:
+            raise ApiError(403, "approval_disabled", "start the gateway with --allow-approval to edit, approve or "
+                                                       "reject lessons here")
+
+    def _lessons(self, _body, query) -> dict:
+        status = (query.get("status") or [None])[0]
+        return {"lessons": self._workbench(lambda w: w.list_lessons(self.root, status)),
+                "approval_enabled": self.allow_approval}
+
+    def _lesson(self, _body, query) -> dict:
+        slug = (query.get("slug") or [""])[0]
+        return {**self._workbench(lambda w: w.detail(self.root, slug)), "approval_enabled": self.allow_approval}
+
+    def _lesson_edit(self, body, _query) -> dict:
+        self._acting()
+        fields = {k: v for k, v in body.items() if k != "slug"}
+        return self._workbench(lambda w: w.edit(self.root, body.get("slug", ""), fields, "console"))
+
+    def _lesson_approve(self, body, _query) -> dict:
+        self._acting()
+        return self._workbench(lambda w: w.approve(self.root, body.get("slug", ""), body.get("rationale"),
+                                                   "console"))
+
+    def _lesson_reject(self, body, _query) -> dict:
+        self._acting()
+        return self._workbench(lambda w: w.reject(self.root, body.get("slug", ""), body.get("reason", "")))
 
     @staticmethod
     def _limit(query: dict, default: int, cap: int) -> int:

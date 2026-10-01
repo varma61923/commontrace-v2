@@ -12,7 +12,10 @@
   var token = "";
   var timer = null;
   var lastOk = 0;
-  var state = { status: null, memories: null, agents: null, events: null };
+  var state = { status: null, memories: null, agents: null, events: null, lessons: null, lesson: null };
+  var selected = {};   // slug -> true, the review queue's bulk selection; survives repaints
+  var notice = null;   // { kind: "ok"|"crit", text } shown on the next paint of the review views
+  var lastPaint = "";
   var connState = "";
 
   // ---- helpers -------------------------------------------------------------------------
@@ -108,6 +111,18 @@
       return r.json();
     });
   }
+  function post(path, body) {
+    return fetch(path, { method: "POST", cache: "no-store",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify(body) }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (r.status === 401) { var e = new Error("auth"); e.auth = true; throw e; }
+        if (!r.ok) { var err = new Error((d.error && d.error.message) || ("HTTP " + r.status)); err.code = d.error && d.error.code; throw err; }
+        return d;
+      });
+    });
+  }
+  function canon(slug) { return String(slug).replace(/\.md$/, "").replace(/^lesson_/, ""); }
   function setConn(kind, text) {
     if (connState === kind + text) return;
     connState = kind + text;
@@ -120,10 +135,16 @@
   var ROUTES = [
     { id: "overview", label: "Overview", title: "Overview" },
     { id: "memories", label: "Memories", title: "What each memory did" },
+    { id: "review", label: "Review", title: "Review queue" },
+    { id: "lesson", label: "Review", title: "Lesson", hidden: true },
     { id: "live", label: "Live", title: "Live activity" },
     { id: "fleet", label: "Fleet", title: "Robots and agents" },
     { id: "safety", label: "Safety", title: "Safety and policy" }
   ];
+  function hashQuery(name) {
+    var m = new RegExp("[?&]" + name + "=([^&]*)").exec(location.hash);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
   function currentRoute() {
     var id = (location.hash.replace(/^#\/?/, "").split("?")[0]) || "overview";
     return ROUTES.filter(function (r) { return r.id === id; })[0] || ROUTES[0];
@@ -132,7 +153,9 @@
     var cur = currentRoute().id;
     nav.textContent = "";
     ROUTES.forEach(function (r) {
-      nav.appendChild(h("a", { href: "#/" + r.id, "aria-current": r.id === cur ? "page" : false, text: r.label }));
+      if (r.hidden) return;
+      var here = r.id === cur || (r.id === "review" && cur === "lesson");
+      nav.appendChild(h("a", { href: "#/" + r.id, "aria-current": here ? "page" : false, text: r.label }));
     });
   }
 
@@ -381,7 +404,197 @@
     return root;
   }
 
-  var VIEWS = { overview: viewOverview, memories: viewMemories, live: viewLive, fleet: viewFleet, safety: viewSafety };
+
+  // ---- review queue and lesson page ------------------------------------------------------------------------
+
+  var GATES = {
+    scaffolding: "Unedited scaffolding: a rule or condition still says TODO",
+    safety: "Safety scan: a credential or an instruction aimed at the agent",
+    redundancy: "Restates an active lesson"
+  };
+  function gateChip(c) {
+    if (!c) return null;
+    if (c.passes) return h("span", { class: "chip good" }, h("span", { class: "ic", "aria-hidden": "true", text: "✓" }), "Passes the gates");
+    return h("span", { class: "chip crit" }, h("span", { class: "ic", "aria-hidden": "true", text: "✕" }), "Needs work: " + c.failed.join(", "));
+  }
+  function noticeBox() {
+    if (!notice) return null;
+    var n = notice;
+    return h("p", { class: "alert " + (n.kind === "ok" ? "good" : "crit"), role: n.kind === "ok" ? "status" : "alert", text: n.text });
+  }
+  function approvalOff() {
+    return h("div", { class: "alert warn" }, h("strong", { text: "Reading only" }),
+      h("span", null, "Editing, approving and rejecting are off, because approving changes what every agent is told. Start the gateway with "),
+      h("code", { text: "--allow-approval" }), h("span", { text: " to turn them on for this session." }));
+  }
+
+  function viewReview() {
+    var root = h("div"), d = state.lessons;
+    root.appendChild(h("h1", { text: "Review queue" }));
+    root.appendChild(h("p", { class: "lede", text: "Drafts waiting for a person. Nothing here is active: no agent has been told any of it." }));
+    if (!d) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
+    if (notice) root.appendChild(noticeBox());
+    if (!d.approval_enabled) root.appendChild(approvalOff());
+    if (!d.lessons.length) {
+      root.appendChild(empty("Nothing waiting", "Drafts appear here after a distill, a dream pass or a suggested revision.", "commontrace distill --failed --draft"));
+      return root;
+    }
+    var live = d.lessons.filter(function (l) { return l.checks && l.checks.passes; });
+    if (d.approval_enabled) {
+      var count = Object.keys(selected).filter(function (k) { return selected[k]; }).length;
+      var bulk = h("button", { class: "btn", type: "button", disabled: count ? false : true, text: "Approve selected (" + count + ")" });
+      bulk.addEventListener("click", function () { approveMany(Object.keys(selected).filter(function (k) { return selected[k]; })); });
+      root.appendChild(h("div", { class: "toolbar" }, bulk,
+        h("span", { class: "muted small", text: live.length + " of " + d.lessons.length + " pass every gate and can be approved." })));
+    }
+    var list = h("ul", { class: "queue", "aria-label": "Drafts awaiting review" });
+    d.lessons.forEach(function (l) {
+      var ok = l.checks && l.checks.passes;
+      var box = null;
+      if (d.approval_enabled) {
+        box = h("input", { type: "checkbox", id: "sel-" + l.slug, disabled: ok ? false : true,
+          checked: ok && selected[l.slug] ? true : false, "aria-label": "Select " + l.slug });
+        box.addEventListener("change", function () { selected[l.slug] = box.checked; paint(true); });
+      }
+      var near = l.checks && l.checks.nearest_active;
+      list.appendChild(h("li", { class: "card" },
+        h("div", { class: "q-head" }, box,
+          h("a", { class: "q-name mono", href: "#/lesson?slug=" + encodeURIComponent(l.slug), text: l.slug }),
+          gateChip(l.checks),
+          h("span", { class: "chip" }, l.drafted_by_model ? "Drafted by a model" : "Written by a person")),
+        h("p", { class: "q-desc", text: l.description }),
+        h("p", { class: "muted small" },
+          num(l.source_traces) + " source trace" + (l.source_traces === 1 ? "" : "s") + (l.domain ? " · " + l.domain : ""),
+          near ? " · closest active lesson: " : null, near ? h("span", { class: "mono", text: near.slug }) : null,
+          near ? " (" + Math.round(near.similarity * 100) + "% alike)" : null)));
+    });
+    root.appendChild(list);
+    return root;
+  }
+
+  function approveMany(slugs) {
+    var out = [], chain = Promise.resolve();
+    slugs.forEach(function (slug) {
+      chain = chain.then(function () {
+        return post("/v1/lesson/approve", { slug: slug, rationale: "approved from the review queue" })
+          .then(function () { out.push(slug + ": approved"); delete selected[slug]; })
+          .catch(function (e) { out.push(slug + ": " + e.message); });
+      });
+    });
+    chain.then(function () {
+      var failed = out.filter(function (x) { return x.indexOf(": approved") < 0; });
+      notice = { kind: failed.length ? "crit" : "ok", text: out.join(" · ") };
+      lastPaint = ""; refresh();
+    });
+  }
+
+  function viewLesson() {
+    var root = h("div"), d = state.lesson, slug = hashQuery("slug");
+    root.appendChild(h("p", null, h("a", { href: "#/review", text: "← Review queue" })));
+    if (!d || d.slug !== slug) { root.appendChild(h("p", { class: "muted", text: "Loading…" })); return root; }
+    var inReview = d.status === "review", can = inReview && d.approval_enabled;
+    root.appendChild(h("h1", { class: "mono", text: d.slug }));
+    root.appendChild(h("p", { class: "lede", text: d.description }));
+    if (notice) root.appendChild(noticeBox());
+    root.appendChild(h("p", null, h("span", { class: "chip" }, "Status: " + d.status), " ",
+      gateChip(d.checks), " ", h("span", { class: "chip" }, d.drafted_by_model ? "Drafted by a model" : "Written by a person")));
+    if (inReview && !d.approval_enabled) root.appendChild(approvalOff());
+
+    // The text, editable only for a draft and only when acting is on.
+    var fields = [["rule", "Rule"], ["applies_when", "Applies when"], ["do_not_apply_when", "Does not apply when"]];
+    var inputs = {};
+    var form = h("form", { class: "card", "aria-label": "Lesson text" });
+    form.appendChild(h("h2", { text: "What the agent would be told" }));
+    fields.forEach(function (f) {
+      form.appendChild(h("label", { for: "f-" + f[0], text: f[1] }));
+      if (can) {
+        inputs[f[0]] = h("textarea", { id: "f-" + f[0], rows: 3, maxlength: 2000, spellcheck: "true" });
+        inputs[f[0]].value = d[f[0]] || "";
+        form.appendChild(inputs[f[0]]);
+      } else {
+        form.appendChild(h("p", { class: "prose", text: d[f[0]] || "(none)" }));
+      }
+    });
+    if (can) {
+      var save = h("button", { class: "btn secondary", type: "submit", text: "Save changes" });
+      form.appendChild(save);
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var body = { slug: d.slug };
+        fields.forEach(function (f) { if (inputs[f[0]].value.trim() !== (d[f[0]] || "").trim()) body[f[0]] = inputs[f[0]].value; });
+        if (Object.keys(body).length === 1) { notice = { kind: "ok", text: "Nothing changed." }; paint(true); return; }
+        post("/v1/lesson/edit", body).then(function () { notice = { kind: "ok", text: "Saved. The gates below were re-checked." }; lastPaint = ""; refresh(); })
+          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+      });
+    }
+    root.appendChild(form);
+
+    if (d.checks) {
+      var checks = h("section", { class: "card", "aria-labelledby": "g-h" }, h("h2", { id: "g-h", text: "Approval gates" }));
+      Object.keys(GATES).forEach(function (g) {
+        var failed = d.checks.failed.indexOf(g) >= 0;
+        var extra = g === "redundancy" && d.checks.nearest_active
+          ? " Closest: " + d.checks.nearest_active.slug + " (" + Math.round(d.checks.nearest_active.similarity * 100) + "% alike)." : "";
+        checks.appendChild(h("p", { class: "gate" }, h("span", { class: "chip " + (failed ? "crit" : "good") },
+          h("span", { class: "ic", "aria-hidden": "true", text: failed ? "✕" : "✓" }), failed ? "Fails" : "Passes"), " " + GATES[g] + "." + extra));
+      });
+      if (d.separation_of_duties) checks.appendChild(h("p", { class: "alert warn", text: "Separation of duties: " + d.separation_of_duties }));
+      root.appendChild(checks);
+    }
+
+    var ev = h("section", { class: "card", "aria-labelledby": "e-h" }, h("h2", { id: "e-h", text: "Evidence and provenance" }));
+    ev.appendChild(h("p", { text: num(d.source_traces) + " source trace" + (d.source_traces === 1 ? "" : "s") + (d.revises ? ", revising " + d.revises : "") + "." }));
+    if (d.provenance) {
+      var u = d.provenance.usage || {};
+      ev.appendChild(h("dl", { class: "kv" },
+        h("dt", { text: "Model" }), h("dd", { text: String(d.provenance.provider || "") + " · " + String(d.provenance.model || "") }),
+        h("dt", { text: "Tokens" }), h("dd", { text: num(u.input_tokens) + " in, " + num(u.output_tokens) + " out" + (u.estimated ? " (estimated)" : "") }),
+        h("dt", { text: "Cost" }), h("dd", { text: d.provenance.cost_usd !== undefined ? "$" + Number(d.provenance.cost_usd).toFixed(4) : "no price table configured" }),
+        h("dt", { text: "Prompt" }), h("dd", { class: "mono", text: String(d.provenance.prompt_sha256 || "").slice(0, 16) })));
+    }
+    var mem = ((state.memories && state.memories.memories) || []).filter(function (m) { return canon(m.lesson_slug) === canon(d.slug); })[0];
+    if (mem) ev.appendChild(h("p", null, "Measured effect: ", verdictChip(mem.verdict), " " + pct(mem.effect) + " (" + pct(mem.ci_low) + " to " + pct(mem.ci_high) + ")" + (mem.withdrawn ? ", withdrawn" : "")));
+    root.appendChild(ev);
+
+    root.appendChild(h("details", { class: "card" }, h("summary", { text: "Full text" }), h("pre", { class: "wrap" }, h("code", { text: d.body })),
+      d.body_truncated ? h("p", { class: "muted small", text: "Shortened for display." }) : null));
+
+    var hist = h("section", { class: "card", "aria-labelledby": "h-h" }, h("h2", { id: "h-h", text: "History" }));
+    if (!d.history.length) hist.appendChild(h("p", { class: "muted", text: "No recorded changes." }));
+    else {
+      var ul = h("ul", { class: "events" });
+      d.history.slice().reverse().forEach(function (r) {
+        ul.appendChild(h("li", null, h("time", { datetime: r.at, text: clock(r.at) }), h("span", { class: "mono", text: String(r.actor || "") }),
+          h("span", { text: (r.reason || "changed") + " (" + String(r.from || "new").slice(0, 8) + " → " + String(r.to || "").slice(0, 8) + ")" })));
+      });
+      hist.appendChild(ul);
+    }
+    root.appendChild(hist);
+
+    if (can) {
+      var why = h("input", { id: "why", type: "text", maxlength: 500, "aria-describedby": "why-help" });
+      var approve = h("button", { class: "btn", type: "button", disabled: d.checks && d.checks.passes ? false : true, text: "Approve" });
+      var reject = h("button", { class: "btn danger", type: "button", text: "Reject" });
+      approve.addEventListener("click", function () {
+        post("/v1/lesson/approve", { slug: d.slug, rationale: why.value || undefined })
+          .then(function () { notice = { kind: "ok", text: d.slug + " is now active." }; location.hash = "#/review"; })
+          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+      });
+      reject.addEventListener("click", function () {
+        if (!why.value.trim()) { notice = { kind: "crit", text: "Say why in the box before rejecting." }; paint(true); return; }
+        post("/v1/lesson/reject", { slug: d.slug, reason: why.value })
+          .then(function () { notice = { kind: "ok", text: d.slug + " was rejected." }; location.hash = "#/review"; })
+          .catch(function (e) { notice = { kind: "crit", text: e.message }; paint(true); });
+      });
+      root.appendChild(h("section", { class: "card", "aria-labelledby": "a-h" }, h("h2", { id: "a-h", text: "Decide" }),
+        h("label", { for: "why", text: "Reason or note" }), why,
+        h("p", { id: "why-help", class: "muted small", text: "Recorded with the change. Approving activates the lesson for every agent; it is checked against the gates again and may still be refused." }),
+        h("div", { class: "toolbar" }, approve, reject)));
+    }
+    return root;
+  }
+
+  var VIEWS = { overview: viewOverview, memories: viewMemories, review: viewReview, lesson: viewLesson, live: viewLive, fleet: viewFleet, safety: viewSafety };
 
   function viewAuth(message) {
     var input = h("input", { id: "tok", type: "password", autocomplete: "off", spellcheck: "false", "aria-describedby": "tok-help" });
@@ -401,13 +614,30 @@
 
   // ---- loop ---------------------------------------------------------------------------------------------
 
-  function render() {
+  function editing() {
+    var a = document.activeElement;
+    return !!a && main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" && a.type === "text");
+  }
+  // Repaint only when what is shown changed, and never under someone's cursor: a poll must not
+  // throw away a half-typed edit, a selection or the focus.
+  function paint(force) {
     var route = currentRoute();
+    var sig = route.id + "|" + location.hash + "|" + JSON.stringify([state.status, state.memories, state.agents, state.events,
+      state.lessons, state.lesson, selected, notice]);
+    if (!force && sig === lastPaint) return;
+    if (!force && editing()) return;
+    lastPaint = sig;
     renderNav();
     document.title = route.title + " · CommonTrace";
+    var focusId = document.activeElement && main.contains(document.activeElement) ? document.activeElement.id : "";
     main.textContent = "";
     main.appendChild(VIEWS[route.id]());
+    if (focusId) { var again = document.getElementById(focusId); if (again) again.focus(); }
+    if (notice && (route.id === "review" || route.id === "lesson")) {
+      var shown = notice; setTimeout(function () { if (notice === shown) { notice = null; } }, 8000);
+    }
   }
+  function render() { paint(false); }
   function paintHeader() {
     var s = state.status;
     if (s && s.gateway && s.gateway.env) { envChip.hidden = false; envChip.textContent = "Environment: " + s.gateway.env; }
@@ -419,9 +649,12 @@
     var route = currentRoute().id;
     var wants = ["status", "memories", "agents"];
     if (route === "live") wants.push("occasions");
+    if (route === "review") wants.push("lessons?status=review");
+    if (route === "lesson") wants.push("lesson?slug=" + encodeURIComponent(hashQuery("slug")));
+    var keys = { occasions: "events", "lessons?status=review": "lessons" };
     return Promise.all(wants.map(function (w) { return api("/v1/" + w).then(function (d) { return [w, d]; }); }))
       .then(function (pairs) {
-        pairs.forEach(function (p) { state[p[0] === "occasions" ? "events" : p[0]] = p[1]; });
+        pairs.forEach(function (p) { state[keys[p[0]] || (p[0].indexOf("lesson?") === 0 ? "lesson" : p[0])] = p[1]; });
         lastOk = Date.now();
         setConn("ok", "Live · updated " + ago(new Date(lastOk).toISOString()));
         paintHeader();
@@ -429,6 +662,7 @@
       })
       .catch(function (e) {
         if (e && e.auth) { token = ""; try { sessionStorage.removeItem("ct-token"); } catch (x) { /* ignore */ } main.textContent = ""; main.appendChild(viewAuth("That token was not accepted.")); setConn("bad", "Not connected"); return; }
+        if (e && !e.auth) console.error(e);
         setConn("bad", lastOk ? "Disconnected · last update " + ago(new Date(lastOk).toISOString()) : "Cannot reach the gateway");
       });
   }

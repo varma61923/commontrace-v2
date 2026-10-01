@@ -139,3 +139,66 @@ def test_in_a_real_browser_hostile_ids_are_text_and_the_token_leaves_the_address
             browser.close()
     finally:
         server.shutdown()
+
+
+def _workbench_store(tmp_path):
+    from commontrace import frontmatter, paths, templates
+    from commontrace.cli import main
+    main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
+    holdout_io.configure(str(tmp_path), rate=0.5, salt="console-wb")
+    for slug, rule in (("lesson_ready", "Link the single refund policy page."),
+                       ("lesson_todo", "TODO: one actionable sentence")):
+        fm = templates.lesson_frontmatter(
+            slug=slug, description=f"{slug} description", agent_type="support", domain="refunds", tags=[],
+            applies_when="A customer asks about refunds." if slug == "lesson_ready" else "TODO: when",
+            do_not_apply_when="Already refunded." if slug == "lesson_ready" else "TODO: when not", importance=3,
+            importance_rationale="r", source_traces=["t1"], status="review")
+        body = (f"## Rule\n{rule}\n\n## Why\nw\n\n## How to apply\n{fm['applies_when']}\n\n"
+                f"## Counter-examples\n{fm['do_not_apply_when']}\n")
+        frontmatter.write(os.path.join(paths.lessons_dir(str(tmp_path)), f"{slug}.md"), fm, body)
+
+
+def test_in_a_real_browser_a_draft_is_edited_approved_and_a_failing_one_cannot_be_selected(tmp_path):
+    """Skipped where Playwright or a Chromium is not installed."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    exe = next((p for p in (os.environ.get("CHROMIUM_PATH"), "/opt/pw-browsers/chromium") if p and os.path.isfile(p)),
+               None)
+    if exe is None:
+        pytest.skip("no Chromium available")
+    import threading
+
+    from commontrace import frontmatter, paths
+
+    _workbench_store(tmp_path)
+    g = gateway.Gateway(str(tmp_path), token="t" * 40, allow_approval=True)
+    server = gateway.make_http_server(g, "127.0.0.1", 0)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=exe)
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+            page.goto(f"http://127.0.0.1:{port}/#token=" + "t" * 40)
+            page.goto(f"http://127.0.0.1:{port}/#/review")
+            page.wait_for_selector(".queue li")
+            assert page.is_disabled("#sel-lesson_todo") and not page.is_disabled("#sel-lesson_ready")
+            page.click("a.q-name:has-text('lesson_todo')")
+            page.wait_for_selector("#f-rule")
+            assert page.is_disabled("button:has-text('Approve')")            # the gates say no
+            page.fill("#f-rule", "Always link the refund policy page.")
+            page.fill("#f-applies_when", "A customer asks when a refund arrives.")
+            page.fill("#f-do_not_apply_when", "The refund was already issued.")
+            page.click("button:has-text('Save changes')")
+            page.wait_for_selector("text=Saved. The gates below were re-checked.")
+            page.wait_for_selector("button:has-text('Approve'):not([disabled])")
+            page.fill("#why", "read and agree")
+            page.click("button:has-text('Approve')")
+            page.wait_for_selector(".queue li")
+            fm = frontmatter.read(os.path.join(paths.lessons_dir(str(tmp_path)), "lesson_todo.md"))[0]
+            assert fm["status"] == "active" and errors == []
+            browser.close()
+    finally:
+        server.shutdown()
