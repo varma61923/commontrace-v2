@@ -894,9 +894,11 @@ def run_suggest_rewrite(args: argparse.Namespace) -> int:
             f"## Rule\n{rule_text}\n\n"
             "## Why\n"
             f"The original lesson ({slug}) was judged HARMFUL. See the evidence below.\n\n"
-            "## How to apply\nTODO: when to invoke it, how to use it concretely.\n\n"
-            "## Counter-examples\nTODO: cases where the rule does NOT apply.\n\n"
-            "## Evidence for rewrite\n" + "\n".join(evidence_lines) + "\n"
+            "## How to apply\n"
+            + (llm_draft.applies_when if llm_draft else "TODO: when to invoke it, how to use it concretely.")
+            + "\n\n## Counter-examples\n"
+            + (llm_draft.do_not_apply_when if llm_draft else "TODO: cases where the rule does NOT apply.")
+            + "\n\n## Evidence for rewrite\n" + "\n".join(evidence_lines) + "\n"
         )
         lesson_io.write_lesson(
             out_path, draft_fm, draft_body, root=root, actor=_actor(),

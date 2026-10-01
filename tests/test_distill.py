@@ -630,13 +630,13 @@ class TestDistillWithLLM:
         capsys.readouterr()
         assert main(["lesson", "validate", "--dest", str(store)]) == 0
 
-    def test_an_llm_drafted_candidate_still_needs_how_to_apply_filled_in(self, store, monkeypatch, capsys):
-        """`--draft` only asks the model for rule/applies_when/
-        do_not_apply_when/evidence -- '## How to apply' and
-        '## Counter-examples' stay TODO regardless, so the approval gate
-        still refuses an LLM-drafted candidate exactly as it refuses a
-        heuristic one, until a human finishes it (or passes --force)."""
-        from commontrace import llm
+    def test_an_llm_drafted_candidate_carries_the_models_judgements_into_every_section(
+            self, store, monkeypatch, capsys):
+        """The model's applies_when and do_not_apply_when also fill '## How to apply' and
+        '## Counter-examples'. Leaving a TODO beside them made `lesson approve` refuse every
+        drafted lesson as unedited scaffolding, so a draft could never pass the gate it was
+        written for. It still lands at status=review: approval stays an explicit, separate act."""
+        from commontrace import frontmatter, llm
 
         self._repeated_pattern(store)
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
@@ -649,8 +649,22 @@ class TestDistillWithLLM:
         lessons_dir = store / "memory" / "lessons"
         candidates = [f for f in os.listdir(lessons_dir) if f.startswith("lesson_candidate_")]
         slug = candidates[0].removesuffix(".md")
+        fm, body = frontmatter.read(str(lessons_dir / f"{slug}.md"))
+        assert fm["status"] == "review"
+        assert self._GOOD["applies_when"] in body.split("## How to apply")[1].split("## Counter-examples")[0]
+        assert self._GOOD["do_not_apply_when"] in body.split("## Counter-examples")[1]
+        assert "TODO" not in body
         capsys.readouterr()
-        rc = main(["lesson", "approve", slug, "--dest", str(store)])
-        assert rc == 1
+        assert main(["lesson", "approve", slug, "--dest", str(store)]) == 0
+        assert frontmatter.read(str(lessons_dir / f"{slug}.md"))[0]["status"] == "active"
+
+    def test_a_heuristic_candidate_with_no_model_still_needs_a_human(self, store, capsys):
+        self._repeated_pattern(store)
+        capsys.readouterr()
+        main(["distill", "--dest", str(store)])
+        lessons_dir = store / "memory" / "lessons"
+        slug = [f for f in os.listdir(lessons_dir) if f.startswith("lesson_candidate_")][0].removesuffix(".md")
+        capsys.readouterr()
+        assert main(["lesson", "approve", slug, "--dest", str(store)]) == 1
         assert "unedited scaffolding" in capsys.readouterr().err
         assert main(["lesson", "approve", slug, "--force", "--dest", str(store)]) == 0

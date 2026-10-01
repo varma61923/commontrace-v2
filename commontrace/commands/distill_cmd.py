@@ -220,11 +220,13 @@ def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
         "",
         "<!-- Source traces are listed in `source_traces` above. -->",
         "",
+        # A model's draft carries these two judgements; leaving the TODO beside them would make
+        # `lesson approve` refuse every drafted lesson as unedited scaffolding.
         "## How to apply",
-        "TODO: when to invoke it, how to use it concretely.",
+        llm_draft.applies_when if llm_draft else "TODO: when to invoke it, how to use it concretely.",
         "",
         "## Counter-examples",
-        "TODO: cases where the rule does NOT apply.",
+        llm_draft.do_not_apply_when if llm_draft else "TODO: cases where the rule does NOT apply.",
     ]
     if llm_draft is not None:
         lines += ["", "## LLM draft evidence", f"Cited: {', '.join(llm_draft.evidence) or '(none)'}"]

@@ -57,6 +57,12 @@ hub-sync = [
     "mcp>=2.0,<3.0",
     "httpx>=0.27.0,<1.0",
 ]
+# `--draft` against Amazon Bedrock or Google Vertex AI (commontrace/llm.py). The official SDKs, which own
+# request signing and credentials; imported only when one of those providers is selected.
+llm = [
+    "boto3>=1.35,<2.0",
+    "google-genai>=1.0,<3.0",
+]
 # `commontrace serve` -- the LOCAL store over MCP stdio
 # (commontrace/mcp_server.py), for agents that cannot run a shell.
 #
