@@ -72,7 +72,7 @@ httpx2==2.13.1
 idna==3.20
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-Mako==1.4.1
+Mako==1.4.3
 MarkupSafe==3.0.3
 mcp==2.2.0
 mcp-types==2.2.0
