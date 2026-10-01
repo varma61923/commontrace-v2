@@ -7,6 +7,7 @@ import os
 import sys
 
 from commontrace import distill, frontmatter, lesson_io, paths, templates, trace_io
+from commontrace.commands import _llm_draft
 from commontrace.commands._validators import similarity_threshold as _similarity_threshold
 from commontrace.frontmatter import FrontmatterError
 
@@ -20,6 +21,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--agent-type", default=None, help="Only cluster traces of this agent_type.")
     p.add_argument("--similarity-threshold", type=_similarity_threshold, default=0.3)
     p.add_argument("--min-cluster-size", type=int, default=2)
+    p.add_argument(
+        "--draft", action="store_true",
+        help="Ask a configured LLM (COMMONTRACE_LLM_API_KEY) to fill in the Rule, "
+        "applies_when and do_not_apply_when from each cluster's own grouped evidence, "
+        "instead of 'TODO: ...' placeholders. Falls back per-cluster, with a stated "
+        "reason, if no provider is configured or it refuses.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -115,7 +123,22 @@ def _unique_candidate_slug(ldir: str, date: str, n: int) -> str:
         i += 1
 
 
-def _candidate_body(cluster: distill.Cluster) -> list[str]:
+def _evidence_lines(cluster: distill.Cluster) -> list[str]:
+    """The same grouped situation/solution evidence `_candidate_body` shows
+    a human, as plain text for an LLM prompt -- one source of what counts
+    as evidence for a cluster, read by both a human reviewer and (with
+    `--draft`) a model, rather than two descriptions that could drift."""
+    n = len(cluster.traces)
+    contexts = distill.variants([t.context_text for t in cluster.traces])
+    solutions = distill.variants([t.solution_text for t in cluster.traces])
+    lines = [f"{n} traces show this pattern.", "", "The situation:"]
+    lines += _variant_lines(contexts, n)
+    lines += ["", "What worked:"]
+    lines += _variant_lines(solutions, n)
+    return lines
+
+
+def _candidate_body(cluster: distill.Cluster, llm_draft=None) -> list[str]:
     """The evidence a reviewer needs, in the file they are reviewing.
 
     What this used to emit was one line per trace, context only, with a UUID
@@ -135,11 +158,15 @@ def _candidate_body(cluster: distill.Cluster) -> list[str]:
     problems, and the candidate should be split rather than written up as
     one rule.
 
-    The TODOs stay. `applies_when`, `do_not_apply_when` and the Rule are
-    JUDGEMENTS, and filling them in from a term-frequency count would put
-    fabricated text past the scaffolding guard that exists to stop exactly
-    that (commontrace/templates.py). Proposing better evidence is honest;
-    proposing the conclusion is not.
+    The TODOs stay by default. `applies_when`, `do_not_apply_when` and the
+    Rule are JUDGEMENTS, and filling them in from a term-frequency count
+    would put fabricated text past the scaffolding guard that exists to
+    stop exactly that (commontrace/templates.py). Proposing better evidence
+    is honest; proposing the conclusion from a heuristic is not -- but
+    `--draft` asking a model to read the SAME evidence and propose a
+    conclusion, refused outright if it isn't a strict, evidence-grounded
+    answer (commontrace/llm.py), is a different claim, and `llm_draft`,
+    when given, replaces the "## Rule" TODO with exactly that.
     """
     n = len(cluster.traces)
     contexts = distill.variants([t.context_text for t in cluster.traces])
@@ -147,7 +174,7 @@ def _candidate_body(cluster: distill.Cluster) -> list[str]:
 
     lines = [
         "## Rule",
-        "TODO: one actionable sentence, derived from `What worked` below.",
+        llm_draft.rule if llm_draft else "TODO: one actionable sentence, derived from `What worked` below.",
         "",
         "## Why",
         f"{n} traces show this pattern. Grouped, they say:",
@@ -175,6 +202,13 @@ def _candidate_body(cluster: distill.Cluster) -> list[str]:
         "## Counter-examples",
         "TODO: cases where the rule does NOT apply.",
     ]
+    if llm_draft is not None:
+        lines += ["", "## LLM draft evidence", f"Cited: {', '.join(llm_draft.evidence) or '(none)'}"]
+        if llm_draft.unverifiable_evidence:
+            lines += [
+                f"Cited but NOT among this cluster's traces (review before trusting): "
+                f"{', '.join(llm_draft.unverifiable_evidence)}",
+            ]
     return lines
 
 
@@ -244,27 +278,64 @@ def run(args: argparse.Namespace) -> int:
     for n, cluster in enumerate(clusters, start=1):
         agent_type = cluster.traces[0].agent_type or (args.agent_type or "code")
         slug = _unique_candidate_slug(ldir, date, n)
+
+        llm_draft = None
+        if args.draft:
+            llm_draft = _llm_draft.try_draft(
+                instruction=(
+                    "These traces show a repeated pattern. Propose ONE actionable rule "
+                    "that generalizes what worked, precisely when it applies, and "
+                    "when it does NOT apply."
+                ),
+                slug=slug,
+                current_rule_text="(none yet -- this is a brand-new candidate, not a revision)",
+                applies_when="(none yet)", do_not_apply_when="(none yet)",
+                evidence_lines=_evidence_lines(cluster),
+                allowed_evidence_ids={t.id for t in cluster.traces},
+            )
+
         fm = templates.lesson_frontmatter(
             slug=slug,
             description=distill.propose_description(cluster),
             agent_type=agent_type,
             domain=distill.propose_domain(cluster, agent_type),
             tags=distill.propose_tags(cluster),
-            applies_when="TODO: precise activation condition (auto-proposed, needs human review)",
-            do_not_apply_when="TODO: explicit counter-condition (auto-proposed, needs human review)",
+            applies_when=(
+                llm_draft.applies_when if llm_draft
+                else "TODO: precise activation condition (auto-proposed, needs human review)"
+            ),
+            do_not_apply_when=(
+                llm_draft.do_not_apply_when if llm_draft
+                else "TODO: explicit counter-condition (auto-proposed, needs human review)"
+            ),
             importance=3,
-            importance_rationale="Auto-proposed from a repeated trace pattern; needs human calibration.",
+            importance_rationale=(
+                "Auto-proposed (LLM-assisted) from a repeated trace pattern; needs human calibration."
+                if llm_draft else
+                "Auto-proposed from a repeated trace pattern; needs human calibration."
+            ),
             source_traces=[t.id for t in cluster.traces],
             status="review",
         )
-        body_lines = _candidate_body(cluster)
+        if llm_draft is not None:
+            fm["llm_draft"] = dict(
+                llm_draft.provenance,
+                cited_evidence=llm_draft.evidence,
+                unverifiable_evidence=llm_draft.unverifiable_evidence,
+            )
+        body_lines = _candidate_body(cluster, llm_draft=llm_draft)
         out_path = os.path.join(ldir, f"{slug}.md")
         lesson_io.write_lesson(
             out_path, fm, "\n".join(body_lines) + "\n", root=root,
-            actor="distill", reason=f"auto-proposed from {len(cluster.traces)} traces",
+            actor="distill", reason=(
+                f"auto-proposed from {len(cluster.traces)} traces" + (" (LLM-assisted)" if llm_draft else "")
+            ),
         )
 
-        print(f"  [{n}] {slug} <- {len(cluster.traces)} traces, shared terms: {', '.join(cluster.shared_terms[:5])}")
+        print(
+            f"  [{n}] {slug} <- {len(cluster.traces)} traces, shared terms: "
+            f"{', '.join(cluster.shared_terms[:5])}" + (" [LLM-assisted]" if llm_draft else "")
+        )
         print(f"      wrote {out_path}")
 
     print(

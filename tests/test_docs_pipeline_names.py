@@ -34,7 +34,13 @@ def test_no_ascii_arrow_fork():
     # tests/ excluded: fixtures may quote historical text.
     checked = []
     for dirpath, _dirnames, filenames in os.walk(ROOT):
-        if ".git" in dirpath or "/tests" in dirpath:
+        # os.walk yields native separators, so on Windows "/tests" never
+        # matched this file's own directory (\tests) and the walk scanned
+        # tests/test_docs_pipeline_names.py itself, tripping the assertion
+        # on its own ASCII_CHAIN fixture constant below. Normalizing to "/"
+        # makes the exclusion match on every platform.
+        norm_dirpath = dirpath.replace(os.sep, "/")
+        if ".git" in norm_dirpath or "/tests" in norm_dirpath:
             continue
         for fn in filenames:
             if fn.endswith((".md", ".py")):

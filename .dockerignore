@@ -119,6 +119,11 @@ commontrace/**
 # and dies. Pure: imports only experiment.py. Reading the LOCAL store's
 # evidence lives in commontrace/evidence.py, which the Hub never imports.
 !commontrace/harm.py
+# hub/otlp.py normalizes OTLP spans with the same adapter `commontrace
+# import --source otel` uses. Pure stdlib (json, collections.abc,
+# dataclasses). Imported inside add_otlp_routes, which runs at startup when
+# HUB_OTLP_INGEST_ENABLED is set -- without it, that Hub dies on startup.
+!commontrace/adapters.py
 
 # Secrets must come from the platform's secret store, never be baked in
 .env

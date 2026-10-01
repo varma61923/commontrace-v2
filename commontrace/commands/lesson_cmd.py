@@ -11,6 +11,7 @@ from commontrace import (
     approval,
     evidence_io,
     frontmatter,
+    holdout_io,
     lesson_io,
     memory_guard,
     paths,
@@ -20,7 +21,7 @@ from commontrace import (
     trace_io,
     validate,
 )
-from commontrace.commands import _validators
+from commontrace.commands import _llm_draft, _validators
 from commontrace.commands._format import cell, read_or_warn
 
 
@@ -110,8 +111,34 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
              "changes nothing about the original until you approve the draft.",
     )
     sr.add_argument("slug")
+    sr.add_argument(
+        "--draft", action="store_true",
+        help="Ask a configured LLM (COMMONTRACE_LLM_API_KEY) to tighten "
+             "applies_when/do_not_apply_when from the same evidence, instead of a "
+             "'TODO: tighten' placeholder. Falls back to the placeholder, with a "
+             "stated reason, if no provider is configured or it refuses.",
+    )
     sr.add_argument("--dest", default=None)
     sr.set_defaults(func=run_suggest_revision)
+
+    srw = sub.add_parser(
+        "suggest-rewrite",
+        help="Draft a full rewrite for a HARMFUL lesson (its rule, not just when it "
+             "fires, may be wrong). Requires an LLM -- there is no honest heuristic "
+             "placeholder for 'what should this rule actually say'. Writes a new "
+             "review-status lesson; changes nothing about the original.",
+    )
+    srw.add_argument("slug")
+    srw.add_argument("--dest", default=None)
+    srw.set_defaults(func=run_suggest_rewrite)
+
+    aa = sub.add_parser(
+        "auto-approve",
+        help="Activate LLM-drafted review lessons that pass every approval gate. Requires "
+             "`auto_approve_drafts: true` in memory/approval-policy.yaml and a started holdout.",
+    )
+    aa.add_argument("--dest", default=None)
+    aa.set_defaults(func=run_auto_approve)
 
     hist = sub.add_parser(
         "history",
@@ -330,6 +357,8 @@ def run_approve(args: argparse.Namespace) -> int:
     Validator call to this command, never automatically by whatever
     proposed it (e.g. `commontrace distill`)."""
     root = paths.resolve_root(args.dest)
+    # `lesson auto-approve` passes its own approver; every gate below is the same.
+    approver = getattr(args, "approver", None) or _actor()
     path = _resolve_lesson_path(root, args.slug)
     if path is None:
         print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
@@ -375,7 +404,7 @@ def run_approve(args: argparse.Namespace) -> int:
         try:
             policy = approval.load_policy(root)
             approval.check(
-                policy, slug=args.slug, approver=_actor(),
+                policy, slug=args.slug, approver=approver,
                 authors=approval.authors_of(root, args.slug),
             )
         except (approval.ApprovalDenied, approval.PolicyError) as exc:
@@ -435,9 +464,10 @@ def run_approve(args: argparse.Namespace) -> int:
             return 1
 
         fm["status"] = "active"
+        fm.update(getattr(args, "extra_frontmatter", None) or {})
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
-        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+        lesson_io.write_lesson(path, fm, body, root=root, actor=approver,
                                reason=args.rationale or "approved")
     if unfilled:
         print(
@@ -466,6 +496,57 @@ def run_approve(args: argparse.Namespace) -> int:
     # somebody chose. Six approvals over an afternoon are usually one
     # deployment, and only the operator knows where that boundary is.
     print("  `commontrace release cut` records the active set as a rollback point.")
+    return 0
+
+
+def run_auto_approve(args: argparse.Namespace) -> int:
+    """Approve every review-status lesson carrying `llm_draft` provenance,
+    through run_approve's own gates, as `approval.AUTO_APPROVER`. Each one is
+    stamped `auto_approved: true`, which keeps `experiment --configure` from
+    stopping the holdout while it is active."""
+    root = paths.resolve_root(args.dest)
+    try:
+        policy = approval.load_policy(root)
+    except approval.PolicyError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if not policy.auto_approve_drafts:
+        print(
+            "[commontrace] auto-approval is off. Set `auto_approve_drafts: true` in "
+            f"{approval.policy_path(root)} to allow it.",
+            file=sys.stderr,
+        )
+        return 1
+    config = holdout_io.load_config(root)
+    if not config.started_at or config.rate < approval.AUTO_APPROVE_MIN_HOLDOUT:
+        print(
+            "[commontrace] refusing: auto-approval needs a started holdout of at least "
+            f"{approval.AUTO_APPROVE_MIN_HOLDOUT:.0%}, so every lesson it activates is measured.\n"
+            "  Start one: commontrace experiment --configure --rate 0.1",
+            file=sys.stderr,
+        )
+        return 1
+
+    approved: list[str] = []
+    refused: list[str] = []
+    for path in _iter_lesson_paths(root, None):
+        parsed = read_or_warn(frontmatter.read, path)
+        if parsed is None:
+            continue
+        fm, _body = parsed
+        if fm.get("status") != "review" or "llm_draft" not in fm:
+            continue
+        slug = str(fm.get("name") or "")
+        rc = run_approve(argparse.Namespace(
+            slug=slug, force=False, dest=args.dest,
+            rationale=f"auto-approved with a {config.rate:.0%} holdout running",
+            approver=approval.AUTO_APPROVER, extra_frontmatter={"auto_approved": True},
+        ))
+        (approved if rc == 0 else refused).append(slug)
+    print(
+        f"[commontrace] auto-approve: {len(approved)} activated, "
+        f"{len(refused)} refused by the approval gates."
+    )
     return 0
 
 
@@ -538,23 +619,38 @@ def _occasion_labels(root: str, wanted: set[str]) -> dict[str, str]:
     return out
 
 
+def _evidence_sections(hit_occasions: list, miss_occasions: list, labels: dict) -> list[str]:
+    def _section(heading: str, occasions: list) -> list[str]:
+        lines = [f"### {heading}"]
+        if not occasions:
+            lines.append("(none)")
+        for ev in occasions:
+            label = labels.get(ev.occasion_id)
+            lines.append(f"- `{ev.occasion_id}`" + (f": {label}" if label else ""))
+        return lines
+    return [*_section("Fired and helped", hit_occasions), "", *_section("Fired but did not help", miss_occasions)]
+
+
 def run_suggest_revision(args: argparse.Namespace) -> int:
     """Draft a tightened activation condition for a MISCALIBRATED lesson.
 
-    Deliberately NOT an LLM-authored rewrite -- this codebase has no LLM
-    call anywhere in its core pipeline, and inventing one just for this
-    command would be a much larger dependency and cost than the gap it
-    closes justifies. What this DOES do: aggregate the exact evidence
-    `commontrace reliability` already computed (which occasions this
-    lesson fired on, and which of those it actually helped) into one
-    place, in a new review-status lesson a human or an agent then edits --
-    the same "propose a draft, a human/Validator activates it" shape
-    `commontrace distill` and `lesson new` already use, not a new
-    governance mechanism.
+    Without `--draft`, this aggregates the exact evidence `commontrace
+    reliability` already computed (which occasions this lesson fired on,
+    and which of those it actually helped) into a "TODO: tighten" scaffold
+    a human or agent then edits -- the same "propose a draft, a human/
+    Validator activates it" shape `commontrace distill` and `lesson new`
+    already use, not a new governance mechanism. `--draft` (commontrace/
+    llm.py) asks a configured LLM to fill that scaffold in from the same
+    evidence instead, and falls back to it (with a stated reason) if no
+    provider is configured or the model's answer is unusable -- either way
+    the draft still lands at status=review and still passes through
+    `lesson approve`'s scaffolding/content-safety/redundancy gate before it
+    can ever be activated.
 
     Scoped to MISCALIBRATED specifically (see `reliability.py`'s own
     verdict rationale): a HARMFUL lesson's rule may be wrong outright, and
-    tightening WHEN it fires does not fix a rule that is simply incorrect.
+    tightening WHEN it fires does not fix a rule that is simply incorrect --
+    see `run_suggest_rewrite` for that case.
     """
     root = paths.resolve_root(args.dest)
     path = _resolve_lesson_path(root, args.slug)
@@ -594,23 +690,27 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
         root, {ev.occasion_id for ev in hit_occasions + miss_occasions},
     )
 
-    def _section(heading: str, occasions: list) -> list[str]:
-        lines = [f"### {heading}"]
-        if not occasions:
-            lines.append("(none)")
-        for ev in occasions:
-            label = labels.get(ev.occasion_id)
-            lines.append(f"- `{ev.occasion_id}`" + (f": {label}" if label else ""))
-        return lines
-
     evidence_lines = [
         f"Reliability verdict at the time this draft was written: MISCALIBRATED "
         f"-- {verdict_row.rationale}",
         "",
-        *_section("Fired and helped", hit_occasions),
-        "",
-        *_section("Fired but did not help", miss_occasions),
+        *_evidence_sections(hit_occasions, miss_occasions, labels),
     ]
+
+    llm_draft = None
+    if args.draft:
+        llm_draft = _llm_draft.try_draft(
+            instruction=(
+                "This lesson fires more broadly than it should (MISCALIBRATED): it "
+                "helps on some occasions and not on others below. Tighten "
+                "applies_when/do_not_apply_when so it fires only where it actually "
+                "helps. Do not change the rule itself -- echo the current rule text "
+                "back unchanged in your 'rule' field."
+            ),
+            slug=slug, current_rule_text=body, applies_when=str(fm.get("applies_when", "")),
+            do_not_apply_when=str(fm.get("do_not_apply_when", "")), evidence_lines=evidence_lines,
+            allowed_evidence_ids={ev.occasion_id for ev in hit_occasions + miss_occasions},
+        )
 
     draft_slug = f"{lesson_io.canonical_slug(slug)}-revision"
     out_path = os.path.join(paths.lessons_dir(root), f"lesson_{draft_slug}.md")
@@ -632,12 +732,15 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-        # TODO-prefixed on purpose (see templates.PLACEHOLDER_MARKER): the
-        # ORIGINAL applies_when/do_not_apply_when are reproduced below each
-        # marker for reference, but the point of this command is that a
-        # human or agent reads the evidence and rewrites the condition --
-        # `lesson approve` refuses this draft, same as any other
-        # unedited scaffolding, until that happens (or --force).
+        # TODO-prefixed on purpose when there is no LLM draft (see
+        # templates.PLACEHOLDER_MARKER): the ORIGINAL applies_when/
+        # do_not_apply_when are reproduced below each marker for reference,
+        # but the point of this command is that a human or agent reads the
+        # evidence and rewrites the condition -- `lesson approve` refuses
+        # this draft, same as any other unedited scaffolding, until that
+        # happens (or --force). An LLM draft is NOT exempt from that same
+        # gate -- it still lands at status=review and still has to pass
+        # the scaffolding/content-safety/redundancy checks in run_approve.
         draft_fm = templates.lesson_frontmatter(
             slug=draft_slug,
             description=f"Revision draft: tighten the activation condition for {slug}",
@@ -645,10 +748,11 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
             domain=str(fm.get("domain") or ""),
             tags=list(fm.get("tags") or []),
             applies_when=(
-                f"TODO: tighten -- was: {fm.get('applies_when', '')}"
+                llm_draft.applies_when if llm_draft else f"TODO: tighten -- was: {fm.get('applies_when', '')}"
             ),
             do_not_apply_when=(
-                f"TODO: tighten -- was: {fm.get('do_not_apply_when', '')}"
+                llm_draft.do_not_apply_when if llm_draft
+                else f"TODO: tighten -- was: {fm.get('do_not_apply_when', '')}"
             ),
             importance=int(fm.get("importance") or 3),
             importance_rationale=(
@@ -659,15 +763,156 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
             status="review",
         )
         draft_fm["revises"] = slug
+        if llm_draft is not None:
+            draft_fm["llm_draft"] = dict(
+                llm_draft.provenance,
+                cited_evidence=llm_draft.evidence,
+                unverifiable_evidence=llm_draft.unverifiable_evidence,
+            )
         draft_body = body.rstrip("\n") + "\n\n## Evidence for revision\n" + "\n".join(evidence_lines) + "\n"
         lesson_io.write_lesson(
             out_path, draft_fm, draft_body, root=root, actor=_actor(),
-            reason=f"suggest-revision draft of {slug}",
+            reason=f"suggest-revision draft of {slug}" + (" (LLM-assisted)" if llm_draft else ""),
         )
-    print(f"[commontrace] drafted {out_path}")
+    print(f"[commontrace] drafted {out_path}" + (" (LLM-assisted)" if llm_draft else ""))
     print(
         f"  Nothing changed for '{slug}' yet -- this is a new, separate draft.\n"
         "  Read the evidence, rewrite applies_when/do_not_apply_when, then:\n"
+        f"    commontrace lesson approve {draft_slug}\n"
+        f"    commontrace lesson reject {slug} --reason \"superseded by {draft_slug}\""
+        "   # once you're satisfied"
+    )
+    return 0
+
+
+def run_suggest_rewrite(args: argparse.Namespace) -> int:
+    """Draft a full rewrite for a HARMFUL lesson -- its rule may be wrong
+    outright, not just over-broad, so (unlike `suggest-revision`) tightening
+    `applies_when` alone cannot fix it. Always attempts an LLM draft: there
+    is no honest heuristic that fills in "what should this rule actually
+    say" the way distill.py's evidence grouping fills in "what varied
+    across these traces" -- see distill.py's own reasoning for refusing to
+    do that. Without a usable LLM this still writes a review-status draft,
+    with a TODO placeholder and a stated reason, so the command is never a
+    no-op -- it just leaves more for the human to write.
+    """
+    root = paths.resolve_root(args.dest)
+    path = _resolve_lesson_path(root, args.slug)
+    if path is None:
+        print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
+        return 1
+    parsed = read_or_warn(frontmatter.read, path)
+    if parsed is None:
+        return 1
+    fm, body = parsed
+    slug = str(fm.get("name", "")) or lesson_io.canonical_slug(args.slug)
+
+    evidence = evidence_io.load_evidence(root)
+    scores = {s.slug: s for s in reliability.score_lessons(evidence)}
+    verdict_row = scores.get(slug)
+    if verdict_row is None or verdict_row.verdict != reliability.VERDICT_HARMFUL:
+        current = verdict_row.verdict if verdict_row else "no evidence yet"
+        print(
+            f"[commontrace] '{slug}' is not HARMFUL (currently: {current}) -- "
+            "refusing to draft a rewrite.",
+            file=sys.stderr,
+        )
+        if verdict_row is not None and verdict_row.verdict == reliability.VERDICT_MISCALIBRATED:
+            print("  Use `commontrace lesson suggest-revision` instead.", file=sys.stderr)
+        else:
+            print("  Run `commontrace reliability` for the current verdict.", file=sys.stderr)
+        return 1
+
+    hit_occasions = [ev for ev in evidence if slug in ev.retrieved and slug in ev.hit]
+    miss_occasions = [ev for ev in evidence if slug in ev.retrieved and slug not in ev.hit]
+    labels = _occasion_labels(root, {ev.occasion_id for ev in hit_occasions + miss_occasions})
+    evidence_lines = [
+        f"Reliability verdict at the time this draft was written: HARMFUL "
+        f"-- {verdict_row.rationale}",
+        "",
+        *_evidence_sections(hit_occasions, miss_occasions, labels),
+    ]
+
+    llm_draft = _llm_draft.try_draft(
+        instruction=(
+            "This lesson is judged HARMFUL: its rule itself may be wrong, not just "
+            "over-broad. Propose a corrected rule, and the activation condition "
+            "under which the CORRECTED rule should fire."
+        ),
+        slug=slug, current_rule_text=body, applies_when=str(fm.get("applies_when", "")),
+        do_not_apply_when=str(fm.get("do_not_apply_when", "")), evidence_lines=evidence_lines,
+        allowed_evidence_ids={ev.occasion_id for ev in hit_occasions + miss_occasions},
+    )
+
+    draft_slug = f"{lesson_io.canonical_slug(slug)}-rewrite"
+    out_path = os.path.join(paths.lessons_dir(root), f"lesson_{draft_slug}.md")
+
+    with frontmatter.locked(out_path):
+        if os.path.exists(out_path):
+            existing = read_or_warn(frontmatter.read, out_path)
+            if existing is not None and existing[0].get("status") == "review":
+                print(
+                    f"[commontrace] a draft already exists for '{slug}' "
+                    f"({draft_slug}, status=review) -- approve or reject it "
+                    "before drafting another.",
+                    file=sys.stderr,
+                )
+                return 1
+        draft_fm = templates.lesson_frontmatter(
+            slug=draft_slug,
+            description=f"Rewrite draft: {slug} was judged HARMFUL",
+            agent_type=str(fm.get("agent_type") or paths.store_agent_type(root)),
+            domain=str(fm.get("domain") or ""),
+            tags=list(fm.get("tags") or []),
+            applies_when=(
+                llm_draft.applies_when if llm_draft
+                else f"TODO: rewrite -- was: {fm.get('applies_when', '')}"
+            ),
+            do_not_apply_when=(
+                llm_draft.do_not_apply_when if llm_draft
+                else f"TODO: rewrite -- was: {fm.get('do_not_apply_when', '')}"
+            ),
+            importance=int(fm.get("importance") or 3),
+            importance_rationale=(
+                f"Drafted from {slug}'s own HARMFUL evidence "
+                f"({verdict_row.n_hit}/{verdict_row.n_retrieved})."
+            ),
+            source_traces=[],
+            status="review",
+        )
+        draft_fm["revises"] = slug
+        if llm_draft is not None:
+            draft_fm["llm_draft"] = dict(
+                llm_draft.provenance,
+                cited_evidence=llm_draft.evidence,
+                unverifiable_evidence=llm_draft.unverifiable_evidence,
+            )
+        rule_text = llm_draft.rule if llm_draft else (
+            f"TODO: rewrite this rule -- the original was judged HARMFUL: {verdict_row.rationale}"
+        )
+        draft_body = (
+            f"## Rule\n{rule_text}\n\n"
+            "## Why\n"
+            f"The original lesson ({slug}) was judged HARMFUL. See the evidence below.\n\n"
+            "## How to apply\nTODO: when to invoke it, how to use it concretely.\n\n"
+            "## Counter-examples\nTODO: cases where the rule does NOT apply.\n\n"
+            "## Evidence for rewrite\n" + "\n".join(evidence_lines) + "\n"
+        )
+        lesson_io.write_lesson(
+            out_path, draft_fm, draft_body, root=root, actor=_actor(),
+            reason=f"suggest-rewrite draft of {slug}" + (" (LLM-assisted)" if llm_draft else ""),
+        )
+    if llm_draft is None:
+        print(
+            f"[commontrace] drafted {out_path} with TODO placeholders -- no LLM draft "
+            "was available, so the rule itself still needs to be written by hand.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"[commontrace] drafted {out_path} (LLM-assisted)")
+    print(
+        f"  Nothing changed for '{slug}' yet -- this is a new, separate draft.\n"
+        "  Read the evidence, review/rewrite the rule and activation condition, then:\n"
         f"    commontrace lesson approve {draft_slug}\n"
         f"    commontrace lesson reject {slug} --reason \"superseded by {draft_slug}\""
         "   # once you're satisfied"

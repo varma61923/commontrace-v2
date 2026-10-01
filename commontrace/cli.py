@@ -31,8 +31,8 @@ else:
 # or none at all still loads every module, so those read exactly as before.
 _COMMANDS = (
     "init", "install", "capture", "import", "trace", "distill", "lesson", "release",
-    "overlap", "commons", "account", "query", "serve", "index", "bench", "reliability",
-    "consolidate", "retrieval", "experiment", "export", "prove", "taxonomy", "impact",
+    "overlap", "commons", "kb", "account", "query", "serve", "index", "bench", "reliability",
+    "consolidate", "retrieval", "experiment", "source", "signals", "export", "prove", "taxonomy", "impact",
     "pilot", "sync", "redact", "doctor",
 )
 

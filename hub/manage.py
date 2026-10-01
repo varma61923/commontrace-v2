@@ -39,6 +39,11 @@
     unlink-sso <user_id>           -> remove the SSO link; the user row and role are
                                         kept, only the ability to sign in is removed
     audit-log [org_id]              -> 100 most recent audited actions
+    export-audit <jsonl|cef> [since] [org_id]
+                                   -> every audited action after `since`
+                                       (ISO-8601), oldest first, one per line,
+                                       for a SIEM. Use the last line's time as
+                                       the next `since`.
 
     stats                          -> aggregate counts: orgs, active keys, traces
                                        (total/quarantined), votes, mean trust
@@ -2166,6 +2171,31 @@ async def audit_log(org_id: str | None = None, session_factory=None) -> None:
             print(f"    {r.summary}")
 
 
+async def export_audit(
+    fmt: str, since: str | None = None, org_id: str | None = None, session_factory=None,
+) -> bool:
+    """Stream audit entries to stdout in a SIEM format. See hub/audit_export.py."""
+    from hub import audit_export
+
+    if fmt not in audit_export.FORMATS:
+        raise ValueError(f"format must be one of {', '.join(audit_export.FORMATS)}, got {fmt!r}")
+    after = None
+    if since:
+        after = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        if after.tzinfo is None:
+            after = after.replace(tzinfo=timezone.utc)
+    session_factory = session_factory or _default_session_factory()
+    async with session_scope(session_factory) as session:
+        stmt = select(AuditLogEntry).order_by(AuditLogEntry.created_at, AuditLogEntry.id)
+        if after is not None:
+            stmt = stmt.where(AuditLogEntry.created_at > after)
+        if org_id:
+            stmt = stmt.where(AuditLogEntry.org_id == org_id)
+        async for entry in await session.stream_scalars(stmt):
+            print(audit_export.render(entry, fmt))
+    return True
+
+
 async def set_plan(org_id: str, plan_name: str, session_factory=None) -> bool:
     """Move an org between plans (hub/plans.py).
 
@@ -2879,6 +2909,7 @@ _COMMANDS = {
     "link-sso": (link_sso, 3, 3),
     "unlink-sso": (unlink_sso, 1, 1),
     "audit-log": (audit_log, 0, 1),
+    "export-audit": (export_audit, 1, 3),
     "stats": (stats, 0, 0),
     "kb-stats": (kb_stats, 0, 0),
     "commons-seed": (commons_seed, 2, 2),

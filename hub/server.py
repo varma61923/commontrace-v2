@@ -51,6 +51,7 @@ from hub.console import CONSOLE_PATH, add_console_routes
 from hub.db import check_row_level_security, session_scope
 from hub.disclosure import add_disclosure_route
 from hub.observability import RequestContextMiddleware, add_health_routes
+from hub.otlp import add_otlp_routes
 from hub.rest import add_rest_routes
 from hub.schema_validation import SchemaValidationError
 from hub.scim import add_scim_routes
@@ -1750,6 +1751,19 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     # verify a delivery actually came from Stripe.
     if config.stripe_webhook_secret:
         add_billing_webhook_route(inner_app, session_factory, stripe=stripe_settings)
+
+    # A live OpenTelemetry SDK/Collector, not a browser or the REST plugin --
+    # opt-in like every other surface above, and absent (not merely refused)
+    # until configured. See hub/otlp.py's own docstring for what this is and
+    # is not (OTLP-JSON only, no protobuf).
+    if config.otlp_ingest_enabled:
+        add_otlp_routes(
+            inner_app,
+            session_factory,
+            config=config,
+            rate_limiter=rate_limiter,
+            trusted_proxy_hops=config.trusted_proxy_hops,
+        )
 
     # An IdP calls this, authenticated per-org via a dedicated `scim`-scoped
     # ApiKey (hub/scopes.py), not a shared deployment-wide secret -- so

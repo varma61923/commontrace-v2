@@ -320,6 +320,19 @@ class HubConfig:
     # requires `signup_enabled`, since it is the same capability /signup's
     # form already offers and must not become a second, ungated door to it.
     rest_api_enabled: bool = False
+
+    # --- OTLP ingest (hub/otlp.py) ---
+    # Off by default, the same absent-unless-configured posture every other
+    # opt-in surface here takes. Set true to expose `POST /v1/traces` -- the
+    # standard OTLP/HTTP path, so an OpenTelemetry SDK or Collector already
+    # configured with an OTLP/HTTP exporter needs only its endpoint pointed
+    # at this Hub (plus an `X-API-Key` header) to turn a completed GenAI
+    # span directly into a Trace, live, with no client-side exporter code
+    # (contrast commontrace/otel_exporter.py's CommonTraceSpanExporter,
+    # which does the same thing into the LOCAL store from inside the same
+    # process). See hub/otlp.py's own docstring for the parsing this reuses
+    # rather than re-implements, and for why OTLP-JSON only (not protobuf).
+    otlp_ingest_enabled: bool = False
     # Bulk export of the curated Knowledge Base corpus (crud.export_commons).
     #
     # OFF by default, unlike commons_enabled, and the asymmetry is the point.
@@ -695,6 +708,7 @@ class HubConfig:
             operator_support_contact=os.environ.get("HUB_OPERATOR_SUPPORT_CONTACT", ""),
             signup_enabled=_env_bool("HUB_SIGNUP_ENABLED", False),
             rest_api_enabled=_env_bool("HUB_REST_API_ENABLED", False),
+            otlp_ingest_enabled=_env_bool("HUB_OTLP_INGEST_ENABLED", False),
             commons_export_enabled=_env_bool("HUB_COMMONS_EXPORT_ENABLED", False),
             stripe_secret_key=env_secret("HUB_STRIPE_SECRET_KEY"),
             stripe_webhook_secret=env_secret("HUB_STRIPE_WEBHOOK_SECRET"),

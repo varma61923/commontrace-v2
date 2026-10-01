@@ -646,6 +646,33 @@ is deliberately conservative: a causal result from `commontrace experiment`
 (§9 above) always outranks a correlational one, and correlational data alone
 never earns an outright yes — see PILOT.md.
 
+### 11 — More commands
+
+```bash
+# Measure file-based memory (CLAUDE.md, AGENTS.md, .cursor/rules) per ## section
+commontrace source render CLAUDE.md --occasion-id task-1 --out session.md
+commontrace source outcome --occasion-id task-1 --succeeded
+
+# LLM-drafted lessons (still status=review); set COMMONTRACE_LLM_API_KEY first
+commontrace distill --draft
+commontrace lesson suggest-revision <slug> --draft
+commontrace lesson suggest-rewrite <slug>
+
+# Curated substrate lesson packs, installed for review
+commontrace kb list
+commontrace kb install kubernetes-deployment
+
+# Failure signals, exportable as eval datasets
+commontrace signals list
+commontrace signals export "<name>" --format langsmith|braintrust
+
+# Reproduce the causal-detection claim against seeded ground truth
+python -m commons.eval.causal_harness
+```
+
+LangGraph: `commontrace.integrations.langgraph.with_lessons(node, memory)`.
+Hub: `HUB_OTLP_INGEST_ENABLED=true` accepts OTLP/JSON spans at `POST /v1/traces`.
+
 See [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) for the object model these
 commands produce, and `commontrace --help` / `commontrace <subcommand> --help`
 for the full CLI reference.

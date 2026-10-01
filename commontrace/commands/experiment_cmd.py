@@ -8,6 +8,8 @@ import statistics
 import sys
 
 from commontrace import (
+    approval,
+    evidence_io,
     experiment,
     frontmatter,
     holdout_io,
@@ -352,6 +354,17 @@ def _run_configure(args: argparse.Namespace, root: str) -> int:
         current = holdout_io.load_config(root)
         print(_render_config(current, root))
         return 0
+    if args.rate < approval.AUTO_APPROVE_MIN_HOLDOUT:
+        held = [str(fm.get("name")) for fm in evidence_io.load_active_lessons(root) if fm.get("auto_approved")]
+        if held:
+            print(
+                f"[commontrace] refusing: {len(held)} active lesson(s) were auto-approved on the "
+                f"condition that the holdout stays at {approval.AUTO_APPROVE_MIN_HOLDOUT:.0%} or more "
+                f"({', '.join(sorted(held)[:5])}{', ...' if len(held) > 5 else ''}).\n"
+                "  Reject or re-approve them by hand first.",
+                file=sys.stderr,
+            )
+            return 1
     try:
         config = holdout_io.configure(
             root, rate=args.rate, detect=args.detect, note=args.note)

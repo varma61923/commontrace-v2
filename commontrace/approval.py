@@ -100,13 +100,20 @@ class PolicyError(ValueError):
 class ApprovalPolicy:
     mode: str = POLICY_SINGLE
     require_human: bool = False
+    #: `commontrace lesson auto-approve` may activate LLM drafts that pass
+    #: every gate -- only while a holdout is running (AUTO_APPROVE_MIN_HOLDOUT).
+    auto_approve_drafts: bool = False
 
     @property
     def separation_required(self) -> bool:
         return self.mode == POLICY_TWO_PERSON
 
 
-ALLOWED_KEYS = frozenset({"mode", "require_human"})
+ALLOWED_KEYS = frozenset({"mode", "require_human", "auto_approve_drafts"})
+#: Lowest holdout rate under which auto-approval is allowed to run.
+AUTO_APPROVE_MIN_HOLDOUT = 0.05
+#: Approver recorded for an auto-approval, distinct from every person and agent.
+AUTO_APPROVER = "auto-approve"
 VALID_BOOL_STRINGS = frozenset({"true", "yes", "1", "false", "no", "0"})
 TRUE_BOOL_STRINGS = frozenset({"true", "yes", "1"})
 
@@ -126,17 +133,29 @@ def validate_policy(raw: dict, path: str = "approval-policy.yaml") -> None:
         if mode not in POLICIES:
             raise PolicyError(f"{path}: mode must be one of {', '.join(POLICIES)}, got {mode!r}")
 
-    if "require_human" in raw:
-        rh = raw["require_human"]
-        if isinstance(rh, str):
-            if rh.strip().lower() not in VALID_BOOL_STRINGS:
-                raise PolicyError(
-                    f"{path}: require_human must be a boolean (true/false), got {rh!r}"
-                )
-        elif not isinstance(rh, bool):
+    for key in ("require_human", "auto_approve_drafts"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if isinstance(value, str):
+            if value.strip().lower() not in VALID_BOOL_STRINGS:
+                raise PolicyError(f"{path}: {key} must be a boolean (true/false), got {value!r}")
+        elif not isinstance(value, bool):
             raise PolicyError(
-                f"{path}: require_human must be a boolean (true/false), got {type(rh).__name__}"
+                f"{path}: {key} must be a boolean (true/false), got {type(value).__name__}"
             )
+
+    if _as_bool(raw.get("require_human", False)) and _as_bool(raw.get("auto_approve_drafts", False)):
+        raise PolicyError(
+            f"{path}: auto_approve_drafts and require_human contradict each other -- "
+            "auto-approval activates a lesson with no person involved."
+        )
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in TRUE_BOOL_STRINGS
+    return bool(value)
 
 
 def load_policy(root: str) -> ApprovalPolicy:
@@ -158,13 +177,11 @@ def load_policy(root: str) -> ApprovalPolicy:
     validate_policy(raw, path)
 
     mode = str(raw.get("mode", POLICY_SINGLE)).strip().lower()
-    rh_raw = raw.get("require_human", False)
-    if isinstance(rh_raw, str):
-        require_human = rh_raw.strip().lower() in TRUE_BOOL_STRINGS
-    else:
-        require_human = bool(rh_raw)
-
-    return ApprovalPolicy(mode=mode, require_human=require_human)
+    return ApprovalPolicy(
+        mode=mode,
+        require_human=_as_bool(raw.get("require_human", False)),
+        auto_approve_drafts=_as_bool(raw.get("auto_approve_drafts", False)),
+    )
 
 
 def _parse_policy_yaml(text: str) -> dict:

@@ -14,7 +14,7 @@
 
 services:
   db:
-    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     environment:
       # This role becomes the cluster SUPERUSER (the Postgres image makes
       # POSTGRES_USER one) and OWNS the schema. It is used for exactly two
@@ -42,7 +42,12 @@ services:
       # overridable from the shell, and not a value any real deployment keeps.
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-change-me-not-for-production}
     volumes:
-      - hub_pgdata:/var/lib/postgresql/data
+      # Postgres 18's image keeps data under /var/lib/postgresql/<major>/ and
+      # refuses to start with a volume mounted at the old .../data path. The
+      # volume is renamed (was hub_pgdata) so a stack created under 16 never
+      # mounts its old-format data here. To carry that data over:
+      # pg_dumpall against the old stack, then restore into this one.
+      - hub_pgdata18:/var/lib/postgresql
       # Run ONCE, at first initialisation of an empty data directory, before
       # the migrate service creates any table -- which is what lets the
       # script's ALTER DEFAULT PRIVILEGES cover every table alembic is about
@@ -180,4 +185,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  hub_pgdata:
+  hub_pgdata18:

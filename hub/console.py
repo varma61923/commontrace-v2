@@ -396,7 +396,14 @@ def _shared_page(body: str, *, expires_at: int) -> HTMLResponse:
     viewer to, so the banner names CommonTrace rather than pointing
     somewhere invented.
     """
-    until = datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%B %-d, %Y")
+    # No `%-d` (day-of-month without a leading zero): that is a glibc/macOS
+    # strftime extension, not a standard one, and CPython raises
+    # `ValueError: Invalid format string` for it on Windows' C runtime --
+    # reproduced running hub/tests on Windows, where every test touching
+    # this function failed on import of a date, not on anything about the
+    # page itself. Built from portable pieces instead, same output.
+    _expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+    until = f"{_expires_dt:%B} {_expires_dt.day}, {_expires_dt:%Y}"
     banner = (
         '<div class="shared-banner">Shared, read-only report — generated from live data by a '
         f"CommonTrace customer. Link active until {h(until)}.</div>"
