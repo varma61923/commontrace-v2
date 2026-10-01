@@ -28,6 +28,9 @@ document cannot.
 | Vulnerability management | Static analysis (`bandit`) and dependency audit (`pip-audit`) run in CI on every push | `.github/workflows/ci.yml` "security scan" job |
 | Vulnerability disclosure | A private reporting channel exists | `SECURITY.md` |
 | Network access control | Application-level IP allowlisting, CIDR-based, fails closed | `hub/server.py:IpAllowlistMiddleware`, `hub/tests/test_ip_allowlist.py` (9 tests) |
+| Data residency enforced | A deployment that declares `HUB_DATA_REGION` does not authenticate an org pinned to another region | `hub/auth.py:_region_ok`, `hub/tests/test_residency.py` (18 tests) |
+| Customer-held encryption key | The Hub's at-rest key can be wrapped by the customer's KMS; revoking access stops decryption | `hub/kms.py`, `hub/tests/test_kms.py` (12 tests) |
+| Billing only on verified evidence | A value charge needs a package that recomputes from its raw data; compromised, synthetic and unestablished results bill nothing | `commontrace/pricing.py`, `tests/test_pricing.py` (34 tests) |
 | Rate limiting / abuse controls | Per-org token-bucket limiting on writes and auth attempts | `hub/abuse.py` |
 | Incident detection | Automatic webhook alert the moment anyone holds the most privileged role | `hub/events.py` (`user.privileged_role_granted`), `hub/tests/test_manage.py::TestPrivilegedRoleGrantAlert` |
 
