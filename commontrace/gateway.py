@@ -69,6 +69,9 @@ from commontrace.measure import CausalMemory, HarmWatch
 API_VERSION = "1"
 #: How stale the console's reports (memories, proof status) may be while the logs are changing, in seconds.
 REPORT_MIN_INTERVAL = 5.0
+#: How old a report may get while nothing it is keyed on changes: it also reads the time, and episode and trace
+#: files edited in place (which leave their directory's mtime alone).
+REPORT_MAX_AGE = 60.0
 MAX_BODY_BYTES = 1 << 20
 MAX_ITEMS = 200
 MAX_TEXT_CHARS = 20_000
@@ -623,11 +626,13 @@ class Gateway:
 
     def _data_key(self) -> tuple:
         """What every report here is a function of: the assignment and outcome logs, the experiment, the proof's
-        registered design and the store's retrieval settings, each by (inode, size, mtime)."""
+        registered design and the store's retrieval settings, each by (inode, size, mtime), and the episode and
+        trace directories, which also carry outcomes (an added or removed file changes the directory's mtime)."""
         key = []
         for path in (holdout_io.holdout_log_path(self.root), holdout_io.outcomes_log_path(self.root),
                      holdout_io.config_path(self.root), proof.state_path(self.root),
-                     retrieval_io.config_path(self.root)):
+                     retrieval_io.config_path(self.root), paths.episodes_dir(self.root),
+                     paths.traces_dir(self.root)):
             try:
                 st = os.stat(path)
                 key.append((st.st_ino, st.st_size, st.st_mtime_ns))
@@ -644,7 +649,8 @@ class Gateway:
         key, now = self._data_key(), time.monotonic()
         with self._memo_lock:
             hit = self._memo.get(name)
-            if hit is not None and (hit[0] == key or now - hit[1] < REPORT_MIN_INTERVAL):
+            if hit is not None and (now - hit[1] < REPORT_MIN_INTERVAL
+                                    or (hit[0] == key and now - hit[1] < REPORT_MAX_AGE)):
                 return hit[2]
         value = compute()
         with self._memo_lock:
@@ -809,6 +815,17 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         def log_message(self, *args, **kwargs):  # silence the default stderr access log
             pass
 
+        def handle(self):
+            # TLS handshakes run here, on this connection's thread and under its timeout. In accept() they ran on
+            # the one serving thread with none, so a client that connected and never spoke stalled every other.
+            if isinstance(self.connection, ssl.SSLSocket):
+                try:
+                    self.connection.do_handshake()
+                except (ssl.SSLError, OSError):
+                    self.close_connection = True
+                    return
+            super().handle()
+
         def _send(self, response: Response) -> None:
             self.send_response(response.status)
             self.send_header("Content-Type", response.content_type)
@@ -858,7 +875,7 @@ def make_http_server(gateway: Gateway, host: str, port: int, *, tls: tuple[str, 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(*tls)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     return server
 
 

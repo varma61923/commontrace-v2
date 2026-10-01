@@ -121,7 +121,7 @@ def test_reports_are_reused_while_the_data_is_unchanged_and_refreshed_once_it_ch
     real = g._compute_analysis
     monkeypatch.setattr(g, "_compute_analysis", lambda: (calls.append(1), real())[1])
     first = _memories(g)
-    clock[0] += 60
+    clock[0] += gateway.REPORT_MAX_AGE / 2
     assert _memories(g) == first and len(calls) == 1                  # unchanged data: never recomputed
     _assign(root, 30, 10)                                             # the data changes ...
     assert _memories(g) != first and len(calls) == 2                  # ... long after the last compute: at once
@@ -132,3 +132,29 @@ def test_reports_are_reused_while_the_data_is_unchanged_and_refreshed_once_it_ch
     clock[0] += gateway.REPORT_MIN_INTERVAL
     refreshed = _memories(g)
     assert len(calls) == 3 and refreshed != second                    # after it, recomputed
+
+
+def test_a_report_is_refreshed_after_its_maximum_age_or_when_a_trace_or_episode_appears(root, monkeypatch):
+    from commontrace import paths
+    clock = [1000.0]
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: clock[0])
+    _assign(root, 0, 4)
+    g = gateway.Gateway(root, token="t" * 40)
+    calls = []
+    real = g._compute_analysis
+    monkeypatch.setattr(g, "_compute_analysis", lambda: (calls.append(1), real())[1])
+    _memories(g)
+    clock[0] += gateway.REPORT_MAX_AGE
+    _memories(g)
+    assert len(calls) == 2                                            # nothing changed, but the report reads the time
+    for directory in (paths.traces_dir(root), paths.episodes_dir(root)):
+        os.makedirs(directory, exist_ok=True)
+        clock[0] += gateway.REPORT_MIN_INTERVAL
+        _memories(g)
+        before = len(calls)
+        with open(os.path.join(directory, "x.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\n---\n")
+        os.utime(directory, ns=(1, 1))                                # a distinct mtime, whatever the clock
+        clock[0] += gateway.REPORT_MIN_INTERVAL
+        _memories(g)
+        assert len(calls) == before + 1                               # outcomes can live in these files too
