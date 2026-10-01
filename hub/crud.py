@@ -2618,6 +2618,10 @@ async def confirm_org_deletion(
     org_name = org.name
     had_subscription = bool(org.stripe_subscription_id)
     await session.delete(org)
+    # Its keys go with it (cascade); no replica may keep serving one from cache.
+    from hub import auth
+
+    await auth.announce_auth_change(session)
     await audit.record(
         session, actor=actor, action="confirm_org_deletion", org_id=org_id,
         target_type="org", target_id=org_id,

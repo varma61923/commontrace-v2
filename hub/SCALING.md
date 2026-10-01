@@ -164,6 +164,35 @@ are the largest addition. Moving the pool onto the serving loop (no
 handoff at all) is the change that would test it. Not attempted here,
 and not claimed.
 
+### One statement per decision, and a cache that is safe across replicas
+
+Two changes since, both measured with the same benchmark (400 requests
+per level, one process, co-located Postgres, `--backend postgres`):
+
+* **The limiter decides in one statement.** It ran a two-statement
+  transaction per decision (BEGIN, upsert, update, COMMIT: four round
+  trips with the row lock held across them). One upsert now refills,
+  takes and returns the decision (`hub/abuse.py:_RATE_LIMIT_TAKE_SQL`).
+* **The verified-key cache can be turned on without a revocation window.**
+  `HUB_AUTH_CACHE_SECONDS` was a trade: a key revoked through another
+  replica stayed servable for the whole window. Revocations now NOTIFY
+  every replica, which clears its cache, and a replica caches only while
+  its LISTEN connection is up (`hub/auth_invalidation.py`).
+
+| | clients | rps | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| one-statement limiter, cache off | 1 | 155 | 6.0 ms | 8.1 ms | 11.0 ms |
+| | 8 | 258 | 30.3 ms | 41.2 ms | 46.9 ms |
+| | 32 | 205 | 136.3 ms | 279.1 ms | 333.6 ms |
+| one-statement limiter, cache 10 s | 1 | 268 | 3.5 ms | 4.9 ms | 6.7 ms |
+| | 8 | 441 | 17.7 ms | 23.7 ms | 26.7 ms |
+| | 32 | 446 | 65.9 ms | 107.6 ms | 162.8 ms |
+
+Against the `postgres` rows above at 32 clients: 161 -> 205 rps from the
+limiter alone, 446 rps with the cache, and p95 307 -> 108 ms. The ceiling
+is still one event loop; the answer past it is still more replicas, which
+is now the configuration that pays the least for being shared.
+
 ## Two findings from the first run, both of which changed the answer
 
 The first run reported **two** paths as linear-or-worse. Both turned out

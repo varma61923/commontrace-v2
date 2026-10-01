@@ -94,6 +94,24 @@ class TestTheProductionAppBoots:
         messages = await _run_lifespan(build_app(cfg, session_factory))
         assert "lifespan.startup.complete" in [m["type"] for m in messages]
 
+    async def test_it_boots_and_shuts_down_with_the_verified_key_cache_on(
+        self, config, session_factory
+    ):
+        """HUB_AUTH_CACHE_SECONDS > 0 starts a LISTEN connection in the
+        lifespan (hub/auth_invalidation.py); startup and shutdown must both
+        complete, and the listener must not outlive the app."""
+        from hub import auth
+
+        cfg = dataclasses.replace(config, auth_cache_seconds=10)
+        try:
+            messages = await _run_lifespan(build_app(cfg, session_factory))
+            types = [m["type"] for m in messages]
+            assert "lifespan.startup.complete" in types
+            assert "lifespan.shutdown.complete" in types
+            assert auth._AUTH_CACHE_LISTENER_LIVE is False
+        finally:
+            auth.configure_auth_cache(0)
+
     async def test_it_boots_with_the_postgres_rate_limiter_backend(
         self, config, session_factory
     ):

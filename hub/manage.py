@@ -2154,6 +2154,7 @@ async def purge_org(
         org_name = org.name
         had_subscription = bool(org.stripe_subscription_id)
         await session.delete(org)
+        await auth.announce_auth_change(session)
         # Recorded AFTER the delete and deliberately NOT cascaded away with
         # it -- see AuditLogEntry's docstring: the purge is exactly the event
         # the trail must retain.
@@ -2268,6 +2269,8 @@ async def set_region(org_id: str, region: str, session_factory=None) -> bool:
             print(f"error: no such organization: {org_id}", file=sys.stderr)
             return False
         was, org.data_region = org.data_region, (value or None)
+        # A region pin decides whether this org's keys authenticate here.
+        await auth.announce_auth_change(session)
         await audit.record(
             session, actor=audit.ACTOR_OPERATOR_CLI, action="set_region", org_id=org_id, target_type="org",
             target_id=org_id, summary=f"{was!r} -> {value or None!r}")

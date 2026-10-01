@@ -91,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The verified-key cache is safe across replicas.** Revoking or rotating a key, deleting an org or changing its
+  region sends a transactional Postgres NOTIFY; every replica's listener clears its cache on commit, and a replica
+  caches only while that listener is connected. A cached key is never served past its own expiry. With the cache
+  at 10 s and the shared limiter: 446 requests/s at 32 clients, p95 108 ms (hub/SCALING.md).
+
 - **The shared rate limiter decides in one statement.** `HUB_RATE_LIMIT_BACKEND=postgres` refilled and
   decremented in two statements inside a transaction (four round trips, row lock held across them) for each of
   the two limiter checks on every authenticated request. One upsert now refills, takes and reports the decision:

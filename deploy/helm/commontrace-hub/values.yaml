@@ -23,7 +23,7 @@ config:
   HUB_DB_MAX_OVERFLOW: "5"
   HUB_REQUIRE_RLS: "true"
   HUB_DATA_REGION: ""                    # e.g. eu or us; reported by /disclosure
-  HUB_AUTH_CACHE_SECONDS: ""             # 0-60; trades revocation latency for throughput (hub/.env.example)
+  HUB_AUTH_CACHE_SECONDS: ""             # 0-60; revocations reach every replica by NOTIFY (hub/.env.example)
 
 # Postgres max_connections must exceed (HUB_DB_POOL_SIZE + HUB_DB_MAX_OVERFLOW) x (max replicas +
 # surge). Set it so the chart can check it at render time.

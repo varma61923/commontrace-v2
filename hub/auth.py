@@ -56,7 +56,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -266,7 +266,7 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     if not old.scopes:
         raise ValueError(f"api key {old_key_id} holds no scopes, so it has nothing to carry forward")
     old.revoked_at = datetime.now(timezone.utc)
-    clear_auth_cache()
+    await announce_auth_change(session)
     # Carry the old key's expiry *policy* forward: a key that was issued to
     # expire in 90 days rotates into another 90-day key, rather than
     # silently becoming a non-expiring one.
@@ -280,7 +280,7 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
 
 
 async def revoke_api_key(session: AsyncSession, key_id: str) -> None:
-    clear_auth_cache()
+    await announce_auth_change(session)
     await session.execute(
         update(ApiKey).where(ApiKey.id == key_id).values(revoked_at=datetime.now(timezone.utc))
     )
@@ -306,6 +306,9 @@ class AuthenticatedKey:
     # the column existed, which held every capability at issuance -- see
     # scopes.satisfies for why that is distinct from an empty tuple.
     scopes: tuple[str, ...] | None = None
+    # When the key stops verifying, if ever. Carried only so the verified-key
+    # cache never serves a key past its own expiry; not part of identity.
+    expires_at: datetime | None = field(default=None, compare=False, repr=False)
 
 
 # --- An opt-in, short-lived cache of verified keys ---------------------------------------------------------------
@@ -321,24 +324,63 @@ class AuthenticatedKey:
 #     failed verification is never cached, so it cannot be used to make an invalid key look valid.
 #
 # Capped at 60 seconds: past that it is a different security posture, not a tuning knob.
+#
+# Across replicas (hub/auth_invalidation.py): every revocation, rotation, org deletion and region change also sends
+# a Postgres NOTIFY that each replica's listener answers by clearing its cache, so a key revoked anywhere stops
+# being served everywhere within milliseconds. build_app configures the cache with `require_listener=True`, and
+# then a replica serves from it ONLY while its listener is connected: losing the connection turns caching off
+# (and empties the cache) rather than leaving the window open. A key is never served past its own `expires_at`.
 _AUTH_CACHE_TTL = 0.0
 _AUTH_CACHE_MAX = 4096
 _AUTH_CACHE: dict[str, tuple[float, "AuthenticatedKey"]] = {}
+_AUTH_CACHE_REQUIRES_LISTENER = False
+_AUTH_CACHE_LISTENER_LIVE = False
 
 
-def configure_auth_cache(seconds: float) -> None:
-    global _AUTH_CACHE_TTL
+def configure_auth_cache(seconds: float, *, require_listener: bool = False) -> None:
+    global _AUTH_CACHE_TTL, _AUTH_CACHE_REQUIRES_LISTENER
     _AUTH_CACHE_TTL = max(0.0, min(float(seconds), 60.0))
+    _AUTH_CACHE_REQUIRES_LISTENER = require_listener
     _AUTH_CACHE.clear()
+
+
+def set_auth_listener_live(live: bool) -> None:
+    """Called by hub/auth_invalidation.py as its connection comes and goes."""
+    global _AUTH_CACHE_LISTENER_LIVE
+    _AUTH_CACHE_LISTENER_LIVE = live
+    _AUTH_CACHE.clear()
+
+
+def _cache_usable() -> bool:
+    if _AUTH_CACHE_TTL <= 0:
+        return False
+    return _AUTH_CACHE_LISTENER_LIVE or not _AUTH_CACHE_REQUIRES_LISTENER
 
 
 def clear_auth_cache() -> None:
     _AUTH_CACHE.clear()
 
 
+#: The Postgres NOTIFY channel every replica's listener (hub/auth_invalidation.py) answers by clearing its cache.
+AUTH_INVALIDATION_CHANNEL = "commontrace_auth_invalidate"
+
+
+async def announce_auth_change(session: AsyncSession) -> None:
+    """Something that decides whether a key verifies just changed: forget every cached key here, and tell every
+    other replica to do the same. The NOTIFY is transactional -- delivered when `session` commits, and not at all
+    if it rolls back -- so other replicas never drop their cache for a change that did not happen, and never keep
+    serving past one that did. On a database without NOTIFY (tests on SQLite) only this process is told."""
+    clear_auth_cache()
+    bind = session.get_bind()
+    if bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        await session.execute(text("SELECT pg_notify(:channel, '')"), {"channel": AUTH_INVALIDATION_CHANNEL})
+
+
 def cached_key(raw_key: str) -> "AuthenticatedKey | None":
     """A verified key remembered from the last few seconds, or None. Costs no database access."""
-    if _AUTH_CACHE_TTL <= 0 or not raw_key:
+    if not raw_key or not _cache_usable():
         return None
     entry = _AUTH_CACHE.get(_key_hmac(raw_key))
     if entry is None:
@@ -350,11 +392,16 @@ def cached_key(raw_key: str) -> "AuthenticatedKey | None":
 
 
 def _remember(raw_key: str, key: "AuthenticatedKey") -> None:
-    if _AUTH_CACHE_TTL <= 0:
+    if not _cache_usable():
         return
+    window = _AUTH_CACHE_TTL
+    if key.expires_at is not None:
+        window = min(window, (key.expires_at - datetime.now(timezone.utc)).total_seconds())
+        if window <= 0:
+            return
     if len(_AUTH_CACHE) >= _AUTH_CACHE_MAX:
         _AUTH_CACHE.clear()
-    _AUTH_CACHE[_key_hmac(raw_key)] = (time.monotonic() + _AUTH_CACHE_TTL, key)
+    _AUTH_CACHE[_key_hmac(raw_key)] = (time.monotonic() + window, key)
 
 
 #: The region this deployment serves (HUB_DATA_REGION), set once at start-up. Empty means none declared, and
@@ -453,7 +500,8 @@ async def _verify_by_hmac(session: AsyncSession, raw_key: str, now: datetime) ->
     if row.last_used_at is None or (now - row.last_used_at) >= _LAST_USED_AT_UPDATE_INTERVAL:
         await session.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used_at=now))
     return AuthenticatedKey(
-        org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes)
+        org_id=row.org_id, key_prefix=row.key_prefix, scopes=_scopes_of(row.scopes),
+        expires_at=row.expires_at,
     )
 
 
@@ -551,7 +599,7 @@ async def _verify_by_legacy_scan(session: AsyncSession, raw_key: str, now: datet
             candidate.key_hmac = current_hmac
         return AuthenticatedKey(
             org_id=candidate.org_id, key_prefix=candidate.key_prefix,
-            scopes=_scopes_of(candidate.scopes),
+            scopes=_scopes_of(candidate.scopes), expires_at=candidate.expires_at,
         )
     return None
 

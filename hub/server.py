@@ -1673,7 +1673,9 @@ def build_mcp_server(config: HubConfig, session_factory: async_sessionmaker, rat
 def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlette:
     # An org pinned to another region is not authenticated by this deployment (hub/auth.py).
     auth.configure_region(config.data_region)
-    auth.configure_auth_cache(config.auth_cache_seconds)
+    # require_listener: a replica serves cached keys only while it is
+    # listening for revocations from every other replica (hub/auth_invalidation.py).
+    auth.configure_auth_cache(config.auth_cache_seconds, require_listener=True)
     rate_limiter = make_rate_limiter(config)
     if config.rate_limit_backend == "memory":
         # In-process buckets reset on restart and N replicas allow ~N× the
@@ -1867,6 +1869,12 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
                         cipher=config.cipher(),
                         batch_size=config.webhook_scheduler_batch_size,
                     )
+                ))
+            if config.auth_cache_seconds > 0:
+                from hub import auth_invalidation
+
+                tasks.append(asyncio.create_task(
+                    auth_invalidation.listen(config.database_url, stop_event)
                 ))
             if config.connectors_enabled:
                 tasks.append(asyncio.create_task(
