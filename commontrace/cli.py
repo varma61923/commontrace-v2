@@ -32,7 +32,7 @@ else:
 _COMMANDS = (
     "init", "install", "capture", "import", "trace", "distill", "lesson", "release",
     "overlap", "commons", "kb", "account", "query", "serve", "index", "bench", "reliability",
-    "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "signals", "export",
+    "consolidate", "retrieval", "experiment", "source", "function", "proof", "gateway", "fleet", "signals", "export",
     "prove", "taxonomy", "impact", "pilot", "sync", "redact", "doctor",
 )
 
