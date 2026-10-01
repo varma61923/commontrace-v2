@@ -10,9 +10,12 @@ Written against the published source of mem0ai 2.2.1, letta-client
 1.12.1, zep-cloud 3.30.0, anthropic 1.11.0 and bedrock-agentcore 1.24.0,
 not against live accounts.
 
-Harm withdrawal always blocklists the memory at recall time. Deleting it
-at the source as well is opt-in (`delete_at_source=True`), since it
-removes data from the customer's own store.
+Harm withdrawal always stops the memory being handed out at recall time:
+by itself when the store's harm policy is `withdraw` (the verdict decides,
+see commontrace/measure.py), or by hand with `withdraw()`. Deleting it at the
+source as well is opt-in (`delete_at_source=True`, or `delete_harmful=True`
+for the automatic case), since it removes data from the customer's own store
+-- and a deleted memory cannot be re-tested after a rewrite.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from commontrace import holdout_io, memory_sources, paths
-from commontrace.measure import CausalMemory
+from commontrace.measure import DEFAULT_CHECK_EVERY, CausalMemory, Recall
 
 
 @dataclass(frozen=True)
@@ -185,14 +188,16 @@ class MeasuredMemory:
 
     def __init__(
         self, adapter: Any, *, root: str | None = None, source_key: str | None = None,
-        pinned: Iterable[str] = (),
+        pinned: Iterable[str] = (), on_harm: str | None = None, delete_harmful: bool = False,
+        check_every: int = DEFAULT_CHECK_EVERY,
     ) -> None:
         self.adapter = adapter
         self.root = paths.resolve_root(root)
         self.source_key = source_key or f"adapter:{adapter.name}"
+        self._delete_harmful = delete_harmful
         self._causal = CausalMemory(
             self._eligible, root=self.root, key=lambda i: i.id, text=lambda i: i.text,
-            pinned=pinned, scorer=f"adapter:{adapter.name}",
+            pinned=pinned, scorer=f"adapter:{adapter.name}", on_harm=on_harm, check_every=check_every,
         )
 
     def _eligible(self, query: str, **kwargs: Any) -> list[Item]:
@@ -200,7 +205,19 @@ class MeasuredMemory:
         return [i for i in self.adapter.search(query, **kwargs) if i.id not in blocked]
 
     def recall(self, query: str = "", *, occasion_id: str, **kwargs: Any) -> list[Item]:
-        return self._causal.recall(query, occasion_id=occasion_id, **kwargs)
+        return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
+
+    def recall_detailed(self, query: str = "", *, occasion_id: str, **kwargs: Any) -> Recall:
+        result = self._causal.recall_detailed(query, occasion_id=occasion_id, **kwargs)
+        if self._delete_harmful and result.withdrawn and self.adapter.can_delete:
+            for item_id in result.withdrawn:
+                # Blocklisted first, so a failed delete still stops delivery.
+                memory_sources.withdraw_key(self.root, self.source_key, item_id)
+                try:
+                    self.adapter.delete(item_id)
+                except Exception:  # noqa: BLE001 - it stays blocklisted; recall must not fail
+                    pass
+        return result
 
     def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:
         return holdout_io.record_outcome(self.root, occasion_id, succeeded)

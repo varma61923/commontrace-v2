@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automatic harm withdrawal for memory held anywhere.** `CausalMemory`, `MeasuredMemory`
+  (Mem0, Letta, Zep, Claude memory stores, AgentCore) and file sources now follow the store's
+  harm policy: with `commontrace retrieval --on-harm withdraw`, a memory whose anytime-valid
+  verdict is HURTS is no longer delivered, decided before arms are assigned so no estimate is
+  biased. `recall_detailed` says what was withdrawn and why; deleting at the source stays
+  opt-in (`delete_harmful=True`). Over 200 seeds per adapter the 95% interval covers the planted
+  effect 92-97% of the time; a planted harmful memory is withdrawn in 100 of 100 runs (median
+  1.5x the fixed-horizon plan) with no helpful or harmless memory withdrawn
+  (`commons/eval/CAUSAL_COVERAGE.md`, `python -m commons.eval.coverage_harness`).
+
 - **Function kits.** `commontrace function` and `init --function|--kit`: the
   occasion, outcome model (real detectors, how they combine, how long to wait),
   planning defaults and demo data that make the holdout work for a function, as

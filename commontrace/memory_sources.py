@@ -59,7 +59,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from commontrace import frontmatter, holdout_io, measure, paths
 
@@ -122,6 +122,10 @@ class RenderResult:
     withheld: list[str]
     #: section ids permanently excluded by withdraw(), before any draw ran.
     blocked: list[str]
+    #: section ids left out because the store's harm policy withdrew them on a
+    #: measured HURTS verdict (commontrace/measure.py). Follows the evidence,
+    #: so it is empty again after a new randomization.
+    harmful: list[str] = field(default_factory=list)
 
 
 def blocklist_path(root: str) -> str:
@@ -268,14 +272,19 @@ class FileMemorySource:
             root=self._root,
             scorer=f"file:{self._label}",
         )
-        delivered = memory.recall(self.path, occasion_id=occasion_id)
-        delivered_ids = {d["id"] for d in delivered}
+        recalled = memory.recall_detailed(self.path, occasion_id=occasion_id)
+        delivered_ids = {d["id"] for d in recalled.items}
         rendered = preamble + "".join(item["memory"] for item in items if item["id"] in delivered_ids)
-        withheld = [item["id"] for item in items if item["id"] not in delivered_ids]
+        harmful = [item["id"] for item in items if item["id"] in recalled.withdrawn]
+        withheld = [
+            item["id"] for item in items
+            if item["id"] not in delivered_ids and item["id"] not in recalled.withdrawn
+        ]
         return RenderResult(
             text=rendered,
             withheld=withheld,
             blocked=[s.id for s in sections if s.id in blocked],
+            harmful=harmful,
         )
 
     def record_outcome(self, occasion_id: str, *, succeeded: bool) -> bool:

@@ -454,6 +454,19 @@ def _unchosen_rerank(root: str) -> str:
     return default_rerank()
 
 
+def read_harm_policy(root: str) -> str:
+    """Only this store's harm policy, read without anything else `load_config`
+    works out (it can read the holdout log). For callers on the hot path that
+    need one setting. Never raises; unset or unreadable means `inform`."""
+    try:
+        with open(config_path(root), encoding="utf-8") as fh:
+            raw = json.load(fh)
+        value = raw.get("harm_policy") if isinstance(raw, dict) else None
+    except (OSError, ValueError):
+        return harm.POLICY_INFORM
+    return str(value) if value in harm.POLICIES else harm.POLICY_INFORM
+
+
 def load_config(root: str) -> RetrievalConfig:
     """This store's retrieval settings, or the right defaults if unset.
 

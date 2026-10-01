@@ -674,6 +674,8 @@ commontrace signals export "<name>" --format langsmith|braintrust
 
 # Reproduce the causal-detection claim against seeded ground truth
 python -m commons.eval.causal_harness
+python -m commons.eval.coverage_harness        # per memory adapter, 200 seeds; see commons/eval/CAUSAL_COVERAGE.md
+commontrace retrieval --on-harm withdraw       # stop delivering a memory measured to hurt (any store)
 ```
 
 LangGraph: `commontrace.integrations.langgraph.with_lessons(node, memory)`.
