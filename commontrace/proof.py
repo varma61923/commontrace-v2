@@ -363,6 +363,33 @@ def _memory_rows(a: Analysis) -> list[dict]:
     return [dataclasses.asdict(e) for e in a.effects]
 
 
+def harm_recovery(a: Analysis, vpo: float | None) -> dict | None:
+    """What withdrawing the harmful memories would give back over the measured window.
+
+    The measured loss of each memory whose verdict is HURTS, sign-flipped, with its
+    interval. A per-memory figure, so it stands even where the memories overlap and
+    cannot be summed into a total (value.py rule 4); here it is only ever summed
+    over memories that were counted, and only when the run is readable. It looks
+    backward at what was measured; it is not a forecast and is never billed.
+    None when there is nothing to recover or nothing can be stated.
+    """
+    if a.value is None or not a.value.readable:
+        return None
+    lost = [m for m in a.value.memories if m.verdict == experiment.VERDICT_HURTS and m.counted]
+    if not lost:
+        return None
+    occasions = -sum(m.occasions_improved for m in lost)
+    # In quadrature, the same convention value.compute uses for its aggregate.
+    spread_low = sum((m.occasions_improved - m.ci_low) ** 2 for m in lost) ** 0.5
+    spread_high = sum((m.ci_high - m.occasions_improved) ** 2 for m in lost) ** 0.5
+    rate = a.value.rate if vpo else None
+    return {
+        "memories": [m.slug for m in lost], "occasions": occasions,
+        "ci_95": [occasions - spread_high, occasions + spread_low],
+        "money": occasions * rate if rate else None,
+    }
+
+
 def build_record(root: str, state: dict, *, key: bytes | None, org_id: str,
                  now: datetime.datetime | None = None) -> tuple[dict, str, Analysis]:
     """The machine-readable record, the raw CSV text, and the analysis behind them."""
@@ -403,7 +430,8 @@ def build_record(root: str, state: dict, *, key: bytes | None, org_id: str,
                       "findings": [dataclasses.asdict(f) for f in a.report.findings]},
         "memories": _memory_rows(a),
         "harmful": {"memories": hurts, "store_policy": policy,
-                    "withdrawn_automatically": bool(hurts) and policy == "withdraw"},
+                    "withdrawn_automatically": bool(hurts) and policy == "withdraw",
+                    "recoverable": harm_recovery(a, state.get("value_per_occasion"))},
         "value": {
             "readable": a.value.readable, "reason": a.value.reason,
             "aggregate_readable": a.value.aggregate_readable,
@@ -452,6 +480,13 @@ def render_report(record: dict, a: Analysis) -> str:
                      if h["withdrawn_automatically"] else
                      "The store's policy is `inform`, so they are still being delivered: "
                      "`commontrace retrieval --on-harm withdraw` stops that."), ""]
+        rec = h.get("recoverable")
+        if rec:
+            lo, hi = rec["ci_95"]
+            money = f" (about {rec['money']:,.2f} at your rate)" if rec["money"] is not None else ""
+            lines += [f"Over the measured window they cost about **{rec['occasions']:,.0f} occasions**{money}, "
+                      f"95% interval {lo:,.0f} to {hi:,.0f}. That is what stopping them gives back; it "
+                      "is measured, not forecast, and it is not billed.", ""]
     if a.value is not None:
         lines += [value.render(a.value), ""]
     lines += ["## Pre-registration", "",
@@ -612,6 +647,19 @@ def verify(directory: str, *, key: bytes | None = None) -> list[Check]:
         "recomputed estimates", FAIL if problems else PASS,
         "; ".join(problems[:6]) if problems else
         f"{len(a.effects)} memories and the validity audit recomputed from {len(rows)} rows"))
+
+    recovery = harm_recovery(a, vpo)
+    recorded_recovery = record["harmful"].get("recoverable")
+    same_recovery = (recovery is None) == (recorded_recovery is None) and (
+        recovery is None or (
+            recovery["memories"] == recorded_recovery["memories"]
+            and _same(recovery["occasions"], recorded_recovery["occasions"])
+            and all(_same(x, y) for x, y in zip(recovery["ci_95"], recorded_recovery["ci_95"]))
+            and (recovery["money"] is None) == (recorded_recovery["money"] is None)
+            and (recovery["money"] is None or _same(recovery["money"], recorded_recovery["money"]))))
+    checks.append(Check("recomputed harm recovery", PASS if same_recovery else FAIL,
+                        "what withdrawing the harmful memories would give back follows from the data"
+                        if same_recovery else "the harm-recovery figure does not follow from the data"))
 
     ledger = a.value.ledger() if a.value is not None else []
     recomputed = [dataclasses.asdict(e) for e in ledger]

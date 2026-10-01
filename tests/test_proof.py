@@ -419,3 +419,30 @@ def test_status_json_is_machine_readable(started, capsys):
 
 def test_the_planned_effect_is_what_the_forecast_says():
     assert experiment.plan(effect=0.05, baseline=0.70, rate=0.5).occasions_needed == 2638
+
+
+# --- What withdrawing the harmful memory would give back --------------------------------
+
+
+def test_the_report_says_what_stopping_the_harmful_memory_gives_back(started, tmp_path):
+    root, _ = started
+    _finished(root)
+    out, record = _package(root, tmp_path)
+    rec = record["harmful"]["recoverable"]
+    assert rec["memories"] == ["hurts"] and rec["occasions"] > 0 and rec["ci_95"][0] < rec["occasions"] < rec["ci_95"][1]
+    assert rec["money"] == pytest.approx(rec["occasions"] * 12.0)
+    text = open(os.path.join(out, "report.md"), encoding="utf-8").read()
+    assert "That is what stopping them gives back" in text and "not billed" in text
+
+
+def test_inflating_the_recoverable_figure_is_caught(package):
+    out, _ = package
+    _edit_json(out, lambda d: d["harmful"]["recoverable"].update(occasions=d["harmful"]["recoverable"]["occasions"] * 5))
+    assert "recomputed harm recovery" in _failed(out)
+
+
+def test_no_recovery_is_stated_when_nothing_hurts_or_the_run_is_unreadable(started, tmp_path):
+    root, _ = started
+    _run_fleet(root, 900, rates={i: 0.1 for i in range(300, 900)})  # compromised: no figure at all
+    _, record = _package(root, tmp_path)
+    assert record["harmful"]["recoverable"] is None
