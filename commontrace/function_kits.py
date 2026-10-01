@@ -78,7 +78,7 @@ SPECS: tuple[dict, ...] = (
             "success": "the task finished within tolerance with no safety stop and no human "
                        "intervention",
             "window_days": 0,
-            "signals": ["from_threshold", "from_human_takeover"],
+            "signals": ["from_threshold", "from_safety_stop", "from_human_takeover"],
             "combine": "all",
         },
         "planning": {"baseline": 0.80, "effect": 0.05, "holdout_rate": 0.5},

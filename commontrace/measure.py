@@ -66,6 +66,7 @@ unknown -- reported as unchecked, never guessed.
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -113,6 +114,41 @@ def content_revision(text: str | None) -> str | None:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+class HarmWatch:
+    """The memories this store's harm policy withdraws, re-read every `check_every`
+    calls and safe to share across threads.
+
+    Reading the evidence re-analyses the whole log, and a new outcome invalidates
+    it, so doing that on every recall would make a busy fleet's recall cost grow
+    with its history. A withdrawal does not need to be that prompt: the verdict is
+    anytime-valid, so acting on it a few dozen occasions late costs a few
+    deliveries, never a wrong conclusion. One watch can serve many
+    `CausalMemory` instances (a gateway builds one per request).
+    """
+
+    def __init__(self, root: str, on_harm: str | None = None,
+                 check_every: int = DEFAULT_CHECK_EVERY) -> None:
+        if on_harm is not None and on_harm not in harm.POLICIES:
+            raise ValueError(f"on_harm must be one of {', '.join(harm.POLICIES)} (or None)")
+        if not isinstance(check_every, int) or isinstance(check_every, bool) or check_every < 1:
+            raise ValueError("check_every must be a whole number of at least 1")
+        self._root, self._on_harm, self._every = root, on_harm, check_every
+        self._calls = 0
+        self._harmful: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def current(self) -> dict[str, dict]:
+        with self._lock:
+            due = self._calls % self._every == 0
+            self._calls += 1
+            if due:
+                policy = self._on_harm or retrieval_io.read_harm_policy(self._root)
+                # Empty unless the policy withdraws AND the evidence is readable;
+                # never raises, because failing to read it must leave retrieval as it was.
+                self._harmful = evidence.withdrawn(self._root, policy)
+            return self._harmful
+
+
 @dataclass(frozen=True)
 class Recall:
     """What one `recall_detailed` call did: what the task should receive, and
@@ -149,17 +185,13 @@ class CausalMemory:
         scorer: str = "external",
         on_harm: str | None = None,
         check_every: int = DEFAULT_CHECK_EVERY,
+        harm_watch: HarmWatch | None = None,
+        durable: bool = True,
     ) -> None:
         if not callable(retrieve):
             raise TypeError("retrieve must be callable")
-        if on_harm is not None and on_harm not in harm.POLICIES:
-            raise ValueError(f"on_harm must be one of {', '.join(harm.POLICIES)} (or None)")
-        if not isinstance(check_every, int) or check_every < 1:
-            raise ValueError("check_every must be a whole number of at least 1")
-        self._on_harm = on_harm
-        self._check_every = check_every
-        self._recalls = 0
-        self._harmful: dict[str, dict] = {}
+        self._watch = harm_watch or HarmWatch(paths.resolve_root(root), on_harm, check_every)
+        self._durable = durable
         self._retrieve = retrieve
         self._root = paths.resolve_root(root)
         self._key = key
@@ -177,22 +209,7 @@ class CausalMemory:
         return self.recall_detailed(query, occasion_id=occasion_id, **kwargs).items
 
     def _withdrawn(self) -> dict[str, dict]:
-        """The memories to withdraw, re-read every `check_every` recalls.
-
-        Reading the evidence re-analyses the whole log, and a new outcome
-        invalidates it, so doing that on every recall would make a busy fleet's
-        recall cost grow with its history. A withdrawal does not need to be
-        that prompt: the verdict is anytime-valid, so acting on it a few dozen
-        occasions late costs a few deliveries, never a wrong conclusion.
-        """
-        due = self._recalls % self._check_every == 0
-        self._recalls += 1
-        if due:
-            policy = self._on_harm or retrieval_io.read_harm_policy(self._root)
-            # Empty unless the policy withdraws AND the evidence is readable;
-            # never raises, because failing to read it must leave retrieval as it was.
-            self._harmful = evidence.withdrawn(self._root, policy)
-        return self._harmful
+        return self._watch.current()
 
     def recall_detailed(self, query: Any, *, occasion_id: str, **kwargs: Any) -> Recall:
         """`recall`, plus which memories were withdrawn for measured harm."""
@@ -241,6 +258,7 @@ class CausalMemory:
                 salt=config.salt,
                 scorer=self._scorer,
                 revisions=revisions,
+                durable=self._durable,
             )
         return Recall(
             items=[item for item_id, item in keyed if item_id not in withheld], withdrawn=removed,
@@ -250,4 +268,4 @@ class CausalMemory:
         """Report whether the task on `occasion_id` succeeded. Idempotent for
         a repeated identical report; raises holdout_io.ConflictingOutcome if
         a different answer is already on record."""
-        return holdout_io.record_outcome(self._root, occasion_id, succeeded)
+        return holdout_io.record_outcome(self._root, occasion_id, succeeded, self._durable)

@@ -119,6 +119,15 @@ def from_csat(score: float, *, scale_max: float, threshold_fraction: float = 0.6
     return (score / scale_max) >= threshold_fraction
 
 
+def from_safety_stop(stopped: bool) -> bool:
+    """A protective stop, e-stop or safety-rated monitored halt during the episode
+    means the episode did not succeed, whatever else the sensors say. Named on its
+    own (like `from_human_takeover`) so a robot's outcome says which of its signals
+    is the veto.
+    """
+    return not stopped
+
+
 def from_human_takeover(human_took_over: bool) -> bool:
     """A human stepping in to finish or correct the task is read as the
     task NOT having been resolved autonomously -- named as its own function

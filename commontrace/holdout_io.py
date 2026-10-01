@@ -172,8 +172,14 @@ def holdout_log_path(root: str) -> str:
     return os.path.join(paths.memory_dir(root), "holdout_log.jsonl")
 
 
-def _append_lines(path: str, lines: list[str]) -> None:
+def _append_lines(path: str, lines: list[str], durable: bool = True) -> None:
     """Append complete lines to a JSONL file, durably. Caller holds the lock.
+
+    `durable=False` skips the `fsync`: the append is still whole-line and
+    serialized by the caller's lock, but a power loss can drop the last few
+    lines. For a control loop on flash storage, where an `fsync` can cost tens
+    of milliseconds, that is the right trade -- a lost line is a missing
+    observation, never a wrong one -- and it must be chosen, not defaulted.
 
     If a previous writer died mid-line, the file ends without a newline, and
     a plain append would glue this write's first line onto that fragment --
@@ -192,7 +198,8 @@ def _append_lines(path: str, lines: list[str]) -> None:
         for line in lines:
             fh.write(line + "\n")
         fh.flush()
-        os.fsync(fh.fileno())
+        if durable:
+            os.fsync(fh.fileno())
 
 
 def assign_and_log(
@@ -206,6 +213,7 @@ def assign_and_log(
     scorer: str = "",
     floor: float | None = None,
     revisions: dict[str, str | None] | None = None,
+    durable: bool = True,
 ) -> set[str]:
     """Decide which of `slugs` to withhold on this occasion, and record it.
 
@@ -295,7 +303,7 @@ def assign_and_log(
             if floor is not None:
                 row["floor"] = float(floor)
             lines.append(json.dumps(row))
-        _append_lines(path, lines)
+        _append_lines(path, lines, durable)
     return withheld
 
 
@@ -395,7 +403,7 @@ def read_outcomes(root: str) -> dict[str, bool]:
     return dict(_outcomes_shared(outcomes_log_path(root)))
 
 
-def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
+def record_outcome(root: str, occasion_id: str, succeeded: bool, durable: bool = True) -> bool:
     """Record whether the task on `occasion_id` succeeded.
 
     Returns True if a line was written, False if the same answer was
@@ -430,7 +438,8 @@ def record_outcome(root: str, occasion_id: str, succeeded: bool) -> bool:
             )
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         _append_lines(
-            path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})]
+            path, [json.dumps({"occasion_id": occasion_id, "succeeded": succeeded, "at": now})],
+            durable,
         )
     return True
 
