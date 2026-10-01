@@ -61,7 +61,7 @@ from commontrace import (
 
 SCHEMA = 1
 STATE_NAME = "proof.json"
-MARKDOWN_NAME, RECORD_NAME, DATA_NAME = "report.md", "proof.json", "assignments.csv"
+MARKDOWN_NAME, RECORD_NAME, DATA_NAME, PAGE_NAME = "report.md", "proof.json", "assignments.csv", "index.html"
 #: A run that cannot give a verdict within this many days at the stated volume is
 #: refused at `start` unless forced: the failure it prevents is a spent pilot.
 MAX_DAYS = 120
@@ -186,6 +186,60 @@ def start_demo(
                        synthetic=True, now=moment)
     _save_state(root, state)
     return state
+
+
+SIM_MEMORIES = (("sim-helpful-memory", +1), ("sim-harmful-memory", -1), ("sim-neutral-memory", 0))
+#: Each simulated memory is eligible on one occasion in three, so a rehearsal runs this many
+#: times the planned occasions: enough for the sequential interval to rule an effect out.
+SIM_PLAN_MULTIPLE = 5
+
+
+def simulate_fleet(root: str, kit: functions.FunctionKit, *, seed: int = 0,
+                   occasions: int | None = None, planted: float | None = None) -> dict:
+    """Drive a simulated fleet through the real path of a proof that was just started.
+
+    The same calls a customer's agent makes (`CausalMemory.recall`, `record_outcome`) against
+    the store `start` configured, with outcomes drawn HERE from planted truth: one memory
+    that raises the success rate, one that lowers it, one that does nothing, each eligible on
+    a third of occasions. Used to show the whole wizard end to end, and by the test that a
+    simulated fleet reaches the right verdicts. Refuses a store that already has assignments.
+    """
+    import random
+
+    from commontrace.measure import CausalMemory
+
+    log = holdout_io.holdout_log_path(root)
+    if os.path.isfile(log) and os.path.getsize(log) > 0:
+        raise ProofError("simulation needs a fresh store: it would otherwise mix synthetic occasions "
+                         "into a real log")
+    rng = random.Random(f"sim:{kit.key}:{seed}")
+    texts = {slug: f"{slug} (simulation)" for slug, _ in SIM_MEMORIES}
+    truth = dict(SIM_MEMORIES)
+    current = {"slug": SIM_MEMORIES[0][0]}
+    memory = CausalMemory(lambda q, **kw: [{"id": current["slug"], "memory": texts[current["slug"]]}],
+                          root=root, on_harm="inform")
+    state = load_state(root)
+    baseline = state["baseline"]
+    occasions = occasions or int(state["planned_occasions"]) * SIM_PLAN_MULTIPLE
+    # Larger than the design's smallest worthwhile effect, so the rehearsal is powered to decide.
+    planted = planted if planted is not None else max(0.15, 1.5 * float(state["effect"]))
+    for i in range(occasions):
+        current["slug"] = SIM_MEMORIES[i % len(SIM_MEMORIES)][0]
+        delivered = {item["id"] for item in memory.recall("simulated task", occasion_id=f"SIM-{i:05d}")}
+        p = baseline + (truth[current["slug"]] * planted if current["slug"] in delivered else 0.0)
+        memory.record_outcome(f"SIM-{i:05d}", succeeded=rng.random() < min(max(p, 0.02), 0.98))
+    return {"occasions": occasions, "planted": {slug: truth[slug] * planted for slug in truth}}
+
+
+def verdict_matches(planted: float, verdict: str | None) -> bool:
+    """Whether `verdict` is a correct reading of a planted effect. A memory that does nothing is
+    read correctly unless it is CLAIMED to help or hurt: whether the interval is already narrow
+    enough to rule an effect out is a matter of sample size, not correctness."""
+    if planted > 0:
+        return verdict == experiment.VERDICT_HELPS
+    if planted < 0:
+        return verdict == experiment.VERDICT_HURTS
+    return verdict not in (None, experiment.VERDICT_HELPS, experiment.VERDICT_HURTS)
 
 
 # --- Analysis (one place, used by status, report and verify) --------------------------
@@ -541,7 +595,10 @@ def build(root: str, out_dir: str, *, key: bytes | None = None, org_id: str = ""
         raise ProofError("no proof has been started here (`commontrace proof start`)")
     record, csv_text, a = build_record(root, state, key=key, org_id=org_id or state["label"], now=now)
     os.makedirs(out_dir, exist_ok=True)
+    from commontrace import proof_page
+
     for name, text in ((MARKDOWN_NAME, render_report(record, a)),
+                       (PAGE_NAME, proof_page.render(record)),
                        (RECORD_NAME, json.dumps(record, indent=2, sort_keys=True) + "\n"),
                        (DATA_NAME, csv_text)):
         with open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="\n") as fh:

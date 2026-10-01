@@ -209,3 +209,18 @@ def test_importing_the_module_never_requires_the_sdk():
     finally:
         del sys.modules["opentelemetry"]
         sys.modules.update(real_modules)
+
+
+def test_a_span_with_an_occasion_and_an_explicit_outcome_closes_it_locally(tmp_path):
+    from commontrace import holdout_io, otel_exporter
+
+    root = str(tmp_path)
+    row = {"name": "done", "status": {"code": "UNSET"}, "spanId": "s1",
+           "attributes": {"session.id": "ep-9", "commontrace.occasion.succeeded": False}}
+    assert otel_exporter.record_occasion_from_row(root, row) is True
+    assert holdout_io.read_outcomes(root) == {"ep-9": False}
+    flipped = dict(row, attributes={"session.id": "ep-9", "commontrace.occasion.succeeded": True})
+    assert otel_exporter.record_occasion_from_row(root, flipped) is False  # first answer stands
+    assert holdout_io.read_outcomes(root) == {"ep-9": False}
+    status_only = {"name": "x", "status": {"code": "OK"}, "attributes": {"session.id": "ep-10"}}
+    assert otel_exporter.record_occasion_from_row(root, status_only) is False

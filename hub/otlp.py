@@ -43,6 +43,15 @@ Collector's `otlphttp` exporter) supports an `encoding: json` /
 `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json` setting; a caller using
 protobuf gets a clear 415, not a silent partial parse.
 
+JOINING SPANS TO HOLDOUT OCCASIONS
+-----------------------------------
+A span that carries an occasion id (`commontrace.occasion_id`, OpenInference's
+`session.id` or GenAI `gen_ai.conversation.id`) AND an explicit boolean
+`commontrace.occasion.succeeded` closes that occasion's holdout observations in
+both arms. The span's own status is never used for this: it describes one call,
+not the task, and treating UNSET/OK as success would score an uninstrumented fleet
+as winning.
+
 AUTHENTICATION AND LIMITS
 --------------------------
 `X-API-Key`, verified with `auth.verify_api_key` and requiring the
@@ -185,6 +194,7 @@ def add_otlp_routes(
 
         accepted = 0
         skipped = 0
+        occasions_resolved = 0
         errors: list[dict] = []
         async with session_scope(session_factory) as session:
             for span in spans:
@@ -196,6 +206,18 @@ def add_otlp_routes(
                 # error, matching commontrace/otel_exporter.py's own
                 # "a span with no GenAI content is skipped" rule for the
                 # identical shape.
+                # An explicit occasion outcome on the span closes that occasion's
+                # holdout observations, whether or not the span has text of its own
+                # (the "task finished" span usually has none). First report wins,
+                # so an exporter retry cannot flip it.
+                if flat.get("occasion_id") and isinstance(flat.get("occasion_succeeded"), bool):
+                    try:
+                        done = await crud.record_occasion_outcome(
+                            session, authenticated.org_id, flat["occasion_id"],
+                            flat["occasion_succeeded"], actor=ACTOR_OTLP)
+                        occasions_resolved += done["observations_resolved"]
+                    except ValueError as exc:
+                        errors.append({"span_id": span_id, "error": str(exc)})
                 if not flat.get("context") and not flat.get("solution"):
                     skipped += 1
                     continue
@@ -232,7 +254,8 @@ def add_otlp_routes(
 
         status = 200 if not errors else 207
         return JSONResponse(
-            {"accepted": accepted, "skipped": skipped, "errors": errors}, status_code=status,
+            {"accepted": accepted, "skipped": skipped, "occasions_resolved": occasions_resolved,
+             "errors": errors}, status_code=status,
         )
 
     app.add_route(OTLP_TRACES_PATH, ingest, methods=["POST"])

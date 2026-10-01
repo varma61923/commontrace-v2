@@ -142,7 +142,7 @@ class TestIngest:
             response = await client.post(
                 otlp.OTLP_TRACES_PATH, json=_otlp_body(empty_span), headers=_key(raw_key),
             )
-        assert response.json() == {"accepted": 0, "skipped": 1, "errors": []}
+        assert response.json() == {"accepted": 0, "skipped": 1, "occasions_resolved": 0, "errors": []}
         async with session_scope(session_factory) as session:
             rows = (await session.execute(select(Trace).where(Trace.org_id == org_id))).scalars().all()
         assert rows == []
@@ -214,3 +214,75 @@ class TestBodyValidation:
         async with _client(_app(session_factory, config)) as client:
             response = await client.post(otlp.OTLP_TRACES_PATH, json=body, headers=_key(raw_key))
         assert response.status_code == 413
+
+
+class TestOccasionJoin:
+    """A span that names its occasion and says how it went closes the holdout observation."""
+
+    @staticmethod
+    def _outcome_span(span_id, occasion, succeeded, key="commontrace.occasion_id"):
+        return {"traceId": "t" * 32, "spanId": span_id, "name": "task finished", "status": {"code": "UNSET"},
+                "attributes": [{"key": key, "value": {"stringValue": occasion}},
+                               {"key": "commontrace.occasion.succeeded", "value": {"boolValue": succeeded}}]}
+
+    async def _observation(self, session_factory, org_id, occasion):
+        from hub import crud
+        from hub.models import HoldoutObservation
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            org.holdout_rate, org.holdout_salt = 0.5, "otlp-join"
+            trace = Trace(org_id=org_id, title="t", context_text="c", solution_text="s", tags=[],
+                          agent_type="support")
+            session.add(trace)
+            await session.flush()
+            await crud.holdout_assign(session, org_id, [trace.id], occasion)
+        return HoldoutObservation
+
+    async def _succeeded(self, session_factory, model, org_id, occasion):
+        async with session_scope(session_factory) as session:
+            rows = (await session.execute(select(model.succeeded).where(
+                model.org_id == org_id, model.occasion_id == occasion))).all()
+        assert len(rows) == 1
+        return rows[0][0]
+
+    @pytest.mark.parametrize("key", ["commontrace.occasion_id", "session.id", "gen_ai.conversation.id"])
+    async def test_an_explicit_outcome_closes_the_occasion_whichever_id_attribute_the_caller_emits(
+            self, session_factory, config, key):
+        org_id, raw_key = await _org_with_key(session_factory)
+        model = await self._observation(session_factory, org_id, "ep-1")
+        async with _client(_app(session_factory, config)) as client:
+            r = await client.post(otlp.OTLP_TRACES_PATH, headers=_key(raw_key),
+                                  json=_otlp_body(self._outcome_span("b" * 16, "ep-1", True, key)))
+        assert r.status_code == 200 and r.json()["occasions_resolved"] == 1
+        assert await self._succeeded(session_factory, model, org_id, "ep-1") is True
+
+    async def test_a_status_alone_never_decides_the_occasion(self, session_factory, config):
+        org_id, raw_key = await _org_with_key(session_factory)
+        model = await self._observation(session_factory, org_id, "ep-2")
+        span = _span("c" * 16, status_code="OK")
+        span["attributes"].append({"key": "commontrace.occasion_id", "value": {"stringValue": "ep-2"}})
+        async with _client(_app(session_factory, config)) as client:
+            r = await client.post(otlp.OTLP_TRACES_PATH, json=_otlp_body(span), headers=_key(raw_key))
+        assert r.json()["occasions_resolved"] == 0
+        assert await self._succeeded(session_factory, model, org_id, "ep-2") is None
+
+    async def test_the_first_report_wins_so_an_exporter_retry_cannot_flip_it(self, session_factory, config):
+        org_id, raw_key = await _org_with_key(session_factory)
+        model = await self._observation(session_factory, org_id, "ep-3")
+        async with _client(_app(session_factory, config)) as client:
+            await client.post(otlp.OTLP_TRACES_PATH, headers=_key(raw_key),
+                              json=_otlp_body(self._outcome_span("d" * 16, "ep-3", False)))
+            r = await client.post(otlp.OTLP_TRACES_PATH, headers=_key(raw_key),
+                                  json=_otlp_body(self._outcome_span("e" * 16, "ep-3", True)))
+        assert r.json()["occasions_resolved"] == 0
+        assert await self._succeeded(session_factory, model, org_id, "ep-3") is False
+
+    async def test_another_orgs_occasion_is_untouched(self, session_factory, config):
+        org_a, _ = await _org_with_key(session_factory, "A")
+        org_b, key_b = await _org_with_key(session_factory, "B")
+        model = await self._observation(session_factory, org_a, "ep-4")
+        async with _client(_app(session_factory, config)) as client:
+            r = await client.post(otlp.OTLP_TRACES_PATH, headers=_key(key_b),
+                                  json=_otlp_body(self._outcome_span("f" * 16, "ep-4", True)))
+        assert r.json()["occasions_resolved"] == 0
+        assert await self._succeeded(session_factory, model, org_a, "ep-4") is None

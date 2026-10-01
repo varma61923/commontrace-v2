@@ -212,3 +212,44 @@ class TestWithdrawal:
         ma.MeasuredMemory(ADAPTERS["mem0"](), root=str(tmp_path)).withdraw(NEUTRAL)
         letta = ma.MeasuredMemory(ADAPTERS["letta"](), root=str(tmp_path))
         assert {i.id for i in letta.recall("q", occasion_id="o1")} == {GOOD, NEUTRAL}
+
+
+class FakeLettaCore:
+    """`client.agents.blocks.list(agent_id)` as letta-client 1.x defines it: an iterable page of
+    BlockResponse (id, label, value, ...)."""
+
+    def __init__(self):
+        blocks = [NS(id=k, label=("persona" if k == NEUTRAL else k), value=v, read_only=False)
+                  for k, v in TEXT.items()]
+        self.listed = []
+        self.agents = NS(blocks=NS(list=lambda agent_id, **kw: (self.listed.append(agent_id), iter(blocks))[1]))
+
+
+class TestLettaCoreBlocks:
+    def test_blocks_are_items_and_the_query_is_ignored(self):
+        fake = FakeLettaCore()
+        items = ma.LettaCoreBlockAdapter(fake, agent_id="agent-1").search("anything")
+        assert {i.id: i.text for i in items} == TEXT and fake.listed == ["agent-1"]
+
+    def test_a_helpful_block_is_found_and_a_pinned_persona_block_is_never_withheld(self, tmp_path):
+        _configure(tmp_path, 0.5)
+        adapter = ma.LettaCoreBlockAdapter(FakeLettaCore(), agent_id="agent-1")
+        memory = ma.MeasuredMemory(adapter, root=str(tmp_path), pinned=adapter.block_ids("persona"))
+        rng = random.Random(99)
+        for i in range(400):
+            delivered = {item.id for item in memory.recall("q", occasion_id=f"o{i}")}
+            assert NEUTRAL in delivered                       # the persona block, every time
+            memory.record_outcome(f"o{i}", succeeded=rng.random() < (0.8 if GOOD in delivered else 0.4))
+        rows, _rate, _corrupt = experiment_cmd._load(str(tmp_path))
+        rows, _salt, _ = experiment_cmd.scope_to_current_salt(str(tmp_path), rows)
+        effects = {e.lesson_slug: e for e in experiment.analyze(experiment_cmd._observations(rows))}
+        assert effects[GOOD].verdict == experiment.VERDICT_HELPS
+        assert NEUTRAL not in effects                          # pinned: delivered, not measured
+
+    def test_rendering_wraps_each_block_by_label_and_blocks_are_never_deleted(self):
+        adapter = ma.LettaCoreBlockAdapter(FakeLettaCore(), agent_id="agent-1")
+        text = adapter.render(adapter.search())
+        assert "<persona>" in text and f"<{GOOD}>" in text
+        assert adapter.can_delete is False
+        with pytest.raises(NotImplementedError):
+            adapter.delete(GOOD)

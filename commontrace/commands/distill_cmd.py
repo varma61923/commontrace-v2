@@ -28,6 +28,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "instead of 'TODO: ...' placeholders. Falls back per-cluster, with a stated "
         "reason, if no provider is configured or it refuses.",
     )
+    p.add_argument(
+        "--failed", action="store_true",
+        help="Only cluster traces recorded as failures (outcome.resolved false or repeated_error): "
+        "a lesson drafted from what went wrong, not from everything that happened.",
+    )
+    p.add_argument(
+        "--signal", default=None, metavar="NAME",
+        help="Only the traces of one named failure signal (exact name from `commontrace signals list`); "
+        "implies --failed.",
+    )
     p.add_argument("--dest", default=None)
     p.set_defaults(func=run)
 
@@ -95,6 +105,20 @@ def _load_traces(root: str, agent_type: str | None) -> list[distill.TraceCandida
             )
         )
     return out
+
+
+def _failure_scope(root: str, args: argparse.Namespace) -> tuple[set[str], str | None]:
+    """Trace ids a failure-scoped distill may use, or the reason it cannot run."""
+    from commontrace import failure_signals
+
+    if not args.signal:
+        return {o.id for o in failure_signals.load_failure_occurrences(root, args.agent_type)}, None
+    signals, _ = failure_signals.build_signals(root, agent_type=args.agent_type)
+    for signal in signals:
+        if signal.name == args.signal:
+            return set(signal.trace_ids), None
+    names = ", ".join(repr(x.name) for x in signals[:5]) or "none found"
+    return set(), f"no failure signal named {args.signal!r} (signals: {names}). See `commontrace signals list`."
 
 
 def _existing_source_traces(root: str) -> list[list[str]]:
@@ -225,6 +249,15 @@ def _variant_lines(items: list[tuple[str, int]], total: int) -> list[str]:
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     traces = _load_traces(root, args.agent_type)
+    if args.failed or args.signal:
+        keep, error = _failure_scope(root, args)
+        if error:
+            print(f"[commontrace] {error}", file=sys.stderr)
+            return 2
+        traces = [t for t in traces if t.id in keep]
+        if not traces:
+            print("[commontrace] no failed traces in scope -- nothing to distill.")
+            return 0
     if not traces:
         print("[commontrace] no traces found under memory/traces/ -- nothing to distill.")
         return 0

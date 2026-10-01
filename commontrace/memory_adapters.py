@@ -73,6 +73,56 @@ class LettaAdapter:
         self.client.agents.passages.delete(item_id, agent_id=self.agent_id)
 
 
+class LettaCoreBlockAdapter:
+    """An agent's CORE memory blocks (the ones that sit in its context window), listed with
+    `client.agents.blocks.list(agent_id)` as `letta-client` defines it.
+
+    Archival passages are fetched on demand, so withholding is just not returning them.
+    Core blocks are always in context, so they are measured the way a whole-store memory
+    is: every block is eligible on every occasion, `query` is ignored, and the caller puts
+    `render(items)` of what `recall` returned into the prompt instead of letting Letta
+    compile the blocks. Detach/attach per session is NOT used: a block can be attached to
+    several agents, so detaching it for one occasion would change every other session
+    that shares it.
+
+    A persona or safety block should not be a control; pass `pinned=adapter.block_ids("persona")`
+    to `MeasuredMemory` so it is always delivered and never measured. Deleting a block is
+    the agent owner's decision, so `can_delete` is False.
+    """
+
+    name = "letta-core"
+    can_delete = False
+
+    def __init__(self, client: Any, *, agent_id: str) -> None:
+        self.client = client
+        self.agent_id = agent_id
+        self._labels: dict[str, str] = {}
+
+    def search(self, query: str = "", **kwargs: Any) -> list[Item]:
+        items = []
+        for block in self.client.agents.blocks.list(self.agent_id, **kwargs):
+            if not getattr(block, "id", None):
+                continue
+            self._labels[block.id] = getattr(block, "label", None) or block.id
+            items.append(Item(block.id, getattr(block, "value", "") or "", block))
+        return items
+
+    def block_ids(self, *labels: str) -> list[str]:
+        """Ids of the blocks with these labels, for `pinned=`."""
+        if not self._labels:
+            self.search()
+        return [bid for bid, label in self._labels.items() if label in labels]
+
+    def delete(self, item_id: str) -> None:
+        raise NotImplementedError("a core memory block is the agent owner's to remove")
+
+    @staticmethod
+    def render(items: Iterable[Item]) -> str:
+        return "\n\n".join(
+            f"<{getattr(i.raw, 'label', None) or i.id}>\n{i.text}\n</{getattr(i.raw, 'label', None) or i.id}>"
+            for i in items)
+
+
 class ZepAdapter:
     """Zep graph search. `scope="edges"` (the default) measures facts;
     nodes and episodes can be measured but not deleted through here."""

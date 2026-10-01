@@ -39,7 +39,7 @@ import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from commontrace import frontmatter, import_data, paths, templates, validate
+from commontrace import adapters, frontmatter, holdout_io, import_data, paths, templates, validate
 from commontrace.commands.capture_cmd import _id_suffix
 from commontrace.commands.import_cmd import _slugify
 
@@ -116,6 +116,20 @@ def write_trace_from_row(
     return out_path
 
 
+def record_occasion_from_row(root: str, row: dict[str, Any]) -> bool:
+    """If the span names its occasion and states an explicit outcome, record it in the
+    holdout outcomes log (see `adapters.OTEL_OCCASION_KEYS`). A span's own status never
+    decides this. A conflicting later report is ignored: the first answer stands."""
+    flat = adapters.normalize(dict(row), source=_SOURCE)
+    occasion, succeeded = flat.get("occasion_id"), flat.get("occasion_succeeded")
+    if not occasion or not isinstance(succeeded, bool):
+        return False
+    try:
+        return holdout_io.record_outcome(root, occasion, succeeded)
+    except holdout_io.ConflictingOutcome:
+        return False
+
+
 class CommonTraceSpanExporter:
     """An `opentelemetry.sdk.trace.export.SpanExporter`. Attach it to your
     own `TracerProvider`:
@@ -146,9 +160,10 @@ class CommonTraceSpanExporter:
 
         try:
             for span in spans:
+                row = _span_to_row(span)
+                record_occasion_from_row(self._root, row)
                 write_trace_from_row(
-                    self._root, _span_to_row(span),
-                    agent_type=self._agent_type, profile=self._profile,
+                    self._root, row, agent_type=self._agent_type, profile=self._profile,
                 )
         except Exception:  # noqa: BLE001 - never raise into the app this is attached to
             return SpanExportResult.FAILURE

@@ -417,3 +417,25 @@ class TestThroughTheCLI:
         """A security reviewer reading `--help` is the first person who asks
         whether this opens a socket."""
         assert "nothing leaves your machine" in cli("import", "--help").stdout
+
+
+class TestOtelOccasionAttributes:
+    def _row(self, **attrs):
+        return {"spanId": "s1", "name": "n", "attributes": attrs}
+
+    def test_the_occasion_comes_from_ours_then_openinference_then_genai(self):
+        from commontrace import adapters
+        norm = lambda **a: adapters.normalize(self._row(**a), source="otel")  # noqa: E731
+        assert norm(**{"commontrace.occasion_id": "x", "session.id": "y"})["occasion_id"] == "x"
+        assert norm(**{"session.id": "y", "gen_ai.conversation.id": "z"})["occasion_id"] == "y"
+        assert norm(**{"gen_ai.conversation.id": "z"})["occasion_id"] == "z"
+        assert "occasion_id" not in norm(**{"gen_ai.system": "openai"})
+
+    def test_only_an_explicit_boolean_is_an_outcome(self):
+        from commontrace import adapters
+        norm = lambda **a: adapters.normalize(  # noqa: E731
+            {"spanId": "s", "name": "n", "status": {"code": "OK"}, "attributes": a}, source="otel")
+        assert norm(**{"commontrace.occasion.succeeded": False})["occasion_succeeded"] is False
+        assert norm(**{"commontrace.occasion.succeeded": True})["occasion_succeeded"] is True
+        assert "occasion_succeeded" not in norm(**{"commontrace.occasion.succeeded": "yes"})
+        assert "occasion_succeeded" not in norm()  # an OK status is not a success

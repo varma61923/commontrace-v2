@@ -1,0 +1,315 @@
+{
+  "audited_at": "2026-10-01T09:04:04.752839+00:00",
+  "design": {
+    "baseline": 0.5,
+    "daily_occasions": 100.0,
+    "effect": 0.2,
+    "kit": {
+      "agent_type": "support",
+      "domains": [
+        "general"
+      ],
+      "key": "easy",
+      "occasion": {
+        "example": "t-1",
+        "label": "task"
+      },
+      "outcome": {
+        "combine": "single",
+        "signals": [
+          "from_threshold"
+        ],
+        "success": "the task finished",
+        "window_days": 0.0
+      },
+      "packs": [],
+      "planning": {
+        "baseline": 0.5,
+        "effect": 0.2,
+        "holdout_rate": 0.5
+      },
+      "regulated": false,
+      "title": "Easy"
+    },
+    "planned_occasions": 198,
+    "rate": 0.5,
+    "started_at": "2026-10-01T09:04:04.263012+00:00",
+    "value_per_occasion": null
+  },
+  "deviations": [],
+  "evidence": {
+    "digest": "3af331c035fdb29e3829cc1b958a47bb0e6856f67a535d71b23ac37bd66cbea8",
+    "file": "assignments.csv",
+    "occasions": 990,
+    "rows": 990
+  },
+  "final": true,
+  "harmful": {
+    "memories": [
+      "sim-harmful-memory"
+    ],
+    "recoverable": {
+      "ci_95": [
+        32.64,
+        64.98
+      ],
+      "memories": [
+        "sim-harmful-memory"
+      ],
+      "money": null,
+      "occasions": 48.82
+    },
+    "store_policy": "inform",
+    "withdrawn_automatically": false
+  },
+  "integrity": {
+    "findings": [
+      {
+        "check": "differential_attrition",
+        "detail": "Dropping unresolved occasions is unbiased when the two arms lose them equally, which is what this measures.",
+        "headline": "Both arms are observed at a similar rate (100.0% injected, 100.0% withheld; p=1).",
+        "numbers": {
+          "gap": 0.0,
+          "injected_rate": 1.0,
+          "injected_resolved": 486,
+          "injected_total": 486,
+          "maturity_horizon_seconds": null,
+          "p": 1.0,
+          "pending_too_young": 0,
+          "withheld_rate": 1.0,
+          "withheld_resolved": 504,
+          "withheld_total": 504
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "censoring_hazard",
+        "detail": "This log does not carry an assignment time and a resolution time for every row, so how long each occasion was watched is unknown. The attrition check still reads the totals; only the timing does not.",
+        "headline": "Reporting schedule not checkable.",
+        "numbers": {},
+        "severity": "OK"
+      },
+      {
+        "check": "arm_balance",
+        "detail": "",
+        "headline": "Withheld share is 50.9%, consistent with the configured 50.0% (p=0.589).",
+        "numbers": {
+          "configured_rate": 0.5,
+          "observed_rate": 0.509090909090909,
+          "p": 0.5889932838432697,
+          "total": 990,
+          "withheld": 504
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "assignment_drift",
+        "detail": "",
+        "headline": "One randomization throughout.",
+        "numbers": {
+          "rates": [
+            0.5
+          ],
+          "salts": [
+            "20261001T090404-61a41663-0.5"
+          ]
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "scorer_drift",
+        "detail": "",
+        "headline": "One retrieval configuration throughout.",
+        "numbers": {
+          "floors": [],
+          "scorers": [
+            "external"
+          ]
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "consistent_arms",
+        "detail": "",
+        "headline": "Every (lesson, occasion) sits in exactly one arm.",
+        "numbers": {
+          "conflicted": 0,
+          "examples": []
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "treatment_stability",
+        "detail": "",
+        "headline": "All 3 lesson(s) held the same text throughout.",
+        "numbers": {
+          "assignments_without_a_revision": 0,
+          "changed": {},
+          "lessons_tracked": 3
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "outcome_variation",
+        "detail": "",
+        "headline": "486 of 990 recorded occasions succeeded.",
+        "numbers": {
+          "resolved": 990,
+          "succeeded": 486
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "marginal_eligibility",
+        "detail": "Assignments logged before retrieval evidence was recorded carry no relevance score. Newer assignments will carry one; this check reports on those.",
+        "headline": "No retrieval scores recorded, so eligibility strength cannot be assessed.",
+        "numbers": {
+          "n_not_floor_gated": 0,
+          "n_scored": 0,
+          "n_unscored": 990
+        },
+        "severity": "OK"
+      },
+      {
+        "check": "assignment_concentration",
+        "detail": "",
+        "headline": "No lesson is absorbing a disproportionate share of occasions.",
+        "numbers": {
+          "counts": {
+            "sim-harmful-memory": 330,
+            "sim-helpful-memory": 330,
+            "sim-neutral-memory": 330
+          },
+          "flagged": [],
+          "median_count": 330,
+          "median_relevance_by_lesson": {}
+        },
+        "severity": "OK"
+      }
+    ],
+    "readable": true,
+    "verdict": "SOUND"
+  },
+  "label": "rehearsal",
+  "ledger": [],
+  "ledger_root": "19fb4bcc3347bd43084a4915cc877a109486ad877e4f0bfbbb87e833b9c4bb5f",
+  "memories": [
+    {
+      "ci_high": -0.1943,
+      "ci_low": -0.3868,
+      "effect": -0.2906,
+      "lesson_slug": "sim-harmful-memory",
+      "min_detectable_effect": 0.1454,
+      "n_injected": 168,
+      "n_withheld": 162,
+      "note": "Outcomes are WORSE when this is injected. Correlational scoring cannot see this -- only the holdout can.",
+      "p_value": 0.0,
+      "rate_injected": 0.1786,
+      "rate_withheld": 0.4691,
+      "significant": true,
+      "verdict": "HURTS"
+    },
+    {
+      "ci_high": 0.3229,
+      "ci_low": 0.1276,
+      "effect": 0.2252,
+      "lesson_slug": "sim-helpful-memory",
+      "min_detectable_effect": 0.1492,
+      "n_injected": 156,
+      "n_withheld": 174,
+      "note": "Injecting this lesson causes better outcomes.",
+      "p_value": 1.4e-05,
+      "rate_injected": 0.7885,
+      "rate_withheld": 0.5632,
+      "significant": true,
+      "verdict": "HELPS"
+    },
+    {
+      "ci_high": 0.1676,
+      "ci_low": -0.0477,
+      "effect": 0.06,
+      "lesson_slug": "sim-neutral-memory",
+      "min_detectable_effect": 0.1555,
+      "n_injected": 162,
+      "n_withheld": 168,
+      "note": "162 injected / 168 withheld clears the 10-per-arm floor, but this design could only have detected ~16% or larger, against a target of 10%. Finding nothing here is 'cannot answer yet', not 'no effect' -- widen the holdout rate or keep accruing.",
+      "p_value": 0.275777,
+      "rate_injected": 0.5123,
+      "rate_withheld": 0.4524,
+      "significant": false,
+      "verdict": "UNDERPOWERED"
+    }
+  ],
+  "mode": "sequential",
+  "org_id": "rehearsal",
+  "preregistration": {
+    "fingerprint": "0ef8fc6267a718fe7bbaeb7d5d1b25e323e2d3c36aad44dc2cd2f4b3086d32cd",
+    "holdout_rate": 0.5,
+    "minimum_practical_effect": 0.2,
+    "notes": "Easy; occasion = one task; window 0d",
+    "planned_occasions": 198,
+    "primary_outcome": "the task finished",
+    "registered_at": "2026-10-01T09:04:04.262981+00:00",
+    "salt": "20261001T090404-61a41663-0.5",
+    "stopping_rule": "sequential"
+  },
+  "preregistration_clean": true,
+  "preregistration_fingerprint": "0ef8fc6267a718fe7bbaeb7d5d1b25e323e2d3c36aad44dc2cd2f4b3086d32cd",
+  "schema": 1,
+  "signature": null,
+  "signed_over": [
+    "org_id",
+    "audited_at",
+    "ledger_root",
+    "evidence.digest",
+    "preregistration_fingerprint"
+  ],
+  "synthetic": false,
+  "value": {
+    "aggregate_readable": true,
+    "ci_95": [
+      -35.91,
+      8.53
+    ],
+    "memories": [
+      {
+        "ci_high": -32.64,
+        "ci_low": -64.98,
+        "counted": true,
+        "effect": -0.2906,
+        "n_injected": 168,
+        "occasions_improved": -48.82,
+        "slug": "sim-harmful-memory",
+        "verdict": "HURTS",
+        "why_not": ""
+      },
+      {
+        "ci_high": 50.37,
+        "ci_low": 19.91,
+        "counted": true,
+        "effect": 0.2252,
+        "n_injected": 156,
+        "occasions_improved": 35.13,
+        "slug": "sim-helpful-memory",
+        "verdict": "HELPS",
+        "why_not": ""
+      },
+      {
+        "ci_high": 27.15,
+        "ci_low": -7.73,
+        "counted": false,
+        "effect": 0.06,
+        "n_injected": 162,
+        "occasions_improved": 9.72,
+        "slug": "sim-neutral-memory",
+        "verdict": "UNDERPOWERED",
+        "why_not": "not established: this design could not detect an effect worth acting on, so multiplying it by a volume would produce a large number with no evidence under it"
+      }
+    ],
+    "money": null,
+    "occasions_improved": -13.69,
+    "readable": true,
+    "reason": "",
+    "value_per_occasion": null
+  }
+}

@@ -34,3 +34,15 @@ def test_every_adapter_has_a_fake_and_an_unknown_one_is_refused(capsys):
     assert set(ch.ADAPTERS) == {"mem0", "letta", "zep", "claude-memory-store", "agentcore"}
     assert ch.main(["--adapters", "nope"]) == 2
     assert "unknown adapter" in capsys.readouterr().err
+
+
+def test_a_mid_run_edit_is_flagged_compromised_and_random_attrition_is_not_blamed_on_the_memory(capsys):
+    edits = ch.edits(seeds=3, jobs=1, occasions=200)
+    assert edits["passed"] and edits["edited_memory_flagged_compromised"] == 1.0
+    runs = ch._run_variant("random_attrition", 2, 1, 300)
+    assert all(r["lost"] > 0 for r in runs) and all(set(r["memories"]) >= {ch.GOOD} for r in runs)
+
+
+def test_loss_that_follows_the_outcome_and_the_treatment_is_flagged_by_the_audit():
+    runs = ch._run_variant("differential_attrition", 6, 1, 400)
+    assert sum(r["audit"] != "SOUND" for r in runs) >= 5   # flagged, not quietly quoted

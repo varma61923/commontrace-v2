@@ -26,6 +26,16 @@ for the same effect; and how often a memory that does not hurt is withdrawn.
 The wait is longer than the plan because the verdict acted on is the
 anytime-valid one, which stays valid however often it is looked at.
 
+ATTRITION. Outcomes that never arrive. Dropped at random (30%) the estimate must stay
+unbiased and its interval must still cover. Dropped only when the occasion failed and
+the memory under test was delivered (60%), the estimate IS biased and the validity audit must say
+so; the harness reports how often it does, and how often a biased estimate went out
+unflagged.
+
+EDITS. A memory rewritten while the experiment runs (its text changes at the midpoint
+and the planted effect changes with it). The estimate pools two treatments, so the
+audit must flag it in every run.
+
 Seeds are `range(n)`, chosen before any run. No other vendor or product is run.
 """
 from __future__ import annotations
@@ -41,7 +51,7 @@ import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from types import SimpleNamespace as NS
 
-from commontrace import experiment, holdout_io, retrieval_io
+from commontrace import experiment, holdout_io, integrity, retrieval_io
 from commontrace import memory_adapters as ma
 from commontrace.commands import experiment_cmd
 from commontrace.measure import CausalMemory
@@ -228,12 +238,105 @@ def withdrawal(seeds: int, jobs: int, max_occasions: int = 1500) -> dict:
     }
 
 
+# --- Attrition and mid-run edits ----------------------------------------------------
+
+ATTRITION_RANDOM = 0.30
+ATTRITION_DIFFERENTIAL = 0.60
+EDIT_AT = 0.5
+
+
+def _variant_seed(args: tuple) -> dict:
+    """One run of `variant` ("random_attrition", "differential_attrition" or "edit") on the
+    Mem0-shaped fake. Returns the per-memory estimates and the audit's verdict."""
+    variant, seed, occasions = args
+    root = tempfile.mkdtemp(prefix=f"commontrace-{variant}-")
+    try:
+        holdout_io.configure(root, rate=RATE, salt=f"{variant}-{seed}")
+        texts = dict(TEXT)
+        client = NS(search=lambda q, **kw: {"results": [{"id": k, "memory": v} for k, v in texts.items()]},
+                    delete=lambda i: None)
+        memory = ma.MeasuredMemory(ma.Mem0Adapter(client), root=root, on_harm="inform")
+        rng = random.Random(f"{variant}:{seed}")
+        effects = dict(EFFECTS)
+        lost = 0
+        for i in range(occasions):
+            if variant == "edit" and i == int(occasions * EDIT_AT):
+                texts[GOOD] = "set an idempotency key on webhook handlers, then wait for the ack"
+                effects[GOOD] = 0.0  # the rewrite does nothing; the pooled arm now averages two treatments
+            delivered = {item.id for item in memory.recall("webhook fired twice", occasion_id=f"o{i}")}
+            p = BASELINE + sum(e for k, e in effects.items() if k in delivered)
+            succeeded = rng.random() < p
+            if variant == "random_attrition" and rng.random() < ATTRITION_RANDOM:
+                lost += 1
+                continue
+            if variant == "differential_attrition" and not succeeded and GOOD in delivered \
+                    and rng.random() < ATTRITION_DIFFERENTIAL:
+                lost += 1
+                continue
+            memory.record_outcome(f"o{i}", succeeded=succeeded)
+        rows, _rate, _corrupt = experiment_cmd._load(root)
+        rows, _salt, _other = experiment_cmd.scope_to_current_salt(root, rows)
+        report = integrity.audit(rows)
+        estimates = {e.lesson_slug: e for e in experiment.analyze(experiment_cmd._observations(rows))}
+        return {
+            "audit": report.verdict, "lost": lost,
+            "memories": {k: {"verdict": e.verdict, "effect": e.effect, "ci_low": e.ci_low, "ci_high": e.ci_high}
+                         for k, e in estimates.items()},
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _run_variant(variant: str, seeds: int, jobs: int, occasions: int) -> list[dict]:
+    work = [(variant, s, occasions) for s in range(seeds)]
+    if jobs > 1:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            return list(pool.map(_variant_seed, work, chunksize=4))
+    return [_variant_seed(w) for w in work]
+
+
+def attrition(seeds: int, jobs: int, occasions: int = OCCASIONS) -> dict:
+    """Random loss keeps the answer honest; loss correlated with outcome and treatment is flagged."""
+    # Same number of REPORTED outcomes as a run without loss, so a pass means the loss did
+    # not bias or mis-cover, not that power happened to survive it.
+    random_runs = _run_variant("random_attrition", seeds, jobs, int(occasions / (1 - ATTRITION_RANDOM)))
+    diff_runs = _run_variant("differential_attrition", seeds, jobs, occasions)
+    random_summary = summarise("random_attrition", [r["memories"] for r in random_runs])
+    # The memory the loss is correlated with in every run: GOOD's injected arm loses its failures.
+    biased = [r for r in diff_runs
+              if GOOD in r["memories"] and r["memories"][GOOD]["ci_low"] > EFFECTS[GOOD]]
+    flagged = [r for r in diff_runs if r["audit"] != integrity.VERDICT_SOUND]
+    return {
+        "seeds": seeds,
+        "random": {"loss": ATTRITION_RANDOM, "memories": random_summary["memories"],
+                   "passed": random_summary["passed"],
+                   "audit_not_compromised": sum(r["audit"] != integrity.VERDICT_COMPROMISED
+                                                for r in random_runs) / seeds},
+        "differential": {
+            "loss_of_failures_when_delivered": ATTRITION_DIFFERENTIAL,
+            "flagged_by_audit": len(flagged) / seeds,
+            "estimate_biased_upward": len(biased) / seeds,
+            "biased_and_unflagged": sum(1 for r in biased if r["audit"] == integrity.VERDICT_SOUND) / seeds,
+        },
+    }
+
+
+def edits(seeds: int, jobs: int, occasions: int = OCCASIONS) -> dict:
+    """A memory rewritten mid-run is flagged COMPROMISED, every time."""
+    runs = _run_variant("edit", seeds, jobs, occasions)
+    return {
+        "seeds": seeds,
+        "edited_memory_flagged_compromised": sum(r["audit"] == integrity.VERDICT_COMPROMISED for r in runs) / seeds,
+        "passed": all(r["audit"] == integrity.VERDICT_COMPROMISED for r in runs),
+    }
+
+
 # --- CLI ----------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scenario", choices=("coverage", "withdrawal", "all"), default="all")
+    ap.add_argument("--scenario", choices=("coverage", "withdrawal", "attrition", "edits", "all"), default="all")
     ap.add_argument("--seeds", type=int, default=200)
     ap.add_argument("--adapters", default=",".join(ADAPTERS))
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
@@ -253,6 +356,12 @@ def main(argv: list[str] | None = None) -> int:
         ok = ok and all(c["passed"] for c in report["coverage"])
     if args.scenario in ("withdrawal", "all"):
         report["withdrawal"] = withdrawal(args.seeds, args.jobs)
+    if args.scenario in ("attrition", "all"):
+        report["attrition"] = attrition(args.seeds, args.jobs, args.occasions)
+        ok = ok and report["attrition"]["random"]["passed"]
+    if args.scenario in ("edits", "all"):
+        report["edits"] = edits(args.seeds, args.jobs, args.occasions)
+        ok = ok and report["edits"]["passed"]
     if args.json:
         print(json.dumps(report, indent=2))
     else:
@@ -270,6 +379,19 @@ def main(argv: list[str] | None = None) -> int:
                   f"vs {w['planned_occasions_fixed_horizon']} planned at a fixed horizon "
                   f"({w['median_over_plan']}x)")
             print(f"    helpful withdrawn in {w['helpful_withdrawn']:.0%}, neutral in {w['neutral_withdrawn']:.0%}")
+        if "attrition" in report:
+            a = report["attrition"]
+            print(f"\nattrition: {a['random']['loss']:.0%} of outcomes lost at random -> "
+                  f"{'PASS' if a['random']['passed'] else 'FAIL'} (verdicts and coverage as without loss)")
+            d = a["differential"]
+            print("    failures lost when the helpful memory was delivered "
+                  f"({d['loss_of_failures_when_delivered']:.0%}): audit flagged "
+                  f"{d['flagged_by_audit']:.0%} of runs; estimate biased upward in "
+                  f"{d['estimate_biased_upward']:.0%}, of which unflagged {d['biased_and_unflagged']:.0%}")
+        if "edits" in report:
+            e = report["edits"]
+            print(f"\nmid-run edit: audit COMPROMISED in {e['edited_memory_flagged_compromised']:.0%} of runs -> "
+                  f"{'PASS' if e['passed'] else 'FAIL'}")
     return 0 if ok else 1
 
 

@@ -36,6 +36,20 @@ which stays valid however often it is looked at; that is why it takes longer tha
 | Helpful memory withdrawn | 0% |
 | Harmless memory withdrawn | 0% |
 
+## Attrition and mid-run edits (200 seeds each)
+
+`python -m commons.eval.coverage_harness --scenario attrition --seeds 200` and `--scenario edits`.
+
+| Scenario | Result |
+|---|---|
+| 30% of outcomes lost at random (run lengthened so the same number are reported) | verdicts and 95% coverage hold as without loss: PASS |
+| Failures lost 60% of the time when the helpful memory was delivered | the estimate is biased upward in 98% of runs; the audit flagged 100% of runs; 0% biased and unflagged |
+| A memory rewritten at the midpoint (its effect changes with it) | audit COMPROMISED in 100% of runs |
+
+Random loss is not blamed on the memory; loss that follows the outcome and the treatment is named by
+the audit instead of being quoted as an effect. The same Mem0-shaped fake is used for both; they test
+the estimator and the audit, which are adapter-independent.
+
 ## Limits
 
 * Planted effects are one size (20pp) at one baseline (50%); smaller effects take proportionally more

@@ -416,7 +416,23 @@ def _otel(row: dict) -> dict:
         attrs, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")) or 0
     if prompt or completion:
         flat["tokens_used"] = prompt + completion
+    occasion = _first(attrs, *OTEL_OCCASION_KEYS)
+    if occasion:
+        flat["occasion_id"] = _as_text(occasion)
+    # The task's outcome is only what the instrumenter said it was. A span's own
+    # status describes that call, not the occasion, so it never decides this.
+    succeeded = attrs.get(OTEL_OUTCOME_KEY)
+    if isinstance(succeeded, bool):
+        flat["occasion_succeeded"] = succeeded
     return flat
+
+
+#: Where a span says which occasion (task, episode, conversation) it belongs to, in
+#: order of preference: ours, OpenInference's `session.id`, and the OpenTelemetry GenAI
+#: `gen_ai.conversation.id`. Whichever the caller already emits joins its spans to the
+#: holdout without new instrumentation.
+OTEL_OCCASION_KEYS = ("commontrace.occasion_id", "session.id", "gen_ai.conversation.id")
+OTEL_OUTCOME_KEY = "commontrace.occasion.succeeded"
 
 
 # --- registry ----------------------------------------------------------------

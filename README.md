@@ -709,6 +709,7 @@ for the full CLI reference.
 ```bash
 commontrace gateway --env real --protect safety/      # HTTP + JSON; prints an API URL and a console URL
 commontrace gateway --stdio                           # one JSON object per line, no network
+commontrace proof wizard support --label acme --daily 400   # plan, confirm, start (add --simulate to rehearse)
 commontrace fleet adopt robot-1/ --dest robot-2/           # robot-2 randomizes exactly as robot-1 does
 commontrace fleet merge robot-1/ robot-2/ --dest pooled/   # refuses what cannot honestly be pooled
 

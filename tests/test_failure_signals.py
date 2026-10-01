@@ -198,3 +198,51 @@ class TestSignalsCli:
         rc = main(["signals", "export", "nope", "--format", "braintrust", "--dest", str(store)])
         assert rc == 1
         assert "no signal named" in capsys.readouterr().err
+
+
+class TestDistillScopedToFailures:
+    """`distill --failed` / `--signal` draft from what went wrong, not everything that happened."""
+
+    REFUND = "customer confused about refund timeline contradictory docs"
+
+    def _seed(self, store):
+        for n in (1, 2):
+            _capture(store, f"Refund confusion {n}", self.REFUND, "link the policy", resolved=False)
+        for n in (1, 2):  # an identical pattern that went fine must not be drafted from
+            _capture(store, f"Refund handled {n}", self.REFUND, "link the policy", resolved=True)
+
+    def _candidates(self, store):
+        ldir = paths.lessons_dir(str(store))
+        return [f for f in os.listdir(ldir) if f.startswith("lesson_") and "template" not in f]
+
+    def test_failed_only_clusters_the_failures(self, store, capsys):
+        self._seed(store)
+        assert main(["distill", "--failed", "--dest", str(store)]) == 0
+        out = capsys.readouterr().out
+        assert "2 trace(s) considered" in out
+        assert len(self._candidates(store)) == 1
+
+    def test_without_the_flag_everything_is_considered(self, store, capsys):
+        self._seed(store)
+        assert main(["distill", "--dest", str(store)]) == 0
+        assert "4 trace(s) considered" in capsys.readouterr().out
+
+    def test_no_failures_says_so_and_writes_nothing(self, store, capsys):
+        for n in (1, 2):
+            _capture(store, f"ok {n}", self.REFUND, "s", resolved=True)
+        assert main(["distill", "--failed", "--dest", str(store)]) == 0
+        assert "no failed traces" in capsys.readouterr().out
+        assert self._candidates(store) == []
+
+    def test_one_named_signal(self, store, capsys):
+        self._seed(store)
+        signals, _ = failure_signals.build_signals(str(store))
+        assert len(signals) == 1
+        assert main(["distill", "--signal", signals[0].name, "--dest", str(store)]) == 0
+        assert "2 trace(s) considered" in capsys.readouterr().out
+
+    def test_an_unknown_signal_is_refused_naming_the_real_ones(self, store, capsys):
+        self._seed(store)
+        assert main(["distill", "--signal", "nope", "--dest", str(store)]) == 2
+        err = capsys.readouterr().err
+        assert "no failure signal named 'nope'" in err and "signals:" in err

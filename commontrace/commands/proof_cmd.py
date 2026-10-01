@@ -50,6 +50,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     vf.add_argument("--key-file", default=None, help="The issuer's key, to check the signature.")
     vf.set_defaults(func=run_verify)
 
+    wz = sub.add_parser(
+        "wizard", help="Plan, confirm, start and (optionally) rehearse a proof in one guided flow.")
+    wz.add_argument("function", nargs="?", help="A kit key or kit file (default: this store's kit).")
+    wz.add_argument("--label", default=None, help="Whose proof this is.")
+    wz.add_argument("--daily", type=float, default=None, help="Occasions per day.")
+    wz.add_argument("--value-per-occasion", type=float, default=None)
+    wz.add_argument("--yes", action="store_true", help="Do not ask for confirmation.")
+    wz.add_argument("--simulate", action="store_true",
+                    help="Rehearse on a simulated fleet in a FRESH store: start, run planted memories "
+                         "through the real path, report, verify, and say whether the verdicts match.")
+    wz.add_argument("--seed", type=int, default=0)
+    wz.add_argument("--dest", default=None)
+    wz.set_defaults(func=run_wizard)
+
     dm = sub.add_parser("demo", help="A proof on synthetic data, to show a report before there is real data.")
     dm.add_argument("function", nargs="?", help="A kit key or kit file (default: this store's kit).")
     dm.add_argument("--value-per-occasion", type=float, default=None)
@@ -124,8 +138,8 @@ def run_report(args: argparse.Namespace) -> int:
     key = proof.read_key(args.key_file) if args.key_file else None
     out = args.out or f"proof-{_slug(state['label'])}"
     record = proof.build(root, out, key=key, org_id=args.org)
-    print(f"[commontrace] wrote {os.path.join(out, proof.MARKDOWN_NAME)}, {proof.RECORD_NAME} and "
-          f"{proof.DATA_NAME}")
+    print(f"[commontrace] wrote {os.path.join(out, proof.PAGE_NAME)} (open or send this), "
+          f"{proof.MARKDOWN_NAME}, {proof.RECORD_NAME} and {proof.DATA_NAME}")
     print(f"  {'FINAL' if record['final'] else 'INTERIM'}; integrity {record['integrity']['verdict']}; "
           f"{'signed' if record['signature'] else 'NOT signed (--key-file)'}"
           + ("; SYNTHETIC DEMO DATA" if record["synthetic"] else ""))
@@ -153,3 +167,70 @@ def run_demo(args: argparse.Namespace) -> int:
     print(f"[commontrace] synthetic {kit.key} proof written to {root} (label {state['label']!r}).")
     print("  commontrace proof status\n  commontrace proof report --key-file KEY")
     return 0
+
+
+def _ask(prompt: str, default: str | None = None) -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        answer = input(f"{prompt}{suffix}: ").strip()
+    except EOFError:
+        answer = ""
+    return answer or (default or "")
+
+
+@_guard
+def run_wizard(args: argparse.Namespace) -> int:
+    """Plan, confirm, start; with --simulate, rehearse the whole path and check the verdicts."""
+    root = paths.resolve_root(args.dest)
+    paths.warn_if_implicit_cwd_store(args.dest)
+    interactive = sys.stdin.isatty() and not args.yes
+    function = args.function
+    if function is None and functions.store_kit(root) is None:
+        if not interactive:
+            raise proof.ProofError("name a function (`commontrace function list`)")
+        function = _ask("Function (" + ", ".join(sorted(functions.builtin_kits())) + ")")
+    args.function = function
+    kit = _kit(args, root)
+    label = args.label or (_ask("Whose proof is this (a customer or fleet name)") if interactive else "")
+    daily = args.daily
+    if daily is None and interactive:
+        daily = float(_ask(f"How many {kit.occasion_label}s per day"))
+    if not label or daily is None:
+        raise proof.ProofError("the wizard needs --label and --daily when it cannot ask")
+    vpo = args.value_per_occasion
+    if vpo is None and interactive:
+        raw = _ask("What is one improved occasion worth to you (blank to skip)")
+        vpo = float(raw) if raw else None
+
+    fc = proof._design(kit, daily, None, None, None)
+    print(functions.render_forecast(fc))
+    if interactive and _ask("Start this proof? (y/n)", "y").lower() not in ("y", "yes"):
+        print("[commontrace] nothing was started.")
+        return 0
+    state, _ = proof.start(root, kit, label=label, daily=daily, value_per_occasion=vpo,
+                           force=args.simulate)
+    reg = state["preregistration"]
+    print(f"\n[commontrace] proof started for {state['label']!r}; registered before any data: "
+          f"{reg['planned_occasions']:,} occasions, stopping rule {reg['stopping_rule']}.")
+    if not args.simulate:
+        print("  Point your agents at the gateway and report each outcome under the same occasion id:")
+        print("    commontrace gateway          # any language, any robot (HTTP + JSON or --stdio)")
+        print("    commontrace proof status     # progress and verdicts as they form")
+        print("    commontrace proof report     # the page and package to share")
+        return 0
+
+    sim = proof.simulate_fleet(root, kit, seed=args.seed)
+    out = f"proof-{_slug(state['label'])}"
+    record = proof.build(root, out)
+    checks = proof.verify(out)
+    found = {m["lesson_slug"]: m["verdict"] for m in record["memories"]}
+    wrong = {slug: (f"{effect:+.0%}", found.get(slug))
+             for slug, effect in sim["planted"].items() if not proof.verdict_matches(effect, found.get(slug))}
+    print(f"\n[commontrace] rehearsal: {sim['occasions']:,} simulated occasions through the real path.")
+    for slug, effect in sim["planted"].items():
+        print(f"  {slug:22s} planted {effect:+.0%}  ->  {found.get(slug)}")
+    print(f"  integrity {record['integrity']['verdict']}; package verifies: {proof.verified(checks)}")
+    print(f"  page: {os.path.join(out, proof.PAGE_NAME)}")
+    ok = not wrong and proof.verified(checks) and record["integrity"]["verdict"] == "SOUND"
+    print("  " + ("every verdict matches what was planted." if ok else f"MISMATCH: {wrong}"))
+    return 0 if ok else 1
