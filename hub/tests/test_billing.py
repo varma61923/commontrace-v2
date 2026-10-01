@@ -652,3 +652,41 @@ class TestWebhookRoute:
                 headers={"stripe-signature": _sign(body, secret=WEBHOOK_SECRET)},
             )
         assert response.status_code == 400
+
+
+class TestConcurrentReplay:
+    async def test_the_same_event_delivered_at_once_applies_once_and_never_errors(
+        self, session_factory, org
+    ):
+        """At-least-once delivery means a retry can land while the first attempt
+        is still in flight. Both pass the 'already processed?' read; the ledger's
+        primary key must make exactly one win, and the loser must answer 200 so
+        the sender stops retrying rather than 500 and retry forever."""
+        import asyncio
+
+        from sqlalchemy import func, select
+
+        from hub.models import ProcessedWebhookEvent
+
+        settings = StripeSettings(secret_key="sk", webhook_secret=WEBHOOK_SECRET, price_team="price_t")
+        body = json.dumps({
+            "id": "evt_race_1",
+            "type": "checkout.session.completed",
+            "data": {"object": {
+                "client_reference_id": org, "customer": "cus_race", "subscription": "sub_race",
+                "metadata": {"org_id": org, "plan": "team"},
+            }},
+        }).encode()
+        headers = {"stripe-signature": _sign(body, secret=WEBHOOK_SECRET)}
+        async with _client(_app(settings, session_factory)) as client:
+            responses = await asyncio.gather(*[
+                client.post("/billing/webhook", content=body, headers=headers) for _ in range(8)
+            ])
+        assert [r.status_code for r in responses] == [200] * 8
+        async with session_scope(session_factory) as session:
+            assert (await session.get(Organization, org)).plan == "team"
+            count = (await session.execute(
+                select(func.count()).select_from(ProcessedWebhookEvent)
+                .where(ProcessedWebhookEvent.id == "evt_race_1")
+            )).scalar_one()
+        assert count == 1

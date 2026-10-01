@@ -48,6 +48,7 @@ from dataclasses import dataclass
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
@@ -365,8 +366,25 @@ def add_billing_webhook_route(app, session_factory, *, stripe: StripeSettings) -
             return PlainTextResponse("invalid payload", status_code=400)
         if not isinstance(event, dict):
             return PlainTextResponse("invalid payload", status_code=400)
-        async with session_scope(session_factory) as session:
-            outcome = await apply_webhook_event(session, stripe, event)
+        try:
+            async with session_scope(session_factory) as session:
+                outcome = await apply_webhook_event(session, stripe, event)
+        except IntegrityError:
+            # A retry landed while the first delivery of this event was still
+            # in flight: both passed the "already processed?" read and the
+            # ledger's primary key let one win. The loser's transaction rolled
+            # back, so nothing applied twice. Answer 200 so the sender stops
+            # retrying -- but only when the ledger confirms the event is
+            # recorded; any other integrity failure is a real error.
+            event_id = str(event.get("id") or "")
+            if not event_id:
+                raise
+            async with session_scope(session_factory) as session:
+                recorded = await session.get(ProcessedWebhookEvent, event_id)
+            if recorded is None:
+                raise
+            logger.info("stripe webhook: event %s already processed (concurrent delivery)", event_id)
+            return PlainTextResponse("ok", status_code=200)
         logger.info("stripe webhook: %s", outcome)
         return PlainTextResponse("ok", status_code=200)
 
