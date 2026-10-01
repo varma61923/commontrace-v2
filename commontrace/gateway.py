@@ -67,6 +67,8 @@ from commontrace import (
 from commontrace.measure import CausalMemory, HarmWatch
 
 API_VERSION = "1"
+#: How stale the console's reports (memories, proof status) may be while the logs are changing, in seconds.
+REPORT_MIN_INTERVAL = 5.0
 MAX_BODY_BYTES = 1 << 20
 MAX_ITEMS = 200
 MAX_TEXT_CHARS = 20_000
@@ -323,6 +325,8 @@ class Gateway:
         self.allowed_hosts = frozenset(h.lower() for h in allowed_hosts) | LOOPBACK_HOSTS
         self._watch = HarmWatch(self.root, on_harm, check_every)
         self._events_lock = threading.Lock()
+        self._memo_lock = threading.Lock()
+        self._memo: dict[str, tuple] = {}
         self.routes: dict[tuple[str, str], tuple[Callable, dict]] = {}
         self._register()
 
@@ -617,7 +621,40 @@ class Gateway:
         return {"occasion_id": occasion, "recorded": written, "succeeded": succeeded,
                 **({} if written else {"note": "the same answer was already on record"})}
 
+    def _data_key(self) -> tuple:
+        """What every report here is a function of: the assignment and outcome logs, the experiment, the proof's
+        registered design and the store's retrieval settings, each by (inode, size, mtime)."""
+        key = []
+        for path in (holdout_io.holdout_log_path(self.root), holdout_io.outcomes_log_path(self.root),
+                     holdout_io.config_path(self.root), proof.state_path(self.root),
+                     retrieval_io.config_path(self.root)):
+            try:
+                st = os.stat(path)
+                key.append((st.st_ino, st.st_size, st.st_mtime_ns))
+            except OSError:
+                key.append(None)
+        return tuple(key)
+
+    def _memoized(self, name: str, compute):
+        """`compute()`, reused while the data it reads is unchanged, and recomputed at most once per
+        REPORT_MIN_INTERVAL seconds while it is changing. An open console polls these reports every few seconds,
+        and recomputing the audit and every estimate per poll cost about a second per call at 60,000 assignments:
+        a dashboard left open on a busy store was a steady CPU tax on the same process serving recalls. Never used
+        on the recall or outcome path, which read and write the logs directly."""
+        key, now = self._data_key(), time.monotonic()
+        with self._memo_lock:
+            hit = self._memo.get(name)
+            if hit is not None and (hit[0] == key or now - hit[1] < REPORT_MIN_INTERVAL):
+                return hit[2]
+        value = compute()
+        with self._memo_lock:
+            self._memo[name] = (key, now, value)
+        return value
+
     def _analysis(self):
+        return self._memoized("analysis", self._compute_analysis)
+
+    def _compute_analysis(self):
         state = proof.load_state(self.root)
         rows = proof._current_rows(self.root)
         if not rows:
@@ -644,7 +681,7 @@ class Gateway:
         }
         if proof.load_state(self.root):
             try:
-                out["proof"] = dataclasses.asdict(proof.status(self.root))
+                out["proof"] = self._memoized("proof", lambda: dataclasses.asdict(proof.status(self.root)))
             except proof.ProofError:
                 pass
         return out

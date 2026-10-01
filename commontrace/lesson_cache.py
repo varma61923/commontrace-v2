@@ -159,6 +159,38 @@ def _stat(path: str) -> tuple[int, int] | None:
     return (st.st_mtime_ns, st.st_size)
 
 
+def _listing(root: str) -> tuple:
+    """((path, mtime_ns, size), ...) for every lesson file, sorted by path, in ONE directory pass.
+
+    The same files `_lesson_paths` enumerates, with the stamps `_stat` would give, but from `os.scandir` instead
+    of a glob followed by a stat per path: at 6,400 lessons the glob, its fnmatch and the path joins were about a
+    third of a warm query. Sorted by path, so corpus order (and with it every tie in `rank_lessons`) is unchanged.
+    """
+    ldir = paths.lessons_dir(root)
+    # String concatenation, not os.path.join per file: the same result for a directory without a trailing
+    # separator, at a fraction of the cost over thousands of names.
+    prefix = ldir if ldir.endswith(os.sep) else ldir + os.sep
+    out = []
+    with os.scandir(ldir) as entries:
+        for entry in entries:
+            name = entry.name
+            if not (name.startswith("lesson_") and name.endswith(".md")) or name == "lesson_template.md":
+                continue
+            try:
+                st = entry.stat()
+            except OSError:
+                continue  # vanished between the listing and the stat
+            out.append((prefix + name, st.st_mtime_ns, st.st_size))
+    out.sort()
+    return tuple(out)
+
+
+# The last listing a process saw per cache file, with what it produced: (listing, cache identity, entries,
+# ordered). When neither any lesson file nor the cache file changed, the whole per-lesson pass is skipped and the
+# same objects are returned -- a tuple comparison instead of thousands of dict lookups.
+_FAST: dict[str, tuple[tuple, tuple | None, dict, list]] = {}
+
+
 def _lesson_paths(root: str) -> list[str]:
     """Same enumeration `_iter_active_lessons` performs, including its sort --
     `rank_lessons` sorts stably, so ties between equally-scoring lessons are
@@ -306,6 +338,12 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
     today -- and that is the point: the warning keeps firing until the file is
     fixed, rather than being silenced by a cache the user cannot see.
     """
+    entries, ordered, _listing_key = _load_entries_keyed(root, reader)
+    return entries, ordered
+
+
+def _load_entries_keyed(root: str, reader) -> tuple[dict[str, dict], list[str], tuple]:
+    """`_load_entries`, plus the directory listing it was computed from (a key for everything derived from it)."""
     if reader is None:
         def reader(p):  # noqa: E306
             try:
@@ -314,12 +352,17 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
                 return None
 
     try:
-        lesson_paths = _lesson_paths(root)
+        listing = _listing(root)
     except OSError:
-        return {}, []
+        return {}, [], ()
 
     cpath = cache_path(root)
     identity = _file_identity(cpath)
+    fast = _FAST.get(cpath)
+    if fast is not None and identity is not None and fast[1] == identity and fast[0] == listing:
+        return fast[2], fast[3], fast[0]
+    lesson_paths = [p for p, _m, _s in listing]
+    stamps = {p: (m, size) for p, m, size in listing}
     memo = _MEMO.get(cpath)
     if memo is not None and identity is not None and memo[0] == identity:
         cached, validated = memo[1], memo[2]
@@ -329,9 +372,7 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
     entries: dict = {}
     repaired = False
     for path in lesson_paths:
-        stamp = _stat(path)
-        if stamp is None:
-            continue  # vanished between glob and stat
+        stamp = stamps[path]
         prior = cached.get(path)
         stamp_and_fm_match = (
             isinstance(prior, dict)
@@ -374,11 +415,17 @@ def _load_entries(root: str, reader=None) -> tuple[dict[str, dict], list[str]]:
             _MEMO[cpath] = (written, entries, frozenset(entries))
         else:
             _MEMO.pop(cpath, None)
+        identity = written
     elif identity is not None:
         # Unchanged: the file on disk is `cached`, and every entry kept from
         # it has had its terms validated.
         _MEMO[cpath] = (identity, cached, validated | frozenset(entries))
-    return entries, [p for p in lesson_paths if p in entries]
+    ordered = [p for p in lesson_paths if p in entries]
+    if identity is not None:
+        _FAST[cpath] = (listing, identity, entries, ordered)
+    else:
+        _FAST.pop(cpath, None)
+    return entries, ordered, listing
 
 
 def load_projected(root: str, reader=None) -> list[tuple[str, dict]]:
@@ -437,12 +484,9 @@ def load_active_with_terms(
     """Active lessons, plus their already-tokenized fields keyed by path --
     pass the second value straight through as `rank_lessons(..., term_cache=)`
     to skip re-tokenizing text that has not changed since the last query."""
-    entries, ordered = _load_entries(root, reader=reader)
-    # What the returned snapshot is a function of: which files, at which
-    # versions, in which order. Same key -> the same objects as last time.
-    snap_key = tuple(
-        (p, entries[p]["mtime_ns"], entries[p]["size"]) for p in ordered
-    )
+    entries, ordered, snap_key = _load_entries_keyed(root, reader)
+    # What the returned snapshot is a function of: which files, at which versions, in which order -- the
+    # directory listing itself. Same key -> the same objects as last time.
     memo_key = (os.path.abspath(root), agent_type)
     prior = _SNAPSHOTS.get(memo_key)
     if prior is not None and prior[0] == snap_key:

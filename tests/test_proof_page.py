@@ -122,7 +122,9 @@ def easy_kit(tmp_path):
     return str(path)
 
 
-def test_a_simulated_fleet_reaches_the_planted_verdicts_through_the_whole_wizard(easy_kit, tmp_path, capsys):
+def test_a_simulated_fleet_reaches_the_planted_verdicts_through_the_whole_wizard(easy_kit, tmp_path, capsys,
+                                                                                 monkeypatch):
+    monkeypatch.chdir(tmp_path)  # the wizard writes proof-<label>/ into the working directory
     store = str(tmp_path / "wiz")
     code = main(["proof", "wizard", easy_kit, "--label", "rehearsal", "--daily", "100", "--yes",
                  "--simulate", "--dest", store])

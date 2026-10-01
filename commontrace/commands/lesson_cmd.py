@@ -619,11 +619,25 @@ def _occasion_labels(root: str, wanted: set[str]) -> dict[str, str]:
     return out
 
 
+#: Occasions listed per section of a revision/rewrite draft: the most recent ones. A lesson that has fired on
+#: thousands of occasions would otherwise put every one in the file and in the model's prompt.
+EVIDENCE_PER_SECTION = 40
+
+
+def _listed_ids(hit_occasions: list, miss_occasions: list) -> set[str]:
+    """The occasion ids `_evidence_sections` actually lists: the only ones a draft may cite."""
+    return {ev.occasion_id for ev in hit_occasions[-EVIDENCE_PER_SECTION:] + miss_occasions[-EVIDENCE_PER_SECTION:]}
+
+
 def _evidence_sections(hit_occasions: list, miss_occasions: list, labels: dict) -> list[str]:
     def _section(heading: str, occasions: list) -> list[str]:
         lines = [f"### {heading}"]
         if not occasions:
             lines.append("(none)")
+        if len(occasions) > EVIDENCE_PER_SECTION:
+            lines.append(f"({len(occasions)} occasions; the {EVIDENCE_PER_SECTION} most recent are listed. "
+                         "`commontrace reliability` has the rest.)")
+            occasions = occasions[-EVIDENCE_PER_SECTION:]
         for ev in occasions:
             label = labels.get(ev.occasion_id)
             lines.append(f"- `{ev.occasion_id}`" + (f": {label}" if label else ""))
@@ -687,7 +701,7 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
     hit_occasions = [ev for ev in evidence if slug in ev.retrieved and slug in ev.hit]
     miss_occasions = [ev for ev in evidence if slug in ev.retrieved and slug not in ev.hit]
     labels = _occasion_labels(
-        root, {ev.occasion_id for ev in hit_occasions + miss_occasions},
+        root, _listed_ids(hit_occasions, miss_occasions),
     )
 
     evidence_lines = [
@@ -709,7 +723,7 @@ def run_suggest_revision(args: argparse.Namespace) -> int:
             ),
             slug=slug, current_rule_text=body, applies_when=str(fm.get("applies_when", "")),
             do_not_apply_when=str(fm.get("do_not_apply_when", "")), evidence_lines=evidence_lines,
-            allowed_evidence_ids={ev.occasion_id for ev in hit_occasions + miss_occasions},
+            allowed_evidence_ids=_listed_ids(hit_occasions, miss_occasions),
         )
 
     draft_slug = f"{lesson_io.canonical_slug(slug)}-revision"
@@ -825,7 +839,7 @@ def run_suggest_rewrite(args: argparse.Namespace) -> int:
 
     hit_occasions = [ev for ev in evidence if slug in ev.retrieved and slug in ev.hit]
     miss_occasions = [ev for ev in evidence if slug in ev.retrieved and slug not in ev.hit]
-    labels = _occasion_labels(root, {ev.occasion_id for ev in hit_occasions + miss_occasions})
+    labels = _occasion_labels(root, _listed_ids(hit_occasions, miss_occasions))
     evidence_lines = [
         f"Reliability verdict at the time this draft was written: HARMFUL "
         f"-- {verdict_row.rationale}",
@@ -841,7 +855,7 @@ def run_suggest_rewrite(args: argparse.Namespace) -> int:
         ),
         slug=slug, current_rule_text=body, applies_when=str(fm.get("applies_when", "")),
         do_not_apply_when=str(fm.get("do_not_apply_when", "")), evidence_lines=evidence_lines,
-        allowed_evidence_ids={ev.occasion_id for ev in hit_occasions + miss_occasions},
+        allowed_evidence_ids=_listed_ids(hit_occasions, miss_occasions),
     )
 
     draft_slug = f"{lesson_io.canonical_slug(slug)}-rewrite"

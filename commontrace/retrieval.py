@@ -297,6 +297,10 @@ class _CorpusIndex:
     n_docs: int
     avg_field_len: float
     max_idf: float
+    #: Each lesson's length factor, computed once per index rather than once per matching lesson per query.
+    length_factors: tuple[float, ...] = ()
+    #: Each lesson's (importance, uses) tie-break pair, coerced once per index.
+    tie_breaks: tuple[tuple[int, int], ...] = ()
 
 
 def _build_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
@@ -329,13 +333,16 @@ def _build_index(lessons, term_cache, scorer: str) -> _CorpusIndex:
         n_terms.append(len(in_doc))
     doc_freq = {term: len(post[0]) for term, post in postings.items()}
     n_docs = len(lessons)
+    avg = (sum(n_terms) / len(n_terms)) if n_terms else 0.0
     return _CorpusIndex(
         n_terms=n_terms,
         postings={term: (tuple(a), tuple(b), tuple(c)) for term, (a, b, c) in postings.items()},
         doc_freq=doc_freq,
         n_docs=n_docs,
-        avg_field_len=(sum(n_terms) / len(n_terms)) if n_terms else 0.0,
+        avg_field_len=avg,
         max_idf=max((_idf(n_docs, df) for df in doc_freq.values()), default=0.0),
+        length_factors=tuple(_length_factor(n, avg) for n in n_terms),
+        tie_breaks=tuple((_rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0))) for _p, fm in lessons),
     )
 
 
@@ -539,18 +546,22 @@ def rank_lessons(
     # order, which keeps the stable selection's tie order exactly what a full
     # pass produced.
     acc: dict[int, list] = {}
+    acc_get = acc.get
     for term in sorted(query_terms):
         post = index.postings.get(term)
         if post is None:
             continue
         term_idf = query_idf.get(term, 0.0)
         for i, weight_sum, best in zip(*post):
-            a = acc.get(i)
+            a = acc_get(i)
             if a is None:
-                a = acc[i] = [0.0, 0.0, []]
+                acc[i] = [weight_sum, term_idf * (best / _MAX_FIELD_WEIGHT), [term]]
+                continue
             a[0] += weight_sum
             a[1] += term_idf * (best / _MAX_FIELD_WEIGHT)
             a[2].append(term)
+    length_factors = index.length_factors
+    tie_breaks = index.tie_breaks
     for i in sorted(acc):
         (path, fm) = lessons[i]
         score, covered, matched = acc[i]
@@ -558,7 +569,7 @@ def rank_lessons(
         if scorer == SCORER_COUNT:
             rel = score
         elif total_query_idf > 0 and matched:
-            lam = _length_factor(index.n_terms[i], index.avg_field_len)
+            lam = length_factors[i] if length_factors else _length_factor(index.n_terms[i], index.avg_field_len)
             # Clamped: `lam` may exceed 1.0 for a lesson shorter than average
             # (a deliberate small boost), and the bound this measure documents
             # -- and that the shared floor depends on -- must hold regardless.
@@ -581,9 +592,10 @@ def rank_lessons(
             ))
             # The sort key plus what is needed to build the result -- the
             # RankedLesson itself is only built for the lessons returned.
+            importance, uses = tie_breaks[i] if tie_breaks else (
+                _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
             scored.append((
-                adjusted, score,
-                _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)),
+                adjusted, score, importance, uses,
                 path, fm, slug, matched, rel, reliability_adj, recency_adj,
             ))
 

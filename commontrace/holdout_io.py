@@ -472,6 +472,59 @@ class LogRecord:
     floor: float | None = None
 
 
+def _parse_log_line(line: str) -> LogRecord | None:
+    """One assignment line, or None when it is not one (counted as corrupt by the caller)."""
+    line = line.strip()
+    try:
+        raw = json.loads(line)
+        lesson = str(raw["lesson"])
+        occasion_id = str(raw["occasion_id"])
+        injected = bool(raw["injected"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    at = None
+    if raw.get("at"):
+        try:
+            at = datetime.datetime.fromisoformat(str(raw["at"]))
+        except ValueError:
+            at = None
+    return LogRecord(
+        lesson=lesson,
+        occasion_id=occasion_id,
+        injected=injected,
+        rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
+        # A line with no salt is a line written before salts were
+        # recorded, and back then there was exactly one randomization:
+        # the default. Normalizing here rather than at each reader is
+        # what keeps an old log analysable -- once the analysis began
+        # scoping to a salt, an empty one matched nothing and a store
+        # whose log predated the field silently stopped reporting at
+        # all. Backward compatibility for a measurement is not a
+        # nicety: the alternative is a fleet's entire experiment
+        # history becoming unreadable on upgrade.
+        salt=str(raw.get("salt") or DEFAULT_SALT),
+        at=at,
+        revision=(str(raw["revision"]) if raw.get("revision") else None),
+        relevance=_opt_float(raw.get("relevance")),
+        rank=_opt_int(raw.get("rank")),
+        scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
+        floor=_opt_float(raw.get("floor")),
+    )
+
+
+@dataclass
+class _LogCache:
+    identity: tuple
+    offset: int = 0          # bytes consumed: only whole, newline-terminated lines
+    tail: bytes = b""        # the last bytes before `offset`, to notice a replaced file
+    records: list = field(default_factory=list)
+    corrupt: int = 0
+
+
+_log_cache: dict[str, _LogCache] = {}
+_log_cache_lock = threading.Lock()
+
+
 def read_log(root: str) -> tuple[list[LogRecord], int]:
     """Every assignment ever logged, plus a count of unparseable lines.
 
@@ -485,54 +538,52 @@ def read_log(root: str) -> tuple[list[LogRecord], int]:
     A corrupt line is counted, not raised: one torn write must not make the
     rest of an experiment unreadable, and the count is surfaced so silent
     data loss stays visible.
+
+    Incremental, like the outcomes log (`_outcomes_shared`): the log is append-only, and re-parsing all of it on
+    every report made a console that polls, or a gateway that re-reads evidence, pay a full parse per call
+    (measured: 1.1 s for 60,000 assignments). What has been parsed is kept and only appended bytes are read; a
+    different inode, a shorter file or changed earlier bytes rebuild from the start, and a final line without its
+    newline is parsed for this call but never cached, exactly as a full read treats it. LogRecord is frozen, so the
+    shared records cannot be changed through the list returned (a fresh list, each call).
     """
     path = holdout_log_path(root)
-    if not os.path.isfile(path):
+    try:
+        st = os.stat(path)
+    except OSError:
         return [], 0
-
-    records: list[LogRecord] = []
-    corrupt = 0
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
+    identity = (st.st_dev, st.st_ino)
+    with _log_cache_lock:
+        cache = _log_cache.get(path)
+        with open(path, "rb") as fh:
+            valid = cache is not None and cache.identity == identity and st.st_size >= cache.offset
+            if valid and cache.tail:
+                fh.seek(cache.offset - len(cache.tail))
+                valid = fh.read(len(cache.tail)) == cache.tail
+            if not valid:
+                cache = _LogCache(identity=identity)
+                _log_cache[path] = cache
+            fh.seek(cache.offset)
+            chunk = fh.read()
+        whole = chunk.rfind(b"\n") + 1
+        for raw_line in chunk[:whole].decode("utf-8", errors="replace").split("\n"):
+            if not raw_line.strip():
                 continue
-            try:
-                raw = json.loads(line)
-                lesson = str(raw["lesson"])
-                occasion_id = str(raw["occasion_id"])
-                injected = bool(raw["injected"])
-            except (ValueError, KeyError, TypeError):
-                corrupt += 1
-                continue
-            at = None
-            if raw.get("at"):
-                try:
-                    at = datetime.datetime.fromisoformat(str(raw["at"]))
-                except ValueError:
-                    at = None
-            records.append(LogRecord(
-                lesson=lesson,
-                occasion_id=occasion_id,
-                injected=injected,
-                rate=_float_or(raw.get("rate"), experiment.DEFAULT_HOLDOUT_RATE),
-                # A line with no salt is a line written before salts were
-                # recorded, and back then there was exactly one randomization:
-                # the default. Normalizing here rather than at each reader is
-                # what keeps an old log analysable -- once the analysis began
-                # scoping to a salt, an empty one matched nothing and a store
-                # whose log predated the field silently stopped reporting at
-                # all. Backward compatibility for a measurement is not a
-                # nicety: the alternative is a fleet's entire experiment
-                # history becoming unreadable on upgrade.
-                salt=str(raw.get("salt") or DEFAULT_SALT),
-                at=at,
-                revision=(str(raw["revision"]) if raw.get("revision") else None),
-                relevance=_opt_float(raw.get("relevance")),
-                rank=_opt_int(raw.get("rank")),
-                scorer=(str(raw["scorer"]) if raw.get("scorer") else None),
-                floor=_opt_float(raw.get("floor")),
-            ))
+            record = _parse_log_line(raw_line)
+            if record is None:
+                cache.corrupt += 1
+            else:
+                cache.records.append(record)
+        if whole:
+            cache.offset += whole
+            cache.tail = (cache.tail + chunk[:whole])[-_TAIL_CHECK:]
+        records, corrupt = list(cache.records), cache.corrupt
+    pending = chunk[whole:].decode("utf-8", errors="replace")
+    if pending.strip():
+        record = _parse_log_line(pending)
+        if record is None:
+            corrupt += 1
+        else:
+            records.append(record)
     return records, corrupt
 
 

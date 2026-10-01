@@ -17,6 +17,22 @@ import sys
 
 from commontrace import llm
 
+#: The evidence block is cut at a line boundary past this many characters (~4k tokens), so one lesson with
+#: thousands of occasions, or a cluster of long traces, cannot turn a draft into an unbounded bill. Callers
+#: that show occasion ids list the most recent ones first-class (lesson_cmd.EVIDENCE_PER_SECTION); this is
+#: the backstop for everything else.
+MAX_EVIDENCE_CHARS = 16_000
+
+
+def _within_budget(lines: list[str], limit: int = MAX_EVIDENCE_CHARS) -> list[str]:
+    kept, used = [], 0
+    for i, line in enumerate(lines):
+        used += len(line) + 1
+        if used > limit:
+            return kept + [f"({len(lines) - i} further evidence line(s) omitted to bound the prompt.)"]
+        kept.append(line)
+    return kept
+
 
 def prompt(instruction: str, slug: str, current_rule_text: str, applies_when: str,
            do_not_apply_when: str, evidence_lines: list[str]) -> str:
@@ -32,7 +48,7 @@ def prompt(instruction: str, slug: str, current_rule_text: str, applies_when: st
         f"Current applies_when: {applies_when}\n"
         f"Current do_not_apply_when: {do_not_apply_when}\n\n"
         "Evidence (the ONLY occasions/traces you may cite -- do not invent others):\n"
-        + "\n".join(evidence_lines) +
+        + "\n".join(_within_budget(evidence_lines)) +
         "\n\nRespond with ONLY a JSON object, no other text, with exactly these keys:\n"
         '  "rule": string,\n'
         '  "applies_when": string,\n'

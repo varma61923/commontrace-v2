@@ -37,7 +37,11 @@ def _run_fleet(root, n, *, harm=-0.25, help_=+0.2, seed=1, rates=None):
 
 
 @pytest.fixture
-def started(tmp_path):
+def started(tmp_path, monkeypatch):
+    # A pinned salt: the fleets below draw outcomes from a seeded rng, and a fresh salt per run would re-deal the
+    # arms, so the null memory would show a chance effect in about one run in twenty.
+    real = holdout_io.configure
+    monkeypatch.setattr(holdout_io, "configure", lambda *a, **kw: real(*a, **{**kw, "salt": kw.get("salt") or "pinned"}))
     root = str(tmp_path / "store")
     state, _ = proof.start(root, SUPPORT, label="Acme support", daily=300, value_per_occasion=12.0)
     return root, state
