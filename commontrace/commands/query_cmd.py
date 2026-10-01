@@ -256,6 +256,36 @@ def _withdraw_from_semantic(
     return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
 
 
+def _screen_semantic(stdout: str, root: str) -> str:
+    """The semantic arm's output without lessons that fail the injection screen.
+
+    The lexical and fused paths screen inside `_apply_dosage`; the semantic-only arm is a separate script
+    that ranks from its index and never reads the lesson text, so a lesson edited after approval was listed
+    to the agent, and under `--experiment` given an arm. Same screen and the same stderr notice as the other
+    paths, named by pattern, never by text."""
+    ldir = paths.lessons_dir(root)
+    verdicts: dict[str, bool] = {}
+    lines = []
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        if slug is not None:
+            if slug not in verdicts:
+                # A slug with no file has no text to carry an injection, and is passed through unchanged.
+                path = os.path.join(ldir, f"{slug}.md")
+                parsed = read_or_warn(frontmatter.read, path) if os.path.isfile(path) else ({}, "")
+                labels = [] if parsed is None else injection_guard.injection_labels({
+                    "description": parsed[0].get("description"), "applies_when": parsed[0].get("applies_when"),
+                    "do_not_apply_when": parsed[0].get("do_not_apply_when"), "body": parsed[1]})
+                verdicts[slug] = parsed is not None and not labels
+                if labels:
+                    print(f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
+                          file=sys.stderr)
+            if not verdicts[slug]:
+                continue
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
+
+
 def _apply_dosage(
     active: list[tuple[str, dict]],
     ranked: list[tuple[str, float]],
@@ -1067,12 +1097,11 @@ def run(args: argparse.Namespace) -> int:
         core = _core_slugs(_iter_active_lessons(root, args.agent_type))
 
     if not args.experiment:
-        if not harmful:
-            return run_script(root, script_path, script_args, missing_hint)
         rc, stdout = run_script(root, script_path, script_args, missing_hint, capture=True)
         if rc != 0:
             sys.stdout.write(stdout)
             return rc
+        stdout = _screen_semantic(stdout, root)
         stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
         sys.stdout.write(stdout)
         _print_withdrawn(withdrawn, harmful)
@@ -1099,7 +1128,8 @@ def run(args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stdout.write(stdout)
         return rc
-    # Before the arms are assigned: a withdrawn lesson is never eligible.
+    # Before the arms are assigned: a quarantined or withdrawn lesson is never eligible.
+    stdout = _screen_semantic(stdout, root)
     stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
 
     slugs = _slugs_from_semantic_output(stdout)

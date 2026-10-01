@@ -532,15 +532,18 @@ class Gateway:
 
         from commontrace import lesson_cache
 
-        active = lesson_cache.load_active(self.root, None, reader=read)
-        ranked = retrieval.rank_lessons(query, active, top_k=top_k)
+        # With the term cache, as `commontrace query` and the MCP server rank: it carries each lesson's stamp, so
+        # the corpus index is reused across recalls instead of rebuilt per call (255 ms at 6,400 lessons).
+        active, term_cache = lesson_cache.load_active_with_terms(self.root, None, reader=read)
+        ranked = retrieval.rank_lessons(query, active, top_k=top_k, term_cache=term_cache)
+        projected = dict(active)
         out = []
         for hit in ranked:
-            parsed = read(hit.path)
-            if parsed is None:
+            try:
+                body = frontmatter.read_body(hit.path)
+            except frontmatter.FrontmatterError:
                 continue
-            fm, body = parsed
-            out.append({"id": hit.slug, "text": body, "protected": bool(fm.get("core")),
+            out.append({"id": hit.slug, "text": body, "protected": bool(projected.get(hit.path, {}).get("core")),
                         "meta": {"description": hit.description, "relevance": round(hit.relevance, 4)}})
         return out
 

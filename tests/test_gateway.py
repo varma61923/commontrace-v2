@@ -327,6 +327,28 @@ def test_store_mode_ranks_this_stores_lessons_and_randomizes_them(root):
     assert "suppression list" in r["deliver"][0]["text"] if r["deliver"] else True
 
 
+def test_store_mode_reuses_the_ranking_index_until_a_lesson_changes(root, monkeypatch):
+    from commontrace import frontmatter, retrieval
+    _store_with_lesson(root)
+    _start_experiment(root)
+    g = gateway.Gateway(root, token=TOKEN)
+    builds = []
+    real = retrieval._build_index
+    monkeypatch.setattr(retrieval, "_build_index", lambda *a: (builds.append(1), real(*a))[1])
+    query = "customer password reset email never arrived"
+    for n in range(5):
+        r = call(g, "POST", "/v1/recall", {"occasion_id": f"ix-{n}", "query": query})[1]
+    assert len(builds) == 1                                         # one build, not one per recall
+    path = os.path.join(paths.lessons_dir(root), "lesson_check_suppression.md")
+    fm, body = frontmatter.read(path)
+    frontmatter.write(path, {**fm, "core": True}, body + "\nEdited.\n")
+    for n in range(12):
+        r = call(g, "POST", "/v1/recall", {"occasion_id": f"core-{n}", "query": query})[1]
+        assert [i["id"] for i in r["deliver"]] == ["lesson_check_suppression"]   # core: never withheld
+        assert r["deliver"][0]["text"] == frontmatter.read(path)[1]              # the body as read fresh
+    assert len(builds) == 2                                         # the edit was noticed exactly once
+
+
 def test_status_memories_occasions_and_agents_reflect_what_happened(gw, root):
     for n in range(30):
         agent = "arm-1" if n % 2 else "arm-2"

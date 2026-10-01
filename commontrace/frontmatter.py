@@ -162,6 +162,23 @@ def read(path: str) -> tuple[dict[str, Any], str]:
     return fm, body
 
 
+def read_body(path: str) -> str:
+    """The body `read` would return, without parsing the frontmatter: for a caller that already holds the parsed
+    frontmatter (commontrace/lesson_cache.py) and only needs the text, which is most of a recall's cost otherwise."""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            content = fh.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FrontmatterError(f"cannot read {path}: {exc}") from exc
+    if not content.startswith("---"):
+        return content
+    first = _DELIM_RE.search(content)
+    second = _DELIM_RE.search(content, first.end()) if first else None
+    if second is None:
+        return content
+    return content[second.end():].lstrip("\n")
+
+
 _DIR_MODE_CACHE: dict[str, int] = {}
 
 

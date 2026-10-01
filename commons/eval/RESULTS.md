@@ -373,3 +373,35 @@ the shipped retriever stays.
 
 Reproduce: `python commons/eval/hybrid_fusion.py` (needs the `attention`
 extra and the cached model; skips cleanly without them).
+
+## Addendum: the shipped ranker against the standard reference retrievers
+
+`commons/eval/retriever_baselines.py` scores the shipped lexical ranker against textbook Okapi BM25
+(k1=1.2, b=0.75), TF-IDF cosine, and two small local embedding models, each alone and fused with the
+shipped ranker by RRF. Every arm sees the same lesson text. Measured 2026-10-01 on one CPU machine:
+
+| Held-out commons probes (46) | recall@1 | recall@3 | MRR |
+|---|---:|---:|---:|
+| shipped lexical | 91.3% | 91.3% | 0.913 |
+| Okapi BM25 | 89.1% | 89.1% | 0.908 |
+| TF-IDF cosine | 87.0% | 89.1% | 0.895 |
+| dense all-MiniLM-L6-v2 (the `attention` extra's model) | **95.7%** | **100.0%** | **0.975** |
+| dense bge-small-en-v1.5 | 95.7% | 95.7% | 0.963 |
+| RRF shipped + all-MiniLM-L6-v2 | 91.3% | 91.3% | 0.934 |
+
+On the six-field fixtures every arm scores 98.6-99.3% recall@1: that corpus tuned the shipped scorer and
+is saturated, so it can only catch a regression.
+
+What this says, and does not:
+- The shipped lexical ranker is ahead of the textbook lexical baselines by one to two probes, not more.
+- Dense retrieval leads lexical by two probes at rank 1 and four at rank 3. At n=46 that is suggestive,
+  not established, and the fusion addendum above found the lead reverses on probes-v2. The product
+  already uses the leading model when the `attention` extra is installed (commontrace/semantic.py).
+- Fusion does not beat the dense arm here either, consistent with the addendum above.
+- Latency in the script's own output is per call with no reused index: the shipped ranker builds its
+  corpus index each call there, which the CLI, MCP server and gateway avoid through the lesson cache.
+  A dense arm costs a model in memory and ~20-45 ms of CPU per query.
+- No other product was run. A comparison with a named memory product needs its system and an agreed
+  task set, and none is claimed here.
+
+`tests/test_retriever_baselines.py` fails if the shipped ranker falls below BM25 on the held-out probes.
