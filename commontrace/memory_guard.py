@@ -305,6 +305,21 @@ def scan_text(text: str, field: str = "") -> list[Finding]:
                 m.start(), m.end(), _redact(text, m.start(), m.end()),
             ))
 
+    findings.extend(scan_injection(text, field))
+    return findings
+
+
+def scan_injection(text: str, field: str = "") -> list[Finding]:
+    """Only the prompt-injection findings in one string: the phrase patterns and the
+    hidden/bidi characters, exactly what `scan_text` reports for that category.
+
+    For callers on a latency budget that need nothing else (the gateway's per-recall
+    screen): running every secret and PII pattern to discard all but these was
+    nearly half of a recall.
+    """
+    if not text:
+        return []
+    findings: list[Finding] = []
     for label, pattern in _INJECTION_PHRASE_PATTERNS:
         for m in pattern.finditer(text):
             findings.append(Finding(
@@ -317,7 +332,6 @@ def scan_text(text: str, field: str = "") -> list[Finding]:
             "hidden/bidi-override Unicode character", field,
             m.start(), m.end(), _redact(text, m.start(), m.end()),
         ))
-
     return findings
 
 

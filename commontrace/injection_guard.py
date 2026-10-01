@@ -19,6 +19,8 @@ active lesson no longer reaches the agent unexamined.
 """
 from __future__ import annotations
 
+import hashlib
+import threading
 from typing import Iterable
 
 from commontrace import memory_guard
@@ -35,14 +37,42 @@ NOTICE = (
 )
 
 
+#: Screening results by content hash. The same lesson text is screened on every
+#: recall, so on a control loop nearly every call is a hit. Bounded; holds labels,
+#: never the text itself.
+_CACHE_LIMIT = 8192
+_labels_by_digest: dict[str, tuple[str, ...]] = {}
+_cache_lock = threading.Lock()
+
+
+def _labels_for(text: str) -> tuple[str, ...]:
+    if not text:
+        return ()
+    digest = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).hexdigest()
+    cached = _labels_by_digest.get(digest)
+    if cached is not None:
+        return cached
+    seen: list[str] = []
+    for finding in memory_guard.scan_injection(text):
+        if finding.label not in seen:
+            seen.append(finding.label)
+    labels = tuple(seen)
+    with _cache_lock:
+        if len(_labels_by_digest) >= _CACHE_LIMIT:
+            _labels_by_digest.clear()
+        _labels_by_digest[digest] = labels
+    return labels
+
+
 def injection_labels(fields: dict) -> list[str]:
     """Labels of the injection patterns found in `fields`, deduplicated and
     in first-seen order. Empty means nothing tripped."""
-    report = memory_guard.scan_fields(fields)
     seen: list[str] = []
-    for finding in report.findings:
-        if finding.category == memory_guard.CATEGORY_INJECTION and finding.label not in seen:
-            seen.append(finding.label)
+    for value in fields.values():
+        if isinstance(value, str):
+            for label in _labels_for(value):
+                if label not in seen:
+                    seen.append(label)
     return seen
 
 
