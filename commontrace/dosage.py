@@ -239,8 +239,10 @@ class Dose:
     def chars_available(self) -> int:
         return max(0, self.budget.max_chars - self.chars_used)
 
-    def gauge(self) -> str:
-        """One line an operator or an agent can read to see the cost."""
+    def gauge(self, also_left_out: int = 0) -> str:
+        """One line an operator or an agent can read to see the cost.
+        `also_left_out` counts candidates a caller never offered because the
+        count budget was already full (they could not have been admitted)."""
         pct = (
             (self.chars_used / self.budget.max_chars * 100)
             if self.budget.max_chars else 0.0
@@ -249,8 +251,8 @@ class Dose:
             f"{len(self.admitted)}/{self.budget.max_lessons} lessons, "
             f"{self.chars_used:,}/{self.budget.max_chars:,} chars ({pct:.0f}%)"
         )
-        if self.dropped:
-            line += f", {len(self.dropped)} not injected"
+        if self.dropped or also_left_out:
+            line += f", {len(self.dropped) + also_left_out} not injected"
         return line
 
 

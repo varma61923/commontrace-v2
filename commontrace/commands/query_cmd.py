@@ -256,34 +256,77 @@ def _withdraw_from_semantic(
     return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
 
 
-def _screen_semantic(stdout: str, root: str) -> str:
-    """The semantic arm's output without lessons that fail the injection screen.
+def _dose_semantic(
+    stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig,
+) -> tuple[str, list[str], str]:
+    """The semantic-only arm's output under this store's injection budget:
+    (output to print, slugs eligible for arms in rank order, note on what was
+    not injected or "").
 
-    The lexical and fused paths screen inside `_apply_dosage`; the semantic-only arm is a separate script
-    that ranks from its index and never reads the lesson text, so a lesson edited after approval was listed
-    to the agent, and under `--experiment` given an arm. Same screen and the same stderr notice as the other
-    paths, named by pattern, never by text."""
-    ldir = paths.lessons_dir(root)
-    verdicts: dict[str, bool] = {}
-    lines = []
-    for line in stdout.splitlines():
+    The lexical and fused paths always applied the budget (`_apply_dosage`)
+    and the screen; this arm applied only the screen. Its script appends
+    EVERY active lesson at or above the importance floor to its top-k (its
+    safety override), so a store with many such lessons handed an agent all
+    of them -- 3,928 lessons for one query on a 10,000-lesson store, each
+    read and screened here first (about 5 s). Now the same allocation as the
+    other paths: core lessons first, then the arm's order (its top-k, then
+    the override), until the budget is full, and every lesson left out
+    named. Admission ends once the count budget is full, so candidates past
+    that point cannot change the dose: they are read in growing windows
+    and the rest are reported by count, never read.
+
+    A ranked slug with no lesson file (an index that names a deleted lesson)
+    has no text to screen or measure, and passes through as before.
+    """
+    lines = stdout.splitlines()
+    order = list(dict.fromkeys(_slugs_from_semantic_output(stdout)))
+    active = _iter_active_lessons(root, agent_type)
+    on_disk = {str(fm.get("name", "")) for _p, fm in active}
+    cosine: dict[str, float] = {}
+    for line in lines:
         slug = _slug_of_semantic_line(line)
-        if slug is not None:
-            if slug not in verdicts:
-                # A slug with no file has no text to carry an injection, and is passed through unchanged.
-                path = os.path.join(ldir, f"{slug}.md")
-                parsed = read_or_warn(frontmatter.read, path) if os.path.isfile(path) else ({}, "")
-                labels = [] if parsed is None else injection_guard.injection_labels({
-                    "description": parsed[0].get("description"), "applies_when": parsed[0].get("applies_when"),
-                    "do_not_apply_when": parsed[0].get("do_not_apply_when"), "body": parsed[1]})
-                verdicts[slug] = parsed is not None and not labels
-                if labels:
-                    print(f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
-                          file=sys.stderr)
-            if not verdicts[slug]:
-                continue
-        lines.append(line)
-    return "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
+        if slug is not None and slug not in cosine:
+            match = re.search(r"cosine=([-0-9.]+)", line)
+            cosine[slug] = float(match.group(1)) if match else 0.0
+    ranked = [(slug, cosine.get(slug, 0.0)) for slug in order if slug in on_disk]
+    passthrough = {slug for slug in order if slug not in on_disk}
+
+    window = max(2 * config.max_lessons, config.max_lessons + 8)
+    while True:
+        considered, dose = _apply_dosage(active, ranked[:window], config)
+        if window >= len(ranked) or len(dose.admitted) >= config.max_lessons:
+            break
+        window *= 2
+    unread = len(ranked) - min(window, len(ranked))
+
+    admitted = {c.slug: c for c in dose.admitted}
+    out = [
+        line for line in lines
+        if (slug := _slug_of_semantic_line(line)) is None or slug in admitted or slug in passthrough
+    ]
+    listed = set(order)
+    for c in dose.admitted:
+        if c.slug not in listed:
+            # A core lesson admitted alongside the ranked set rather than
+            # because it matched -- see commontrace/dosage.py.
+            out.append(f"{c.slug} | core | importance={c.importance}")
+    text = "\n".join(out) + ("\n" if out and (stdout.endswith("\n") or not stdout) else "")
+    eligible = [
+        slug for slug in order
+        if slug in passthrough or (slug in admitted and not admitted[slug].core)
+    ]
+    dropped = [f"{d.slug} ({d.reason})" for d in dose.dropped]
+    if unread:
+        dropped.append(f"{unread} more ({dosage.REASON_COUNT})")
+    note = ""
+    if dropped:
+        # Never silent: an agent given ten of 3,928 lessons and told nothing
+        # acts on the others' absence as though it were the fleet's position.
+        note = (
+            "\n[commontrace] not injected: " + ", ".join(dropped)
+            + f"\n[commontrace] budget: {dose.gauge(unread)}\n"
+        )
+    return text, eligible, note
 
 
 def _apply_dosage(
@@ -1105,9 +1148,9 @@ def run(args: argparse.Namespace) -> int:
         if rc != 0:
             sys.stdout.write(stdout)
             return rc
-        stdout = _screen_semantic(stdout, root)
         stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-        sys.stdout.write(stdout)
+        stdout, _eligible, note = _dose_semantic(stdout, root, args.agent_type, config)
+        sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
         return 0
 
@@ -1132,13 +1175,12 @@ def run(args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stdout.write(stdout)
         return rc
-    # Before the arms are assigned: a quarantined or withdrawn lesson is never eligible.
-    stdout = _screen_semantic(stdout, root)
+    # Before the arms are assigned: a quarantined or withdrawn lesson, or one
+    # the budget leaves out, is never administered and so never eligible.
     stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-
-    slugs = _slugs_from_semantic_output(stdout)
+    stdout, slugs, note = _dose_semantic(stdout, root, args.agent_type, config)
     if not slugs:
-        sys.stdout.write(stdout)
+        sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
         print(
             "[commontrace] --experiment: the semantic retriever returned no lessons, "
@@ -1157,6 +1199,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"{slug} | [WITHHELD - holdout]")
         else:
             print(line)
+    if note:
+        sys.stdout.write(note)
     _print_withdrawn(withdrawn, harmful)
     print(
         f"\n[commontrace] experiment: {len(slugs) - len(withheld)} injected, "
