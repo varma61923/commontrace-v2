@@ -2,6 +2,7 @@
 `commontrace distill` / `lesson approve` / `lesson reject` CLI commands --
 the generic Curator/Validator pipeline for any agent_type, not just the
 code-review profile's Omega/Lambda subagents."""
+import json
 import os
 
 import pytest
@@ -542,3 +543,114 @@ class TestTheProposedDescriptionIsReadable:
 
         description = distill.propose_description(self._cluster(["", ""]))
         assert "repeated pattern" in description
+
+
+class TestDistillWithLLM:
+    """`--draft` never changes what governs activation -- `lesson approve`'s
+    scaffolding/content-safety/redundancy gate is untouched. It only changes
+    whether the candidate STARTS as a real attempt or a 'TODO: ...'
+    placeholder, and falls back to exactly the pre-`--draft` behavior
+    whenever no usable draft comes back."""
+
+    _GOOD = {
+        "rule": "Point the customer to the canonical refund policy page.",
+        "applies_when": "a customer is confused about the refund timeline",
+        "do_not_apply_when": "the customer already has the policy link",
+        "evidence": [],
+    }
+
+    def _repeated_pattern(self, store):
+        main(["init", "--agent-type", "support", "--dest", str(store)])
+        for i in range(3):
+            _capture(
+                store, f"Refund confusion {i}",
+                "customer confused about refund timeline contradictory docs escalated",
+                "point to canonical refund policy page",
+            )
+
+    def test_llm_assisted_candidate_fills_in_the_rule(self, store, monkeypatch, capsys):
+        from commontrace import llm
+
+        self._repeated_pattern(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),
+        )
+        capsys.readouterr()
+        assert main(["distill", "--draft", "--dest", str(store)]) == 0
+        out = capsys.readouterr().out
+        assert "[LLM-assisted]" in out
+
+        lessons_dir = store / "memory" / "lessons"
+        candidates = [f for f in os.listdir(lessons_dir) if f.startswith("lesson_candidate_")]
+        fm, body = frontmatter.read(str(lessons_dir / candidates[0]))
+        assert fm["applies_when"] == self._GOOD["applies_when"]
+        assert fm["do_not_apply_when"] == self._GOOD["do_not_apply_when"]
+        assert self._GOOD["rule"] in body
+        assert "llm_draft" in fm
+        assert fm["llm_draft"]["provider"] == "anthropic"
+
+    def test_without_draft_flag_the_llm_is_never_called(self, store, monkeypatch):
+        from commontrace import llm
+
+        self._repeated_pattern(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+
+        def boom(cfg, prompt):
+            raise AssertionError("the LLM must not be called without --draft")
+
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        assert main(["distill", "--dest", str(store)]) == 0
+
+    def test_falls_back_to_todo_scaffold_when_no_llm_is_configured(self, store, monkeypatch, capsys):
+        self._repeated_pattern(store)
+        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        capsys.readouterr()
+        assert main(["distill", "--draft", "--dest", str(store)]) == 0
+        assert "falling back to the template scaffold" in capsys.readouterr().err
+
+        lessons_dir = store / "memory" / "lessons"
+        candidates = [f for f in os.listdir(lessons_dir) if f.startswith("lesson_candidate_")]
+        fm, body = frontmatter.read(str(lessons_dir / candidates[0]))
+        assert "llm_draft" not in fm
+        assert "TODO" in body
+
+    def test_an_llm_drafted_candidate_still_passes_schema_validation(self, store, monkeypatch, capsys):
+        from commontrace import llm
+
+        self._repeated_pattern(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),
+        )
+        capsys.readouterr()
+        main(["distill", "--draft", "--dest", str(store)])
+        capsys.readouterr()
+        assert main(["lesson", "validate", "--dest", str(store)]) == 0
+
+    def test_an_llm_drafted_candidate_still_needs_how_to_apply_filled_in(self, store, monkeypatch, capsys):
+        """`--draft` only asks the model for rule/applies_when/
+        do_not_apply_when/evidence -- '## How to apply' and
+        '## Counter-examples' stay TODO regardless, so the approval gate
+        still refuses an LLM-drafted candidate exactly as it refuses a
+        heuristic one, until a human finishes it (or passes --force)."""
+        from commontrace import llm
+
+        self._repeated_pattern(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda cfg, prompt: (json.dumps(dict(self._GOOD, evidence=[])), {}),
+        )
+        capsys.readouterr()
+        main(["distill", "--draft", "--dest", str(store)])
+        lessons_dir = store / "memory" / "lessons"
+        candidates = [f for f in os.listdir(lessons_dir) if f.startswith("lesson_candidate_")]
+        slug = candidates[0].removesuffix(".md")
+        capsys.readouterr()
+        rc = main(["lesson", "approve", slug, "--dest", str(store)])
+        assert rc == 1
+        assert "unedited scaffolding" in capsys.readouterr().err
+        assert main(["lesson", "approve", slug, "--force", "--dest", str(store)]) == 0
