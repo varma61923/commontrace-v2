@@ -11,6 +11,7 @@ from commontrace import (
     approval,
     evidence_io,
     frontmatter,
+    holdout_io,
     lesson_io,
     memory_guard,
     paths,
@@ -130,6 +131,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     srw.add_argument("slug")
     srw.add_argument("--dest", default=None)
     srw.set_defaults(func=run_suggest_rewrite)
+
+    aa = sub.add_parser(
+        "auto-approve",
+        help="Activate LLM-drafted review lessons that pass every approval gate. Requires "
+             "`auto_approve_drafts: true` in memory/approval-policy.yaml and a started holdout.",
+    )
+    aa.add_argument("--dest", default=None)
+    aa.set_defaults(func=run_auto_approve)
 
     hist = sub.add_parser(
         "history",
@@ -348,6 +357,8 @@ def run_approve(args: argparse.Namespace) -> int:
     Validator call to this command, never automatically by whatever
     proposed it (e.g. `commontrace distill`)."""
     root = paths.resolve_root(args.dest)
+    # `lesson auto-approve` passes its own approver; every gate below is the same.
+    approver = getattr(args, "approver", None) or _actor()
     path = _resolve_lesson_path(root, args.slug)
     if path is None:
         print(f"[commontrace] no lesson found for slug '{args.slug}'.", file=sys.stderr)
@@ -393,7 +404,7 @@ def run_approve(args: argparse.Namespace) -> int:
         try:
             policy = approval.load_policy(root)
             approval.check(
-                policy, slug=args.slug, approver=_actor(),
+                policy, slug=args.slug, approver=approver,
                 authors=approval.authors_of(root, args.slug),
             )
         except (approval.ApprovalDenied, approval.PolicyError) as exc:
@@ -453,9 +464,10 @@ def run_approve(args: argparse.Namespace) -> int:
             return 1
 
         fm["status"] = "active"
+        fm.update(getattr(args, "extra_frontmatter", None) or {})
         if args.rationale:
             body = _append_body_note(body, "Approved", args.rationale)
-        lesson_io.write_lesson(path, fm, body, root=root, actor=_actor(),
+        lesson_io.write_lesson(path, fm, body, root=root, actor=approver,
                                reason=args.rationale or "approved")
     if unfilled:
         print(
@@ -484,6 +496,57 @@ def run_approve(args: argparse.Namespace) -> int:
     # somebody chose. Six approvals over an afternoon are usually one
     # deployment, and only the operator knows where that boundary is.
     print("  `commontrace release cut` records the active set as a rollback point.")
+    return 0
+
+
+def run_auto_approve(args: argparse.Namespace) -> int:
+    """Approve every review-status lesson carrying `llm_draft` provenance,
+    through run_approve's own gates, as `approval.AUTO_APPROVER`. Each one is
+    stamped `auto_approved: true`, which keeps `experiment --configure` from
+    stopping the holdout while it is active."""
+    root = paths.resolve_root(args.dest)
+    try:
+        policy = approval.load_policy(root)
+    except approval.PolicyError as exc:
+        print(f"[commontrace] {exc}", file=sys.stderr)
+        return 1
+    if not policy.auto_approve_drafts:
+        print(
+            "[commontrace] auto-approval is off. Set `auto_approve_drafts: true` in "
+            f"{approval.policy_path(root)} to allow it.",
+            file=sys.stderr,
+        )
+        return 1
+    config = holdout_io.load_config(root)
+    if not config.started_at or config.rate < approval.AUTO_APPROVE_MIN_HOLDOUT:
+        print(
+            "[commontrace] refusing: auto-approval needs a started holdout of at least "
+            f"{approval.AUTO_APPROVE_MIN_HOLDOUT:.0%}, so every lesson it activates is measured.\n"
+            "  Start one: commontrace experiment --configure --rate 0.1",
+            file=sys.stderr,
+        )
+        return 1
+
+    approved: list[str] = []
+    refused: list[str] = []
+    for path in _iter_lesson_paths(root, None):
+        parsed = read_or_warn(frontmatter.read, path)
+        if parsed is None:
+            continue
+        fm, _body = parsed
+        if fm.get("status") != "review" or "llm_draft" not in fm:
+            continue
+        slug = str(fm.get("name") or "")
+        rc = run_approve(argparse.Namespace(
+            slug=slug, force=False, dest=args.dest,
+            rationale=f"auto-approved with a {config.rate:.0%} holdout running",
+            approver=approval.AUTO_APPROVER, extra_frontmatter={"auto_approved": True},
+        ))
+        (approved if rc == 0 else refused).append(slug)
+    print(
+        f"[commontrace] auto-approve: {len(approved)} activated, "
+        f"{len(refused)} refused by the approval gates."
+    )
     return 0
 
 
