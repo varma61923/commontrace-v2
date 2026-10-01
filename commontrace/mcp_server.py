@@ -88,6 +88,7 @@ from commontrace import (
     frontmatter,
     harm,
     holdout_io,
+    injection_guard,
     lesson_cache,
     lesson_io,
     mcp_tools,
@@ -267,7 +268,7 @@ def _lesson_path(root: str, slug: str) -> str:
     return path
 
 
-def _apply_dosage(matched, active, config):
+def _apply_dosage(matched, active, config, quarantined=None):
     """Admit core lessons and enforce the budget, returning the wire items.
 
     Core lessons are loaded from the whole active set rather than from the
@@ -293,6 +294,13 @@ def _apply_dosage(matched, active, config):
             continue
         item = _lesson_wire(fm_full, body, include_body=True)
         item["core"] = True
+        # Screened here too: a core lesson is injected on every occasion, so
+        # it is the most valuable place to hide an instruction.
+        clean, bad = injection_guard.screen([item])
+        if bad:
+            if quarantined is not None:
+                quarantined.extend(bad)
+            continue
         core_items.append(item)
 
     # A core lesson that also matched keeps its core priority rather than
@@ -790,6 +798,7 @@ def build_server(root: str, *, allow_approval: bool = True):
             to_read = [(r.slug, r.path, r.relevance) for r in ranked]
 
         matched_items = []
+        quarantined: list[dict] = []
         for slug, path, relevance in to_read:
             # Re-read for the BODY. `_iter_active_lessons` returns frontmatter
             # only, and the body is where the rule actually is -- returning a
@@ -800,6 +809,12 @@ def build_server(root: str, *, allow_approval: bool = True):
             except Exception:  # noqa: BLE001
                 continue
             item = _lesson_wire(fm, body, include_body=True)
+            # Quarantined before dosage and before arms are assigned: a lesson
+            # the agent is never handed must not be logged as treated.
+            _clean, _bad = injection_guard.screen([item])
+            if _bad:
+                quarantined.extend(_bad)
+                continue
             lexical_hit = lexical_by_slug.get(slug)
             if fused is None and reranked is None:
                 item["score"] = round(lexical_hit.score, 3)
@@ -826,7 +841,7 @@ def build_server(root: str, *, allow_approval: bool = True):
         # worse the tighter the budget is. Only lessons that will actually be
         # handed over are eligible to be randomized.
         admitted_items, core_items, dose = _apply_dosage(
-            matched_items, active, retrieval_config
+            matched_items, active, retrieval_config, quarantined
         )
 
         withheld: set[str] = set()
@@ -900,7 +915,11 @@ def build_server(root: str, *, allow_approval: bool = True):
             "n_active": len(active),
             "occasion_id": occasion_id or None,
             "budget": dose.gauge(),
+            "notice": injection_guard.NOTICE,
         }
+        if quarantined:
+            # Named, never silent, and by pattern rather than by text.
+            result["quarantined"] = quarantined
         if retrieval_config.fusion != retrieval_io.FUSION_NONE and fused is None and active:
             # Configured but not run -- said out loud, because the store asked
             # for a DIFFERENT eligibility rule. The assignment records the
@@ -955,7 +974,7 @@ def build_server(root: str, *, allow_approval: bool = True):
                 "nothing causal can be measured. An operator starts one with "
                 "`commontrace experiment --configure --rate <r>`."
             )
-        if not injected and not held and not withdrawn_items:
+        if not injected and not held and not withdrawn_items and not quarantined:
             result["note"] = (
                 "No active lesson matched. That is a real answer -- proceed on your own "
                 "judgement, then `capture` what happened so the gap can become a lesson."

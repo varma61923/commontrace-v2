@@ -14,6 +14,7 @@ from commontrace import (
     frontmatter,
     harm,
     holdout_io,
+    injection_guard,
     lesson_cache,
     paths,
     recency,
@@ -306,6 +307,18 @@ def _apply_dosage(
         if parsed is None:
             return
         fm, body = parsed
+        # Same screen the MCP surface applies, before the lesson can be
+        # admitted or assigned an arm. Named on stderr by pattern, never by text.
+        labels = injection_guard.injection_labels({
+            "description": fm.get("description"), "applies_when": fm.get("applies_when"),
+            "do_not_apply_when": fm.get("do_not_apply_when"), "body": body,
+        })
+        if labels:
+            print(
+                f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
+                file=sys.stderr,
+            )
+            return
         considered[slug] = {
             "slug": slug, "path": path, "relevance": relevance,
             "core": slug in core_slugs_all, "fm": fm, "body": body,
