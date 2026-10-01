@@ -69,7 +69,7 @@ from starlette.responses import HTMLResponse, Response
 
 from hub import audit as audit_module
 from hub import auth, crud, events, manage, plans, rbac, retention, scopes
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import (
@@ -1572,7 +1572,7 @@ def add_admin_routes(
     if not admin_token:
         raise ValueError("add_admin_routes requires a non-empty admin token")
 
-    limiter = rate_limiter or RateLimiter(per_minute=120, burst=30)
+    limiter = rate_limiter or make_named_limiter(config, 120, 30, "admin_auth")
 
     async def _guard(request: Request) -> Response | None:
         # Rate limited BEFORE the credential check, keyed by client address,

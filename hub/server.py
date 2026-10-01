@@ -38,6 +38,7 @@ from hub.abuse import (
     RateLimiter,
     TraceRejected,
     make_auth_rate_limiter,
+    make_named_limiter,
     make_rate_limiter,
     make_read_rate_limiter,
     make_scim_auth_rate_limiter,
@@ -1737,6 +1738,7 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
         add_signup_routes(
             inner_app, session_factory,
             trusted_proxy_hops=config.trusted_proxy_hops, console_path=CONSOLE_PATH,
+            config=config,
         )
 
     # The JSON surface the CommonTrace Claude Code plugin speaks -- opt-in,
@@ -1793,8 +1795,8 @@ def build_app(config: HubConfig, session_factory: async_sessionmaker) -> Starlet
     add_health_routes(
         inner_app,
         session_factory,
-        readyz_rate_limiter=RateLimiter(
-            per_minute=config.readyz_rate_limit_per_minute, burst=config.readyz_rate_limit_burst
+        readyz_rate_limiter=make_named_limiter(
+            config, config.readyz_rate_limit_per_minute, config.readyz_rate_limit_burst, "readyz"
         ),
         trusted_proxy_hops=config.trusted_proxy_hops,
         metrics_token=config.metrics_token,

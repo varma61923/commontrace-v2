@@ -355,3 +355,82 @@ class TestLooksLikeJwt:
         assert not sso.looks_like_jwt("..")
         assert not sso.looks_like_jwt("a.b")
         assert not sso.looks_like_jwt("")
+
+
+class TestKeyRotation:
+    """An IdP rotating its signing key must not lock every SSO user out until
+    the cached JWKS expires, and an attacker naming random `kid`s must not
+    turn every request into a fetch against the IdP."""
+
+    def _setup(self, clock):
+        old_key, old_pub = _keypair()
+        new_key, new_pub = _keypair()
+        published = {"keys": [_jwk(old_pub, "old")]}
+        fetches = []
+
+        def fetch(uri):
+            fetches.append(uri)
+            return json.loads(json.dumps(published))
+
+        cache = sso.JWKSCache(fetch, clock=clock)
+        provider = sso.IdentityProvider(
+            issuer=ISSUER, audience=AUDIENCE, jwks_uri="https://idp/jwks.json"
+        )
+        return old_key, new_key, new_pub, published, fetches, cache, provider
+
+    def test_a_token_signed_with_a_freshly_rotated_key_verifies(self):
+        now = [0.0]
+        old_key, new_key, new_pub, published, fetches, cache, provider = self._setup(lambda: now[0])
+        assert sso.verify_bearer_token(_token(old_key, "old"), provider, jwks_cache=cache)
+        published["keys"].append(_jwk(new_pub, "new"))   # the IdP rotates
+        now[0] = sso.UNKNOWN_KID_REFETCH_SECONDS + 1     # well inside the 1h TTL
+        claims = sso.verify_bearer_token(_token(new_key, "new"), provider, jwks_cache=cache)
+        assert claims.subject == "user-1"
+        assert len(fetches) == 2
+
+    def test_unknown_kids_refetch_at_most_once_per_interval(self):
+        now = [0.0]
+        old_key, new_key, _pub, _published, fetches, cache, provider = self._setup(lambda: now[0])
+        sso.verify_bearer_token(_token(old_key, "old"), provider, jwks_cache=cache)
+        for i in range(50):
+            with pytest.raises(sso.IdentityError):
+                sso.verify_bearer_token(_token(new_key, f"bogus-{i}"), provider, jwks_cache=cache)
+        assert len(fetches) == 1  # the initial fetch only: still inside the interval
+        now[0] = sso.UNKNOWN_KID_REFETCH_SECONDS + 1
+        for i in range(50):
+            with pytest.raises(sso.IdentityError):
+                sso.verify_bearer_token(_token(new_key, f"bogus2-{i}"), provider, jwks_cache=cache)
+        assert len(fetches) == 2  # one refetch for the whole burst
+
+    def test_a_static_jwks_is_never_refetched(self, signing_key, provider):
+        key, _pub = signing_key
+        with pytest.raises(sso.IdentityError, match="matches kid"):
+            sso.verify_bearer_token(_token(key, "nope"), provider)
+
+
+class TestTheJwkMustFitTheTokensAlgorithm:
+    def test_a_jwk_declaring_a_different_alg_is_refused(self, signing_key):
+        key, pub = signing_key
+        provider = _provider({"keys": [_jwk(pub, "k1", alg="RS512")]})
+        with pytest.raises(sso.IdentityError, match="published for"):
+            sso.verify_bearer_token(_token(key, "k1", alg="RS256"), provider)
+
+    def test_an_encryption_key_is_not_a_signing_key(self, signing_key):
+        key, pub = signing_key
+        jwk = _jwk(pub, "k1")
+        jwk["use"] = "enc"
+        with pytest.raises(sso.IdentityError, match="not a signing key"):
+            sso.verify_bearer_token(_token(key, "k1"), _provider({"keys": [jwk]}))
+
+    def test_an_rsa_token_against_a_non_rsa_jwk_is_refused(self, signing_key):
+        key, _pub = signing_key
+        oct_jwk = {"kid": "k1", "kty": "oct", "k": "c2VjcmV0", "use": "sig"}
+        with pytest.raises(sso.IdentityError, match="kty"):
+            sso.verify_bearer_token(_token(key, "k1"), _provider({"keys": [oct_jwk]}))
+
+    def test_a_jwk_without_alg_still_verifies_with_the_tokens_alg(self, signing_key):
+        key, pub = signing_key
+        jwk = _jwk(pub, "k1")
+        del jwk["alg"]
+        claims = sso.verify_bearer_token(_token(key, "k1", alg="RS384"), _provider({"keys": [jwk]}))
+        assert claims.subject == "user-1"

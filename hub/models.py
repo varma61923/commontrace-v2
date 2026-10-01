@@ -132,6 +132,13 @@ class Organization(Base):
     # the property this whole mechanism exists to guarantee: this value
     # equals a real `count(*)` after every mutation path, every time.
     trace_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Every Proof share link carries the generation it was minted under
+    # (hub/console.py:issue_share_token); bumping this ends every link minted
+    # before, at once. Without it a forwarded link stayed live for its whole
+    # 14 days however widely it travelled.
+    share_generation: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     # --- Randomized holdout configuration ------------------------------
     #

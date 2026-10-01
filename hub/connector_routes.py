@@ -13,7 +13,7 @@ import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.connectors import service
 
@@ -26,7 +26,9 @@ def add_connector_routes(app, session_factory, *, config: HubConfig, trusted_pro
     # The auth limiter, not the write limiter: this endpoint is reachable by
     # anyone who knows its URL, and what it spends before a signature check is
     # an HMAC and a primary-key lookup.
-    limiter = RateLimiter(per_minute=config.auth_attempts_per_minute, burst=config.auth_attempts_burst)
+    limiter = make_named_limiter(
+        config, config.auth_attempts_per_minute, config.auth_attempts_burst, "connector_auth"
+    )
     cipher = config.cipher()
 
     async def events(request: Request) -> Response:

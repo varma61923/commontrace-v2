@@ -77,6 +77,13 @@ DEFAULT_JWKS_TTL_SECONDS = 3600
 #: `exp`/`iat`/`nbf`. Zero would make ordinary NTP drift an outage.
 DEFAULT_CLOCK_SKEW_SECONDS = 60
 
+#: The fastest a token naming an unknown `kid` can force a JWKS refetch,
+#: per JWKS URI (JWKSCache.refresh_for_unknown_kid).
+UNKNOWN_KID_REFETCH_SECONDS = 60
+
+#: Which JWK key type each allowed algorithm family requires.
+_KTY_FOR_ALG_PREFIX = {"RS": "RSA", "ES": "EC"}
+
 
 class IdentityError(Exception):
     """A bearer token could not be verified as issued by a trusted IdP."""
@@ -141,6 +148,27 @@ class JWKSCache:
         self._cached[jwks_uri] = (now, document)
         return document
 
+    def refresh_for_unknown_kid(self, jwks_uri: str) -> dict | None:
+        """Refetch now because a token named a `kid` the cached document
+        lacks -- or return None if this URI was fetched too recently.
+
+        An IdP rotates its signing key by publishing the new key and then
+        signing with it. Until the TTL above expires, every token carrying
+        the new `kid` would fail against the cached document: an hour-long
+        SSO outage after each routine rotation. Refetching on a miss fixes
+        that, but an unthrottled refetch is a lever -- a stream of tokens
+        with random `kid`s would turn every request into a fetch against
+        the IdP. So a miss refetches at most once per
+        `UNKNOWN_KID_REFETCH_SECONDS` per URI, however many misses arrive.
+        """
+        now = self._clock()
+        cached = self._cached.get(jwks_uri)
+        if cached is not None and now - cached[0] < UNKNOWN_KID_REFETCH_SECONDS:
+            return None
+        document = self._fetch(jwks_uri)
+        self._cached[jwks_uri] = (now, document)
+        return document
+
     def invalidate(self, jwks_uri: str = "") -> None:
         """Force the next `get` to refetch. `""` clears every entry."""
         if jwks_uri:
@@ -149,7 +177,11 @@ class JWKSCache:
             self._cached.clear()
 
 
-def _key_for(jwks_document: dict, kid: str | None):
+class UnknownKid(IdentityError):
+    """No key in the JWKS document carries the token's `kid`."""
+
+
+def _key_for(jwks_document: dict, kid: str | None, alg: str = "RS256"):
     """The public key matching `kid` in a JWKS document, or raise.
 
     Never falls back to "the only key" when `kid` is absent and the
@@ -157,6 +189,13 @@ def _key_for(jwks_document: dict, kid: str | None):
     and key-confusion consequential enough, that guessing is the wrong
     default -- an IdP with more than one active key (the normal case during
     rotation) makes that guess wrong silently rather than loudly.
+
+    The key is built for `alg` -- the token's own, already allowlisted
+    algorithm -- and the JWK must agree with it: its `kty` must be the one
+    that algorithm needs, any `alg` it declares must be the same one, and a
+    key published for encryption (`use: enc`) is not a signing key. Building
+    it from the JWK's own `alg` let the document, not the allowlist, decide
+    what kind of key a signature was checked against.
     """
     keys = jwks_document.get("keys") if isinstance(jwks_document, dict) else None
     if not isinstance(keys, list):
@@ -168,11 +207,23 @@ def _key_for(jwks_document: dict, kid: str | None):
         )
     for entry in keys:
         if isinstance(entry, dict) and entry.get("kid") == kid:
+            expected_kty = _KTY_FOR_ALG_PREFIX.get(alg[:2])
+            if entry.get("kty") != expected_kty:
+                raise IdentityError(
+                    f"JWK kid={kid!r} has kty={entry.get('kty')!r}, but the token is signed "
+                    f"with {alg}, which needs kty={expected_kty!r}"
+                )
+            if "alg" in entry and entry["alg"] != alg:
+                raise IdentityError(
+                    f"JWK kid={kid!r} is published for {entry['alg']!r}, not the token's {alg!r}"
+                )
+            if entry.get("use", "sig") != "sig":
+                raise IdentityError(f"JWK kid={kid!r} is not a signing key (use={entry.get('use')!r})")
             try:
-                return jwt.algorithms.get_default_algorithms()[entry.get("alg", "RS256")].from_jwk(entry)
+                return jwt.algorithms.get_default_algorithms()[alg].from_jwk(entry)
             except Exception as exc:  # noqa: BLE001 - a malformed JWK is a verification failure
                 raise IdentityError(f"could not parse JWK for kid={kid!r}: {exc}") from None
-    raise IdentityError(f"no key in this issuer's JWKS matches kid={kid!r}")
+    raise UnknownKid(f"no key in this issuer's JWKS matches kid={kid!r}")
 
 
 def verify_bearer_token(
@@ -217,7 +268,18 @@ def verify_bearer_token(
             )
         jwks_document = jwks_cache.get(provider.jwks_uri)
 
-    key = _key_for(jwks_document, header.get("kid"))
+    try:
+        key = _key_for(jwks_document, header.get("kid"), alg)
+    except UnknownKid:
+        # Possibly a key the IdP rotated in after the cached fetch. A static
+        # JWKS has nothing to refetch; a fetched one is refreshed at most
+        # once a minute however many unknown kids arrive.
+        if provider.jwks is not None or jwks_cache is None:
+            raise
+        refreshed = jwks_cache.refresh_for_unknown_kid(provider.jwks_uri)
+        if refreshed is None:
+            raise
+        key = _key_for(refreshed, header.get("kid"), alg)
 
     try:
         payload = jwt.decode(

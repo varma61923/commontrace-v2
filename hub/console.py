@@ -91,7 +91,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from commontrace import raw_export
 from hub import alerts, audit, auth, commons, crud, events, manage, plans, rbac, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_rate_limiter, rate_limit_key
+from hub.abuse import RateLimited, TraceRejected, make_named_limiter, make_rate_limiter, rate_limit_key
 from hub.admin import (
     _CSS,
     _FORM_GUARD_SCRIPT,
@@ -211,14 +211,16 @@ def read_session(secret: str, token: str) -> dict | None:
 SHARE_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60
 
 
-def issue_share_token(secret: str, org_id: str, ttl_seconds: int = SHARE_TOKEN_TTL_SECONDS) -> str:
+def issue_share_token(
+    secret: str, org_id: str, ttl_seconds: int = SHARE_TOKEN_TTL_SECONDS, generation: int = 0
+) -> str:
     """A signed, read-only, org-scoped link to that org's OWN live Proof
     page -- mintable only by someone already holding a real session for
     that org (see the `proof_share` route below), never guessable, and
     incapable of being upgraded into a session (read_session's explicit
     `kind` check above)."""
     payload = json.dumps(
-        {"kind": "share_proof", "org": org_id, "exp": int(time.time()) + ttl_seconds},
+        {"kind": "share_proof", "org": org_id, "exp": int(time.time()) + ttl_seconds, "gen": int(generation)},
         separators=(",", ":"), sort_keys=True,
     ).encode("utf-8")
     body = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
@@ -723,25 +725,41 @@ def _value_block(worth: dict) -> str:
     return "".join(lines) + "</div>"
 
 
-def _render_share_form(share_url: str | None) -> str:
+def _render_share_revoke(is_admin: bool) -> str:
+    if not is_admin:
+        return ""
+    return (
+        f'<form method="post" action="{CONSOLE_PATH}/proof/share/revoke" class="share-box" '
+        'data-confirm="Revoke every share link issued for this report? Anyone holding one '
+        'will see Not found. This cannot be undone.">'
+        '<span class="muted">Sent a link somewhere it should not have gone?</span> '
+        '<button type="submit" class="btn">Revoke all share links</button></form>'
+    )
+
+
+_SHARE_FLASH = {"revoked": "Every share link issued before now has been revoked."}
+
+
+def _render_share_form(share_url: str | None, is_admin: bool = False) -> str:
     """Prepended to the AUTHENTICATED Proof page only -- never to the shared
     view itself, which has no session and must not be able to mint more
     links for an org it isn't signed into."""
     days = SHARE_TOKEN_TTL_SECONDS // 86400
+    revoke = _render_share_revoke(is_admin)
     if share_url:
         return (
             '<div class="share-box"><b id="share-url-label">Shareable link generated.</b><br>'
             f"Valid {days} days, always shows LIVE data (not a frozen snapshot), visible to "
             "anyone who has the link -- treat it like the report data it is."
             f'{secret_field(share_url, "share-url-label")}</div>'
-        )
+        ) + revoke
     return (
         f'<form method="post" action="{CONSOLE_PATH}/proof/share" class="share-box">'
         "<b>Share this report</b><br>"
         '<span class="muted">A read-only link to this live page -- no sign-in required to view '
         f"it, always shows current data, expires in {days} days.</span><br>"
         '<button type="submit">Generate shareable link</button></form>'
-    )
+    ) + revoke
 
 
 def _render_experiment_controls(causal: dict, is_admin: bool, *, error: str = "") -> str:
@@ -1687,7 +1705,7 @@ def add_console_routes(
     # client key exactly as the MCP auth path is: without it this is an
     # unauthenticated, unthrottled oracle for testing API keys, reachable from
     # a browser, which is a strictly easier target than the MCP transport.
-    signin_limiter = RateLimiter(per_minute=10, burst=5)
+    signin_limiter = make_named_limiter(config, 10, 5, "console_signin")
 
     # Guards hub/console.py's shared, unauthenticated Proof view (below):
     # each real causal_effects() call is genuine statistical work, not a
@@ -1695,7 +1713,7 @@ def add_console_routes(
     # this route has no session to charge a per-org read limiter against.
     # Generous on purpose -- a link embedded in a live deck or forwarded
     # thread can get a real burst of legitimate views -- but not unbounded.
-    share_view_limiter = RateLimiter(per_minute=60, burst=20)
+    share_view_limiter = make_named_limiter(config, 60, 20, "console_share_view")
 
     def _secret() -> str:
         return console_secret
@@ -1939,7 +1957,10 @@ def add_console_routes(
         # history and let anyone send a signed-in user a /proof?share_url=
         # link to a page of their own that the console then presented as
         # "Shareable link generated".
-        share_box = _render_share_form(share_url)
+        share_box = _render_share_form(share_url, is_admin)
+        flash = _SHARE_FLASH.get(request.query_params.get("done", ""), "")
+        if flash:
+            share_box = f'<p class="flash" role="status">{h(flash)}</p>' + share_box
         return _page("Proof", share_box + _render_proof(
             outcomes, causal, worth, is_admin=is_admin, experiment_error=experiment_error,
         ))
@@ -1960,9 +1981,34 @@ def add_console_routes(
         if claims is None:
             return _redirect_to_signin()
         org_id = str(claims["org"])
-        token = issue_share_token(_secret(), org_id)
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id)
+            generation = int(org.share_generation) if org is not None else 0
+        token = issue_share_token(_secret(), org_id, generation=generation)
         url = str(request.url.replace(path=f"{CONSOLE_PATH}/proof/shared/{token}", query=""))
         return await _proof_view(request, org_id, _is_admin(claims), share_url=url)
+
+    async def proof_share_revoke(request: Request) -> Response:
+        """End every share link minted so far, in one step. Admin only: a
+        link is a capability another admin may have handed to a customer on
+        purpose, and ending it is not a read-only member's call."""
+        claims = await _claims(request)
+        if claims is None:
+            return _redirect_to_signin()
+        org_id = str(claims["org"])
+        if not _is_admin(claims):
+            return await _proof_view(request, org_id, False)
+        actor = audit.actor_for_api_key(str(claims.get("key") or ""))
+        async with session_scope(session_factory) as session:
+            org = await session.get(Organization, org_id, with_for_update=True)
+            if org is not None:
+                org.share_generation = int(org.share_generation) + 1
+                await audit.record(
+                    session, actor=actor, action="revoke_share_links",
+                    org_id=org_id, target_type="organization", target_id=org_id,
+                    summary=f"share_generation={org.share_generation}",
+                )
+        return RedirectResponse(f"{CONSOLE_PATH}/proof?done=revoked", status_code=303)
 
     async def proof_shared(request: Request) -> Response:
         """The public, unauthenticated view a share link resolves to. No
@@ -1993,6 +2039,12 @@ def add_console_routes(
                 status_code=429, headers={"Retry-After": str(int(retry_after) + 1)},
             )
         async with session_scope(session_factory) as session:
+            # A revoked generation, or an org that no longer exists, reads
+            # exactly like a forged link: same 404, same reasoning as above.
+            # After the limiter, so a burst against a dead link costs no reads.
+            org = await session.get(Organization, org_id)
+            if org is None or int(claims.get("gen", 0)) != int(org.share_generation):
+                return HTMLResponse("Not found.", status_code=404)
             outcomes = await crud.fleet_outcomes(session, org_id)
             causal = await crud.causal_effects(session, org_id)
             worth = await crud.value_delivered(session, org_id)
@@ -2730,6 +2782,9 @@ def add_console_routes(
     app.add_route(CONSOLE_PATH, overview, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof", proof, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/share", refuse_cross_origin(proof_share), methods=["POST"])
+    app.add_route(
+        f"{CONSOLE_PATH}/proof/share/revoke", refuse_cross_origin(proof_share_revoke), methods=["POST"]
+    )
     app.add_route(f"{CONSOLE_PATH}/proof/shared/{{token}}", proof_shared, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/assignments.csv", assignments_csv, methods=["GET"])
     app.add_route(f"{CONSOLE_PATH}/proof/experiment/start", refuse_cross_origin(experiment_start), methods=["POST"])

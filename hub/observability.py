@@ -44,7 +44,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import RateLimiter, make_named_limiter, rate_limit_key
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
@@ -352,7 +352,7 @@ def add_health_routes(
     every few seconds) never comes close to. `trusted_proxy_hops` is
     HubConfig.trusted_proxy_hops, passed straight through to
     hub.abuse.rate_limit_key -- see that config field's docstring."""
-    readyz_rate_limiter = readyz_rate_limiter or RateLimiter(per_minute=120, burst=30)
+    readyz_rate_limiter = readyz_rate_limiter or make_named_limiter(None, 120, 30, "readyz")
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})

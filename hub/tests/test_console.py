@@ -1049,6 +1049,56 @@ class TestProofSharing:
             ]
         assert 429 in statuses
 
+    async def test_revoking_ends_every_link_minted_before(self, session_factory, org_and_key):
+        """A forwarded link used to stay live for its whole 14 days."""
+        org_id, raw_key = org_and_key
+        before = console.issue_share_token(SECRET, org_id)
+        async with _client(_app(session_factory=session_factory)) as client:
+            assert (await client.get(f"{console.CONSOLE_PATH}/proof/shared/{before}")).status_code == 200
+            await _signed_in(client, raw_key)
+            revoked = await client.post(f"{console.CONSOLE_PATH}/proof/share/revoke")
+            assert revoked.status_code == 303
+            assert revoked.headers["location"].endswith("/proof?done=revoked")
+            page = await client.get(revoked.headers["location"])
+            assert "has been revoked" in page.text
+            assert (await client.get(f"{console.CONSOLE_PATH}/proof/shared/{before}")).status_code == 404
+
+            # A link minted after the revocation carries the new generation.
+            minted = await client.post(f"{console.CONSOLE_PATH}/proof/share")
+        import re
+        token = re.search(r'value="([^"]+)"', minted.text).group(1).rsplit("/", 1)[-1]
+        async with _client(_app(session_factory=session_factory)) as anon:
+            assert (await anon.get(f"{console.CONSOLE_PATH}/proof/shared/{token}")).status_code == 200
+
+    async def test_revocation_is_audited(self, session_factory, org_and_key):
+        from sqlalchemy import select
+
+        from hub.models import AuditLogEntry
+
+        org_id, raw_key = org_and_key
+        async with _client(_app(session_factory=session_factory)) as client:
+            await _signed_in(client, raw_key)
+            await client.post(f"{console.CONSOLE_PATH}/proof/share/revoke")
+        async with session_factory() as session:
+            actions = (await session.execute(
+                select(AuditLogEntry.action).where(AuditLogEntry.org_id == org_id)
+            )).scalars().all()
+        assert "revoke_share_links" in actions
+
+    async def test_revoking_without_a_session_redirects_to_signin(self, session_factory):
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.post(f"{console.CONSOLE_PATH}/proof/share/revoke")
+        assert response.status_code == 303
+        assert response.headers["location"].endswith("/signin")
+
+    async def test_a_link_for_an_org_that_no_longer_exists_is_a_404(self, session_factory):
+        import uuid as _uuid
+
+        token = console.issue_share_token(SECRET, str(_uuid.uuid4()))
+        async with _client(_app(session_factory=session_factory)) as client:
+            response = await client.get(f"{console.CONSOLE_PATH}/proof/shared/{token}")
+        assert response.status_code == 404
+
     async def test_a_rate_limited_view_names_when_to_come_back(
         self, session_factory, org_and_key
     ):

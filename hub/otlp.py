@@ -76,7 +76,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from hub import auth, crud, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, rate_limit_key
+from hub.abuse import RateLimited, RateLimiter, TraceRejected, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.plans import EntitlementExceeded
@@ -142,9 +142,8 @@ def add_otlp_routes(
     """
     from commontrace import adapters
 
-    auth_limiter = RateLimiter(
-        per_minute=config.auth_attempts_per_minute,
-        burst=config.auth_attempts_burst,
+    auth_limiter = make_named_limiter(
+        config, config.auth_attempts_per_minute, config.auth_attempts_burst, "otlp_auth"
     )
 
     async def ingest(request: Request) -> Response:

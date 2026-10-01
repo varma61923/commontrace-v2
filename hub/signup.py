@@ -37,7 +37,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from hub import audit
-from hub.abuse import RateLimiter, rate_limit_key
+from hub.abuse import make_named_limiter, rate_limit_key
 from hub.admin import _CSS, _FORM_GUARD_SCRIPT, h, html_headers, refuse_cross_origin, secret_field
 from hub.auth import issue_api_key
 from hub.db import session_scope
@@ -108,7 +108,9 @@ def _page(title: str, body: str) -> HTMLResponse:
     )
 
 
-def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, console_path: str = "/app") -> None:
+def add_signup_routes(
+    app, session_factory, *, trusted_proxy_hops: int = 0, console_path: str = "/app", config=None
+) -> None:
     """Mount the public signup routes. Call only when self-serve signup is
     enabled (HUB_SIGNUP_ENABLED) -- omitted entirely otherwise, the same
     absent-unless-configured posture `/admin` and `/app` already follow."""
@@ -119,7 +121,7 @@ def add_signup_routes(app, session_factory, *, trusted_proxy_hops: int = 0, cons
     # burst=2 caps a legitimate retry (typo the org name, resubmit) without
     # a wait; per_minute=1 means a sustained attacker gets one more org per
     # minute per source address after that, not an unbounded rate.
-    signup_limiter = RateLimiter(per_minute=1, burst=2)
+    signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def signup_page(request: Request) -> Response:
         return _page("Create account", _FORM.format(path=SIGNUP_PATH, error=""))

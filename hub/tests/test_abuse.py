@@ -201,6 +201,52 @@ class TestResolveClientKey:
         assert resolve_client_key(req, 1) == "unknown"
 
 
+class _MultiHeaderRequest(_FakeRequest):
+    """Like Starlette's Headers: a field sent more than once is kept as
+    separate lines, and `.get` returns only the first."""
+
+    def __init__(self, client_host, lines):
+        super().__init__(client_host)
+        self._lines = lines
+
+    def get(self, key, default=""):
+        return self._lines[0] if key.lower() == "x-forwarded-for" and self._lines else default
+
+    def getlist(self, key):
+        return list(self._lines) if key.lower() == "x-forwarded-for" else []
+
+
+class TestForwardedForCannotBeSpoofed:
+    def test_a_client_line_cannot_win_over_the_proxys_second_line(self):
+        """The client sends its own X-Forwarded-For; the proxy adds a second
+        line rather than appending. Reading only the first line trusted
+        the client's value."""
+        req = _MultiHeaderRequest("10.0.0.1", ["9.9.9.9", "203.0.113.9"])
+        assert resolve_client_key(req, 1) == "203.0.113.9"
+
+    def test_lines_and_commas_combine_in_order(self):
+        req = _MultiHeaderRequest("10.0.0.2", ["9.9.9.9, 203.0.113.9", "10.0.0.1"])
+        assert resolve_client_key(req, 2) == "203.0.113.9"
+
+    @pytest.mark.parametrize(
+        "written, expected",
+        [
+            ("203.0.113.9:51234", "203.0.113.9"),
+            ("[2001:db8::1]:443", "2001:db8::1"),
+            ("2001:db8::1", "2001:db8::1"),
+            ("203.0.113.9", "203.0.113.9"),
+        ],
+    )
+    def test_a_source_port_does_not_make_a_new_bucket(self, written, expected):
+        req = _FakeRequest("10.0.0.1", headers={"X-Forwarded-For": written})
+        assert resolve_client_key(req, 1) == expected
+
+    def test_two_ports_from_one_address_share_one_limit_key(self):
+        a = _FakeRequest("10.0.0.1", headers={"X-Forwarded-For": "203.0.113.9:1111"})
+        b = _FakeRequest("10.0.0.1", headers={"X-Forwarded-For": "203.0.113.9:2222"})
+        assert rate_limit_key(a, 1) == rate_limit_key(b, 1)
+
+
 class TestRateLimitKey:
     """One host is handed a whole IPv6 /64, so a limiter keyed on the full
     address gave it 2^64 fresh budgets -- no limit at all on guessing API

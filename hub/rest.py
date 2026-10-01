@@ -70,7 +70,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from hub import audit, auth, crud, scopes
-from hub.abuse import RateLimited, RateLimiter, TraceRejected, rate_limit_key
+from hub.abuse import RateLimited, TraceRejected, make_named_limiter, rate_limit_key
 from hub.config import HubConfig
 from hub.db import session_scope
 from hub.models import Organization
@@ -185,14 +185,15 @@ def add_rest_routes(
     # Keyed by client address and checked before any credential work, for the
     # reason hub/server.py's auth limiter exists: an unauthenticated endpoint
     # that reaches Postgres on every request is a lever without one.
-    auth_limiter = RateLimiter(
-        per_minute=config.auth_attempts_per_minute,
-        burst=config.auth_attempts_burst,
+    auth_limiter = make_named_limiter(
+        config, config.auth_attempts_per_minute, config.auth_attempts_burst, "rest_auth"
     )
     # Deliberately tight and deliberately not CAPTCHA-strength -- the same
     # budget and the same reasoning as hub/signup.py's form limiter, because
     # this is the same capability behind a different content type.
-    signup_limiter = RateLimiter(per_minute=1, burst=2)
+    # Named "signup", the same bucket as hub/signup.py's form: one capability,
+    # one budget per source, whichever content type it arrives as.
+    signup_limiter = make_named_limiter(config, 1, 2, "signup")
 
     async def _authenticate(request: Request):
         """(AuthenticatedKey, None) on success, or (None, error response).
