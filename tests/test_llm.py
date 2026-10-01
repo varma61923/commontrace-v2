@@ -56,6 +56,23 @@ class TestLoadConfig:
         with pytest.raises(llm.LLMUnavailable, match="COMMONTRACE_LLM_BASE_URL"):
             llm.load_config()
 
+    @pytest.mark.parametrize("bad", ["file:///etc/passwd", "ftp://host/x", "localhost:11434/v1", "http://"])
+    def test_a_non_http_base_url_is_refused(self, monkeypatch, bad):
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("COMMONTRACE_LLM_BASE_URL", bad)
+        with pytest.raises(llm.LLMUnavailable, match="http"):
+            llm.load_config()
+
+    def test_a_directly_built_config_cannot_reach_a_file_url(self, monkeypatch):
+        def must_not_open(request, timeout=None):
+            raise AssertionError("urlopen must not be reached for a file:// URL")
+
+        monkeypatch.setattr(urllib.request, "urlopen", must_not_open)
+        config = llm.Config(provider="openai-compatible", model="m", api_key="k", base_url="file:///etc")
+        with pytest.raises(llm.LLMUnavailable, match="non-http"):
+            llm.draft("prompt", config=config)
+
     def test_openai_compatible_with_base_url_is_valid(self, monkeypatch):
         monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
         monkeypatch.setenv("COMMONTRACE_LLM_PROVIDER", "openai-compatible")

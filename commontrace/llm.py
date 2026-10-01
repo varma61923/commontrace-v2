@@ -122,7 +122,22 @@ def load_config() -> Config:
             "COMMONTRACE_LLM_PROVIDER=openai-compatible requires COMMONTRACE_LLM_BASE_URL "
             "(e.g. a local model server, or a provider's OpenAI-compatible endpoint)."
         )
+    if base_url and not _is_http_url(base_url):
+        raise LLMUnavailable(
+            f"COMMONTRACE_LLM_BASE_URL must be an http(s) URL, got {base_url!r}."
+        )
     return Config(provider=provider, model=model, api_key=api_key, base_url=base_url)
+
+
+def _is_http_url(url: str) -> bool:
+    """http and https only. urlopen also honours file:// and other schemes,
+    so a base URL from the environment could otherwise read a local file
+    and send its contents to a model. Plain http stays allowed: a local
+    model server on localhost is a supported endpoint."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
 @dataclass(frozen=True)
@@ -151,10 +166,14 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
     import urllib.error
     import urllib.request
 
+    # Checked again here, not only in load_config: a Config can be built
+    # directly, and this is the line that actually opens the URL.
+    if not _is_http_url(url):
+        raise LLMUnavailable(f"refusing a non-http(s) URL: {url!r}")
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as resp:  # nosec B310 - scheme checked above
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
