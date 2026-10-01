@@ -301,3 +301,82 @@ class TestConsolidateCLI:
         ]) == 0
         out = capsys.readouterr().out
         assert "`payments`" in out and "`security`" in out
+
+
+class TestConsolidateDraft:
+    """`--draft` writes new review-status drafts and never changes the originals."""
+
+    def _pair(self, store):
+        main(["init", "--agent-type", "code", "--dest", str(store)])
+        _write_lesson(store, "first", "Payment webhook delivered more than once.",
+                      "A webhook is retried after a timeout.", SAME_RULE)
+        _write_lesson(store, "second", "Duplicate charge from a retried webhook.",
+                      "A webhook is retried after a timeout.", SAME_RULE)
+
+    def test_a_fusion_pair_becomes_one_review_status_merge_draft(self, store, monkeypatch, capsys):
+        import json as _json
+        import os
+
+        from commontrace import frontmatter, llm, paths
+
+        self._pair(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        reply = {"rule": "Make webhook handlers idempotent on the provider's event id.",
+                 "applies_when": "handling a webhook the provider may redeliver",
+                 "do_not_apply_when": "the handler has no side effects",
+                 "evidence": ["first", "second"]}
+        monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (_json.dumps(reply), {}))
+        before = sorted(os.listdir(paths.lessons_dir(str(store))))
+        capsys.readouterr()
+
+        assert main(["consolidate", "--draft", "--dest", str(store)]) == 0
+        new = sorted(set(os.listdir(paths.lessons_dir(str(store)))) - set(before))
+        assert new == ["lesson_first-merge-second.md"]
+        fm, body = frontmatter.read(os.path.join(paths.lessons_dir(str(store)), new[0]))
+        assert fm["status"] == "review"
+        assert fm["merges"] == ["first", "second"]
+        assert fm["llm_draft"]["cited_evidence"] == ["first", "second"]
+        assert reply["rule"] in body
+        # The originals are untouched and still active.
+        for slug in ("first", "second"):
+            orig, _ = frontmatter.read(os.path.join(paths.lessons_dir(str(store)), f"lesson_{slug}.md"))
+            assert orig["status"] == "active"
+
+    def test_no_llm_configured_writes_nothing(self, store, monkeypatch, capsys):
+        import os
+
+        from commontrace import paths
+
+        self._pair(store)
+        monkeypatch.delenv("COMMONTRACE_LLM_API_KEY", raising=False)
+        before = sorted(os.listdir(paths.lessons_dir(str(store))))
+        capsys.readouterr()
+        assert main(["consolidate", "--draft", "--dest", str(store)]) == 0
+        assert sorted(os.listdir(paths.lessons_dir(str(store)))) == before
+        assert "0 draft(s) written" in capsys.readouterr().err
+
+    def test_without_draft_no_llm_is_called(self, store, monkeypatch):
+        from commontrace import llm
+
+        self._pair(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+
+        def boom(cfg, prompt):
+            raise AssertionError("no LLM call without --draft")
+
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        assert main(["consolidate", "--dest", str(store)]) == 0
+
+    def test_a_pending_draft_is_not_rewritten(self, store, monkeypatch, capsys):
+        import json as _json
+
+        from commontrace import llm
+
+        self._pair(store)
+        monkeypatch.setenv("COMMONTRACE_LLM_API_KEY", "k")
+        reply = {"rule": "r", "applies_when": "a", "do_not_apply_when": "d", "evidence": ["first"]}
+        monkeypatch.setattr(llm, "_call_anthropic", lambda cfg, prompt: (_json.dumps(reply), {}))
+        main(["consolidate", "--draft", "--dest", str(store)])
+        capsys.readouterr()
+        main(["consolidate", "--draft", "--dest", str(store)])
+        assert "already pending review" in capsys.readouterr().err
