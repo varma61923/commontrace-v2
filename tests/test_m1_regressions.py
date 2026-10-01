@@ -323,7 +323,7 @@ def test_query_cmd_importance_floor_flag():
     # rather than the flag forwarding it exists to pin.
     with patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True), \
             patch("commontrace.commands.query_cmd._index_is_unusable", return_value=""):
-        with patch("commontrace.commands.query_cmd.run_script", return_value=0) as mock_run:
+        with patch("commontrace.commands.query_cmd.run_script", return_value=(0, "")) as mock_run:
             query_cmd.run(args)
             assert mock_run.called
             called_args = mock_run.call_args[0][2]
