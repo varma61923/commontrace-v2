@@ -201,10 +201,18 @@ def ranked_slugs(
         model = _model(script, index[0]) if index[0] in script.TRUSTED_MODELS else None
         if model is not None and isinstance(model, script.Ranked):
             return model.rc, [], model.stderr
+        from commontrace import lesson_cache
+
+        try:
+            # The lesson cache's directory pass (one per retrieval inside a
+            # `lesson_cache.one_scan()` block), as getmtime floats.
+            mtimes = [(p, lesson_cache.mtime_seconds(ns)) for p, ns, _size in lesson_cache.listing(root)]
+        except OSError:
+            mtimes = None
         result = script.rank(
             query, top_k, 4, agent_type,
             index_path=ipath, lessons_dir=paths.lessons_dir(root),
-            index=index, model=model,
+            index=index, model=model, lesson_mtimes=mtimes,
         )
     if result.rc != 0:
         return result.rc, [], result.stderr

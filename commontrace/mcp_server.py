@@ -539,6 +539,15 @@ def build_server(root: str, *, allow_approval: bool = True):
         "go ahead" -- is answered immediately with `skipped: true` and no
         ranking pass, because there is nothing in it for a lesson to match.
         """
+        # One retrieval is one snapshot of the store: its lessons directory is
+        # listed once (commontrace/lesson_cache.py's one_scan), not by every
+        # reader -- at 10,000 lessons the listings cost as much as both models.
+        with lesson_cache.one_scan():
+            return _retrieve(task, top_k, occasion_id, agent_type, exclude_shown)
+
+    def _retrieve(
+        task: str, top_k: int, occasion_id: str, agent_type: str, exclude_shown: str,
+    ) -> dict:
         # Before the store is read, and before any arm is assigned. Both halves
         # of that ordering matter: the saving is the corpus parse this skips,
         # and the safety is that a skipped turn never becomes an occasion, so

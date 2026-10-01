@@ -288,6 +288,7 @@ def check_staleness(
     indexed_slugs: "set[str]",
     active_slugs: "set[str]",
     newest_active_mtime: "float | None" = None,
+    lesson_mtimes=None,
 ):
     """Return a list of human-readable reasons the on-disk index may no longer match the
     current lesson store, or [] if it looks current.
@@ -336,12 +337,15 @@ def check_staleness(
                 reasons.append("an active lesson file was modified after the index was last built")
         else:
             newest_active = 0.0
-            for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+            if lesson_mtimes is None:
+                lesson_mtimes = []
+                for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+                    try:
+                        lesson_mtimes.append((path, os.path.getmtime(path)))
+                    except OSError:
+                        continue
+            for path, mtime in lesson_mtimes:
                 if os.path.basename(path) == "lesson_template.md":
-                    continue
-                try:
-                    mtime = os.path.getmtime(path)
-                except OSError:
                     continue
                 if mtime <= index_mtime:
                     continue  # can't raise newest_active past index_mtime either way
@@ -503,7 +507,8 @@ def load_model(model_name=DEFAULT_MODEL_NAME):
 
 
 def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
-         index_path=None, lessons_dir=None, index=None, model=None) -> Ranked:
+         index_path=None, lessons_dir=None, index=None, model=None,
+         lesson_mtimes=None) -> Ranked:
     """One semantic retrieval, as a value. `main()` prints it; a long-lived
     process (commontrace/semantic_arm.py, behind the MCP server) calls this
     directly with the index and model it already holds, so the two can never
@@ -511,7 +516,9 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
 
     `index` is load_index()'s tuple and `model` load_model()'s result; either
     is loaded here when not given; a caller that passes `model` must pass the
-    index's own (`index[0]`, a TRUSTED_MODELS name).
+    index's own (`index[0]`, a TRUSTED_MODELS name). `lesson_mtimes`, when
+    given, is ((path, getmtime), ...) for every lesson file, from a directory
+    pass the caller already made, in place of this function's own.
     """
     index_path = INDEX_PATH if index_path is None else index_path
     lessons_dir = LESSONS_DIR if lessons_dir is None else lessons_dir
@@ -536,7 +543,11 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
     if isinstance(model, Ranked):
         return model
     q_emb = model.encode(
-        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True)
+        TRUSTED_MODELS[model_name] + query, normalize_embeddings=True, convert_to_numpy=True,
+        # Never a progress bar: sentence-transformers draws one whenever the
+        # process's logging is at INFO, as the MCP server's is, onto stderr
+        # on every query.
+        show_progress_bar=False)
 
     # An index built by a different (or later, wider) embedding model has a
     # different column count, and `embeddings @ q_emb` raises numpy's own
@@ -576,11 +587,18 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
             idx_mtime = os.path.getmtime(index_path)
         except OSError:
             idx_mtime = 0.0
-        for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+        if lesson_mtimes is None:
+            lesson_mtimes = []
+            for path in glob.glob(os.path.join(lessons_dir, "lesson_*.md")):
+                try:
+                    lesson_mtimes.append((path, os.path.getmtime(path)))
+                except OSError:
+                    pass
+        for path, mtime in lesson_mtimes:
             if os.path.basename(path) == "lesson_template.md":
                 continue
             try:
-                if os.path.getmtime(path) > idx_mtime:
+                if mtime > idx_mtime:
                     with open(path, "r", encoding="utf-8-sig") as fh:
                         content = fh.read()
                     delims = list(_DELIM_RE.finditer(content))
@@ -664,6 +682,7 @@ def rank(query, top_k=10, include_importance_floor=4, agent_type=None, *,
         newest_active_mtime=(
             getattr(importances_res, "newest_active_mtime", None) if n_frontmatters_parsed > 0 else None
         ),
+        lesson_mtimes=lesson_mtimes,
     )
 
     brief_lines = [

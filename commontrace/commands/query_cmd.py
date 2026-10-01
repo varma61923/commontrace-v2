@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import math
 import os
 import re
@@ -1024,13 +1023,14 @@ def _index_is_unusable(root: str) -> str:
 
     newest_lesson = 0.0
     newest_name = ""
-    for path in glob.glob(os.path.join(paths.lessons_dir(root), "lesson_*.md")):
-        if os.path.basename(path) == "lesson_template.md":
-            continue
-        try:
-            mtime = os.path.getmtime(path)
-        except OSError:
-            continue
+    # The lesson cache's directory pass, shared with every other reader in a
+    # `lesson_cache.one_scan()` block; the floats are getmtime's own.
+    try:
+        listing = lesson_cache.listing(root)
+    except OSError:
+        listing = ()
+    for path, mtime_ns, _size in listing:
+        mtime = lesson_cache.mtime_seconds(mtime_ns)
         if mtime > newest_lesson:
             newest_lesson, newest_name = mtime, os.path.basename(path)
     if newest_lesson == 0.0:
@@ -1056,6 +1056,13 @@ def _has_candidates(args: argparse.Namespace, root: str) -> bool:
 
 
 def run(args: argparse.Namespace) -> int:
+    # One retrieval is one snapshot of the store: its directory is listed once
+    # (commontrace/lesson_cache.py's one_scan), not once per reader.
+    with lesson_cache.one_scan():
+        return _run(args)
+
+
+def _run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
     # A one-shot process: score with the warm worker's loaded cross-encoder
     # rather than loading one here for seconds (commontrace/warm.py). Same

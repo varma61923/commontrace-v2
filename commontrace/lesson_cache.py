@@ -70,6 +70,8 @@ error. Nothing here is a source of truth; the lesson files are.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import glob
 import json
 import os
@@ -159,6 +161,40 @@ def _stat(path: str) -> tuple[int, int] | None:
     return (st.st_mtime_ns, st.st_size)
 
 
+#: Listings already taken inside the current `one_scan()` block, by lessons directory; None outside one.
+_SCAN_SCOPE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("commontrace_scan_scope", default=None)
+
+
+@contextlib.contextmanager
+def one_scan():
+    """List each store's lessons directory at most once inside this block.
+
+    One retrieval used to list it up to five times: the index-staleness check
+    (twice, before and after a refresh), the lesson cache, and the semantic
+    arm's own newer-than-the-index check -- each a stat of every lesson, so at
+    10,000 lessons the directory cost as much as both models together. A
+    retrieval is one snapshot of the store; nothing inside it writes lessons.
+    """
+    token = _SCAN_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _SCAN_SCOPE.reset(token)
+
+
+def listing(root: str) -> tuple:
+    """((path, mtime_ns, size), ...) for every lesson file, sorted by path (see `_listing`)."""
+    return _listing(root)
+
+
+def mtime_seconds(mtime_ns: int) -> float:
+    """`os.path.getmtime`'s float for a stat's `st_mtime_ns`, computed the way CPython computes
+    `st_mtime` (whole seconds plus nanoseconds * 1e-9), so a comparison against another file's
+    getmtime decides exactly as it would have with getmtime on both sides."""
+    sec, nsec = divmod(mtime_ns, 1_000_000_000)
+    return sec + nsec * 1e-9
+
+
 def _listing(root: str) -> tuple:
     """((path, mtime_ns, size), ...) for every lesson file, sorted by path, in ONE directory pass.
 
@@ -167,6 +203,9 @@ def _listing(root: str) -> tuple:
     third of a warm query. Sorted by path, so corpus order (and with it every tie in `rank_lessons`) is unchanged.
     """
     ldir = paths.lessons_dir(root)
+    scope = _SCAN_SCOPE.get()
+    if scope is not None and ldir in scope:
+        return scope[ldir]
     # String concatenation, not os.path.join per file: the same result for a directory without a trailing
     # separator, at a fraction of the cost over thousands of names.
     prefix = ldir if ldir.endswith(os.sep) else ldir + os.sep
@@ -182,7 +221,10 @@ def _listing(root: str) -> tuple:
                 continue  # vanished between the listing and the stat
             out.append((prefix + name, st.st_mtime_ns, st.st_size))
     out.sort()
-    return tuple(out)
+    result = tuple(out)
+    if scope is not None:
+        scope[ldir] = result
+    return result
 
 
 # The last listing a process saw per cache file, with what it produced: (listing, cache identity, entries,

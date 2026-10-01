@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One directory pass per retrieval.** A retrieval listed the lessons directory up to five times (the index
+  staleness check before and after a refresh, the lesson cache, and the semantic arm's two newer-than-the-index
+  checks), each a stat of every lesson. Inside `lesson_cache.one_scan()` every reader shares one listing; MCP
+  `retrieve` at 10,000 lessons went from 662 ms to 518 ms p50 (838 to 633 ms p95). The comparison against the
+  index uses getmtime's own floats, so the CLI and `build_index.py` still agree on what is stale.
+- **No progress bars from the MCP server.** The semantic arm's query encoding drew a sentence-transformers progress
+  bar onto stderr on every `retrieve`, because the server's logging runs at INFO.
+
 - **Semantic-only retrieval honours the injection budget.** Its script appends every active lesson at or above the
   importance floor to the top-k, and this path, unlike the lexical and fused ones, never applied the store's budget
   or admitted core lessons: on a 10,000-lesson store one query handed an agent 3,928 lessons and read every one of
