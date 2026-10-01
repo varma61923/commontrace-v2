@@ -88,6 +88,10 @@ hub/disclosure.py   always-on, unauthenticated GET /disclosure -- an operator's 
                     data region / legal name / support contact, or an honest "not disclosed"
 hub/signup.py       public, self-serve org creation at /signup (off unless HUB_SIGNUP_ENABLED is set)
 hub/billing.py      self-serve Stripe upgrades: Checkout/Billing Portal + the webhook that applies them
+hub/rest.py         JSON API at /api/v1/* for the CommonTrace Claude Code plugin (off unless
+                    HUB_REST_API_ENABLED is set)
+hub/otlp.py         POST /v1/traces: a live OpenTelemetry SDK/Collector ingests directly (OTLP/JSON
+                    only; off unless HUB_OTLP_INGEST_ENABLED is set)
 hub/plans.py       entitlements: what each plan grants, and the credit contributors earn
 hub/outcomes.py    before/after fleet outcome measurement (observational; statistics imported from commontrace/experiment.py)
 hub/bench_scaling.py  does serving one customer get more expensive as their corpus grows? (see SCALING.md)
