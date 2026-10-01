@@ -763,7 +763,7 @@ def _corpus_record_to_wire(rec: dict) -> dict:
         "context_text": context_text,
         "solution_text": str(rec.get("solution_text") or ""),
         "tags": tags,
-        "agent_type": str(rec.get("agent_type") or "code"),
+        "agent_type": str(rec.get("agent_type") or "general"),
         "profile": str(rec.get("profile") or ""),
     }
 
@@ -987,7 +987,7 @@ async def commons_seed(
                 context_text=context_text,
                 solution_text=solution_text,
                 tags=tags,
-                agent_type=str(rec.get("agent_type") or "code"),
+                agent_type=str(rec.get("agent_type") or "general"),
                 shared_with_commons=True,
                 shared_at=datetime.now(timezone.utc),
                 shared_rationale=str(rec.get("source") or "operator-seeded public substrate knowledge")[:500],

@@ -97,9 +97,10 @@ _MAX_SEARCH_LIMIT = 50
 #: real one. Bounded for the same reason hub/signup.py bounds its form field.
 _MAX_NAME_CHARS = 200
 
-#: Traces arriving from a coding-agent plugin with no `agent_type` of their
-#: own. Named rather than left empty so fleet reporting can group them.
-_DEFAULT_AGENT_TYPE = "code"
+#: Traces arriving with no `agent_type` of their own. Named rather than left
+#: empty so fleet reporting can group them, and not a business function: a
+#: support fleet's unlabelled traces must not be counted as coding traces.
+_DEFAULT_AGENT_TYPE = "general"
 
 
 def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:

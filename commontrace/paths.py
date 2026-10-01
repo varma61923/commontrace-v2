@@ -18,6 +18,10 @@ import sys
 # legal fleet is a first-class citizen of the protocol. These names are what
 # `--help` offers as examples and what STARTER_DOMAINS below has starter
 # vocabularies for; nothing validates against membership in this list.
+#: What a store or trace with no declared function is called. Deliberately not a
+#: business function: defaulting to one made every unlabelled record a coding record.
+GENERAL_AGENT_TYPE = "general"
+
 SUGGESTED_AGENT_TYPES = ["code", "support", "sales", "hr", "marketing", "ops", "custom"]
 
 # Deprecated alias. Kept for one release so an external caller importing
@@ -37,7 +41,12 @@ STARTER_DOMAINS = {
     "marketing": ["messaging", "compliance", "channel", "brand-voice"],
     "ops": ["incident-response", "runbooks", "monitoring", "capacity"],
     "custom": ["other"],
+    GENERAL_AGENT_TYPE: ["other"],
 }
+
+# `commontrace init --function`: the business function, and the agent_type slug it
+# is stored under. "custom" takes its slug from --agent-type.
+FUNCTION_AGENT_TYPES = {"support": "support", "sales": "sales", "hr": "hr", "coding": "code"}
 
 
 def resolve_root(explicit: str | None = None) -> str:
@@ -95,13 +104,13 @@ def memory_dir(root: str) -> str:
     return os.path.join(root, "memory")
 
 
-def store_agent_type(root: str, default: str = "code") -> str:
+def store_agent_type(root: str, default: str = GENERAL_AGENT_TYPE) -> str:
     """The agent_type this store was initialized with.
 
     `commontrace init` stamps it into the first line of memory/INDEX.md. Reading
     it back matters because a support/sales/ops fleet otherwise has to repeat
     `--agent-type` on every single command, and the one time someone forgets,
-    the record is silently written as `code` -- wrong, and invisible until a
+    the record is silently written under the wrong fleet -- wrong, and invisible until a
     later filter mysteriously returns nothing.
 
     Falls back to `default` for a store with no index (or an index written by

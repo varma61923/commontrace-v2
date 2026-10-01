@@ -73,7 +73,7 @@ class TestShapeIsStillValidated:
         (mem / "INDEX.md").write_text(
             "# Memory Index — agent_type: not a valid slug!\n", encoding="utf-8"
         )
-        assert paths.store_agent_type(str(tmp_path)) == "code"
+        assert paths.store_agent_type(str(tmp_path)) == "general"
         assert "not a valid slug" in capsys.readouterr().err
 
 
@@ -82,8 +82,12 @@ class TestEpisodesFollowTheProfileNotTheAgentType:
     (SKILL.md), not by the `code` agent type. Keying the store layout on the
     agent type made `code` the only first-class fleet."""
 
-    def test_default_init_still_scaffolds_episodes(self, tmp_path):
+    def test_bare_init_is_general_and_scaffolds_no_episodes(self, tmp_path):
         assert main(["init", "--dest", str(tmp_path)]) == 0
+        assert not os.path.isdir(paths.episodes_dir(str(tmp_path)))
+
+    def test_explicit_code_agent_type_still_scaffolds_episodes(self, tmp_path):
+        assert main(["init", "--agent-type", "code", "--dest", str(tmp_path)]) == 0
         assert os.path.isdir(paths.episodes_dir(str(tmp_path)))
 
     def test_a_non_code_fleet_gets_no_episodes_by_default(self, tmp_path):

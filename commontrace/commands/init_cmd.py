@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 from commontrace import paths, templates
 from commontrace.commands import _validators
@@ -14,12 +15,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Scaffold a local CommonTrace store (memory/) for a fleet or project.",
     )
     p.add_argument(
+        "--function",
+        choices=(*paths.FUNCTION_AGENT_TYPES, "custom"),
+        default=None,
+        help="Business function this store is for. 'custom' takes its slug from "
+             "--agent-type. Without --function or --agent-type the store is "
+             f"'{paths.GENERAL_AGENT_TYPE}'.",
+    )
+    p.add_argument(
         "--agent-type",
         type=_validators.agent_type,
-        default="code",
-        help="Kind of agent this store is for, as a lowercase slug (default: code). "
-             "Any field works -- e.g. code, support, sales, hr, marketing, ops, "
-             "robotics, legal. The taxonomy is open: see "
+        default=None,
+        help="Kind of agent this store is for, as a lowercase slug (default: "
+             f"{paths.GENERAL_AGENT_TYPE}). Any field works -- e.g. code, support, sales, "
+             "hr, marketing, ops, robotics, legal. The taxonomy is open: see "
              "protocol/PROTOCOL.md#7-taxonomy-open-not-closed.",
     )
     p.add_argument(
@@ -45,13 +54,30 @@ EPISODE_PROFILES = frozenset({"code-review"})
 def _profile_for(args: argparse.Namespace) -> str:
     if args.profile is not None:
         return args.profile.strip()
-    # Preserves the historical default exactly: `commontrace init` with no
-    # arguments has always scaffolded episodes/, and the code-review profile
-    # is why.
+    # The code-review profile is what writes episodes/, so it follows the
+    # coding agent type and nothing else.
     return "code-review" if args.agent_type == "code" else ""
 
 
+def resolve_agent_type(function: str | None, agent_type: str | None) -> str:
+    """The agent_type to stamp on the store. Raises ValueError on a conflict."""
+    if function in (None, "custom"):
+        return agent_type or (function and "custom") or paths.GENERAL_AGENT_TYPE
+    expected = paths.FUNCTION_AGENT_TYPES[function]
+    if agent_type and agent_type != expected:
+        raise ValueError(
+            f"--function {function} stores as agent_type {expected!r}, "
+            f"which conflicts with --agent-type {agent_type!r}"
+        )
+    return expected
+
+
 def run(args: argparse.Namespace) -> int:
+    try:
+        args.agent_type = resolve_agent_type(args.function, args.agent_type)
+    except ValueError as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 2
     root = os.path.abspath(args.dest)
     profile = _profile_for(args)
     mem = paths.memory_dir(root)

@@ -276,7 +276,7 @@ def run(args: argparse.Namespace) -> int:
 
     print(f"[commontrace] {len(traces)} trace(s) considered, {len(clusters)} candidate cluster(s) found:\n")
     for n, cluster in enumerate(clusters, start=1):
-        agent_type = cluster.traces[0].agent_type or (args.agent_type or "code")
+        agent_type = cluster.traces[0].agent_type or (args.agent_type or paths.GENERAL_AGENT_TYPE)
         slug = _unique_candidate_slug(ldir, date, n)
 
         llm_draft = None

@@ -847,3 +847,28 @@ def test_no_command_at_all_prints_the_command_list(capsys):
     assert cli.main([]) == 2
     err = capsys.readouterr().err
     assert "usage:" in err and "capture" in err and "doctor" in err
+
+
+def test_bare_init_is_general_not_a_business_function(store):
+    assert main(["init", "--dest", str(store)]) == 0
+    assert (store / "memory" / "INDEX.md").read_text().startswith("# Memory Index — agent_type: general")
+    assert not os.path.isdir(store / "memory" / "episodes")
+    assert paths.store_agent_type(str(store)) == "general"
+
+
+def test_init_function_maps_to_agent_type(store):
+    assert main(["init", "--function", "coding", "--dest", str(store)]) == 0
+    assert paths.store_agent_type(str(store)) == "code"
+    assert os.path.isdir(store / "memory" / "episodes")
+
+
+def test_init_function_custom_takes_the_slug_from_agent_type(store):
+    assert main(["init", "--function", "custom", "--agent-type", "legal", "--dest", str(store)]) == 0
+    assert paths.store_agent_type(str(store)) == "legal"
+
+
+def test_init_function_conflicting_with_agent_type_is_refused(store, capsys):
+    assert main(["init", "--function", "support", "--agent-type", "sales", "--dest", str(store)]) == 2
+    assert "conflicts" in capsys.readouterr().err
+    assert not os.path.isdir(store / "memory")
+

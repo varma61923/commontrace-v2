@@ -89,7 +89,7 @@ ACTOR_OTLP = "otlp-ingest"
 #: SDK's own default `BatchSpanProcessor` caps an export batch at 512).
 _MAX_SPANS_PER_REQUEST = 500
 
-_DEFAULT_AGENT_TYPE = "code"
+_DEFAULT_AGENT_TYPE = "general"
 
 
 def _json_error(status: int, error: str, detail: str = "") -> JSONResponse:

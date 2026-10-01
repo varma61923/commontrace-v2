@@ -64,8 +64,8 @@ pip install -e ".[attention]"
 ### 2 — Bootstrap a store for your fleet
 
 ```bash
-commontrace init --agent-type support        # any field: code, sales, hr, marketing,
-                                             # ops, robotics, legal, ... (open taxonomy)
+commontrace init --function support          # support | sales | hr | coding | custom
+commontrace init --agent-type robotics       # any slug (open taxonomy); bare `init` = general
 commontrace doctor                            # sanity-check the environment
 ```
 

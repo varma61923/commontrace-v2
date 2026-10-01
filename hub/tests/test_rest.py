@@ -237,9 +237,10 @@ class TestContributing:
         assert trace.org_id == org_id
         assert trace.title == "Flaky asyncpg pool under load"
         assert sorted(trace.tags) == ["asyncpg", "pool"]
-        # Named rather than left empty, so fleet reporting can group traces
-        # that arrived from the coding-agent plugin.
-        assert trace.agent_type == "code"
+        # Named rather than left empty so fleet reporting can group traces,
+        # and "general" rather than "code": a support fleet's unlabelled
+        # traces must not be counted as coding traces.
+        assert trace.agent_type == "general"
         assert entry is not None
         assert entry.actor == rest.ACTOR_REST_API
 
