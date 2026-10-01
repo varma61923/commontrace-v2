@@ -2182,13 +2182,16 @@ def add_admin_routes(
         if key is None:
             return _back(ADMIN_PATH, "No such key.")
         org_id = key.org_id
-        async with session_scope(session_factory) as session:
-            issued = await auth.rotate_api_key(session, key_id)
-            await audit_module.record(
-                session, actor=_ADMIN_ACTOR, action="rotate_key",
-                org_id=org_id, target_type="api_key", target_id=issued.key_id,
-                summary=f"replaces={key_id}",
-            )
+        try:
+            async with session_scope(session_factory) as session:
+                issued = await auth.rotate_api_key(session, key_id)
+                await audit_module.record(
+                    session, actor=_ADMIN_ACTOR, action="rotate_key",
+                    org_id=org_id, target_type="api_key", target_id=issued.key_id,
+                    summary=f"replaces={key_id}",
+                )
+        except ValueError as exc:
+            return _back(f"{ADMIN_PATH}/org/{org_id}", f"Not rotated: {exc}")
         return await _org_view(org_id, admin_token, fresh_key=issued.raw_key)
 
     async def keys_revoke(request: Request) -> Response:

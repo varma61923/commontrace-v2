@@ -248,10 +248,22 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     within the caller's transaction. The old key stops verifying the moment
     this commits; nothing in between grants a window with two live keys
     unless the caller wants that (call issue_api_key again before revoking
-    if a rollover grace period is desired)."""
-    old = await session.get(ApiKey, old_key_id)
+    if a rollover grace period is desired).
+
+    The successor holds exactly the old key's scopes: a read-only workload
+    token must not come back from a rotation holding admin. The old row is
+    locked, so two rotations of one key cannot both succeed and mint two live
+    successors, and a key that is already revoked cannot be rotated back to
+    life -- revocation is how a compromised key is ended."""
+    old = (await session.execute(
+        select(ApiKey).where(ApiKey.id == old_key_id).with_for_update()
+    )).scalar_one_or_none()
     if old is None:
         raise ValueError(f"no such api key: {old_key_id}")
+    if old.revoked_at is not None:
+        raise ValueError(f"api key {old_key_id} is already revoked; issue a new key instead")
+    if not old.scopes:
+        raise ValueError(f"api key {old_key_id} holds no scopes, so it has nothing to carry forward")
     old.revoked_at = datetime.now(timezone.utc)
     # Carry the old key's expiry *policy* forward: a key that was issued to
     # expire in 90 days rotates into another 90-day key, rather than
@@ -260,7 +272,9 @@ async def rotate_api_key(session: AsyncSession, old_key_id: str) -> IssuedKey:
     if old.expires_at is not None:
         span = old.expires_at - old.created_at
         expires_days = max(1, round(span.total_seconds() / 86400))
-    return await issue_api_key(session, old.org_id, expires_days=expires_days)
+    return await issue_api_key(
+        session, old.org_id, expires_days=expires_days, scopes=list(old.scopes),
+    )
 
 
 async def revoke_api_key(session: AsyncSession, key_id: str) -> None:

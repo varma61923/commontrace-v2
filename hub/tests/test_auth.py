@@ -225,6 +225,57 @@ async def test_rotate_key_carries_forward_the_expiry_policy(session_factory, con
     assert abs((row.expires_at - expected).total_seconds()) < 86400
 
 
+async def test_rotating_a_narrow_key_does_not_widen_it(session_factory, config):
+    """A read-only key that rotates into an all-scopes key is a privilege
+    escalation performed by the rotation button. The successor must hold
+    exactly the scopes the old key held."""
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        original = await auth.issue_api_key(session, org_id, scopes=["read"])
+    async with session_scope(session_factory) as session:
+        rotated = await auth.rotate_api_key(session, original.key_id)
+        row = (await session.execute(select(ApiKey).where(ApiKey.id == rotated.key_id))).scalar_one()
+    assert list(row.scopes) == ["read"]
+    assert tuple(rotated.scopes) == ("read",)
+
+
+async def test_a_revoked_key_cannot_be_rotated_back_to_life(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        original = await auth.issue_api_key(session, org_id)
+    async with session_scope(session_factory) as session:
+        await auth.revoke_api_key(session, original.key_id)
+    with pytest.raises(ValueError, match="revoked"):
+        async with session_scope(session_factory) as session:
+            await auth.rotate_api_key(session, original.key_id)
+    async with session_scope(session_factory) as session:
+        live = (await session.execute(
+            select(ApiKey).where(ApiKey.org_id == org_id, ApiKey.revoked_at.is_(None))
+        )).scalars().all()
+    assert live == []
+
+
+async def test_concurrent_rotations_of_one_key_mint_exactly_one_successor(session_factory, config):
+    org_id = await _make_org(session_factory)
+    async with session_scope(session_factory) as session:
+        original = await auth.issue_api_key(session, org_id)
+
+    async def rotate():
+        try:
+            async with session_scope(session_factory) as session:
+                return await auth.rotate_api_key(session, original.key_id)
+        except ValueError:
+            return None
+
+    results = await asyncio.gather(*[rotate() for _ in range(6)])
+    assert len([r for r in results if r is not None]) == 1
+    async with session_scope(session_factory) as session:
+        live = (await session.execute(
+            select(ApiKey).where(ApiKey.org_id == org_id, ApiKey.revoked_at.is_(None))
+        )).scalars().all()
+    assert len(live) == 1
+
+
 # --- last_used_at throttling ----------------------------------------------
 
 

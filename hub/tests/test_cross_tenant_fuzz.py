@@ -174,3 +174,24 @@ async def test_no_admin_route_returns_5xx_for_a_malformed_id(session_factory, co
                     method, path, headers=headers, data={"role": "owner"}, follow_redirects=True,
                 )
                 assert response.status_code < 500, (method, template, value[:40], response.status_code)
+
+
+async def test_rotating_a_revoked_key_from_the_console_changes_nothing(session_factory, config, tenants):
+    """The rotate route answers an already-revoked key like an unknown one
+    (no new key is shown, none is minted) rather than a 500."""
+    from sqlalchemy import func, select
+
+    async with session_scope(session_factory) as session:
+        a_org = (await session.execute(select(ApiKey.org_id).limit(1))).scalar_one()
+        issued = await auth.issue_api_key(session, a_org)
+        await auth.revoke_api_key(session, issued.key_id)
+    app = _app(session_factory, config)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(f"{console.CONSOLE_PATH}/signin", data={"api_key": tenants["a_raw_key"]})
+        async with session_scope(session_factory) as session:
+            before = (await session.execute(select(func.count()).select_from(ApiKey))).scalar_one()
+        response = await client.post(f"{console.CONSOLE_PATH}/keys/{issued.key_id}/rotate")
+        assert response.status_code < 500 and "shown once" not in response.text
+    async with session_scope(session_factory) as session:
+        after = (await session.execute(select(func.count()).select_from(ApiKey))).scalar_one()
+    assert after == before

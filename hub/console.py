@@ -2456,7 +2456,8 @@ def add_console_routes(
         # operator caller to have already scoped it; a customer's own
         # session must not be able to rotate (or even discover the
         # existence of) another org's key by guessing its id.
-        if key is None or key.org_id != org_id:
+        # An already-revoked key is shown the same way: it cannot be rotated.
+        if key is None or key.org_id != org_id or key.revoked_at is not None:
             keys = await _list_keys(org_id)
             return _page("API keys", _render_keys(keys, True))
         actor = audit.actor_for_api_key(str(claims.get("key") or ""))
