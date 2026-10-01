@@ -62,6 +62,11 @@ _SPAWN_WAIT_SECONDS = 3.0
 #: How long a client waits for an answer. Generous: a worker that was started
 #: by this very call is still importing torch and loading the model.
 _REPLY_TIMEOUT_SECONDS = 180.0
+#: An index build embeds every new lesson: a first build of a large store
+#: takes as long as it takes, and giving up would only start the same build
+#: again in a subprocess. A worker that dies closes the socket, which ends the
+#: wait at once; this bounds only a worker that hangs.
+_BUILD_REPLY_TIMEOUT_SECONDS = 7200.0
 _MAX_REQUEST_BYTES = 8 << 20
 _MAX_REPLY_BYTES = 64 << 20
 #: AF_UNIX paths are limited to ~104-108 bytes depending on the platform.
@@ -194,6 +199,10 @@ def _peer_uid(conn: socket.socket) -> int | None:
 # --- client -----------------------------------------------------------------
 
 
+def _reply_timeout(request: dict) -> float:
+    return _BUILD_REPLY_TIMEOUT_SECONDS if request.get("op") == "build" else _REPLY_TIMEOUT_SECONDS
+
+
 def _ask(path: str, request: dict, *, connect_deadline: float) -> dict | None:
     """The worker's reply, or None (nothing listening, or no usable reply)."""
     return _exchange(path, request, connect_deadline=connect_deadline)[1]
@@ -220,7 +229,7 @@ def _exchange(path: str, request: dict, *, connect_deadline: float) -> tuple[boo
         uid = _peer_uid(conn)
         if uid is not None and uid != os.getuid():
             return True, None
-        conn.settimeout(_REPLY_TIMEOUT_SECONDS)
+        conn.settimeout(_reply_timeout(request))
         _send(conn, request)
         reply = _recv(conn, _MAX_REPLY_BYTES)
     except (OSError, ValueError, struct.error):

@@ -272,6 +272,13 @@ class TestTheIndexBuilderIsServedToo:
         assert loaded.build([], root)["rc"] == 0
 
 
+def test_a_long_first_build_is_waited_for_not_run_twice():
+    """A first build of a large store outlasts a query's reply timeout; timing
+    out would start the same build again in a subprocess."""
+    assert warm._reply_timeout({"op": "build"}) > 3600
+    assert warm._reply_timeout({"op": "rerank"}) == warm._reply_timeout({}) == warm._REPLY_TIMEOUT_SECONDS
+
+
 class TestItIsActuallyWarm:
     def test_later_calls_reuse_one_worker(self, tmp_path, env, script, capfd):
         root = _store(tmp_path, "store")
