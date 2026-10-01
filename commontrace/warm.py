@@ -233,7 +233,9 @@ def _peer_uid(conn: socket.socket) -> int | None:
 
 
 def _reply_timeout(request: dict) -> float:
-    return _BUILD_REPLY_TIMEOUT_SECONDS if request.get("op") == "build" else _REPLY_TIMEOUT_SECONDS
+    # A whole command can include an index build (a stale index is refreshed
+    # before ranking), so it waits as a build does.
+    return _BUILD_REPLY_TIMEOUT_SECONDS if request.get("op") in ("build", "cli") else _REPLY_TIMEOUT_SECONDS
 
 
 def _ask(path: str, request: dict, *, connect_deadline: float) -> dict | None:
