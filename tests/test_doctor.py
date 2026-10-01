@@ -220,3 +220,89 @@ def test_a_bare_model_name_is_looked_up_where_sentence_transformers_puts_it(monk
     assert doctor_cmd._model_cached("multi-qa-mpnet-base-dot-v1") is False
     assert seen == ["multi-qa-mpnet-base-dot-v1", "sentence-transformers/multi-qa-mpnet-base-dot-v1"]
     assert doctor_cmd._model_cached("") is False
+
+
+# --- Troubleshooting is generated from the checks, and the measurement checks -------------------------------------
+
+
+def _check_labels():
+    import ast
+    import inspect
+
+    from commontrace.commands import doctor_cmd
+
+    tree = ast.parse(inspect.getsource(doctor_cmd))
+    labels = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("_check", "_info") \
+                and node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant):
+                labels.add(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                labels.add("".join(v.value if isinstance(v, ast.Constant) else "{}" for v in arg.values))
+    return labels
+
+
+def test_every_check_has_a_why_and_a_fix_so_the_guide_cannot_go_stale():
+    from commontrace.commands import doctor_cmd
+
+    labels = _check_labels()
+    assert labels and not (labels - set(doctor_cmd.TROUBLESHOOTING)), \
+        f"add a TROUBLESHOOTING entry for: {sorted(labels - set(doctor_cmd.TROUBLESHOOTING))}"
+    unused = set(doctor_cmd.TROUBLESHOOTING) - labels
+    assert not unused, f"TROUBLESHOOTING entries for checks that no longer exist: {sorted(unused)}"
+    for label, (why, fix) in doctor_cmd.TROUBLESHOOTING.items():
+        assert why.strip() and fix.strip(), label
+
+
+def test_the_troubleshooting_guide_prints_and_exits_clean(capsys):
+    from commontrace.cli import main
+
+    assert main(["doctor", "--troubleshooting"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Troubleshooting") and "**Fix:**" in out and "## memory/ store present" in out
+
+
+def test_a_failing_check_prints_its_fix(tmp_path, capsys, monkeypatch):
+    from commontrace.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    main(["doctor", "--dest", str(tmp_path / "nothing")])
+    out = capsys.readouterr().out
+    assert "[WARN] memory/ store present" in out and "fix: Run `commontrace init" in out
+
+
+def test_a_world_readable_gateway_token_is_flagged(tmp_path, capsys, monkeypatch):
+    import os
+
+    from commontrace import gateway
+    from commontrace.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
+    token = gateway.token_path(str(tmp_path))
+    gateway.load_or_create_token(str(tmp_path))
+    capsys.readouterr()
+    main(["doctor", "--dest", str(tmp_path)])
+    assert "[OK  ] gateway token file protected" in capsys.readouterr().out
+    os.chmod(token, 0o644)
+    main(["doctor", "--dest", str(tmp_path)])
+    assert "[WARN] gateway token file protected" in capsys.readouterr().out
+
+
+def test_a_run_that_never_reports_outcomes_and_a_compromised_one_are_named(tmp_path, capsys, monkeypatch):
+    from commontrace import holdout_io
+    from commontrace.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    main(["init", "--agent-type", "support", "--dest", str(tmp_path)])
+    config = holdout_io.configure(str(tmp_path), rate=0.5, salt="doc")
+    for i in range(40):
+        holdout_io.assign_and_log(str(tmp_path), ["m"], occasion_id=f"o{i}", rate=0.5 if i < 20 else 0.1,
+                                  salt=config.salt, revisions={"m": "r"})
+    capsys.readouterr()
+    main(["doctor", "--dest", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "[WARN] experiment outcomes reported" in out and "fix: Report each occasion" in out
+    assert "[WARN] experiment integrity" in out and "COMPROMISED" in out

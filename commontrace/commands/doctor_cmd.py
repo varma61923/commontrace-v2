@@ -36,7 +36,75 @@ def _installed(module: str) -> bool:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser("doctor", help="Check the environment and store health.")
     p.add_argument("--dest", default=None)
+    p.add_argument("--troubleshooting", action="store_true",
+                   help="Print what each check means and how to fix it, as Markdown, and exit.")
     p.set_defaults(func=run)
+
+
+#: Why each check exists and what to do when it does not pass, keyed by the check's label (a `{}` stands for a
+#: value filled in at run time). A test fails if a check is added without an entry, so the troubleshooting guide
+#: is generated from the same list the checks run from and cannot go stale.
+TROUBLESHOOTING: dict[str, tuple[str, str]] = {
+    "Python >= 3.10": ("The package uses syntax and library features from Python 3.10.",
+                       "Install Python 3.10 or newer and reinstall: `python3 -m pip install commontrace`."),
+    "PyYAML importable": ("Lessons and traces are Markdown with YAML frontmatter, read with PyYAML.",
+                          "`python3 -m pip install 'PyYAML>=6,<7'` in the same environment as `commontrace`."),
+    "git on PATH": ("Some commands read the repository's history.", "Install git, or ignore this if you do not use "
+                                                                    "those commands."),
+    "memory/ store present": ("Every command reads a store: a `memory/` directory.",
+                              "Run `commontrace init --function <name>` here, or pass `--dest` / set "
+                              "`COMMONTRACE_ROOT` to the directory that holds `memory/`."),
+    "lessons in store": ("With no lessons there is nothing to retrieve or measure.",
+                         "Capture experience (`commontrace capture`), then `commontrace distill`, review and "
+                         "`commontrace lesson approve`; or `commontrace kb install` for a curated pack."),
+    "retrieval ready (>= 1 ACTIVE lesson)": ("The store has content but nothing active, so `query` returns nothing.",
+                                             "Approve a candidate: `commontrace lesson list --status review`, then "
+                                             "`commontrace lesson approve <slug>`."),
+    "trace filename collisions": ("Two traces whose file names collide overwrite each other.",
+                                  "Re-capture the affected traces; recent versions suffix every name with an id."),
+    "credentials in stored traces": ("A trace holding a credential would be replayed to every later reader.",
+                                     "Run `commontrace redact` on the store and rotate the credential."),
+    "store agent_type": ("The declared kind of agent decides starter domains and defaults.",
+                         "Set it with `commontrace init --agent-type <type>`; any value is valid."),
+    "attention extra (numpy + sentence-transformers)": ("Semantic ranking needs numpy and sentence-transformers; "
+                                                        "without them retrieval is lexical.",
+                                                        "`python3 -m pip install 'commontrace[attention]'`, then "
+                                                        "`commontrace index`."),
+    "MCP SDK (agent-native access via `commontrace serve`)": ("`commontrace serve` needs the MCP SDK.",
+                                                              "`python3 -m pip install 'commontrace[serve]'`."),
+    "reference attention/query.py": ("The semantic query script ships inside the package.",
+                                     "`python3 -m pip install --force-reinstall commontrace`."),
+    "benchmark script found": ("`commontrace bench` runs a script that ships inside the package.",
+                               "`python3 -m pip install --force-reinstall commontrace`."),
+    "pilot metrics script found": ("`commontrace pilot` runs a script that ships inside the package.",
+                                   "`python3 -m pip install --force-reinstall commontrace`."),
+    "protocol/ spec": ("The spec is in a repository checkout; an installed client carries the schemas instead.",
+                       "Nothing to do for an installed client."),
+    "retrieval fusion": ("Reports how lesson scores are combined.", "Change it with `commontrace retrieval`."),
+    "retrieval reranking": ("Reports whether a reranker is configured.", "Change it with `commontrace retrieval`."),
+    "{} model cached": ("A semantic model that is not downloaded is fetched on first use, which can stall a "
+                        "first query or fail offline.",
+                        "Run `commontrace index` once with network access, or point the model setting at a local "
+                        "directory."),
+    "{} model": ("Reports which embedding model a role uses.", "Change it with `commontrace retrieval`."),
+    "gateway token file protected": ("The gateway's bearer token lets whoever holds it read and write this store.",
+                                     "`chmod 600 memory/gateway.token`; rotate it by deleting the file and "
+                                     "restarting the gateway."),
+    "experiment outcomes reported": ("A held-out memory without outcomes cannot be measured; a run that never "
+                                     "reports them is not an experiment.",
+                                     "Report each occasion's result under the same occasion id (`POST /v1/outcome` "
+                                     "or `CausalMemory.record_outcome`); see `commontrace proof status`."),
+    "experiment integrity": ("A COMPROMISED experiment (for example, two rates under one salt) states no effect.",
+                             "Read `commontrace proof status` for the named mechanism; start a fresh "
+                             "randomization (change the salt) rather than pooling."),
+}
+
+
+def troubleshooting_markdown() -> str:
+    lines = ["# Troubleshooting", "", "Generated from the checks `commontrace doctor` runs.", ""]
+    for label, (why, fix) in TROUBLESHOOTING.items():
+        lines += [f"## {label.replace('{}', '<name>')}", "", why, "", f"**Fix:** {fix}", ""]
+    return "\n".join(lines)
 
 
 # Accumulates failed checks so run() can exit non-zero. Module-level rather
@@ -62,6 +130,10 @@ def _check(label: str, ok: bool, detail: str = "", critical: bool = False) -> No
     if detail:
         line += f" - {detail}"
     print(line)
+    if not ok:
+        entry = TROUBLESHOOTING.get(label)
+        if entry:
+            print(f"       fix: {entry[1]}")
     if not ok and critical:
         _FAILURES.append(label)
 
@@ -202,7 +274,45 @@ def _model_cached(name: str) -> bool:
     return False
 
 
+def _check_measurement(root: str) -> None:
+    """The checks for a store that is measuring: the gateway's token, outcomes, and the audit's verdict.
+    Silent for a store that is not (nothing started, nothing to report)."""
+    import stat
+
+    from commontrace import gateway, holdout_io
+
+    token = gateway.token_path(root)
+    if os.path.isfile(token) and os.name == "posix":
+        mode = stat.S_IMODE(os.stat(token).st_mode)
+        _check("gateway token file protected", mode & 0o077 == 0, f"mode {oct(mode)}")
+    config = holdout_io.load_config(root)
+    if not (config.started_at and config.running):
+        return
+    rows, _corrupt = holdout_io.read_log(root)
+    if not rows:
+        return
+    occasions = {r.occasion_id for r in rows}
+    answered = set(holdout_io.read_outcomes(root))
+    share = len(occasions & answered) / len(occasions)
+    _check("experiment outcomes reported", share >= 0.5 or len(occasions) < 20,
+           f"{share:.0%} of {len(occasions)} occasions have an outcome")
+    from commontrace import integrity
+    from commontrace.commands import experiment_cmd
+
+    try:
+        assignments, _rate, _bad = experiment_cmd._load(root)
+        assignments, _salt, _other = experiment_cmd.scope_to_current_salt(root, assignments)
+        verdict = integrity.audit(assignments).verdict
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must not take the report down
+        _check("experiment integrity", False, f"could not audit: {exc}")
+        return
+    _check("experiment integrity", verdict != integrity.VERDICT_COMPROMISED, verdict)
+
+
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "troubleshooting", False):
+        print(troubleshooting_markdown())
+        return 0
     _FAILURES.clear()
     root = paths.resolve_root(args.dest)
     print(f"[commontrace] doctor - store root: {root}\n")
@@ -431,6 +541,9 @@ def run(args: argparse.Namespace) -> int:
             "not present; expected for a pip-installed client -- schemas are mirrored "
             "at commontrace/schemas/",
         )
+
+    if has_mem:
+        _check_measurement(root)
 
     if _FAILURES:
         # Non-zero so a CI gate, a container health check, or an onboarding
