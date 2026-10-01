@@ -42,6 +42,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     demo.add_argument("--dest", default=None)
     demo.set_defaults(func=run_demo)
 
+    pr = sub.add_parser(
+        "precision", help="Score the outcome detector against occasions a person has labelled.")
+    pr.add_argument("sample", help="JSON lines: {occasion_id, truth, combine, signals}; see commontrace/precision.py.")
+    pr.add_argument("--min-precision", type=float, default=0.9)
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(func=run_precision)
+
     chk = sub.add_parser("check", help="Validate a kit file.")
     chk.add_argument("file")
     chk.set_defaults(func=run_check)
@@ -113,3 +120,23 @@ def run_check(args: argparse.Namespace) -> int:
           f"detectors {', '.join(kit.outcome.signals)} ({kit.outcome.combine})")
     return 0
 
+
+
+def run_precision(args: argparse.Namespace) -> int:
+    import json
+
+    from commontrace import precision
+
+    try:
+        with open(args.sample, encoding="utf-8") as fh:
+            result = precision.evaluate(precision.read_sample(fh.read()))
+    except (OSError, precision.SampleError) as exc:
+        print(f"[commontrace] error: {exc}", file=sys.stderr)
+        return 2
+    met = result.precision is not None and result.precision >= args.min_precision
+    if args.json:
+        print(json.dumps({**result.to_dict(), "min_precision": args.min_precision, "met": met}, indent=2))
+    else:
+        print(precision.render(result, min_precision=args.min_precision))
+        print("  " + ("meets the target." if met else "DOES NOT meet the target (or made no success calls)."))
+    return 0 if met else 1

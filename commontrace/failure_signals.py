@@ -169,9 +169,94 @@ def _trend(dated: list[str]) -> str:
     return "steady"
 
 
+#: Cosine similarity of stemmed, IDF-weighted title+context vectors at which two groups of failures
+#: are one signal (average linkage). Chosen on development seeds 100-104 of commons/eval/signal_ari.py
+#: and reported on held-out seeds 0-19; a different scale from `distill`'s word-overlap threshold.
+DEFAULT_SIMILARITY = 0.15
+
+
+def _vectors(occurrences: list[FailureOccurrence]) -> list[dict[str, float]]:
+    """Unit-length TF-IDF vectors of each failure's title and context, stemmed.
+
+    IDF is computed over THESE failures, so boilerplate that appears across all of them ("the customer
+    was frustrated") carries almost no weight and what distinguishes one failure mode from another
+    carries most. The solution text is not used: it is what was done about it, and a signal is meant to
+    group by what went wrong, including failures nobody has yet fixed."""
+    import math
+    from collections import Counter
+
+    from commontrace import _stem
+    from commontrace._lexical import STOPWORDS, WORD_RE
+
+    def tokens(text: str) -> list[str]:
+        return [_stem.stem(w) for w in WORD_RE.findall(text.lower()) if w not in STOPWORDS and len(w) > 1]
+
+    docs = [Counter(tokens(f"{o.title} {o.context_text}")) for o in occurrences]
+    df: Counter = Counter(t for d in docs for t in d)
+    n = len(docs)
+    out = []
+    for d in docs:
+        v = {t: (1 + math.log(c)) * math.log((n + 1) / (df[t] + 0.5)) for t, c in d.items()}
+        norm = math.sqrt(sum(x * x for x in v.values())) or 1.0
+        out.append({t: x / norm for t, x in v.items()})
+    return out
+
+
+def _average_linkage(vectors: list[dict[str, float]], threshold: float) -> list[list[int]]:
+    """Agglomerative clustering, average linkage (UPGMA), merging while the best pair's similarity is at
+    least `threshold`. Sparse: only pairs that share a term have a similarity, the rest are 0 and can
+    never merge at a positive threshold, so cost follows the number of overlapping pairs, not n squared
+    over everything. Average linkage, not single: one shared sentence cannot chain two different
+    failure modes into one."""
+    import heapq
+
+    n = len(vectors)
+    index: dict[str, list[int]] = {}
+    for i, v in enumerate(vectors):
+        for t in v:
+            index.setdefault(t, []).append(i)
+    sims: dict[int, dict[int, float]] = {i: {} for i in range(n)}
+    for i, v in enumerate(vectors):
+        scores: dict[int, float] = {}
+        for t, x in v.items():
+            for j in index[t]:
+                if j > i:
+                    scores[j] = scores.get(j, 0.0) + x * vectors[j][t]
+        for j, sim in scores.items():
+            if sim > 0:
+                sims[i][j] = sims[j][i] = sim
+    members = {i: [i] for i in range(n)}
+    heap = [(-sim, i, j) for i in range(n) for j, sim in sims[i].items() if j > i]
+    heapq.heapify(heap)
+    next_id = n
+    while heap:
+        neg, a, b = heapq.heappop(heap)
+        if -neg < threshold:
+            break
+        if a not in members or b not in members or sims[a].get(b) != -neg:
+            continue  # stale: one side was merged since this entry was pushed
+        na, nb = len(members[a]), len(members[b])
+        c = next_id
+        next_id += 1
+        merged: dict[int, float] = {}
+        for other in (sims[a].keys() | sims[b].keys()) - {a, b}:
+            merged[other] = (na * sims[a].get(other, 0.0) + nb * sims[b].get(other, 0.0)) / (na + nb)
+        for x in (a, b):
+            for other in sims.pop(x):
+                if other in sims:
+                    sims[other].pop(x, None)
+        sims[c] = merged
+        for other, sim in merged.items():
+            sims[other][c] = sim
+            if sim >= threshold:
+                heapq.heappush(heap, (-sim, min(c, other), max(c, other)))
+        members[c] = members.pop(a) + members.pop(b)
+    return list(members.values())
+
+
 def build_signals(
     root: str, *, agent_type: str | None = None,
-    similarity_threshold: float = 0.3, min_cluster_size: int = 2,
+    similarity_threshold: float = DEFAULT_SIMILARITY, min_cluster_size: int = 2,
 ) -> tuple[list[Signal], dict[str, FailureOccurrence]]:
     """Cluster this store's failing traces into named signals.
 
@@ -182,17 +267,19 @@ def build_signals(
     """
     occurrences = load_failure_occurrences(root, agent_type)
     by_id = {occ.id: occ for occ in occurrences}
-    candidates = [
-        distill.TraceCandidate(
-            id=occ.id, path="", title=occ.title, context_text=occ.context_text,
-            solution_text=occ.solution_text, tags=occ.tags, agent_type=occ.agent_type,
-        )
-        for occ in occurrences
-    ]
-    clusters = distill.find_clusters(
-        candidates, existing_lessons_source_traces=[],
-        similarity_threshold=similarity_threshold, min_cluster_size=min_cluster_size,
-    )
+    groups = _average_linkage(_vectors(occurrences), similarity_threshold) if similarity_threshold > 0 else \
+        [list(range(len(occurrences)))] if occurrences else []
+    clusters = []
+    for group in groups:
+        if len(group) < min_cluster_size:
+            continue
+        traces = [distill.TraceCandidate(
+            id=occurrences[i].id, path="", title=occurrences[i].title, context_text=occurrences[i].context_text,
+            solution_text=occurrences[i].solution_text, tags=occurrences[i].tags,
+            agent_type=occurrences[i].agent_type) for i in group]
+        shared = set.intersection(*(distill._tokenize(f"{t.title} {t.context_text}") for t in traces))
+        clusters.append(distill.Cluster(traces=traces, shared_terms=sorted(shared)[:8]))
+    clusters.sort(key=lambda c: len(c.traces), reverse=True)
 
     signals: list[Signal] = []
     for cluster in clusters:
