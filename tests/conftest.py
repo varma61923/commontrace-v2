@@ -20,6 +20,11 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "commontrace", "reference"))
 # kinds of install, so it pins the default off and the tests of the default
 # set it themselves (tests/test_rerank.py). Subprocesses inherit it.
 os.environ.setdefault("COMMONTRACE_DEFAULT_RERANK", "none")
+# Semantic queries are answered by a long-lived worker when one can be had
+# (commontrace/warm.py). One worker outliving the test that started it would
+# serve later tests from its own module state, so the suite runs without it
+# and tests/test_warm.py turns it on where it is the subject.
+os.environ.setdefault("COMMONTRACE_WARM", "0")
 
 
 def _write_frontmatter_file(path, fm, body):

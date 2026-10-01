@@ -6,6 +6,8 @@ import subprocess
 import sys
 from typing import Literal, overload
 
+from commontrace import warm
+
 
 def has_attention_deps() -> bool:
     """Whether the optional semantic attention layer's deps (numpy, sentence-transformers)
@@ -147,6 +149,27 @@ def run_script(
     env["PYTHONSAFEPATH"] = "1"
     if extra_env:
         env.update(extra_env)
+
+    # The semantic query script and the index builder are answered by a
+    # long-lived worker that keeps the model loaded (commontrace/warm.py), when
+    # one can be had; it runs the script's own main() and returns what the
+    # subprocess would have printed.
+    # None means "use the subprocess", and every failure on that path is None.
+    if not extra_env and warm.enabled(relative):
+        answered = warm.run(
+            warm.worker_script(relative, script), extra_args, root, env,
+            build=warm.worker_script(relative, script) != script,
+        )
+        if answered is not None:
+            rc, out, err = answered
+            if err:
+                sys.stderr.write(err)
+                sys.stderr.flush()
+            if capture:
+                return rc, out
+            sys.stdout.write(out)
+            sys.stdout.flush()
+            return rc
 
     cmd = [sys.executable]
     if sys.version_info >= (3, 11):

@@ -439,6 +439,19 @@ the optional `attention` extra (semantic embeddings) isn't installed —
 `commontrace query` always returns something with just the core install,
 rather than failing outright.
 
+With the `attention` extra, the first semantic query starts a background
+worker that keeps the embedding model and the cross-encoder loaded, and
+later queries are answered by it. On a 1000-lesson store on a 4-core CPU, a
+query with the default fusion and reranking takes about 0.55 s instead of
+7-8.5 s, and semantic ranking alone about 0.25 s instead of 6.5 s; nearly
+all that remains is the models' own forward passes. The first query after a
+lesson changes refreshes the index through the same worker, re-reading only
+the lessons that changed: about 2 s instead of 16-18 s. The output is what the
+one-shot run would have printed, byte for byte (the same models, loaded the
+same way), and any problem with the worker falls back to the one-shot run. It is Unix-only, listens on a
+socket only you can reach, and exits after 10 idle minutes
+(`COMMONTRACE_WARM_IDLE`, in seconds); `COMMONTRACE_WARM=0` turns it off.
+
 Ranking can also weigh a lesson's own track record and freshness, not just
 today's topical match — opt-in, and never a change to which lessons are
 *eligible* at all (the relevance floor is unaffected either way):
@@ -951,6 +964,8 @@ clone the repo and run scripts from within it, everything works out of the box.
 | Variable | Default | Description |
 |---|---|---|
 | `COMMONTRACE_ROOT` | Auto-detected from script location | Root of the skill installation |
+| `COMMONTRACE_WARM` | on (Unix) | `0` runs every semantic query as a one-shot process instead of through the warm worker |
+| `COMMONTRACE_WARM_IDLE` | `600` | Seconds without a query before the warm worker exits |
 
 Only set `COMMONTRACE_ROOT` if you need to override the auto-detected path (e.g., scripts
 are running from a different location than the memory store).

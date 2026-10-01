@@ -375,6 +375,7 @@ def build_or_update_index(
     force_rebuild: bool = False,
     model: Any = None,
     log: Any = print,
+    items: Any = None,
 ) -> dict[str, Any]:
     """Computes SHA-256 hash of lesson content. Reuses precomputed embeddings for unchanged
     hashes from output_path. Encodes only new/modified lessons.
@@ -385,7 +386,9 @@ def build_or_update_index(
     `model_name`, for a long-lived process
     that holds one (commontrace/semantic_arm.py); `log` receives the progress lines,
     which such a process must keep off stdout -- the MCP server's stdout is its
-    protocol channel.
+    protocol channel. `items` is `iter_active_lessons(lessons_dir)`'s output
+    when the caller already has it (main() reads it for its staleness check):
+    parsing every lesson's YAML is most of an incremental build's cost.
     """
     if np is None:
         raise ImportError("numpy is required to build or update the attention index.")
@@ -395,7 +398,7 @@ def build_or_update_index(
         raise ValueError(
             f"{model_name!r} is not a trusted embedding model; expected one of {list(TRUSTED_MODELS)}")
 
-    active_items = list(iter_active_lessons(lessons_dir))
+    active_items = list(items) if items is not None else list(iter_active_lessons(lessons_dir))
     slugs = [item[0] for item in active_items]
     texts = [item[1] for item in active_items]
     agent_types = [item[2] for item in active_items]
@@ -532,6 +535,7 @@ def main() -> int:
     model_name = args.model or index_model(INDEX_PATH, args.fallback_model)
 
     # Staleness check: if not args.force, check if the index is already fully up-to-date
+    items = None
     if os.path.exists(INDEX_PATH) and not args.force:
         index_mtime = _safe_mtime(INDEX_PATH)
         newest_lesson = max(
@@ -551,13 +555,16 @@ def main() -> int:
             indexed_slugs = None
             model_matches = False
 
-        active_slugs = {item[0] for item in iter_active_lessons(LESSONS_DIR)}
+        # Read once, and handed to the build below: the lessons are the same.
+        items = list(iter_active_lessons(LESSONS_DIR))
+        active_slugs = {item[0] for item in items}
         same_slugs = indexed_slugs is not None and indexed_slugs == active_slugs
         if newest_lesson <= index_mtime and same_slugs and model_matches:
             print(f"Index up-to-date at {INDEX_PATH} (use --force or --rebuild to rebuild anyway)")
             return 0
 
-    res = build_or_update_index(LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force)
+    res = build_or_update_index(
+        LESSONS_DIR, INDEX_PATH, model_name=model_name, force_rebuild=args.force, items=items)
     print(
         f"Index built: {res['n_lessons']} lessons ({res['encoded_count']} encoded, "
         f"{res['reused_count']} reused from cache), "

@@ -877,3 +877,24 @@ class TestLessonSlugPrefixNormalization:
         fm_rej, body_rej = frontmatter.read(lesson_path2)
         assert fm_rej["status"] == "archived"
         assert "## Rejected" in body_rej
+
+
+class TestAStaleIndexReadsEachLessonOnce:
+    """main() read every lesson's frontmatter for its staleness check, then
+    build_or_update_index read them all again: two YAML parses per lesson per
+    rebuild, most of an incremental build's time."""
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+    def test_one_pass_over_the_lessons(self, tmp_path, monkeypatch):
+        build_index, index_file = TestCacheInvalidationValidatesModelAndDimension()._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", ["build_index.py"])
+        assert build_index.main() == 0          # the first build
+        lesson = tmp_path / "memory" / "lessons" / "lesson_01.md"
+        lesson.write_text(lesson.read_text(encoding="utf-8") + "more\n", encoding="utf-8")
+        future = time.time() + 1000
+        os.utime(str(lesson), (future, future))  # newer than the index: stale
+        passes = []
+        real = build_index.iter_active_lessons
+        monkeypatch.setattr(build_index, "iter_active_lessons", lambda d: passes.append(d) or real(d))
+        assert build_index.main() == 0
+        assert len(passes) == 1

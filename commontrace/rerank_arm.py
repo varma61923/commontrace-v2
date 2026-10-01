@@ -122,6 +122,27 @@ MAX_CHARS = 1200
 
 _LOCK = threading.Lock()
 _LOADED: dict[str, object] = {}
+#: Whether to score in the warm worker (commontrace/warm.py) when one can be
+#: had. A one-shot CLI process sets it: loading the model there costs seconds
+#: per query, while the worker keeps it loaded. A long-lived process (the MCP
+#: server) leaves it off and keeps the model itself.
+_USE_WORKER = False
+
+
+def use_worker(enabled: bool = True) -> None:
+    """Score through the warm worker when one can be had (see _USE_WORKER)."""
+    global _USE_WORKER
+    _USE_WORKER = enabled
+
+
+def _worker_scores(mode: str, pairs: list[tuple[str, str]]) -> list[float] | None:
+    """The worker's scores for `pairs`, or None to score in-process. Same
+    model, loaded by this module's `_load` in the worker, so the same scores."""
+    if not _USE_WORKER:
+        return None
+    from commontrace import warm
+
+    return warm.rerank_scores(mode, pairs)
 
 
 def available() -> bool:
@@ -192,6 +213,8 @@ def ready(mode: str = DEFAULT_MODE) -> str:
     """
     if not available():
         return "the reranker needs the attention extra (`pip install commontrace[attention]`)"
+    if _worker_scores(mode, []) is not None:
+        return ""
     try:
         with _LOCK:
             _load(mode)
@@ -277,14 +300,14 @@ def rerank(
     extra = [s for s in withdrawn if s in text_of and s not in set(candidates)]
     if not candidates and not extra:
         return [], []
-    with _LOCK:
-        model = _load(mode)
-        scores = model.predict(
-            # Capped here, not only in `lesson_text`, so every caller -- both
-            # surfaces and the benchmark -- reranks the same text.
-            [(task, text_of[s][:MAX_CHARS]) for s in candidates + extra],
-            batch_size=64, show_progress_bar=False,
-        )
+    # Capped here, not only in `lesson_text`, so every caller -- both
+    # surfaces and the benchmark -- reranks the same text.
+    pairs = [(task, text_of[s][:MAX_CHARS]) for s in candidates + extra]
+    scores = _worker_scores(mode, pairs)
+    if scores is None:
+        with _LOCK:
+            model = _load(mode)
+            scores = model.predict(pairs, batch_size=64, show_progress_bar=False)
     scored = [(s, float(x)) for s, x in zip(candidates, scores[: len(candidates)])]
     if admit is not None:
         scored = [(s, x) for s, x in scored if admit(s, x)]

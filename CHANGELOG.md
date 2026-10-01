@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`commontrace query` with the attention extra in about 0.55 s, from 7-8.5 s** (default fusion and
+  reranking, 1000 lessons, 4-core CPU; semantic alone 0.25 s from 6.5 s). The first call starts a per-user worker
+  (`commontrace/warm.py`) that keeps the reference script, the embedding model, the cross-encoder and the parsed
+  index loaded, and answers later calls over a private Unix socket (directory 0700 and checked, socket 0600, peer
+  uid checked on Linux). It runs the script's own `main()` and `rerank_arm`'s own model loading, so output and
+  scores are identical to the one-shot run, and every failure falls back to that run. The MCP server keeps its
+  models in-process as before. The index refresh after a lesson changes runs in the same worker with the model
+  it already holds and re-parses only changed frontmatter: about 2 s from 16-18 s at 1000 lessons.
+- **An index rebuild reads each lesson once.** `build_index.py` parsed every lesson's frontmatter for its
+  staleness check and again for the build; the build now reuses the first pass. It exits after `COMMONTRACE_WARM_IDLE` seconds idle (600), when its socket is
+  removed, or when the script changes; `COMMONTRACE_WARM=0` turns it off.
 - **`commontrace gate`: fail a build on memory that should not ship.** Exit 1 on a COMPROMISED experiment, an
   active lesson measured to hurt (a warning if harm withdrawal already keeps it out), an active lesson tripping
   the content screen, or unedited scaffolding; contradictions and no-verdicts-yet warn (`--strict` blocks). Text,

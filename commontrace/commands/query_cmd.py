@@ -1014,6 +1014,10 @@ def _has_candidates(args: argparse.Namespace, root: str) -> bool:
 
 def run(args: argparse.Namespace) -> int:
     root = paths.resolve_root(args.dest)
+    # A one-shot process: score with the warm worker's loaded cross-encoder
+    # rather than loading one here for seconds (commontrace/warm.py). Same
+    # model, same scores; any failure scores in-process as before.
+    rerank_arm.use_worker()
 
     # A store that reranks without fusion reranks the LEXICAL arm, as MCP's
     # `retrieve` does: the reranker's pool is the floor-cleared lexical

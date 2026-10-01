@@ -74,6 +74,10 @@ TROUBLESHOOTING: dict[str, tuple[str, str]] = {
                                                               "`python3 -m pip install 'commontrace[serve]'`."),
     "reference attention/query.py": ("The semantic query script ships inside the package.",
                                      "`python3 -m pip install --force-reinstall commontrace`."),
+    "warm query worker": ("Without it every semantic query loads the embedding model again (seconds, not "
+                          "milliseconds).",
+                          "Make the runtime directory private: `chmod 700` the directory named above (or set "
+                          "XDG_RUNTIME_DIR to one that is), and make sure it is owned by you."),
     "benchmark script found": ("`commontrace bench` runs a script that ships inside the package.",
                                "`python3 -m pip install --force-reinstall commontrace`."),
     "pilot metrics script found": ("`commontrace pilot` runs a script that ships inside the package.",
@@ -499,6 +503,14 @@ def run(args: argparse.Namespace) -> int:
     query_script = find_reference_script(root, "memory/attention/query.py")
     if query_script is not None:
         _check("reference attention/query.py", True, query_script)
+        if attention_extra:
+            from commontrace import warm
+
+            healthy, detail = warm.status(query_script)
+            if healthy:
+                _info("warm query worker", detail)
+            else:
+                _check("warm query worker", False, detail)
     else:
         # It ships inside the package now, so absence means a damaged install
         # rather than "you are not in a repo checkout". This used to be an
