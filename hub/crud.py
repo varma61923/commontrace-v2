@@ -1599,6 +1599,10 @@ async def amend_trace(
             if idempotency_key is not None
             else None
         ),
+        # Carry forward routing and temporal validity from the original trace
+        scopes=list(original.scopes or []),
+        valid_from=original.valid_from,
+        valid_until=original.valid_until,
         **_carry_commons_forward(original, resolved_title, resolved_context, resolved_tags),
     )
     original.superseded_at = datetime.now(timezone.utc)

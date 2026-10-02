@@ -196,3 +196,16 @@ def _review(root: str) -> list[str]:
             if fm.get("status") == "review":
                 out.append(name.removesuffix(".md"))
     return out
+
+
+def main_dream(root: str, draft: bool = False) -> int:
+    """Run a dreaming pass programmatically (used by agent_loop and tests)."""
+    import argparse
+    args = argparse.Namespace(
+        recipe=None,
+        every="weekly",
+        dest=root,
+        no_draft=not draft,
+    )
+    return run(args)
+
