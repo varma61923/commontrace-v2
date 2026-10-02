@@ -561,7 +561,9 @@ class TestTheSemanticOnlyPathIsLabelled:
         assert rc == 0
         with open(holdout_io.holdout_log_path(store), encoding="utf-8") as fh:
             rows = [json.loads(line) for line in fh if line.strip()]
-        assert {r.get("scorer") for r in rows if r["occasion_id"] == "sem-1"} == {"semantic"}
+        # A store with no history on this path is given the budgeted treatment,
+        # which has its own label (tests/test_semantic_dosage.py).
+        assert {r.get("scorer") for r in rows if r["occasion_id"] == "sem-1"} == {"semantic-dosed"}
 
     def test_a_log_mixing_it_with_lexical_is_drift(self):
         from commontrace import integrity

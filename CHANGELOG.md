@@ -151,8 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or admitted core lessons: on a 10,000-lesson store one query handed an agent 3,928 lessons and read every one of
   them first (5.1 s warm). It now gets the same allocation as the other paths (core first, then the arm's order,
   every lesson left out named), reads only up to a full count budget (0.71 s p50, 0.76 s p95), and assigns arms
-  only to what is injected. A store on semantic-only retrieval with more eligible lessons than its budget now
-  serves fewer lessons per occasion, as the lexical path already did.
+  only to what is injected. The budgeted treatment is recorded as `semantic-dosed`; a store whose experiment log
+  already records the unbudgeted one (`semantic`) keeps it until that experiment is reset, as a store keeps its
+  logged scorer, so no running experiment changes treatment on upgrade and the audit never pools the two.
+- **A semantic-only experiment log pinned the wrong settings.** Semantic-only assignments carry no floor, so the
+  pinning read them as pre-upgrade rows: an unconfigured store was pinned to the historical `count-v1` scorer, and
+  an index rebuilt from nothing took the default embedder instead of the one the experiment ranked with.
 
 - **Brute-force limits multiplied by replica count.** Console sign-in, signup, share-link views, the operator
   console, connector/OTLP/REST auth and `/readyz` built process-local limiters, so under

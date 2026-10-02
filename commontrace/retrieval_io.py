@@ -61,6 +61,13 @@ FUSIONS = (FUSION_NONE, FUSION_RRF, FUSION_GATED)
 #: occasions flipped between this path and lexical (a stale index, a
 #: missing extra) pooled two treatments with nothing to show it.
 SEMANTIC_ONLY = "semantic"
+#: The same, when the store's injection budget then decided what of the arm's
+#: output reached the agent (query_cmd._dose_semantic). The semantic-only path
+#: used to inject everything the arm returned, its importance override
+#: included; a store whose log already records that treatment keeps it
+#: (`semantic_only_undosed_pinned`), and the budgeted one is recorded under
+#: this label, so the audit never pools the two.
+SEMANTIC_ONLY_DOSED = "semantic-dosed"
 
 #: Second-stage reranking of the first stage's candidates
 #: (commontrace/rerank_arm.py). "none" keeps the first stage's order.
@@ -208,14 +215,26 @@ def parse_rerank_label(label: str) -> tuple[str, str]:
     return label, RERANK_NONE
 
 
-def semantic_only_label(embedder: str = "") -> str:
+def semantic_only_label(embedder: str = "", *, dosed: bool = False) -> str:
     """The label of a ranking the semantic arm decided alone, naming its
-    embedder as a fused label does."""
-    return f"{SEMANTIC_ONLY}@{embedder}" if embedder else SEMANTIC_ONLY
+    embedder as a fused label does; `dosed` when the store's budget then
+    decided what reached the agent (SEMANTIC_ONLY_DOSED)."""
+    base = SEMANTIC_ONLY_DOSED if dosed else SEMANTIC_ONLY
+    return f"{base}@{embedder}" if embedder else base
 
 
 def _is_semantic_only(label: str) -> bool:
-    return label == SEMANTIC_ONLY or (label or "").startswith(SEMANTIC_ONLY + "@")
+    return (label or "").partition("@")[0] in (SEMANTIC_ONLY, SEMANTIC_ONLY_DOSED)
+
+
+def semantic_only_undosed_pinned(root: str) -> bool:
+    """Whether this store's most recent assignment was a semantic-only one
+    made before the budget applied to that path: an experiment running on
+    that treatment keeps it, as a store keeps its logged scorer."""
+    logged = _last_logged_settings(root)
+    if logged is None:
+        return False
+    return parse_rerank_label(logged[0])[0].partition("@")[0] == SEMANTIC_ONLY
 
 
 def parse_embedder(label: str) -> str:
@@ -400,6 +419,13 @@ def _last_logged_settings(root: str) -> tuple[str, float] | None:
             continue  # a torn final line, or a partial first line from the seek
         scorer = raw.get("scorer")
         floor = raw.get("floor")
+        if scorer and floor is None and _is_semantic_only(parse_rerank_label(str(scorer))[0]):
+            # The semantic-only path records no floor, because no lexical
+            # floor decided its eligibility. Its label alone proves the row
+            # postdates these fields: read as "pre-upgrade", such a store was
+            # pinned to the historical count-v1 scorer and its index rebuilt
+            # with the default embedder instead of the one it ranked with.
+            return str(scorer), retrieval.DEFAULT_FLOOR
         if scorer and floor is not None:
             try:
                 return str(scorer), float(floor)

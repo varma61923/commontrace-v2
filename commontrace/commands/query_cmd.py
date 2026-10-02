@@ -255,6 +255,47 @@ def _withdraw_from_semantic(
     return "\n".join(lines) + ("\n" if stdout.endswith("\n") else ""), removed_slugs
 
 
+def _screen_semantic(stdout: str, root: str) -> str:
+    """The semantic arm's output without lessons that fail the injection screen.
+
+    The lexical and fused paths screen inside `_apply_dosage`; the semantic-only arm is a separate script
+    that ranks from its index and never reads the lesson text, so a lesson edited after approval was listed
+    to the agent, and under `--experiment` given an arm. Same screen and the same stderr notice as the other
+    paths, named by pattern, never by text."""
+    ldir = paths.lessons_dir(root)
+    verdicts: dict[str, bool] = {}
+    lines = []
+    for line in stdout.splitlines():
+        slug = _slug_of_semantic_line(line)
+        if slug is not None:
+            if slug not in verdicts:
+                # A slug with no file has no text to carry an injection, and is passed through unchanged.
+                path = os.path.join(ldir, f"{slug}.md")
+                parsed = read_or_warn(frontmatter.read, path) if os.path.isfile(path) else ({}, "")
+                labels = [] if parsed is None else injection_guard.injection_labels({
+                    "description": parsed[0].get("description"), "applies_when": parsed[0].get("applies_when"),
+                    "do_not_apply_when": parsed[0].get("do_not_apply_when"), "body": parsed[1]})
+                verdicts[slug] = parsed is not None and not labels
+                if labels:
+                    print(f"[commontrace] quarantined {slug}: injection screen: {', '.join(labels)}",
+                          file=sys.stderr)
+            if not verdicts[slug]:
+                continue
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if stdout.endswith("\n") else "")
+
+
+def _semantic_dose_or_pinned(
+    stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig, dosed: bool,
+) -> tuple[str, list[str], str]:
+    """`_dose_semantic`, or for a store whose experiment runs on the treatment
+    from before the budget applied here, that treatment: screened, all of it."""
+    if dosed:
+        return _dose_semantic(stdout, root, agent_type, config)
+    stdout = _screen_semantic(stdout, root)
+    return stdout, _slugs_from_semantic_output(stdout), ""
+
+
 def _dose_semantic(
     stdout: str, root: str, agent_type: str | None, config: retrieval_io.RetrievalConfig,
 ) -> tuple[str, list[str], str]:
@@ -1152,6 +1193,9 @@ def _run(args: argparse.Namespace) -> int:
     core: set[str] = set()
     if harmful:
         core = _core_slugs(_iter_active_lessons(root, args.agent_type))
+    # The budget applies to this path unless an experiment is running on the
+    # treatment from before it did (retrieval_io.semantic_only_undosed_pinned).
+    dosed = not retrieval_io.semantic_only_undosed_pinned(root)
 
     if not args.experiment:
         rc, stdout = run_script(root, script_path, script_args, missing_hint, capture=True)
@@ -1159,7 +1203,7 @@ def _run(args: argparse.Namespace) -> int:
             sys.stdout.write(stdout)
             return rc
         stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-        stdout, _eligible, note = _dose_semantic(stdout, root, args.agent_type, config)
+        stdout, _eligible, note = _semantic_dose_or_pinned(stdout, root, args.agent_type, config, dosed)
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
         return 0
@@ -1188,7 +1232,7 @@ def _run(args: argparse.Namespace) -> int:
     # Before the arms are assigned: a quarantined or withdrawn lesson, or one
     # the budget leaves out, is never administered and so never eligible.
     stdout, withdrawn = _withdraw_from_semantic(stdout, harmful, core, args.top_k)
-    stdout, slugs, note = _dose_semantic(stdout, root, args.agent_type, config)
+    stdout, slugs, note = _semantic_dose_or_pinned(stdout, root, args.agent_type, config, dosed)
     if not slugs:
         sys.stdout.write(stdout + note)
         _print_withdrawn(withdrawn, harmful)
@@ -1202,7 +1246,7 @@ def _run(args: argparse.Namespace) -> int:
     withheld = _apply_holdout(
         args, root, slugs,
         scorer=retrieval_io.semantic_only_label(
-            retrieval_io.embedder_tag(_semantic_model_from_output(stdout))))
+            retrieval_io.embedder_tag(_semantic_model_from_output(stdout)), dosed=dosed))
     for line in stdout.splitlines():
         slug = _slug_of_semantic_line(line)
         if slug is not None and slug in withheld:
