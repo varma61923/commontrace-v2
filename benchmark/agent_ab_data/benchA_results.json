@@ -1,0 +1,1252 @@
+[
+ {
+  "occ": "occ_07",
+  "task": "T3",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 2,
+  "withheld": 3,
+  "slugs": [
+   "lesson_git_release_rebase",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "mem_chars": 989,
+  "retrieval_s": 0.46,
+  "tokens": 51990,
+  "tool_uses": 5,
+  "duration_ms": 8371,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_02",
+  "task": "I2",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 5,
+  "withheld": 5,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter",
+   "lesson_docker_layer_order"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_kafka_rebalance",
+   "lesson_oncall_rotation",
+   "lesson_git_release_rebase"
+  ],
+  "mem_chars": 2560,
+  "retrieval_s": 0.41,
+  "tokens": 53564,
+  "tool_uses": 5,
+  "duration_ms": 8728,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_05",
+  "task": "T2",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 1,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 577,
+  "retrieval_s": 0.29,
+  "tokens": 51759,
+  "tool_uses": 5,
+  "duration_ms": 8810,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_03",
+  "task": "P2",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_docker_layer_order"
+  ],
+  "mem_chars": 2354,
+  "retrieval_s": 0.34,
+  "tokens": 52852,
+  "tool_uses": 4,
+  "duration_ms": 8921,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_08",
+  "task": "S2",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "withheld_slugs": [
+   "lesson_react_list_keys"
+  ],
+  "mem_chars": 1769,
+  "retrieval_s": 0.34,
+  "tokens": 52803,
+  "tool_uses": 4,
+  "duration_ms": 9548,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_01",
+  "task": "I3",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 7,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_docker_layer_order",
+   "lesson_terraform_state_lock",
+   "lesson_http_retry_jitter",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_kafka_rebalance"
+  ],
+  "mem_chars": 3431,
+  "retrieval_s": 0.4,
+  "tokens": 53942,
+  "tool_uses": 5,
+  "duration_ms": 9841,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_06",
+  "task": "T2",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 1,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 577,
+  "retrieval_s": 0.28,
+  "tokens": 51952,
+  "tool_uses": 5,
+  "duration_ms": 9955,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_04",
+  "task": "I2",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 4,
+  "withheld": 6,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_http_retry_jitter",
+   "lesson_git_release_rebase"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_docker_layer_order",
+   "lesson_kafka_rebalance",
+   "lesson_oncall_rotation"
+  ],
+  "mem_chars": 1965,
+  "retrieval_s": 0.4,
+  "tokens": 54658,
+  "tool_uses": 5,
+  "duration_ms": 10966,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_09",
+  "task": "S3",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 1,
+  "withheld": 4,
+  "slugs": [
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "mem_chars": 397,
+  "retrieval_s": 0.36,
+  "tokens": 51845,
+  "tool_uses": 4,
+  "duration_ms": 7000,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_16",
+  "task": "T3",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_git_release_rebase",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "mem_chars": 1465,
+  "retrieval_s": 0.35,
+  "tokens": 52069,
+  "tool_uses": 4,
+  "duration_ms": 7042,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_14",
+  "task": "P2",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_sql_always_parameterised"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_use_clock_now_not_system_time",
+   "lesson_docker_layer_order"
+  ],
+  "mem_chars": 1769,
+  "retrieval_s": 0.34,
+  "tokens": 52440,
+  "tool_uses": 4,
+  "duration_ms": 7480,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_11",
+  "task": "M3",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 1,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_kafka_rebalance"
+  ],
+  "mem_chars": 605,
+  "retrieval_s": 0.33,
+  "tokens": 52146,
+  "tool_uses": 5,
+  "duration_ms": 8470,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_15",
+  "task": "E3",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter"
+  ],
+  "mem_chars": 1218,
+  "retrieval_s": 0.31,
+  "tokens": 53029,
+  "tool_uses": 5,
+  "duration_ms": 8959,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_13",
+  "task": "I3",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 6,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_docker_layer_order",
+   "lesson_kafka_rebalance"
+  ],
+  "withheld_slugs": [
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_terraform_state_lock",
+   "lesson_http_retry_jitter",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "mem_chars": 2015,
+  "retrieval_s": 0.37,
+  "tokens": 53312,
+  "tool_uses": 6,
+  "duration_ms": 9727,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_10",
+  "task": "E3",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 3,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "mem_chars": 1543,
+  "retrieval_s": 0.31,
+  "tokens": 53410,
+  "tool_uses": 5,
+  "duration_ms": 10537,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_12",
+  "task": "E2",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 4,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_docker_layer_order",
+   "lesson_kafka_rebalance",
+   "lesson_postgres_vacuum_before_migration"
+  ],
+  "mem_chars": 1872,
+  "retrieval_s": 0.36,
+  "tokens": 53765,
+  "tool_uses": 5,
+  "duration_ms": 11782,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_18",
+  "task": "M2",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 1011,
+  "retrieval_s": 0.31,
+  "tokens": 52187,
+  "tool_uses": 5,
+  "duration_ms": 7625,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_21",
+  "task": "M3",
+  "cls": "M",
+  "arm": "control",
+  "rel_arm": "withheld",
+  "injected": 0,
+  "withheld": 3,
+  "slugs": [],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_kafka_rebalance",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 0,
+  "retrieval_s": 0.35,
+  "tokens": 51788,
+  "tool_uses": 5,
+  "duration_ms": 8091,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_24",
+  "task": "M3",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_kafka_rebalance"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 1039,
+  "retrieval_s": 0.36,
+  "tokens": 52250,
+  "tool_uses": 5,
+  "duration_ms": 8232,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_19",
+  "task": "I2",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 6,
+  "withheld": 4,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter",
+   "lesson_kafka_rebalance",
+   "lesson_oncall_rotation"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_docker_layer_order",
+   "lesson_git_release_rebase"
+  ],
+  "mem_chars": 2899,
+  "retrieval_s": 0.38,
+  "tokens": 53589,
+  "tool_uses": 5,
+  "duration_ms": 8789,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_23",
+  "task": "P2",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 1,
+  "withheld": 5,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_use_clock_now_not_system_time",
+   "lesson_docker_layer_order"
+  ],
+  "mem_chars": 645,
+  "retrieval_s": 0.3,
+  "tokens": 52144,
+  "tool_uses": 5,
+  "duration_ms": 9639,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_20",
+  "task": "E3",
+  "cls": "E",
+  "arm": "control",
+  "rel_arm": "withheld",
+  "injected": 0,
+  "withheld": 5,
+  "slugs": [],
+  "withheld_slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter"
+  ],
+  "mem_chars": 0,
+  "retrieval_s": 0.35,
+  "tokens": 53753,
+  "tool_uses": 5,
+  "duration_ms": 9971,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_22",
+  "task": "E2",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 4,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_kafka_rebalance",
+   "lesson_postgres_vacuum_before_migration"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_docker_layer_order"
+  ],
+  "mem_chars": 1979,
+  "retrieval_s": 0.35,
+  "tokens": 54645,
+  "tool_uses": 5,
+  "duration_ms": 12407,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_17",
+  "task": "E2",
+  "cls": "E",
+  "arm": "control",
+  "rel_arm": "withheld",
+  "injected": 0,
+  "withheld": 7,
+  "slugs": [],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_docker_layer_order",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_kafka_rebalance",
+   "lesson_postgres_vacuum_before_migration"
+  ],
+  "mem_chars": 0,
+  "retrieval_s": 0.36,
+  "tokens": 54279,
+  "tool_uses": 4,
+  "duration_ms": 14190,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_25",
+  "task": "E3",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 2196,
+  "retrieval_s": 0.39,
+  "tokens": 53110,
+  "tool_uses": 5,
+  "duration_ms": 7035,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_31",
+  "task": "T3",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 1,
+  "withheld": 4,
+  "slugs": [
+   "lesson_git_release_rebase"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "mem_chars": 401,
+  "retrieval_s": 0.35,
+  "tokens": 51724,
+  "tool_uses": 5,
+  "duration_ms": 7457,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_28",
+  "task": "P3",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 2175,
+  "retrieval_s": 0.32,
+  "tokens": 52590,
+  "tool_uses": 4,
+  "duration_ms": 7716,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_29",
+  "task": "M2",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 1,
+  "withheld": 1,
+  "slugs": [
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "mem_chars": 397,
+  "retrieval_s": 0.34,
+  "tokens": 51897,
+  "tool_uses": 5,
+  "duration_ms": 7937,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_26",
+  "task": "M2",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 1011,
+  "retrieval_s": 0.35,
+  "tokens": 52279,
+  "tool_uses": 5,
+  "duration_ms": 8281,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_30",
+  "task": "S2",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys"
+  ],
+  "mem_chars": 1221,
+  "retrieval_s": 0.39,
+  "tokens": 52615,
+  "tool_uses": 4,
+  "duration_ms": 9439,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_27",
+  "task": "I3",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 2,
+  "withheld": 8,
+  "slugs": [
+   "lesson_http_retry_jitter",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_docker_layer_order",
+   "lesson_kafka_rebalance",
+   "lesson_terraform_state_lock"
+  ],
+  "mem_chars": 939,
+  "retrieval_s": 0.33,
+  "tokens": 53420,
+  "tool_uses": 5,
+  "duration_ms": 9765,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_32",
+  "task": "S2",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 2109,
+  "retrieval_s": 0.33,
+  "tokens": 53097,
+  "tool_uses": 4,
+  "duration_ms": 10187,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_39",
+  "task": "S3",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 1561,
+  "retrieval_s": 0.31,
+  "tokens": 52298,
+  "tool_uses": 4,
+  "duration_ms": 6640,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_34",
+  "task": "P3",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 3,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_sql_always_parameterised"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "mem_chars": 1561,
+  "retrieval_s": 0.34,
+  "tokens": 52231,
+  "tool_uses": 4,
+  "duration_ms": 6977,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_40",
+  "task": "P3",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_sql_always_parameterised"
+  ],
+  "mem_chars": 2147,
+  "retrieval_s": 0.32,
+  "tokens": 52481,
+  "tool_uses": 4,
+  "duration_ms": 7083,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_33",
+  "task": "T3",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 4,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_git_release_rebase",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "mem_chars": 1877,
+  "retrieval_s": 0.39,
+  "tokens": 52382,
+  "tool_uses": 5,
+  "duration_ms": 7418,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_36",
+  "task": "I3",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 5,
+  "withheld": 5,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys",
+   "lesson_kafka_rebalance",
+   "lesson_http_retry_jitter",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_docker_layer_order",
+   "lesson_terraform_state_lock"
+  ],
+  "mem_chars": 2195,
+  "retrieval_s": 0.33,
+  "tokens": 53142,
+  "tool_uses": 5,
+  "duration_ms": 7644,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_35",
+  "task": "M2",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 1,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "withheld_slugs": [
+   "lesson_react_list_keys"
+  ],
+  "mem_chars": 671,
+  "retrieval_s": 0.34,
+  "tokens": 52055,
+  "tool_uses": 5,
+  "duration_ms": 7716,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_37",
+  "task": "P3",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "withheld_slugs": [
+   "lesson_react_list_keys",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_vendor_amounts_major_units"
+  ],
+  "mem_chars": 1193,
+  "retrieval_s": 0.29,
+  "tokens": 52232,
+  "tool_uses": 4,
+  "duration_ms": 8908,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_38",
+  "task": "S2",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 2,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "mem_chars": 985,
+  "retrieval_s": 0.36,
+  "tokens": 52567,
+  "tool_uses": 4,
+  "duration_ms": 9459,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_42",
+  "task": "S3",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys"
+  ],
+  "mem_chars": 1221,
+  "retrieval_s": 0.33,
+  "tokens": 52137,
+  "tool_uses": 4,
+  "duration_ms": 6597,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_44",
+  "task": "S3",
+  "cls": "S",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 3,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_react_list_keys"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_ledgerkit_confine_attachment_paths"
+  ],
+  "mem_chars": 1559,
+  "retrieval_s": 0.31,
+  "tokens": 52362,
+  "tool_uses": 4,
+  "duration_ms": 7068,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_41",
+  "task": "M3",
+  "cls": "M",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 2,
+  "withheld": 1,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once"
+  ],
+  "withheld_slugs": [
+   "lesson_kafka_rebalance"
+  ],
+  "mem_chars": 1219,
+  "retrieval_s": 0.31,
+  "tokens": 52131,
+  "tool_uses": 5,
+  "duration_ms": 7168,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_48",
+  "task": "T2",
+  "cls": "T",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 1,
+  "withheld": 0,
+  "slugs": [
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [],
+  "mem_chars": 577,
+  "retrieval_s": 0.29,
+  "tokens": 51822,
+  "tool_uses": 5,
+  "duration_ms": 8664,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_43",
+  "task": "P2",
+  "cls": "P",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 4,
+  "withheld": 2,
+  "slugs": [
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_docker_layer_order"
+  ],
+  "mem_chars": 2326,
+  "retrieval_s": 0.32,
+  "tokens": 53033,
+  "tool_uses": 5,
+  "duration_ms": 9044,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_46",
+  "task": "T2",
+  "cls": "T",
+  "arm": "control",
+  "rel_arm": "withheld",
+  "injected": 0,
+  "withheld": 1,
+  "slugs": [],
+  "withheld_slugs": [
+   "lesson_ledgerkit_use_clock_now_not_system_time"
+  ],
+  "mem_chars": 0,
+  "retrieval_s": 0.29,
+  "tokens": 51618,
+  "tool_uses": 5,
+  "duration_ms": 9026,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_45",
+  "task": "I2",
+  "cls": "I",
+  "arm": "memory",
+  "rel_arm": "injected",
+  "injected": 5,
+  "withheld": 5,
+  "slugs": [
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_ledgerkit_sql_always_parameterised",
+   "lesson_http_retry_jitter",
+   "lesson_kafka_rebalance"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_docker_layer_order",
+   "lesson_oncall_rotation",
+   "lesson_git_release_rebase"
+  ],
+  "mem_chars": 2499,
+  "retrieval_s": 0.37,
+  "tokens": 54075,
+  "tool_uses": 6,
+  "duration_ms": 11665,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ },
+ {
+  "occ": "occ_47",
+  "task": "E2",
+  "cls": "E",
+  "arm": "memory",
+  "rel_arm": "withheld",
+  "injected": 4,
+  "withheld": 3,
+  "slugs": [
+   "lesson_ledgerkit_vendor_amounts_major_units",
+   "lesson_ledgerkit_idempotency_via_idem_once",
+   "lesson_docker_layer_order",
+   "lesson_postgres_vacuum_before_migration"
+  ],
+  "withheld_slugs": [
+   "lesson_ledgerkit_raise_apperror_not_builtin",
+   "lesson_ledgerkit_confine_attachment_paths",
+   "lesson_kafka_rebalance"
+  ],
+  "mem_chars": 2000,
+  "retrieval_s": 0.35,
+  "tokens": 55604,
+  "tool_uses": 5,
+  "duration_ms": 15049,
+  "status": "ok",
+  "pass": true,
+  "tampered": false
+ }
+]
