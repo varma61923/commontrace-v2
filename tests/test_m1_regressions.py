@@ -261,7 +261,8 @@ def test_query_cmd_importance_floor_flag():
     args = parser.parse_args(["query", "my task", "--include-importance-floor", "3"])
     assert args.include_importance_floor == 3
 
-    with patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True), \
+    with patch("commontrace.commands.query_cmd._has_candidates", return_value=True), \
+            patch("commontrace.commands.query_cmd.has_attention_deps", return_value=True), \
             patch("commontrace.commands.query_cmd._index_is_unusable", return_value=""):
         with patch("commontrace.commands.query_cmd.run_script", return_value=(0, "")) as mock_run:
             query_cmd.run(args)

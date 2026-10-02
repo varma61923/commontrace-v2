@@ -43,8 +43,11 @@ class _LazyCommandMap(dict):
     def __init__(self, subparsers_action=None):
         super().__init__()
         self._subparsers_action = subparsers_action
+        self._loading: set[str] = set()
 
     def __contains__(self, key):
+        if key in self._loading:
+            return False
         return key in _COMMANDS or dict.__contains__(self, key)
 
     def __iter__(self):
@@ -67,7 +70,11 @@ class _LazyCommandMap(dict):
         action._choices_actions = [
             a for a in action._choices_actions if a.dest != key
         ]
-        module.add_parser(action)
+        self._loading.add(key)
+        try:
+            module.add_parser(action)
+        finally:
+            self._loading.discard(key)
         return dict.__getitem__(self, key)
 
     def __setitem__(self, key, value):

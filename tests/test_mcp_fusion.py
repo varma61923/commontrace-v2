@@ -9,12 +9,12 @@ from commontrace.commands import query_cmd
 from tests.test_hybrid_retrieval import _args
 from tests.test_mcp_server import _write_lesson, call, cli
 
+TASK = "password reset email suppression"
+SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]
+
 pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
 
 from commontrace import mcp_server  # noqa: E402
-
-TASK = "password reset email suppression"
-SEMANTIC = ["refund-threshold", "suppression-list", "unsubscribe-sync"]
 
 
 @pytest.fixture

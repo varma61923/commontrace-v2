@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from commontrace import evidence, experiment
-from tests.test_harm_policy import BAD, _store
-from tests.test_mcp_server import cli
-
 pytest.importorskip("mcp", reason="`commontrace serve` needs the MCP SDK: pip install 'commontrace[serve]'")
+
+from commontrace import evidence, experiment  # noqa: E402
+from tests.test_harm_policy import BAD, _store  # noqa: E402
+from tests.test_mcp_server import cli  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

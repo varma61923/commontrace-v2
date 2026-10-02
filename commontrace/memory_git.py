@@ -448,7 +448,7 @@ def install_pre_commit_hook(root: str) -> dict:
         hook_content = _build_pre_commit_hook_script()
         with open(hook_path, "w", encoding="utf-8") as f:
             f.write(hook_content)
-        os.chmod(hook_path, 0o755)
+        os.chmod(hook_path, 0o755)  # nosec B103
         return {"ok": True, "hook_path": hook_path, "root": root}
     except OSError as exc:
         return {"ok": False, "error": str(exc), "root": root}

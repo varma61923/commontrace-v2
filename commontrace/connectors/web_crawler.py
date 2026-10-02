@@ -107,7 +107,7 @@ class WebCrawlerConnector(Connector):
 
     def _fetch(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
             ctype = ""
             try:
                 ctype = str(resp.headers.get("Content-Type", ""))

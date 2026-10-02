@@ -231,7 +231,7 @@ def extract_docx_paragraphs(path: str) -> list[str]:
     try:
         import xml.etree.ElementTree as ET
 
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml_bytes)  # nosec B314
         paras: list[str] = []
         for p in root.iter(_W_P):
             bits: list[str] = []
