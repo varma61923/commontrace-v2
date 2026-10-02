@@ -45,3 +45,4 @@ htmlcov/
 # Jupyter (if anyone runs notebooks locally)
 .ipynb_checkpoints/
 
+.agentteam/

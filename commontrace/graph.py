@@ -141,6 +141,7 @@ def add_node(
     entity_type: str,
     name: str = "",
     properties: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> GraphNode:
     """Add or update an entity node in the graph."""
     clean_id = id.strip().lower()
@@ -170,6 +171,20 @@ def add_node(
         nodes[clean_id] = node
 
     save_nodes(root, nodes)
+    if provenance is not None:
+        try:
+            from commontrace import provenance as _prov
+
+            _prov.append_provenance(
+                root,
+                target_kind="node",
+                target_id=clean_id,
+                source_path=str((provenance or {}).get("source_path", "")),
+                run_id=str((provenance or {}).get("run_id", "")),
+                detail=(provenance or {}).get("detail", ""),
+            )
+        except Exception:
+            pass
     return node
 
 
@@ -182,6 +197,7 @@ def add_edge(
     valid_from: str | None = None,
     valid_until: str | None = None,
     properties: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> GraphEdge:
     """Add a directed relationship between two nodes."""
     src = source.strip().lower()
@@ -193,9 +209,9 @@ def add_edge(
 
     nodes = load_nodes(root)
     if src not in nodes:
-        add_node(root, src, entity_type="concept")
+        add_node(root, src, entity_type="concept", provenance=provenance)
     if dst not in nodes:
-        add_node(root, dst, entity_type="concept")
+        add_node(root, dst, entity_type="concept", provenance=provenance)
 
     edges = load_edges(root)
     now_iso = _now()
@@ -209,6 +225,20 @@ def add_edge(
                 if properties:
                     edge.properties.update(properties)
                 save_edges(root, edges)
+                if provenance is not None:
+                    try:
+                        from commontrace import provenance as _prov
+
+                        _prov.append_provenance(
+                            root,
+                            target_kind="edge",
+                            target_id=f"{src}->{dst}:{relation}",
+                            source_path=str((provenance or {}).get("source_path", "")),
+                            run_id=str((provenance or {}).get("run_id", "")),
+                            detail=(provenance or {}).get("detail", ""),
+                        )
+                    except Exception:
+                        pass
                 return edge
 
     new_edge = GraphEdge(
@@ -223,6 +253,20 @@ def add_edge(
     )
     edges.append(new_edge)
     save_edges(root, edges)
+    if provenance is not None:
+        try:
+            from commontrace import provenance as _prov
+
+            _prov.append_provenance(
+                root,
+                target_kind="edge",
+                target_id=f"{src}->{dst}:{relation}",
+                source_path=str((provenance or {}).get("source_path", "")),
+                run_id=str((provenance or {}).get("run_id", "")),
+                detail=(provenance or {}).get("detail", ""),
+            )
+        except Exception:
+            pass
     return new_edge
 
 

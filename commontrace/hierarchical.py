@@ -357,3 +357,115 @@ def search_facts(
 
     scored.sort(key=lambda x: -x[1])
     return scored[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Append-only v2 additions: forward-looking Foresight records.
+# Existing fact lifecycle above is untouched.
+# ---------------------------------------------------------------------------
+
+FORESIGHT_STATUSES = ("open", "confirmed", "refuted", "expired")
+
+
+@dataclass
+class Foresight:
+    id: str
+    statement: str
+    owner: str
+    evidence_ids: list[str]
+    valid_from: str
+    status: str  # "open" | "confirmed" | "refuted" | "expired"
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> Foresight:
+        return Foresight(
+            id=str(data.get("id", "")),
+            statement=str(data.get("statement", "")),
+            owner=str(data.get("owner", "")),
+            evidence_ids=[str(e) for e in (data.get("evidence_ids") or [])],
+            valid_from=str(data.get("valid_from", "")),
+            status=str(data.get("status", "open")),
+            created_at=str(data.get("created_at", "")),
+        )
+
+
+def _foresights_file(root: str) -> str:
+    return os.path.join(_facts_dir(root), "foresights.jsonl")
+
+
+def _foresight_id(statement: str, owner: str) -> str:
+    norm = _normalize_statement(statement)
+    h = hashlib.sha256(f"foresight|{norm}|{owner.strip().lower()}".encode("utf-8")).hexdigest()[:12]
+    return f"foresight-{h}"
+
+
+def record_foresight(
+    root: str,
+    statement: str,
+    owner: str = "",
+    evidence_ids: list[str] | None = None,
+    valid_from: str | None = None,
+    status: str = "open",
+) -> Foresight:
+    """Persist a forward-looking foresight (prediction/expectation) record."""
+    statement = (statement or "").strip()
+    if not statement:
+        raise ValueError("Foresight statement cannot be empty")
+    if status not in FORESIGHT_STATUSES:
+        status = "open"
+    now_iso = _now()
+    evidence = [str(e) for e in (evidence_ids or []) if str(e).strip()]
+    fid = _foresight_id(statement, owner or "")
+    # Avoid id collision with an existing different record.
+    existing = load_foresights(root)
+    if any(f.id == fid and f.statement != statement for f in existing):
+        fid = f"{fid}-{int(datetime.now(timezone.utc).timestamp()) % 10000}"
+    fs = Foresight(
+        id=fid,
+        statement=statement,
+        owner=(owner or "").strip(),
+        evidence_ids=evidence,
+        valid_from=valid_from or now_iso,
+        status=status,
+        created_at=now_iso,
+    )
+    fpath = _foresights_file(root)
+    with open(fpath, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(fs.to_dict()) + "\n")
+    return fs
+
+
+def load_foresights(root: str) -> list[Foresight]:
+    """Load all foresight records (in file order)."""
+    fpath = _foresights_file(root)
+    out: list[Foresight] = []
+    if not os.path.exists(fpath):
+        return out
+    with open(fpath, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(Foresight.from_dict(json.loads(line)))
+            except Exception:
+                continue
+    return out
+
+
+def list_foresights(
+    root: str,
+    status: str = "",
+    owner: str = "",
+) -> list[Foresight]:
+    """List foresights with optional status/owner filters (newest last)."""
+    items = load_foresights(root)
+    if status:
+        items = [f for f in items if f.status == status]
+    if owner:
+        items = [f for f in items if f.owner == owner]
+    return items

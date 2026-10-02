@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import re as _re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -202,6 +203,8 @@ def rank_lessons(
     adaptive_tail: bool = True,
     graph_boost_lookup: dict[str, float] | None = None,
     graph_weight: float = 0.0,
+    entity_index: dict[str, list[int]] | None = None,
+    entity_boost: float = 0.0,
 ) -> list[RankedLesson]:
     query_terms = _terms_for(scorer, _tokenize(task))
     if not query_terms:
@@ -254,8 +257,16 @@ def rank_lessons(
             reliability_adj = reliability_lookup.get(slug, 0.0) if reliability_lookup else 0.0
             recency_adj = recency_lookup.get(slug, 0.0) if recency_lookup else 0.0
             graph_adj = graph_boost_lookup.get(slug, 0.0) if graph_boost_lookup else 0.0
+            entity_adj = 0.0
+            if entity_boost and entity_index:
+                try:
+                    entity_adj = float(_entity_overlap(task, i, lessons, entity_index))
+                except Exception:
+                    entity_adj = 0.0
             adjusted = min(1.0, max(0.0,
-                rel + reliability_weight * reliability_adj + recency_weight * recency_adj + graph_weight * graph_adj,
+                rel + reliability_weight * reliability_adj
+                + recency_weight * recency_adj + graph_weight * graph_adj
+                + entity_boost * entity_adj,
             ))
             importance, uses = tie_breaks[i] if tie_breaks else (
                 _rank_int(fm.get("importance", 0)), _rank_int(fm.get("uses", 0)))
@@ -323,3 +334,204 @@ def apply_reranker(
     if reranker is None:
         return ranked
     return reranker(task, ranked)
+
+
+# ---------------------------------------------------------------------------
+# Additive v2 extensions: entity index + hierarchical episode->fact expansion.
+# All new symbols keep existing signatures default-compatible.
+# ---------------------------------------------------------------------------
+
+_ENTITY_RE = _re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,}")
+_ENTITY_SPLIT_RE = _re.compile(r"[^A-Za-z0-9]+")
+
+
+def _entity_tokens_for_lesson(fm: dict) -> set[str]:
+    """Stdlib entity-ish tokens: tags + domain + Capitalized words.
+
+    Lowercased for case-insensitive matching. Pure stdlib, no NLP deps.
+    """
+    out: set[str] = set()
+    try:
+        tags = fm.get("tags")
+        if isinstance(tags, (list, tuple)):
+            for t in tags:
+                for part in _ENTITY_SPLIT_RE.split(str(t)):
+                    if len(part) > 1:
+                        out.add(part.lower())
+        domain = fm.get("domain")
+        if domain:
+            for part in _ENTITY_SPLIT_RE.split(str(domain)):
+                if len(part) > 1:
+                    out.add(part.lower())
+        for field in (fm.get("description") or "", fm.get("applies_when") or ""):
+            for m in _ENTITY_RE.findall(str(field)):
+                if m[0].isupper() and m.lower() not in _STOPWORDS and len(m) > 1:
+                    out.add(m.lower())
+    except Exception:
+        pass
+    return out
+
+
+def _entity_tokens_for_query(task: str) -> set[str]:
+    out: set[str] = set()
+    try:
+        for m in _ENTITY_RE.findall(task or ""):
+            if m[0].isupper() and m.lower() not in _STOPWORDS and len(m) > 1:
+                out.add(m.lower())
+        # Also include distinctive non-stopword tokens so lowercase
+        # entity mentions (e.g. tag names) still match.
+        for w in _WORD_RE.findall((task or "").lower()):
+            if w not in _STOPWORDS and len(w) > 2:
+                out.add(w)
+    except Exception:
+        pass
+    return out
+
+
+def build_entity_index(
+    lessons: list[tuple[str, dict]],
+) -> dict[str, list[int]]:
+    """Build a stdlib token->doc-id index mapping entity token to doc indices.
+
+    Returns {token: sorted [doc_index, ...]}. Doc ids are positional indices
+    into `lessons` so the index stays valid for that ranking call.
+    """
+    index: dict[str, list[int]] = {}
+    for i, (_path, fm) in enumerate(lessons):
+        try:
+            toks = _entity_tokens_for_lesson(fm if isinstance(fm, dict) else {})
+        except Exception:
+            toks = set()
+        for tok in toks:
+            index.setdefault(tok, []).append(i)
+    for tok in index:
+        index[tok] = sorted(index[tok])
+    return index
+
+
+def _entity_overlap(
+    task: str,
+    doc_pos: int,
+    lessons: list[tuple[str, dict]],
+    entity_index: dict[str, list[int]],
+) -> float:
+    """Count of query entity tokens present in doc `doc_pos` (via index)."""
+    if not entity_index:
+        return 0.0
+    qtoks = _entity_tokens_for_query(task)
+    if not qtoks:
+        return 0.0
+    hits = 0
+    for tok in qtoks:
+        postings = entity_index.get(tok)
+        if postings and doc_pos in postings:
+            hits += 1
+    return float(hits)
+
+
+def _as_episode_ids(episodes: list) -> list[str]:
+    """Normalize ranked episodes to an ordered id list (best first)."""
+    ids: list[str] = []
+    for ep in episodes or []:
+        if isinstance(ep, str):
+            ids.append(ep)
+        elif isinstance(ep, (tuple, list)) and ep:
+            ids.append(str(ep[0]))
+        elif isinstance(ep, dict):
+            for key in ("id", "trace_id", "episode_id", "path"):
+                if ep.get(key):
+                    ids.append(str(ep[key]))
+                    break
+        else:
+            ident = getattr(ep, "id", None) or getattr(ep, "trace_id", None)
+            ids.append(str(ident if ident is not None else ep))
+    return ids
+
+
+def _fact_id_of(fact: Any) -> str:
+    if isinstance(fact, dict):
+        for key in ("id", "fact_id"):
+            if fact.get(key):
+                return str(fact[key])
+        return str(fact.get("statement", fact))
+    ident = getattr(fact, "id", None)
+    if ident:
+        return str(ident)
+    return str(fact)
+
+
+def _fact_sources_of(fact: Any) -> list[str]:
+    if isinstance(fact, dict):
+        srcs = fact.get("source_traces", []) or fact.get("evidence_ids", []) or fact.get("sources", [])
+    else:
+        srcs = getattr(fact, "source_traces", None)
+        if srcs is None:
+            srcs = getattr(fact, "evidence_ids", [])
+    try:
+        return [str(s) for s in (srcs or [])]
+    except Exception:
+        return []
+
+
+def _fact_confidence_of(fact: Any) -> float:
+    if isinstance(fact, dict):
+        try:
+            return float(fact.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            return 0.5
+    try:
+        return float(getattr(fact, "confidence", 0.5))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def hierarchical_expand(
+    episodes: list,
+    facts: list,
+    top_n: int = 10,
+    min_score: float = 0.0,
+    rrf_k: int = DEFAULT_RRF_K,
+) -> list[tuple[str, float]]:
+    """Expand ranked episodes to linked facts with RRF fusion + floor eviction.
+
+    - `episodes`: ranked episode/trace ids (best first); accepts str ids,
+      (id, score) pairs, or dicts/objects with an id field.
+    - `facts`: AtomicFact-like objects or dicts carrying `source_traces`
+      (episode links) and optional `confidence`.
+    - Fusion: episode-position RRF summed over linked episodes, fused with a
+      confidence-ranked fact arm via :func:`reciprocal_rank_fusion`.
+    - Facts with fused score < `min_score` are evicted (score-floor eviction).
+    - Returns [(fact_id, fused_score)] sorted best first, at most `top_n`.
+    """
+    ep_ids = _as_episode_ids(episodes)
+    if not ep_ids or not facts:
+        return []
+    fact_ids = [_fact_id_of(f) for f in facts]
+    ep_set = set(ep_ids)
+
+    # Arm 1: per-fact episode linkage arm (ordered by summed episode RRF).
+    ep_rrf = {eid: 1.0 / (rrf_k + pos) for pos, eid in enumerate(ep_ids, start=1)}
+    # Arm 2: confidence arm (facts ranked by confidence desc).
+    order = sorted(range(len(facts)), key=lambda i: (-_fact_confidence_of(facts[i]), fact_ids[i]))
+    conf_ranked = [fact_ids[i] for i in order]
+    # Arm 3: linkage arm order — facts with stronger episode linkage first so
+    # RRF fusion rewards episode fan-out even when confidences tie.
+    link_strength: dict[str, float] = {}
+    for fid, fact in zip(fact_ids, facts):
+        linked = [s for s in _fact_sources_of(fact) if s in ep_set]
+        link_strength[fid] = sum(ep_rrf.get(s, 0.0) for s in linked)
+    link_ranked = sorted(fact_ids, key=lambda fid: (-link_strength.get(fid, 0.0), fid))
+
+    arms = {"confidence": conf_ranked, "episode_link": link_ranked}
+    fused = dict(
+        reciprocal_rank_fusion(arms, k=rrf_k, top_k=None)
+    )
+    # Add raw linkage strength so directly-linked facts outrank unlinked ones
+    # with identical RRF positions, while keeping RRF as the fusion backbone.
+    scored: list[tuple[str, float]] = []
+    for fid in fact_ids:
+        score = fused.get(fid, 0.0) + link_strength.get(fid, 0.0)
+        if score >= min_score:
+            scored.append((fid, round(score, 6)))
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    return scored[: max(0, top_n)]

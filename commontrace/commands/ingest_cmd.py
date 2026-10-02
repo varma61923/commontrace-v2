@@ -40,6 +40,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--json", dest="output_json", action="store_true",
                    help="Output results as JSON.")
+    p.add_argument("--preview", action="store_true",
+                   help="Dry-run: parse/chunk with zero writes, report would-write counts.")
     p.set_defaults(func=run)
 
 
@@ -47,7 +49,10 @@ def run(args: argparse.Namespace) -> int:
     from commontrace.ingest import IngestionPipeline
 
     root = args.dest or paths.store_root()
-    source_type = args.source_type.replace("-", "_")  # json-logs → json_logs
+    raw_type = args.source_type or args.source_format or "code"
+    source_type = raw_type.replace("-", "_")  # json-logs → json_logs
+    if source_type == "logs":
+        source_type = "json_logs"  # alias: bare 'logs' means structured logs
 
     pipeline = IngestionPipeline()
     kwargs: dict = {}
@@ -69,8 +74,29 @@ def run(args: argparse.Namespace) -> int:
         source_type=source_type,
         dest_root=root,
         scope=args.scope,
+        preview=bool(getattr(args, "preview", False)),
         **kwargs,
     )
+
+    if getattr(args, "preview", False):
+        if args.output_json:
+            payload = result.to_dict()
+            payload["preview"] = True
+            print(json.dumps(payload, indent=2))
+        else:
+            d = result.to_dict()
+            print("[commontrace] ingest preview (no writes):")
+            print(f"  chunks extracted:   {d['chunks_extracted']}")
+            print(f"  facts written:      {d['facts_written']}")
+            print(f"  graph nodes:        {d['graph_nodes']}")
+            print(f"  graph edges:        {d['graph_edges']}")
+            print(f"  lessons drafted:    {d['lessons_drafted']}")
+            print(f"  traces written:     {d['traces_written']}")
+            if d["errors"]:
+                print("  errors:")
+                for e in d["errors"]:
+                    print(f"    - {e}", file=sys.stderr)
+        return 1 if result.errors else 0
 
     if args.output_json:
         print(json.dumps(result.to_dict(), indent=2))

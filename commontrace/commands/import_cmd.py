@@ -20,8 +20,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Bulk-import an existing export (JSONL or CSV) into memory/traces/ -- "
         "'start from your historical traces' with no infrastructure replacement.",
     )
-    p.add_argument("file", help="Path to a .jsonl or .csv export.")
-    p.add_argument("--format", choices=["jsonl", "csv"], default=None, help="Default: infer from the file extension.")
+    p.add_argument("file", help="Path to a .jsonl, .csv, or cogx/v1 .json export.")
+    p.add_argument(
+        "--format", choices=["jsonl", "csv", "cogx", "native"], default=None,
+        help="Default: auto-detect (a cogx/v1 envelope is recognized by content, "
+             "otherwise inferred from the file extension). 'native' is an alias for 'jsonl'.",
+    )
     p.add_argument(
         "--source", choices=list(adapters.SOURCES), default=adapters.GENERIC,
         help=(
@@ -54,8 +58,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _infer_format(path: str, explicit: str | None) -> str:
-    if explicit:
+    if explicit == "native":
+        explicit = "jsonl"
+    if explicit in ("csv", "cogx"):
         return explicit
+    # JSONL rows and cogx envelopes share no extension convention, so peek:
+    # a cogx/v1 envelope is unambiguous by content and wins over the default.
+    from commontrace import interop
+
+    if interop.detect_file_format(path) == "cogx":
+        return "cogx"
+    if explicit == "jsonl":
+        return "jsonl"
     ext = os.path.splitext(path)[1].lower()
     if ext == ".csv":
         return "csv"
@@ -101,6 +115,9 @@ def run(args: argparse.Namespace) -> int:
         source=getattr(args, "source", adapters.GENERIC),
     )
     fmt = _infer_format(args.file, args.format)
+
+    if fmt == "cogx":
+        return _run_cogx(args)
 
     if not args.dry_run:
         paths.warn_if_implicit_cwd_store(args.dest)
@@ -191,5 +208,36 @@ def run(args: argparse.Namespace) -> int:
         "Run `commontrace distill` to find repeated patterns across them."
     )
     if n_rejected or all_rows_skipped:
+        return 1
+    return 0
+
+
+def _run_cogx(args: argparse.Namespace) -> int:
+    from commontrace import interop, paths
+
+    try:
+        envelope = interop.read_cogx(args.file)
+    except (OSError, ValueError) as exc:
+        print(f"[commontrace] could not read COGX envelope {args.file}: {exc}", file=sys.stderr)
+        return 1
+    records = envelope["records"]
+    by_kind: dict[str, int] = {}
+    for rec in records:
+        by_kind[rec["kind"]] = by_kind.get(rec["kind"], 0) + 1
+    breakdown = ", ".join(f"{k}: {by_kind[k]}" for k in sorted(by_kind)) or "no records"
+
+    if args.dry_run:
+        print(f"[commontrace] {args.file}: {len(records)} COGX record(s) ({breakdown}) --dry-run: no files written.")
+        return 0
+
+    paths.warn_if_implicit_cwd_store(args.dest)
+    root = paths.resolve_root(args.dest)
+    counts = interop.apply_store(root, records, agent_type=args.agent_type)
+    applied = sum(v for k, v in counts.items() if k != "skipped")
+    print(
+        f"[commontrace] {args.file}: applied {applied} COGX record(s) "
+        f"({breakdown}), {counts['skipped']} skipped."
+    )
+    if applied == 0 and counts["skipped"] > 0:
         return 1
     return 0

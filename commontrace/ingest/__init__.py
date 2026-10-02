@@ -29,6 +29,46 @@ def _redact_secrets(text: str) -> str:
     return _SECRET_PATTERNS.sub("[REDACTED]", text)
 
 
+# ---------------------------------------------------------------------------
+# LLM contextualizer hardening (prompt-injection tag stripping)
+# ---------------------------------------------------------------------------
+
+_MAX_CONTEXT_LEN = 2000
+
+_PAIRED_TAG_RE = re.compile(
+    r"<\s*(system|prompt|instruction|context|developer|assistant)\b[^>]*>"
+    r".*?"
+    r"<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_BARE_TAG_RE = re.compile(
+    r"<\s*/?\s*(system|prompt|instruction|context|developer|assistant)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def sanitize_contextualizer_text(text: str, max_len: int = _MAX_CONTEXT_LEN) -> str:
+    """Strip prompt-injection tags from LLM contextualizer input and cap length.
+
+    Removes paired ``<system>...</system>`` / ``<prompt>...</prompt>``
+    (plus instruction/context/developer/assistant) blocks and any bare
+    occurrences, then truncates to ``max_len`` chars.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    cleaned = _PAIRED_TAG_RE.sub(" ", text)
+    cleaned = _BARE_TAG_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if max_len > 0 and len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip()
+    return cleaned
+
+
+def contextualize_for_llm(text: str, max_len: int = _MAX_CONTEXT_LEN) -> str:
+    """Prepare chunk text for an LLM contextualizer: redact + strip + cap."""
+    return sanitize_contextualizer_text(_redact_secrets(text), max_len=max_len)
+
+
 def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -180,7 +220,7 @@ def ingest_code_repository(
                                 "tags": ["ingested", "code"] + ([scope] if scope else []),
                                 "scopes": [scope] if scope else [],
                                 "source": rel,
-                            }, chunk.content)
+                            }, contextualize_for_llm(chunk.content))
                             result.lessons_drafted += 1
 
             files_processed += 1
@@ -259,7 +299,9 @@ def ingest_markdown_documentation(
                 elif any(kw in bc for kw in ("architecture", "design", "pattern", "structure")):
                     category = "architecture"
 
-                statement = f"{chunk.breadcrumb}: {chunk.content[:200]}".strip()
+                statement = sanitize_contextualizer_text(
+                    f"{chunk.breadcrumb}: {chunk.content[:200]}".strip()
+                )
                 if len(statement) > 30:
                     hierarchical.add_fact(
                         root,
@@ -332,7 +374,7 @@ def ingest_json_logs(
             slug = f"log_error_{fp}"
             trace_path = os.path.join(trace_dir, f"{slug}.md")
             if not os.path.exists(trace_path):
-                context = _redact_secrets(f"Recurring error in {service_name or log_path}: {msg}")
+                context = contextualize_for_llm(f"Recurring error in {service_name or log_path}: {msg}")
                 solution = f"Occurred {len(entries)} times. Review service {service_name or log_path}."
                 frontmatter.write(trace_path, {
                     "title": f"[Log] {msg[:80]}",
@@ -401,9 +443,250 @@ def ingest_failure_transcript(
                 "scopes": [scope] if scope else [],
                 "source": transcript_path,
                 "step_index": step_idx,
-            }, _redact_secrets(content))
+            }, contextualize_for_llm(content, max_len=1000))
             result.lessons_drafted += 1
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Fact-triple ingestion (subject, predicate, object, valid_at)
+# ---------------------------------------------------------------------------
+
+def _load_triples(path_or_list: Any) -> list[dict[str, Any]]:
+    """Normalize triples input to a list of dicts.
+
+    Accepts a list of dicts/tuples, or a path to a .json / .jsonl file.
+    """
+    if isinstance(path_or_list, (list, tuple)):
+        items = list(path_or_list)
+    elif isinstance(path_or_list, str) and os.path.exists(path_or_list):
+        items = []
+        with open(path_or_list, "r", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read().strip()
+        if not raw:
+            return []
+        if path_or_list.endswith(".jsonl"):
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(json.loads(line))
+                except Exception:
+                    continue
+        else:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = []
+            if isinstance(parsed, dict):
+                items = [parsed]
+            elif isinstance(parsed, list):
+                items = parsed
+            else:
+                items = []
+    else:
+        raise ValueError(f"triples source not found: {path_or_list!r}")
+
+    triples: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, (list, tuple)) and len(item) >= 3:
+            triples.append({
+                "subject": str(item[0]),
+                "predicate": str(item[1]),
+                "object": str(item[2]),
+                "valid_at": str(item[3]) if len(item) > 3 and item[3] else "",
+            })
+        elif isinstance(item, dict):
+            subj = item.get("subject", "")
+            pred = item.get("predicate", item.get("relation", ""))
+            obj = item.get("object", item.get("target", ""))
+            if subj and pred and obj:
+                triples.append({
+                    "subject": str(subj),
+                    "predicate": str(pred),
+                    "object": str(obj),
+                    "valid_at": str(item.get("valid_at", item.get("valid_from", "")) or ""),
+                })
+    return triples
+
+
+def ingest_fact_triples(
+    path_or_list: Any,
+    root: str,
+    scope: str = "",
+    run_id: str = "",
+) -> IngestionResult:
+    """Ingest (subject, predicate, object, valid_at) triples.
+
+    Writes graph nodes + edges and atomic facts. Returns an IngestionResult.
+    """
+    from commontrace import graph as graph_mod
+    from commontrace import hierarchical
+
+    label = path_or_list if isinstance(path_or_list, str) else "<triples>"
+    result = IngestionResult(source_path=str(label), source_type="fact_triples")
+    try:
+        triples = _load_triples(path_or_list)
+    except Exception as exc:
+        result.errors.append(f"triples load error: {exc}")
+        return result
+
+    for triple in triples:
+        subj = sanitize_contextualizer_text(triple["subject"], max_len=500)
+        pred_raw = str(triple["predicate"]).strip().lower()
+        obj = sanitize_contextualizer_text(triple["object"], max_len=500)
+        valid_at = str(triple.get("valid_at") or "")
+        if not subj or not obj or not pred_raw:
+            continue
+        relation = pred_raw if pred_raw in graph_mod.RELATIONS else "relates_to"
+        prov = {
+            "source_path": str(label),
+            "run_id": run_id,
+            "detail": {"predicate": pred_raw},
+        }
+        try:
+            graph_mod.add_node(root, subj, "concept", name=subj, provenance=prov)
+            result.graph_nodes_written += 1
+            graph_mod.add_node(root, obj, "concept", name=obj, provenance=prov)
+            result.graph_nodes_written += 1
+            graph_mod.add_edge(
+                root, subj, obj, relation,
+                valid_from=valid_at or None,
+                properties={"predicate": pred_raw},
+                provenance=prov,
+            )
+            result.graph_edges_written += 1
+            hierarchical.add_fact(
+                root,
+                statement=f"{subj} {pred_raw} {obj}"[:500],
+                category="general",
+                scopes=[scope] if scope else None,
+                confidence=0.8,
+                valid_from=valid_at or None,
+            )
+            result.facts_written += 1
+            result.chunks_extracted += 1
+        except Exception as exc:
+            result.errors.append(f"triple error ({subj}/{pred_raw}/{obj}): {exc}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Preview (dry-run, zero writes)
+# ---------------------------------------------------------------------------
+
+def preview_ingest(
+    path: str,
+    source_type: str,
+    scope: str = "",
+    max_files: int = 200,
+    **kwargs: Any,
+) -> IngestionResult:
+    """Dry-run ingestion: parse/chunk with zero writes.
+
+    Returns an IngestionResult with would-write counts populated and no
+    side effects on the store.
+    """
+    result = IngestionResult(source_path=path, source_type=f"{source_type}:preview")
+    stype = source_type.replace("-", "_")
+    try:
+        if stype == "code":
+            files = 0
+            for dirpath, _dirs, filenames in os.walk(path):
+                for fname in filenames:
+                    if files >= max_files:
+                        break
+                    if not fname.endswith(tuple(kwargs.get("extensions", (".py",)))):
+                        continue
+                    fpath = os.path.join(dirpath, fname)
+                    chunks = _chunk_code_file(fpath)
+                    result.chunks_extracted += len(chunks)
+                    result.graph_nodes_written += 1  # file node
+                    for chunk in chunks:
+                        if chunk.chunk_type == "code_symbol":
+                            result.graph_nodes_written += 1
+                            result.graph_edges_written += 1
+                            if len(chunk.content) > 200:
+                                result.lessons_drafted += 1
+                    files += 1
+        elif stype == "markdown":
+            files = 0
+            for dirpath, _dirs, filenames in os.walk(path):
+                for fname in filenames:
+                    if not fname.endswith(".md"):
+                        continue
+                    if files >= max_files:
+                        break
+                    chunks = _chunk_markdown(os.path.join(dirpath, fname))
+                    result.chunks_extracted += len(chunks)
+                    result.facts_written += len(
+                        [c for c in chunks if len(f"{c.breadcrumb}: {c.content[:200]}".strip()) > 30]
+                    )
+                    files += 1
+        elif stype == "json_logs":
+            buckets: dict[str, int] = {}
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as lf:
+                    for line in lf:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        result.chunks_extracted += 1
+                        level = str(entry.get("level", entry.get("severity", ""))).upper()
+                        msg = str(entry.get("message", entry.get("msg", entry.get("error", ""))))
+                        if not msg or level not in ("ERROR", "CRITICAL", "FATAL", "WARNING"):
+                            continue
+                        fp = _fingerprint(re.sub(r"\b\d+\b", "N", msg))
+                        buckets[fp] = buckets.get(fp, 0) + 1
+            except Exception as exc:
+                result.errors.append(f"log parse error: {exc}")
+                return result
+            result.graph_nodes_written = 1 + len(buckets)  # service + errors
+            result.graph_edges_written = len(buckets)
+            result.traces_written = len([c for c in buckets.values() if c >= 2])
+        elif stype == "transcript":
+            turns: list[dict] = []
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as tf:
+                    for line in tf:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            turns.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as exc:
+                result.errors.append(f"transcript parse error: {exc}")
+                return result
+            result.chunks_extracted = len(turns)
+            failures = [
+                t for t in turns
+                if str(t.get("status", "")).upper() in ("ERROR", "FAILED", "FAILURE")
+                or "error" in str(t.get("content", "")).lower()[:200]
+            ]
+            result.lessons_drafted = min(len(failures), 10)
+        elif stype == "fact_triples":
+            try:
+                triples = _load_triples(path)
+            except Exception as exc:
+                result.errors.append(f"triples load error: {exc}")
+                return result
+            result.chunks_extracted = len(triples)
+            result.graph_nodes_written = 2 * len(triples)
+            result.graph_edges_written = len(triples)
+            result.facts_written = len(triples)
+        else:
+            result.errors.append(f"unknown source_type: {source_type!r}")
+    except Exception as exc:
+        result.errors.append(f"preview error: {exc}")
     return result
 
 
@@ -427,17 +710,27 @@ class IngestionPipeline:
         source_type: str,
         dest_root: str,
         scope: str = "",
+        preview: bool = False,
         **kwargs: Any,
     ) -> IngestionResult:
-        """Ingest a source into governed lessons, atomic facts, and the knowledge graph."""
-        if source_type == "code":
+        """Ingest a source into governed lessons, atomic facts, and the knowledge graph.
+
+        When ``preview`` is True, no writes are performed — would-write
+        counts are returned instead.
+        """
+        stype = source_type.replace("-", "_")
+        if preview:
+            return preview_ingest(path, stype, scope=scope, **kwargs)
+        if stype == "code":
             return ingest_code_repository(dest_root, path, scope=scope, **kwargs)
-        elif source_type == "markdown":
+        elif stype == "markdown":
             return ingest_markdown_documentation(dest_root, path, scope=scope, **kwargs)
-        elif source_type == "json_logs":
+        elif stype == "json_logs":
             return ingest_json_logs(dest_root, path, scope=scope, **kwargs)
-        elif source_type == "transcript":
+        elif stype == "transcript":
             return ingest_failure_transcript(dest_root, path, scope=scope, **kwargs)
+        elif stype == "fact_triples":
+            return ingest_fact_triples(path, dest_root, scope=scope, **kwargs)
         else:
             result = IngestionResult(source_path=path, source_type=source_type)
             result.errors.append(f"unknown source_type: {source_type!r}")
