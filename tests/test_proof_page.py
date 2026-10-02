@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from commontrace import functions, holdout_io, proof, proof_page
+from commontrace import functions, holdout_io, paths, proof, proof_page
 from commontrace.cli import main
 
 SUPPORT = functions.builtin_kits()["support"]
@@ -154,3 +154,15 @@ def test_simulation_refuses_a_store_that_already_holds_assignments(tmp_path):
                               salt=holdout_io.load_config(root).salt, revisions={"m": "r"})
     with pytest.raises(proof.ProofError, match="fresh store"):
         proof.simulate_fleet(root, kit)
+
+
+def test_a_seeded_rehearsal_randomizes_the_same_way_every_time(easy_kit, tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    salts = []
+    for run in ("a", "b"):
+        store = str(tmp_path / run)
+        assert main(["proof", "wizard", easy_kit, "--label", run, "--daily", "100", "--yes",
+                     "--simulate", "--seed", "7", "--dest", store]) == 0
+        salts.append(holdout_io.load_config(paths.resolve_root(store)).salt)
+    capsys.readouterr()
+    assert salts[0] == salts[1]

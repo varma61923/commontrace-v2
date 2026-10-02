@@ -208,7 +208,8 @@ def run_wizard(args: argparse.Namespace) -> int:
         print("[commontrace] nothing was started.")
         return 0
     state, _ = proof.start(root, kit, label=label, daily=daily, value_per_occasion=vpo,
-                           force=args.simulate)
+                           force=args.simulate,
+                           salt=f"sim-{kit.key}-{args.seed}" if args.simulate else None)
     reg = state["preregistration"]
     print(f"\n[commontrace] proof started for {state['label']!r}; registered before any data: "
           f"{reg['planned_occasions']:,} occasions, stopping rule {reg['stopping_rule']}.")
